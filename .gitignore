@@ -1,0 +1,128 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ---------- 测试 / 覆盖率 ----------
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+.tox/
+.nox/
+
+# 类型检查 / 静态分析
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ---------- 工具 / 编辑器 ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+
+# ---------- 日志 / 临时文件 ----------
+*.log
+logs/
+*.pid
+*.seed
+*.pid.lock
+local_settings.py
+
+# ---------- 环境变量 / 密钥（务必忽略）----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.yaml
+secrets.json
+
+# ---------- 数据库 / 迁移产物 ----------
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+postgres_data/
+mysql_data/
+docker-compose.override.yml
+
+# ---------- Alembic ----------
+# 保留 alembic/ 目录本身和 versions/，只忽略缓存
+alembic/__pycache__/
+alembic/versions/__pycache__/
+
+# ---------- API 文档 / 客户端生成 ----------
+docs/_build/
+docs/.sphinx/
+.openapi-generator/
+
+# ---------- 模型 / 数据文件 ----------
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.parquet
+*.csv
+!data/.gitkeep
+
+# ---------- 前端（如有） ----------
+node_modules/
+.next/
+.nuxt/
+dist/
+.parcel-cache/
+
+# ---------- 操作系统 ----------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+ehthumbs.db
+Desktop.ini
+
+# ---------- 项目特定 ----------
+# FastAPI
+htmlcov/
+
+# 临时测试文件
+/tmp/
+test_*.tmp
