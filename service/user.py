@@ -1,7 +1,9 @@
-from fastapi import HTTPException, status
+from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from core.error_code import ErrCode
+from core.exception import BizError
 from model.user import TUser
 from repository.unit_of_work import UnitOfWork
 from schema.order import OrderOut
@@ -26,9 +28,10 @@ class UserService:
     async def create_user(self, data: UserCreate) -> UserOut:
         async with self.uow.session.begin():
             if await self.uow.users.get_by_username(data.username) is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="username already exists",
+                raise BizError(
+                    code=ErrCode.BIZ_USER_DUPLICATE,
+                    message="username already exists",
+                    http_status=status.HTTP_409_CONFLICT,
                 )
             user = TUser(id=new_id(), username=data.username)
             await self.uow.users.create(user)
@@ -42,9 +45,10 @@ class UserService:
         )
         user = (await self.uow.session.execute(stmt)).scalar_one_or_none()
         if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"user {user_id} not found",
+            raise BizError(
+                code=ErrCode.BIZ_USER_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=status.HTTP_404_NOT_FOUND,
             )
         return UserWithOrdersOut(
             id=user.id,

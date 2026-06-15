@@ -1,5 +1,7 @@
-from fastapi import HTTPException, status
+from fastapi import status
 
+from core.error_code import ErrCode
+from core.exception import BizError
 from model.order import TOrder
 from repository.unit_of_work import UnitOfWork
 from schema.order import OrderCreate, OrderOut
@@ -14,9 +16,10 @@ class OrderService:
         async with self.uow.session.begin():
             user = await self.uow.users.get_by_id(user_id)
             if user is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"user {user_id} not found",
+                raise BizError(
+                    code=ErrCode.BIZ_USER_NOT_FOUND,
+                    message=f"user {user_id} not found",
+                    http_status=status.HTTP_404_NOT_FOUND,
                 )
             order = TOrder(
                 id=new_id(),
