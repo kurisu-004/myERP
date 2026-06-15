@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from database import DATABASE_URL
+from core.database import DATABASE_URL
 from model import Base
 
 config = context.config

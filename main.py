@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 import uvicorn
 
-from database import lifespan
+from core.database import lifespan
 from api import api_router
 
 app = FastAPI(lifespan=lifespan)

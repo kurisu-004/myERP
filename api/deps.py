@@ -2,7 +2,7 @@ from collections.abc import AsyncGenerator
 
 from fastapi import Depends
 
-from database import SessionLocal
+from core.database import SessionLocal
 from repository.order import OrderRepository
 from repository.unit_of_work import UnitOfWork
 from repository.user import UserRepository

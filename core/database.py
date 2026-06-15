@@ -4,17 +4,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy import text
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
+from core.config import settings
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set!")
+DATABASE_URL = settings.database_url
 
 engine = create_async_engine(
-    DATABASE_URL,
+    settings.database_url,
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,
