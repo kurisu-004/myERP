@@ -5,6 +5,12 @@ from fastapi import Depends
 from core.database import SessionLocal
 from repository.order import OrderRepository
 from repository.part import PartRepository
+from repository.rbac import (
+    PermissionRepository,
+    RolePermissionRepository,
+    RoleRepository,
+    UserRoleRepository,
+)
 from repository.unit_of_work import UnitOfWork
 from repository.user import UserRepository
 from repository.worker import WorkerRepository
@@ -20,6 +26,10 @@ async def get_uow() -> AsyncGenerator[UnitOfWork, None]:
             orders=OrderRepository(session),
             parts=PartRepository(session),
             workers=WorkerRepository(session),
+            roles=RoleRepository(session),
+            permissions=PermissionRepository(session),
+            user_roles=UserRoleRepository(session),
+            role_permissions=RolePermissionRepository(session),
         )
 
 

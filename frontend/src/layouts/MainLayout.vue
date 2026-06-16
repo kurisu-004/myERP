@@ -16,44 +16,31 @@
         active-text-color="var(--sidebar-text-active)"
         class="sidebar-menu"
         router
+        unique-opened
       >
-        <el-menu-item index="/dashboard">
-          <el-icon><House /></el-icon>
-          <template #title>首页</template>
-        </el-menu-item>
-
-        <el-sub-menu index="base">
-          <template #title>
-            <el-icon><Document /></el-icon>
-            <span>基础数据</span>
-          </template>
-          <el-menu-item index="/parts">
-            <el-icon><Box /></el-icon>
-            <template #title>零件一览</template>
+        <template v-for="node in displayMenus" :key="node.code">
+          <el-sub-menu
+            v-if="node.children && node.children.length > 0"
+            :index="node.code"
+          >
+            <template #title>
+              <el-icon v-if="node.icon"><component :is="iconOf(node.icon)" /></el-icon>
+              <span>{{ node.name }}</span>
+            </template>
+            <el-menu-item
+              v-for="child in node.children"
+              :key="child.code"
+              :index="child.path || child.code"
+            >
+              <el-icon v-if="child.icon"><component :is="iconOf(child.icon)" /></el-icon>
+              <template #title>{{ child.name }}</template>
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="node.path || node.code">
+            <el-icon v-if="node.icon"><component :is="iconOf(node.icon)" /></el-icon>
+            <template #title>{{ node.name }}</template>
           </el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="sales">
-          <template #title>
-            <el-icon><Money /></el-icon>
-            <span>销售管理</span>
-          </template>
-          <el-menu-item index="/sales/order">
-            <el-icon><Tickets /></el-icon>
-            <template #title>销售订单</template>
-          </el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="purchase">
-          <template #title>
-            <el-icon><ShoppingCart /></el-icon>
-            <span>采购管理</span>
-          </template>
-          <el-menu-item index="/purchase/order">
-            <el-icon><Tickets /></el-icon>
-            <template #title>采购订单</template>
-          </el-menu-item>
-        </el-sub-menu>
+        </template>
       </el-menu>
     </el-aside>
 
@@ -61,11 +48,7 @@
       <!-- 右侧顶部栏 -->
       <el-header class="header">
         <div class="header-left">
-          <el-button
-            link
-            class="collapse-btn"
-            @click="toggleCollapse"
-          >
+          <el-button link class="collapse-btn" @click="toggleCollapse">
             <el-icon :size="20">
               <Fold v-if="!isCollapse" />
               <Expand v-else />
@@ -89,19 +72,25 @@
             </el-button>
           </el-tooltip>
 
+          <el-tag v-if="auth.isSuperadmin" type="danger" effect="dark" size="small">
+            SUPERADMIN
+          </el-tag>
+          <el-tag v-else type="info" effect="plain" size="small">
+            {{ auth.user?.name || 'USER' }}
+          </el-tag>
+
           <el-dropdown trigger="click" @command="handleUserCmd">
             <div class="user-info">
-              <el-avatar :size="32" :src="userAvatar" class="user-avatar" />
-              <span class="user-name">{{ userInfo.name }}</span>
+              <el-avatar :size="32" class="user-avatar">
+                {{ initial }}
+              </el-avatar>
+              <span class="user-name">{{ auth.user?.name || '未登录' }}</span>
               <el-icon><ArrowDown /></el-icon>
             </div>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="profile">
                   <el-icon><User /></el-icon>个人信息
-                </el-dropdown-item>
-                <el-dropdown-item command="settings">
-                  <el-icon><Setting /></el-icon>系统设置
                 </el-dropdown-item>
                 <el-dropdown-item divided command="logout">
                   <el-icon><SwitchButton /></el-icon>退出登录
@@ -112,7 +101,6 @@
         </div>
       </el-header>
 
-      <!-- 主要内容区 -->
       <el-main class="main-content">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
@@ -125,31 +113,128 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, type Component as VueComponent } from 'vue'
+import { computed, ref, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton } from '@element-plus/icons-vue'
-
-type UserCmd = 'profile' | 'settings' | 'logout'
-
-interface UserInfo {
-  name: string
-}
+import * as ElIcons from '@element-plus/icons-vue'
+import {
+  Box,
+  Fold,
+  Expand,
+  Refresh,
+  ArrowDown,
+  User,
+  SwitchButton,
+} from '@element-plus/icons-vue'
+import { useAuthStore } from '@/store/auth'
+import type { MenuNode } from '@/types/rbac'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const isCollapse = ref(false)
 
-const userInfo = ref<UserInfo>({ name: '管理员' })
-const userAvatar = ref<string>(
-  'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'
-)
+const initial = computed<string>(() => {
+  const n = auth.user?.name || ''
+  return n ? n.slice(0, 1) : 'U'
+})
 
 const activeMenu = computed<string>(() => route.path)
 
+// 动态菜单: 超管看全部静态菜单, 普通用户按后端下发的 menus 过滤
+const allStaticMenus: MenuNode[] = [
+  {
+    id: 'static-dashboard',
+    code: 'dashboard:menu',
+    name: '首页',
+    path: '/dashboard',
+    icon: 'House',
+    component: null,
+    sort_order: 0,
+    children: [],
+  },
+  {
+    id: 'static-parts',
+    code: 'parts:menu',
+    name: '基础数据',
+    path: null,
+    icon: 'Document',
+    component: null,
+    sort_order: 10,
+    children: [
+      {
+        id: 'static-parts-list',
+        code: 'parts:list',
+        name: '零件一览',
+        path: '/parts',
+        icon: 'Box',
+        component: null,
+        sort_order: 11,
+        children: [],
+      },
+    ],
+  },
+  {
+    id: 'static-rbac',
+    code: 'rbac:menu',
+    name: '系统管理',
+    path: null,
+    icon: 'Setting',
+    component: null,
+    sort_order: 900,
+    children: [
+      {
+        id: 'static-rbac-user',
+        code: 'rbac:user:list',
+        name: '用户管理',
+        path: '/rbac/users',
+        icon: 'User',
+        component: null,
+        sort_order: 901,
+        children: [],
+      },
+      {
+        id: 'static-rbac-role',
+        code: 'rbac:role:list',
+        name: '角色管理',
+        path: '/rbac/roles',
+        icon: 'UserFilled',
+        component: null,
+        sort_order: 902,
+        children: [],
+      },
+      {
+        id: 'static-rbac-perm',
+        code: 'rbac:permission:list',
+        name: '菜单权限',
+        path: '/rbac/permissions',
+        icon: 'Key',
+        component: null,
+        sort_order: 903,
+        children: [],
+      },
+    ],
+  },
+]
+
+const displayMenus = computed<MenuNode[]>(() => {
+  if (auth.isSuperadmin) {
+    return allStaticMenus
+  }
+  // 非超管: 用后端 menus 数组 (从 /auth/me 拿),但是要按 path 找对应的菜单模板
+  // 简化: 直接用后端返回的 menus
+  return auth.menus
+})
+
+function iconOf(name: string | null | undefined): Component | null {
+  if (!name) return null
+  const iconMap = ElIcons as unknown as Record<string, Component>
+  return iconMap[name] || null
+}
+
 const breadcrumbItems = computed<string[]>(() => {
-  return route.meta?.breadcrumb || [route.meta?.title || '首页']
+  return (route.meta?.breadcrumb as string[] | undefined) || [route.meta?.title || '首页']
 })
 
 const toggleCollapse = (): void => {
@@ -161,20 +246,23 @@ const reload = (): void => {
   router.go(0)
 }
 
-const handleUserCmd = (cmd: string | number | object): void => {
-  const command = cmd as UserCmd
+const handleUserCmd = async (cmd: string | number | object): Promise<void> => {
+  const command = cmd as string
   if (command === 'logout') {
-    ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-      .then(() => ElMessage.success('已退出登录'))
-      .catch(() => undefined)
+    try {
+      await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      })
+    } catch {
+      return
+    }
+    auth.logout()
+    ElMessage.success('已退出登录')
+    router.push('/login')
   } else if (command === 'profile') {
     ElMessage.info('个人信息')
-  } else if (command === 'settings') {
-    ElMessage.info('系统设置')
   }
 }
 </script>
@@ -294,6 +382,8 @@ const handleUserCmd = (cmd: string | number | object): void => {
 
   .user-avatar {
     background-color: var(--primary-light);
+    color: #fff;
+    font-weight: 600;
   }
 
   .user-name {

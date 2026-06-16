@@ -4,6 +4,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repository.order import OrderRepository
 from repository.part import PartRepository
+from repository.rbac import (
+    PermissionRepository,
+    RolePermissionRepository,
+    RoleRepository,
+    UserRoleRepository,
+)
 from repository.user import UserRepository
 from repository.worker import WorkerRepository
 
@@ -15,6 +21,10 @@ class UnitOfWork:
     orders: OrderRepository
     parts: PartRepository
     workers: WorkerRepository
+    roles: RoleRepository
+    permissions: PermissionRepository
+    user_roles: UserRoleRepository
+    role_permissions: RolePermissionRepository
 
     async def commit(self) -> None:
         await self.session.commit()

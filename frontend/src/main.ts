@@ -19,4 +19,15 @@ app.use(createPinia())
 app.use(router)
 app.use(ElementPlus, { locale: zhCn })
 
+// 启动时如果有 token, 先拉一次 me (失败则清掉)
+const { useAuthStore } = await import('./store/auth')
+const auth = useAuthStore()
+if (auth.token) {
+  try {
+    await auth.loadMe()
+  } catch {
+    auth.logout()
+  }
+}
+
 app.mount('#app')
