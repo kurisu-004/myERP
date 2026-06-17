@@ -47,6 +47,28 @@ export const useAuthStore = defineStore('auth', () => {
     setToken(null)
   }
 
+  function initDevSession(): void {
+    const fakeToken = 'dev-fake-token'
+    token.value = fakeToken
+    setToken(fakeToken)
+    me.value = {
+      user: {
+        id: '1',
+        employee_no: 'DEV001',
+        username: 'dev',
+        name: '开发用户',
+        is_active: 1,
+        last_login_at: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      roles: [],
+      permissions: ['*'],
+      menus: [],
+      is_superadmin: true,
+    }
+  }
+
   return {
     token,
     me,
@@ -60,5 +82,6 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     loadMe,
     logout,
+    initDevSession,
   }
 })

@@ -32,7 +32,7 @@
             @keyup.enter="onSubmit"
           />
         </el-form-item>
-        <el-button
+<el-button
           type="primary"
           :loading="loading"
           class="submit-btn"
