@@ -78,10 +78,9 @@ async def test_list_paginated_search(
 @pytest.mark.integration
 async def test_update_last_login(user_repo: UserRepository, user_factory):
     u = await user_factory("login")
-    from datetime import datetime
-    from datetime import timezone
+    from utils.time import utcnow
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = utcnow()
     await user_repo.update_last_login(u.id, now)
     fetched = await user_repo.get_by_id(u.id)
     assert fetched is not None

@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model import TRole, TUser, TUserRole
+from utils.time import utcnow
 
 
 class UserRoleRepository:
@@ -27,17 +28,12 @@ class UserRoleRepository:
         link = await self.get_link(user_id, role_id)
         if link is None:
             return
-        from datetime import datetime
-        from datetime import timezone
 
-        link.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        link.deleted_at = utcnow()
         await self.session.flush()
 
     async def replace(self, user_id: int, role_ids: list[int]) -> None:
-        from datetime import datetime
-        from datetime import timezone
-
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = utcnow()
         existing = await self.list_links_by_user(user_id)
         existing_ids = {l.role_id for l in existing}
         new_ids = set(role_ids)

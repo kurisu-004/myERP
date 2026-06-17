@@ -1,16 +1,12 @@
 """账号仓储."""
 from datetime import datetime
-from datetime import timezone
 from typing import Sequence
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model import TUser
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+from utils.time import utcnow
 
 
 class UserRepository:
@@ -89,9 +85,9 @@ class UserRepository:
         u = await self.session.get(TUser, user_id)
         if u is None:
             return
-        u.last_login_at = ts.replace(tzinfo=None) if ts.tzinfo else ts
+        u.last_login_at = ts
         await self.session.flush()
 
     async def soft_delete(self, user: TUser) -> None:
-        user.deleted_at = _utcnow_naive()
+        user.deleted_at = utcnow()
         await self.session.flush()

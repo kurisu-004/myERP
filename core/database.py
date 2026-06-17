@@ -22,12 +22,6 @@ SessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
 
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with SessionLocal() as session:
-        yield session
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.connect() as conn:

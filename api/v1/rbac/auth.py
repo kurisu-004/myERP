@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from api.deps import get_uow
 from api.rbac_deps import get_current_user
 from model import TUser
 from repository.unit_of_work import UnitOfWork

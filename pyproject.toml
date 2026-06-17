@@ -2,7 +2,7 @@
 name = "myerp"
 version = "0.1.0"
 description = "myERP backend"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.136",
     "uvicorn[standard]>=0.30",

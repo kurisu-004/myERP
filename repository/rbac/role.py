@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model import TRole
+from utils.time import utcnow
 
 
 class RoleRepository:
@@ -73,8 +74,6 @@ class RoleRepository:
     async def soft_delete(self, role: TRole) -> None:
         if role.is_builtin:
             raise ValueError("builtin role cannot be deleted")
-        from datetime import datetime
-        from datetime import timezone
 
-        role.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        role.deleted_at = utcnow()
         await self.session.flush()

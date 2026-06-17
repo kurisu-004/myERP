@@ -1,12 +1,11 @@
 """JWT 工具."""
-from datetime import datetime
 from datetime import timedelta
-from datetime import timezone
 from typing import Any
 
 import jwt
 
 from core.config import settings
+from utils.time import utcnow
 
 
 def create_access_token(
@@ -14,7 +13,7 @@ def create_access_token(
     extra: dict[str, Any] | None = None,
     expires_minutes: int | None = None,
 ) -> str:
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     exp = now + timedelta(minutes=expires_minutes or settings.jwt_expire_minutes)
     payload: dict[str, Any] = {
         "sub": str(subject),

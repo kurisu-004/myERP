@@ -8,15 +8,13 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
-from datetime import timezone
-
 from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.security import create_access_token
 from model import TPermission, TUser
 from repository.unit_of_work import UnitOfWork
+from utils.time import utcnow
 from schema.rbac import (
     MenuNodeOut,
     MeOut,
@@ -59,7 +57,7 @@ class AuthService:
                 http_status=401,
             )
         # 写入 last_login_at
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = utcnow()
         await self.uow.users.update_last_login(user.id, now)
         await self.uow.commit()
 

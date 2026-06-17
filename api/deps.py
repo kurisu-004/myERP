@@ -1,41 +1,15 @@
 from collections.abc import AsyncGenerator
+from typing import Annotated
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
-from repository.order import OrderRepository
-from repository.part import PartRepository
-from repository.rbac import (
-    PermissionRepository,
-    RolePermissionRepository,
-    RoleRepository,
-    UserRoleRepository,
-)
-from repository.unit_of_work import UnitOfWork
-from repository.user import UserRepository
-from repository.worker import WorkerRepository
-from service.order import OrderService
-from service.user import UserService
 
 
-async def get_uow() -> AsyncGenerator[UnitOfWork, None]:
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as session:
-        yield UnitOfWork(
-            session=session,
-            users=UserRepository(session),
-            orders=OrderRepository(session),
-            parts=PartRepository(session),
-            workers=WorkerRepository(session),
-            roles=RoleRepository(session),
-            permissions=PermissionRepository(session),
-            user_roles=UserRoleRepository(session),
-            role_permissions=RolePermissionRepository(session),
-        )
+        yield session
 
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-def get_user_service(uow: UnitOfWork = Depends(get_uow)) -> UserService:
-    return UserService(uow)
-
-
-def get_order_service(uow: UnitOfWork = Depends(get_uow)) -> OrderService:
-    return OrderService(uow)

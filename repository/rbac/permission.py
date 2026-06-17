@@ -1,15 +1,9 @@
 """权限点仓储."""
-from datetime import datetime
-from datetime import timezone
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model import TPermission
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+from utils.time import utcnow
 
 
 class PermissionRepository:
@@ -75,7 +69,7 @@ class PermissionRepository:
         return permission
 
     async def soft_delete(self, permission: TPermission) -> None:
-        permission.deleted_at = _utcnow_naive()
+        permission.deleted_at = utcnow()
         await self.session.flush()
 
     async def list_enabled_codes_by_user(self, user_id: int) -> list[str]:
