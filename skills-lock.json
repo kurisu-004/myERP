@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "db-designer": {
+      "source": "kurisu-004/mySkill",
+      "sourceType": "github",
+      "skillPath": "skills/db-designer/SKILL.md",
+      "computedHash": "d888e9a0ce94f173695461748d96712264274b06251023c46770f6e3307305d2"
+    }
+  }
+}

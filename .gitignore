@@ -83,6 +83,7 @@ secrets.json
 *.mdb
 postgres_data/
 mysql_data/
+data/
 docker-compose.override.yml
 
 # ---------- Alembic ----------

@@ -1,0 +1,38 @@
+name: myerp
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: myerp-postgres
+    restart: unless-stopped
+
+    environment:
+      # 管理员账号（超管）
+      POSTGRES_USER: hsh
+      POSTGRES_PASSWORD: "6065161"
+      # 默认数据库名（启动时会自动创建）
+      POSTGRES_DB: myerp
+      # 时区
+      TZ: Asia/Shanghai
+
+    ports:
+      # 宿主机端口:容器端口，按需修改左侧端口避免冲突
+      - "5432:5432"
+
+    volumes:
+      # PostgreSQL 18+ 使用按主版本分目录的布局（pg_ctlcluster 兼容），
+      # 必须挂载父目录 /var/lib/postgresql，让镜像在内部创建如 18/main/ 的子目录。
+      # 实际数据会落在 ./data/18/main/ 下；切勿直接挂载 /var/lib/postgresql/data。
+      # 参考：https://github.com/docker-library/postgres/pull/1259
+      - ./data:/var/lib/postgresql
+
+    # 日志驱动：限制单个日志文件大小，避免占满磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 注释掉下面这行可以放后台运行
+    # stdin_open: true
+    # tty: true
