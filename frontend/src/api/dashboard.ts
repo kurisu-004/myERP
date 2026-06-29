@@ -1,84 +1,133 @@
-// 大屏 WebSocket 客户端。连接、解析、失败自动重连。
+// 大屏 WebSocket：单例订阅式客户端。
+//
+// 用法：
+//   const off = onDashboardSnapshot(snap => ...)
+//   onDashboardEvent(ev => ...)
+//   onDashboardStatus(s => ...)
+//   // 组件卸载时调 off() 反订阅；模块本身会保持长连接并在断线时自动重连。
 
-/** 大屏 ready_queue / in_process 共用的最小数据项 */
-export interface DashboardPartItem {
-  id: number
-  serial_no: string | null
-  name: string
-  drawing_no: string
-  quantity: number
-  planned_delivery_date: string | null
-  released_at: string | null
-  picked_up_at: string | null
-  current_worker_id: number | null
-  worker_name: string | null
-  customer_name: string | null
-  customer_path: string | null
-}
+import type {
+  ConnectionStatus,
+  DashboardEvent,
+  DashboardServerMessage,
+  DashboardSnapshot,
+} from '@/types/dashboard'
 
-export interface DashboardSnapshotData {
-  ready_queue: DashboardPartItem[]
-  in_process: DashboardPartItem[]
-  ts: string
-}
+type SnapshotHandler = (snap: DashboardSnapshot) => void
+type EventHandler = (ev: DashboardEvent) => void
+type StatusHandler = (status: ConnectionStatus) => void
 
-export interface DashboardSnapshot {
-  type: 'snapshot'
-  data: DashboardSnapshotData
-  ts: string
-}
+// —— 模块级单例状态 ——
+let ws: WebSocket | null = null
+let closed = false
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+let retryDelay = 1000
 
-export type ConnectionStatus = 'connecting' | 'open' | 'closed'
+const snapSubs = new Set<SnapshotHandler>()
+const eventSubs = new Set<EventHandler>()
+const statusSubs = new Set<StatusHandler>()
 
-export interface DashboardClient {
-  close: () => void
-}
-
-export function connectDashboard(
-  onSnapshot: (snap: DashboardSnapshot) => void,
-  onStatus: (status: ConnectionStatus) => void,
-): DashboardClient {
+function url(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const url = `${proto}://${location.host}/api/v1/ws/dashboard`
+  return `${proto}://${location.host}/api/v1/ws/dashboard`
+}
 
-  let ws: WebSocket | null = null
-  let closed = false
-  let retryTimer: ReturnType<typeof setTimeout> | null = null
-  let retryDelay = 1000
-
-  function connect() {
-    if (closed) return
-    onStatus('connecting')
-    ws = new WebSocket(url)
-    ws.onopen = () => {
-      retryDelay = 1000
-      onStatus('open')
+function notifyStatus(s: ConnectionStatus): void {
+  for (const h of statusSubs) {
+    try {
+      h(s)
+    } catch (e) {
+      console.error('dashboard status handler error', e)
     }
-    ws.onmessage = (ev) => {
+  }
+}
+
+function dispatch(msg: DashboardServerMessage): void {
+  if (msg.type === 'snapshot') {
+    for (const h of snapSubs) {
       try {
-        const msg = JSON.parse(ev.data) as DashboardSnapshot
-        if (msg.type === 'snapshot') onSnapshot(msg)
+        h(msg)
       } catch (e) {
-        console.error('dashboard WS parse error', e)
+        console.error('dashboard snapshot handler error', e)
       }
     }
-    ws.onerror = () => {
-      // onclose 会跟着触发
-    }
-    ws.onclose = () => {
-      onStatus('closed')
-      if (closed) return
-      retryTimer = setTimeout(connect, retryDelay)
-      retryDelay = Math.min(retryDelay * 2, 10000)
+  } else if (msg.type === 'event') {
+    for (const h of eventSubs) {
+      try {
+        h(msg)
+      } catch (e) {
+        console.error('dashboard event handler error', e)
+      }
     }
   }
-  connect()
+}
 
-  return {
-    close() {
-      closed = true
-      if (retryTimer) clearTimeout(retryTimer)
-      ws?.close()
-    },
+function connect(): void {
+  if (closed) return
+  notifyStatus('connecting')
+  ws = new WebSocket(url())
+  ws.onopen = () => {
+    retryDelay = 1000
+    notifyStatus('open')
   }
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data) as DashboardServerMessage
+      dispatch(msg)
+    } catch (e) {
+      console.error('dashboard WS parse error', e)
+    }
+  }
+  ws.onerror = () => {
+    // onclose 紧随其后
+  }
+  ws.onclose = () => {
+    notifyStatus('closed')
+    ws = null
+    if (closed) return
+    retryTimer = setTimeout(connect, retryDelay)
+    retryDelay = Math.min(retryDelay * 2, 10000)
+  }
+}
+
+function ensureConnected(): void {
+  if (ws || closed) return
+  connect()
+}
+
+// ============================================================
+// 公共 API：订阅 / 反订阅
+// ============================================================
+
+/** 订阅 snapshot 推送；返回反订阅函数。首次调用即触发建立连接。 */
+export function onDashboardSnapshot(h: SnapshotHandler): () => void {
+  snapSubs.add(h)
+  ensureConnected()
+  return () => snapSubs.delete(h)
+}
+
+/** 订阅业务事件（PICKED_UP / RELEASED），由横幅通知组件消费。 */
+export function onDashboardEvent(h: EventHandler): () => void {
+  eventSubs.add(h)
+  ensureConnected()
+  return () => eventSubs.delete(h)
+}
+
+/** 订阅连接状态变化。 */
+export function onDashboardStatus(h: StatusHandler): () => void {
+  statusSubs.add(h)
+  ensureConnected()
+  return () => statusSubs.delete(h)
+}
+
+/** 显式关闭长连接（一般不调用，保留供登出/测试使用）。 */
+export function closeDashboard(): void {
+  closed = true
+  if (retryTimer) clearTimeout(retryTimer)
+  retryTimer = null
+  ws?.close()
+  ws = null
+  snapSubs.clear()
+  eventSubs.clear()
+  statusSubs.clear()
 }

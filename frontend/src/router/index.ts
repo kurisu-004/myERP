@@ -23,7 +23,7 @@ const routes: RouteRecordRaw[] = [
           title: '零件一览',
           icon: 'Box',
           breadcrumb: [
-            { label: '基础数据', path: '/parts' },
+            { label: '订单管理', path: '/parts' },
             { label: '零件一览' },
           ],
         },
@@ -31,26 +31,41 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'parts/new',
         name: 'PartsNew',
-        component: () => import('@/views/parts/PartsForm.vue'),
+        component: () => import('@/views/parts/PartBatchNew.vue'),
         meta: {
-          title: '新增零件',
+          title: '新建零件',
           breadcrumb: [
-            { label: '基础数据', path: '/parts' },
-            { label: '零件一览', path: '/parts' },
-            { label: '新增零件' },
+            { label: '订单管理', path: '/parts' },
+            { label: '新建零件' },
           ],
         },
+      },
+      {
+        // 必须放在 parts/new 之后，确保静态段优先匹配；
+        // Vue Router 4 静态段优先于动态段，但显式顺序更稳。
+        path: 'parts/:id(\\d+)',
+        name: 'PartsDetail',
+        component: () => import('@/views/parts/PartDetail.vue'),
+        meta: {
+          title: '零件详情',
+          breadcrumb: [
+            { label: '订单管理', path: '/parts' },
+            { label: '零件一览', path: '/parts' },
+            { label: '详情' },
+          ],
+        },
+        props: true,
       },
       {
         path: 'workers',
         name: 'WorkerList',
         component: () => import('@/views/WorkerList.vue'),
         meta: {
-          title: '工人管理',
+          title: '工人一览',
           icon: 'User',
           breadcrumb: [
-            { label: '基础数据', path: '/parts' },
-            { label: '工人管理' },
+            { label: '权限管理', path: '/workers' },
+            { label: '工人一览' },
           ],
         },
       },

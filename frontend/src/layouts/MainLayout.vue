@@ -22,18 +22,29 @@
           <template #title>首页</template>
         </el-menu-item>
 
-        <el-sub-menu index="base">
+        <el-sub-menu index="order">
           <template #title>
-            <el-icon><Document /></el-icon>
-            <span>基础数据</span>
+            <el-icon><Tickets /></el-icon>
+            <span>订单管理</span>
           </template>
           <el-menu-item index="/parts">
             <el-icon><Box /></el-icon>
             <template #title>零件一览</template>
           </el-menu-item>
+          <el-menu-item index="/parts/new">
+            <el-icon><Plus /></el-icon>
+            <template #title>新建零件</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="auth">
+          <template #title>
+            <el-icon><Key /></el-icon>
+            <span>权限管理</span>
+          </template>
           <el-menu-item index="/workers">
             <el-icon><User /></el-icon>
-            <template #title>工人管理</template>
+            <template #title>工人一览</template>
           </el-menu-item>
         </el-sub-menu>
 
@@ -45,28 +56,6 @@
           <el-menu-item index="/scan">
             <el-icon><Promotion /></el-icon>
             <template #title>扫码台</template>
-          </el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="sales">
-          <template #title>
-            <el-icon><Money /></el-icon>
-            <span>销售管理</span>
-          </template>
-          <el-menu-item index="/sales/order">
-            <el-icon><Tickets /></el-icon>
-            <template #title>销售订单</template>
-          </el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="purchase">
-          <template #title>
-            <el-icon><ShoppingCart /></el-icon>
-            <span>采购管理</span>
-          </template>
-          <el-menu-item index="/purchase/order">
-            <el-icon><Tickets /></el-icon>
-            <template #title>采购订单</template>
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
@@ -137,6 +126,9 @@
         </router-view>
       </el-main>
     </el-container>
+
+    <!-- 全局业务事件横幅：Teleport 到 body，右上角浮层 -->
+    <NotificationBanner />
   </el-container>
 </template>
 
@@ -144,7 +136,7 @@
 import { ref, computed, type Component as VueComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, Tools, Promotion } from '@element-plus/icons-vue'
+import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, Tools, Promotion, Tickets, Key, Plus } from '@element-plus/icons-vue'
 
 type UserCmd = 'profile' | 'settings' | 'logout'
 

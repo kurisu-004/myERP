@@ -119,3 +119,31 @@ async def broadcast_dashboard_snapshot() -> None:
     if not manager.active:
         return
     await _build_and_broadcast()
+
+
+def _event_payload(event_type: str, data: dict) -> str:
+    """包装业务事件消息（区别于 snapshot 周期推送）。
+
+    信封与 snapshot 一致，仅 `type` 和 `event_type` 不同；前端按 type 分发。
+    """
+    return json.dumps(
+        {
+            "type": "event",
+            "event_type": event_type,
+            "data": data,
+            "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+        ensure_ascii=False,
+    )
+
+
+async def broadcast_dashboard_event(event_type: str, payload: dict) -> None:
+    """service 层在 PICKED_UP / RELEASED 等关键动作后调这个。
+
+    由 `api.deps.get_part_service` 包成闭包注入到
+    `PartService.event_broadcaster`，触发立即推送一条 event 消息给所有
+    dashboard 客户端。**无活跃连接时静默 no-op**，不报错。
+    """
+    if not manager.active:
+        return
+    await manager.broadcast(_event_payload(event_type, payload))

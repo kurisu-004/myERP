@@ -1,19 +1,19 @@
 """数据大屏快照构建。
 
-- ready_queue: status=READY 的零件，按 released_at 升序，前 top_n。
-- in_process: status=IN_PROCESS 的零件，按 latest PICKED_UP 事件 created_at
-  升序；含 current_worker.name。
+- ready_queue: status=READY 的零件，按 *加急优先 → 交期近优先* 排序，前 top_n。
+- in_process: status=IN_PROCESS 的零件，按 id 倒序；含 current_worker.name。
+- upcoming_delivery: 未来 7 天（含今天）每天的待交零件数，
+  排除 COMPLETED / CANCELLED 终态；零计数日期也补齐，返回固定 7 条。
 
-DB 不存 ENUM，所以这里用 `PartStatus.READY.value` / `IN_PROCESS.value` 字面量
-比较。
+DB 不存 ENUM，所以这里用 `PartStatus.<X>.value` 字面量比较。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model import TPart, TPartEvent, TWorker
@@ -42,7 +42,8 @@ async def build_snapshot(
 ) -> dict[str, Any]:
     """异步构建一次完整快照。
 
-    返回 `{"ready_queue": [...], "in_process": [...], "ts": iso8601}`。
+    返回 `{"ready_queue": [...], "in_process": [...],
+            "upcoming_delivery": [...], "ts": iso8601}`。
     """
     ready_parts = await _fetch_ready(session, top_n)
     in_process_parts = await _fetch_in_process(session, top_n)
@@ -62,9 +63,12 @@ async def build_snapshot(
         for p in in_process_parts
     ]
 
+    upcoming_delivery = await _fetch_upcoming_delivery(session, days=7)
+
     out = {
         "ready_queue": ready_items,
         "in_process": in_process_items,
+        "upcoming_delivery": upcoming_delivery,
         "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
     return out
@@ -73,15 +77,59 @@ async def build_snapshot(
 async def _fetch_ready(
     session: AsyncSession, top_n: int
 ) -> list[TPart]:
+    """READY 队列：加急优先 → 交期近优先 → id 兜底。
+
+    - is_urgent DESC：True(1) 排在 False(0) 前；
+    - planned_delivery_date ASC：交期近的先；
+    - id ASC：同交期时按创建先后稳定排序。
+    """
     stmt = (
         select(TPart)
         .where(TPart.status == PartStatus.READY.value)
         .where(TPart.deleted_at.is_(None))
-        .order_by(TPart.released_at.asc(), TPart.id.asc())
+        .order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.asc(),
+        )
         .limit(top_n)
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def _fetch_upcoming_delivery(
+    session: AsyncSession, days: int = 7
+) -> list[dict[str, Any]]:
+    """未来 `days` 天（含今天）按计划交期分桶的待交零件数。
+
+    - 排除终态（COMPLETED / CANCELLED）；
+    - 排除软删记录；
+    - 零计数日期也补齐返回固定 `days` 条，保证前端 7 根柱子稳定；
+    - 返回 `[{"date": "YYYY-MM-DD", "count": int}, ...]`，按 date 升序。
+    """
+    today = date.today()
+    end = today + timedelta(days=days - 1)
+    # 用 SQL 端参数化，避免函数调用在 WHERE 里无法走索引
+    stmt = (
+        select(TPart.planned_delivery_date, func.count(TPart.id))
+        .where(TPart.deleted_at.is_(None))
+        .where(
+            TPart.status.notin_(
+                [PartStatus.COMPLETED.value, PartStatus.CANCELLED.value]
+            )
+        )
+        .where(TPart.planned_delivery_date >= today)
+        .where(TPart.planned_delivery_date <= end)
+        .group_by(TPart.planned_delivery_date)
+    )
+    rows = (await session.execute(stmt)).all()
+    bucket: dict[date, int] = {d: int(n) for d, n in rows}
+    out: list[dict[str, Any]] = []
+    for offset in range(days):
+        d = today + timedelta(days=offset)
+        out.append({"date": d.isoformat(), "count": bucket.get(d, 0)})
+    return out
 
 
 async def _fetch_in_process(
@@ -170,6 +218,7 @@ def _to_dict(
         "name": part.name,
         "drawing_no": part.drawing_no,
         "quantity": part.quantity,
+        "is_urgent": bool(part.is_urgent),
         "planned_delivery_date": part.planned_delivery_date.isoformat()
         if part.planned_delivery_date
         else None,

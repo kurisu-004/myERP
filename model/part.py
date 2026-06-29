@@ -48,11 +48,12 @@ class TPart(Base, AuditMixin):
     )
 
     # —— 业务字段 ——
-    # 序列号：每客户独立循环，形式 "F1000" / "L1234"。
+    # 序列号：每客户独立循环，形式 "F1000" / "L1234" / "H1050"。
     # - 状态在 (PENDING, READY, IN_PROCESS, INSPECTION, READY_TO_SHIP,
     #   DELIVERED, REPAIRING) 时非空；
     # - 状态变为 COMPLETED / CANCELLED 时 service 层置 NULL → 释放回池。
-    # 由 repository.find_next_serial_for_customer 在写入前分配。
+    # 由 SerialCounterRepository.acquire_serial 在写入前分配，
+    # 范围 [1000, 5999]（counter % 5000 + 1000），单 prefix 同时活跃上限 5000。
     serial_no: Mapped[str | None] = mapped_column(
         String(8), nullable=True, index=True
     )

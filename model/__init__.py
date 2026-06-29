@@ -11,6 +11,7 @@ from .enums import (
 )
 from .part import TPart
 from .part_event import TPartEvent
+from .serial_counter import TSerialCounter
 from .worker import TWorker
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "TCustomer",
     "TPart",
     "TPartEvent",
+    "TSerialCounter",
     "TWorker",
     "PartStatus",
     "PartEventType",

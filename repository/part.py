@@ -3,7 +3,6 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.serial import SERIAL_MAX, SERIAL_MIN
 from model import TPart
 from model.enums import PartSortKey, PartStatus, SortDir
 
@@ -125,38 +124,7 @@ class PartRepository:
         await self.session.flush()
         return part
 
-    # ===== 序列号 =====
-    async def find_next_serial_for_code(self, code: str) -> str:
-        """找指定一级客户代码（一个字母）的下一个可用序列号。
-
-        序列号在一级客户范围内全局共享：
-          - F1000 ~ F9999 是整个「法拉电子」的工单号池
-          - L1000 ~ L9999 是整个「路达」的工单号池
-        同一个一级客户下的所有二级叶子客户共享同一段号。
-        释放时也是：完成/取消时该号回到所属一级客户的池里。
-
-        搜索 [SERIAL_MIN, SERIAL_MAX]（闭区间）找最小空缺。
-        """
-        stmt = select(TPart.serial_no).where(
-            TPart.serial_no.is_not(None),
-            TPart.serial_no.like(f"{code}%"),
-            TPart.deleted_at.is_(None),
-        )
-        result = await self.session.execute(stmt)
-        used: set[int] = set()
-        for (sn,) in result:
-            if not sn:
-                continue
-            try:
-                used.add(int(sn[1:]))
-            except ValueError:
-                continue
-        for n in range(SERIAL_MIN, SERIAL_MAX + 1):
-            if n not in used:
-                return f"{code}{n}"
-        # 9000 个号全被占，理论不会发生（unique index 会先报错）
-        return f"{code}{SERIAL_MIN}"
-
+    # ===== 序列号查询 =====
     async def get_by_serial(
         self, serial_no: str, *, include_deleted: bool = False
     ) -> TPart | None:

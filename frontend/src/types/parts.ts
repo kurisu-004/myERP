@@ -71,6 +71,19 @@ export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   COMPLETED: '完成',
 }
 
+export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 'warning' | 'info' | 'danger'> = {
+  CREATED: 'primary',
+  RELEASED: 'success',
+  PICKED_UP: 'warning',
+  RETURNED: 'info',
+  INSPECTED: 'primary',
+  STATUS_CHANGED: 'info',
+  REPAIR_STARTED: 'danger',
+  REPAIR_COMPLETED: 'success',
+  CANCELLED: 'danger',
+  COMPLETED: 'success',
+}
+
 /** 扫码台允许的 event_type 子集 */
 export const SCAN_EVENT_TYPE_OPTIONS: PartEventType[] = ['PICKED_UP', 'RETURNED', 'INSPECTED']
 

@@ -5,12 +5,13 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
-from core.serial import code_for_parent
+from core.serial import SERIAL_RELEASE_STATUSES, code_for_parent
 from model import PART_TRANSITIONS, TCustomer, TPart, TPartEvent, TWorker
 from model.enums import PartEventType, PartStatus
 from repository.customer import CustomerRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
+from repository.serial_counter import SerialCounterRepository
 from repository.worker import WorkerRepository
 from schema.part import (
     PartBatchCreateItemFailure,
@@ -28,11 +29,6 @@ from schema.part import (
 from utils.id_gen import new_id
 
 
-# 状态机里会"释放序列号"的终态
-SERIAL_RELEASE_STATUSES: frozenset[PartStatus] = frozenset(
-    {PartStatus.COMPLETED, PartStatus.CANCELLED}
-)
-
 # CANCELLED 允许从任意非终态进入（任意 → CANCELLED）
 ALL_NON_TERMINAL_STATUSES: frozenset[PartStatus] = frozenset(
     {
@@ -48,6 +44,8 @@ ALL_NON_TERMINAL_STATUSES: frozenset[PartStatus] = frozenset(
 
 # 触发 dashboard 广播的回调签名：(no args) -> awaitable[None]
 Broadcaster = Callable[[], Awaitable[None]]
+# 触发单条业务事件推送的回调签名：(event_type, payload) -> awaitable[None]
+EventBroadcaster = Callable[[str, dict], Awaitable[None]]
 
 
 def _parse_status(value: str | PartStatus | None) -> PartStatus | None:
@@ -100,13 +98,17 @@ class PartService:
         customers: CustomerRepository,
         workers: WorkerRepository,
         events: PartEventRepository,
+        serial_counters: SerialCounterRepository,
         broadcaster: Broadcaster | None = None,
+        event_broadcaster: EventBroadcaster | None = None,
     ) -> None:
         self.parts = parts
         self.customers = customers
         self.workers = workers
         self.events = events
+        self.serial_counters = serial_counters
         self.broadcaster = broadcaster
+        self.event_broadcaster = event_broadcaster
 
     # ============================================================
     # 查询
@@ -252,6 +254,43 @@ class PartService:
 
             logging.getLogger(__name__).exception("dashboard broadcast failed")
 
+    async def _broadcast_event(self, event_type: str, payload: dict) -> None:
+        """触发单条业务事件推送（如 PICKED_UP / RELEASED）。
+
+        失败不影响主业务；调用方无需 try/except。
+        payload 仅含 UI 横幅所需最小集，**不要传全 PartOut**。
+        """
+        if self.event_broadcaster is None:
+            return
+        try:
+            await self.event_broadcaster(event_type, payload)
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "dashboard event broadcast failed: %s", event_type
+            )
+
+    @staticmethod
+    def _banner_payload(
+        part: TPart, *, customer_path: str | None, worker_name: str | None = None
+    ) -> dict:
+        """拼横幅事件 payload（最小字段集）。
+
+        `customer_path` 由调用方从 `_to_out(...)` 拿，避免重复查 customer。
+        """
+        return {
+            "serial_no": part.serial_no,
+            "drawing_no": part.drawing_no,
+            "name": part.name,
+            "customer_path": customer_path,
+            "is_urgent": bool(part.is_urgent),
+            "planned_delivery_date": part.planned_delivery_date.isoformat()
+            if part.planned_delivery_date
+            else None,
+            "worker_name": worker_name,
+        }
+
     # ============================================================
     # 写操作
     # ============================================================
@@ -284,7 +323,7 @@ class PartService:
                 message=f"未配置一级客户「{parent.name}」的序列号代码",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        serial_no = await self.parts.find_next_serial_for_code(code)
+        serial_no = await self.serial_counters.acquire_serial(code)
         total_price = data.total_price
         if total_price is None:
             total_price = data.unit_price * data.quantity
@@ -491,6 +530,10 @@ class PartService:
         )
         await self._broadcast()
         items = await self._to_out([part])
+        await self._broadcast_event(
+            "RELEASED",
+            self._banner_payload(part, customer_path=items[0].customer_path),
+        )
         return items[0]
 
     async def pick_up_by_scan(self, data: PartPickUpRequest) -> PartOut:
@@ -533,6 +576,14 @@ class PartService:
         )
         await self._broadcast()
         items = await self._to_out([part])
+        await self._broadcast_event(
+            "PICKED_UP",
+            self._banner_payload(
+                part,
+                customer_path=items[0].customer_path,
+                worker_name=worker.name,
+            ),
+        )
         return items[0]
 
     async def scan_event(self, data: PartScanRequest) -> PartOut:
