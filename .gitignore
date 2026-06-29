@@ -127,3 +127,6 @@ htmlcov/
 # 临时测试文件
 /tmp/
 test_*.tmp
+
+.agent/
+.claude/

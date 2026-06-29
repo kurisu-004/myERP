@@ -1,7 +1,9 @@
 from fastapi import APIRouter
 
-from . import order, user
+from . import customer, part, worker, ws
 
 api_router = APIRouter(prefix="/v1")
-api_router.include_router(user.router)
-api_router.include_router(order.router)
+api_router.include_router(customer.router)
+api_router.include_router(part.router)
+api_router.include_router(worker.router)
+api_router.include_router(ws.router)

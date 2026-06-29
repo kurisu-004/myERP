@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skills/db-designer/SKILL.md",
       "computedHash": "d888e9a0ce94f173695461748d96712264274b06251023c46770f6e3307305d2"
+    },
+    "webapp-testing": {
+      "source": "kurisu-004/mySkill",
+      "sourceType": "github",
+      "skillPath": "skills/webapp-testing/SKILL.md",
+      "computedHash": "ad5b1fc52807e9afa4635e59218a026b164dc58b6c3f41b0f7c644dcd6ccf572"
     }
   }
 }

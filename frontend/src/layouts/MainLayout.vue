@@ -31,6 +31,21 @@
             <el-icon><Box /></el-icon>
             <template #title>零件一览</template>
           </el-menu-item>
+          <el-menu-item index="/workers">
+            <el-icon><User /></el-icon>
+            <template #title>工人管理</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="floor">
+          <template #title>
+            <el-icon><Tools /></el-icon>
+            <span>车间</span>
+          </template>
+          <el-menu-item index="/scan">
+            <el-icon><Promotion /></el-icon>
+            <template #title>扫码台</template>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="sales">
@@ -76,8 +91,9 @@
             <el-breadcrumb-item
               v-for="(item, idx) in breadcrumbItems"
               :key="idx"
+              :to="item.to"
             >
-              {{ item }}
+              {{ item.label }}
             </el-breadcrumb-item>
           </el-breadcrumb>
         </div>
@@ -128,7 +144,7 @@
 import { ref, computed, type Component as VueComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton } from '@element-plus/icons-vue'
+import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, Tools, Promotion } from '@element-plus/icons-vue'
 
 type UserCmd = 'profile' | 'settings' | 'logout'
 
@@ -148,8 +164,14 @@ const userAvatar = ref<string>(
 
 const activeMenu = computed<string>(() => route.path)
 
-const breadcrumbItems = computed<string[]>(() => {
-  return route.meta?.breadcrumb || [route.meta?.title || '首页']
+const breadcrumbItems = computed<{ label: string; to?: string }[]>(() => {
+  const raw = route.meta?.breadcrumb ?? []
+  const list = raw.length > 0 ? raw : [{ label: route.meta?.title || '首页' }]
+  return list.map((it, idx, arr) => ({
+    label: it.label,
+    // 最后一项（当前页）不可点击；中间项若有 path 则可跳转
+    to: idx === arr.length - 1 || !it.path ? undefined : it.path,
+  }))
 })
 
 const toggleCollapse = (): void => {

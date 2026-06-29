@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -30,8 +31,23 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 启动心跳
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
         print("启动心跳")
-    yield
-    await engine.dispose()
+
+    # 启动 dashboard 推送后台任务
+    from api.v1.ws import dashboard_push_loop
+
+    push_task = asyncio.create_task(dashboard_push_loop())
+    print("dashboard push loop started")
+
+    try:
+        yield
+    finally:
+        push_task.cancel()
+        try:
+            await push_task
+        except asyncio.CancelledError:
+            pass
+        await engine.dispose()

@@ -2,6 +2,78 @@ export type PartCategory = '紧固件' | '轴承' | '传动件' | '电气件' | 
 export type PartStatus = '启用' | '停用'
 export type WarehouseStatus = '未入库' | '部分入库' | '已入库'
 
+/** 后端订单状态枚举（数据大屏用） */
+export type OrderStatus =
+  | 'PENDING'
+  | 'READY'
+  | 'IN_PROCESS'
+  | 'INSPECTION'
+  | 'READY_TO_SHIP'
+  | 'DELIVERED'
+  | 'REPAIRING'
+  | 'COMPLETED'
+  | 'CANCELLED'
+
+export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
+  PENDING: '待生产',
+  READY: '就绪',
+  IN_PROCESS: '生产中',
+  INSPECTION: '待品检',
+  READY_TO_SHIP: '待送货',
+  DELIVERED: '已送货',
+  REPAIRING: '返修中',
+  COMPLETED: '已完成',
+  CANCELLED: '已取消',
+}
+
+export const ORDER_STATUS_TAG_TYPE: Record<OrderStatus, 'info' | 'warning' | 'success' | 'danger' | 'primary'> = {
+  PENDING: 'info',
+  READY: 'warning',
+  IN_PROCESS: 'primary',
+  INSPECTION: 'warning',
+  READY_TO_SHIP: 'warning',
+  DELIVERED: 'success',
+  REPAIRING: 'danger',
+  COMPLETED: 'success',
+  CANCELLED: 'info',
+}
+
+export type PartSortKey =
+  | 'PLANNED_DELIVERY_DATE'
+  | 'REQUEST_DATE'
+  | 'CREATED_AT'
+
+export type SortDir = 'ASC' | 'DESC'
+
+/** 后端 PartEventType 枚举 */
+export type PartEventType =
+  | 'CREATED'
+  | 'RELEASED'
+  | 'PICKED_UP'
+  | 'RETURNED'
+  | 'INSPECTED'
+  | 'STATUS_CHANGED'
+  | 'REPAIR_STARTED'
+  | 'REPAIR_COMPLETED'
+  | 'CANCELLED'
+  | 'COMPLETED'
+
+export const PART_EVENT_LABEL: Record<PartEventType, string> = {
+  CREATED: '创建',
+  RELEASED: '开始生产',
+  PICKED_UP: '领取',
+  RETURNED: '归还',
+  INSPECTED: '送检',
+  STATUS_CHANGED: '状态变更',
+  REPAIR_STARTED: '开始返修',
+  REPAIR_COMPLETED: '返修完成',
+  CANCELLED: '取消',
+  COMPLETED: '完成',
+}
+
+/** 扫码台允许的 event_type 子集 */
+export const SCAN_EVENT_TYPE_OPTIONS: PartEventType[] = ['PICKED_UP', 'RETURNED', 'INSPECTED']
+
 export interface PartItem {
   id: number
   /** 内部编号（HSH+年月日+类型） */
