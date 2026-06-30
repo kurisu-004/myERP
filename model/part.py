@@ -120,6 +120,16 @@ class TPart(Base, AuditMixin):
         lazy="raise",
     )
 
+    # —— 装配字段 ——
+    # 逻辑外键 → t_assembly.id（NULL = 普通独立零件 / 非任何装配件的子件）。
+    # service 层校验装配存在、未软删；删除装配件时级联软删子件。
+    assembly_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+        comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
+    )
+
     # —— 组合索引：按客户+状态查按交期排序，是高频看板查询
     __table_args__ = (
         Index(
@@ -128,4 +138,5 @@ class TPart(Base, AuditMixin):
             "status",
             "planned_delivery_date",
         ),
+        Index("ix_t_part_assembly_id_status", "assembly_id", "status"),
     )

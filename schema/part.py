@@ -47,6 +47,10 @@ class PartOut(BaseModel):
     customer_path: str | None = Field(
         default=None, description="客户完整路径，如 法拉电子 / 母排厂"
     )
+    assembly_id: int | None = Field(
+        default=None,
+        description="所属装配件 id（NULL = 普通独立零件，非任何装配件的子件）",
+    )
 
 
 class PartListOut(BaseModel):

@@ -5,13 +5,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
 from repository import (
+    AssemblyRepository,
     CustomerRepository,
+    DrawingFileRepository,
     PartEventRepository,
     PartRepository,
     SerialCounterRepository,
     WorkerRepository,
 )
-from service import CustomerService, PartService, WorkerService
+from service import (
+    AssemblyService,
+    CustomerService,
+    DrawingService,
+    PartService,
+    WorkerService,
+)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -74,3 +82,58 @@ def get_customer_service(
     session: AsyncSession = Depends(get_session),
 ) -> CustomerService:
     return CustomerService(customers=CustomerRepository(session))
+
+
+def get_drawing_service(
+    session: AsyncSession = Depends(get_session),
+) -> DrawingService:
+    return DrawingService(
+        files=DrawingFileRepository(session),
+        parts=PartRepository(session),
+        assemblies=AssemblyRepository(session),
+    )
+
+
+def get_assembly_service(
+    session: AsyncSession = Depends(get_session),
+    serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
+) -> AssemblyService:
+    """注入 AssemblyService。
+
+    共享同一 session/事务：构造 PartService / DrawingService 时复用 session，
+    装配体创建时的所有 DB 写入都在一个事务里，任一失败整体回滚。
+    """
+    from api.v1.ws import broadcast_dashboard_event
+
+    parts_repo = PartRepository(session)
+    files_repo = DrawingFileRepository(session)
+    assemblies_repo = AssemblyRepository(session)
+    customers_repo = CustomerRepository(session)
+    workers_repo = WorkerRepository(session)
+    events_repo = PartEventRepository(session)
+
+    part_service = PartService(
+        parts=parts_repo,
+        customers=customers_repo,
+        workers=workers_repo,
+        events=events_repo,
+        serial_counters=serial_counters,
+    )
+    drawings = DrawingService(
+        files=files_repo, parts=parts_repo, assemblies=assemblies_repo
+    )
+
+    async def _event_broadcaster(event_type: str, payload: dict) -> None:
+        await broadcast_dashboard_event(event_type, payload)
+
+    return AssemblyService(
+        assemblies=assemblies_repo,
+        parts=parts_repo,
+        files=files_repo,
+        customers=customers_repo,
+        serial_counters=serial_counters,
+        events=events_repo,
+        part_service=part_service,
+        drawings=drawings,
+        event_broadcaster=_event_broadcaster,
+    )

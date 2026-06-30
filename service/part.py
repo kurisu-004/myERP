@@ -682,6 +682,7 @@ class PartService:
                     customer_name=child_name,
                     parent_customer_name=parent_name,
                     customer_path=path,
+                    assembly_id=p.assembly_id,
                 )
             )
         return out

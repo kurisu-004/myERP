@@ -16,6 +16,8 @@ export interface PartItem {
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null
+  /** 所属装配件 id；NULL = 普通独立零件 */
+  assembly_id: number | null
 }
 
 export interface PartListResult {

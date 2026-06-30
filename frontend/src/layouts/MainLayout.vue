@@ -35,6 +35,14 @@
             <el-icon><Plus /></el-icon>
             <template #title>新建零件</template>
           </el-menu-item>
+          <el-menu-item index="/assemblies">
+            <el-icon><Connection /></el-icon>
+            <template #title>装配件一览</template>
+          </el-menu-item>
+          <el-menu-item index="/assemblies/new">
+            <el-icon><Plus /></el-icon>
+            <template #title>新建装配件</template>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="auth">
@@ -136,7 +144,7 @@
 import { ref, computed, type Component as VueComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, Tools, Promotion, Tickets, Key, Plus } from '@element-plus/icons-vue'
+import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, Tools, Promotion, Tickets, Key, Plus, Connection } from '@element-plus/icons-vue'
 
 type UserCmd = 'profile' | 'settings' | 'logout'
 

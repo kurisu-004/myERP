@@ -1,26 +1,9 @@
 <template>
   <div class="dashboard">
-    <!-- 顶部连接状态卡 -->
-    <el-card class="header-card" shadow="never">
-      <div class="header">
-        <div class="title">
-          <span class="title-text">车间生产大屏</span>
-          <span class="subtitle">加急优先 · 交期近优先 · 实时横幅</span>
-        </div>
-        <div class="status">
-          <span :class="['dot', status]"></span>
-          <span class="status-text">{{ statusLabel }}</span>
-          <span class="last-updated" v-if="lastUpdated">
-            · 上次更新 {{ lastUpdated }}
-          </span>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- 第 1 行：待加工队列 + 7 日交期分布 -->
-    <el-row :gutter="16" class="board-row">
-      <el-col :xs="24" :lg="16">
-        <el-card shadow="never" class="board-card">
+    <!-- 主行：左侧 70% 待加工队列，右侧 30% 上下排布 7 日交期 + 加工中 -->
+    <el-row :gutter="16" class="board-row board-row-main">
+      <el-col :xs="24" :lg="17">
+        <el-card shadow="never" class="board-card ready-card">
           <template #header>
             <div class="card-header">
               <span class="card-title">
@@ -28,9 +11,18 @@
                 待加工队列
                 <span class="card-subtitle">· 加急优先 · 交期近优先</span>
               </span>
-              <el-tag type="warning" effect="dark">
-                {{ readyQueue.length }}
-              </el-tag>
+              <div class="header-right-tags">
+                <span class="status-mini" v-if="lastUpdated || status">
+                  <span :class="['dot', status]"></span>
+                  <span class="status-mini-text">{{ statusLabel }}</span>
+                  <span v-if="lastUpdated" class="status-mini-time">
+                    · {{ lastUpdated }}
+                  </span>
+                </span>
+                <el-tag type="warning" effect="dark">
+                  {{ readyQueue.length }}
+                </el-tag>
+              </div>
             </div>
           </template>
           <div v-if="readyQueue.length === 0" class="empty">
@@ -80,91 +72,87 @@
         </el-card>
       </el-col>
 
-      <el-col :xs="24" :lg="8">
-        <el-card shadow="never" class="board-card">
-          <template #header>
-            <div class="card-header">
-              <span class="card-title">
-                <el-icon class="card-icon"><Calendar /></el-icon>
-                未来 7 日交期分布
-              </span>
-              <el-tag type="primary" effect="dark">
-                {{ totalUpcoming }} 件
-              </el-tag>
-            </div>
-          </template>
-          <div class="delivery-chart">
-            <div
-              v-for="(bar, idx) in upcomingDelivery"
-              :key="bar.date"
-              :class="['bar-col', { today: idx === 0 }]"
-            >
-              <div class="bar-count">
-                <span v-if="bar.count > 0" class="bar-num">{{ bar.count }}</span>
-              </div>
-              <div class="bar-track">
-                <div
-                  class="bar-fill"
-                  :style="{ height: barHeight(bar.count) }"
-                ></div>
-              </div>
-              <div class="bar-label">
-                <div class="bar-day">{{ dayLabel(idx) }}</div>
-                <div class="bar-date">{{ formatShortDate(bar.date) }}</div>
-              </div>
-            </div>
-          </div>
-          <div class="delivery-foot">
-            <span class="foot-stat">
-              <span class="foot-dot dot-warn"></span>
-              今日 {{ upcomingDelivery[0]?.count ?? 0 }} 件
-            </span>
-            <span class="foot-stat">
-              <span class="foot-dot dot-info"></span>
-              后 6 日 {{ totalUpcoming - (upcomingDelivery[0]?.count ?? 0) }} 件
-            </span>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <!-- 第 2 行：正在加工（幻灯片自动切换） -->
-    <el-row :gutter="16" class="board-row">
-      <el-col :span="24">
-        <el-card shadow="never" class="board-card inprocess-card">
-          <template #header>
-            <div class="card-header">
-              <span class="card-title">
-                <el-icon class="card-icon"><Tools /></el-icon>
-                正在加工
-                <span class="card-subtitle">· 自动切换</span>
-              </span>
-              <div class="header-right-tags">
-                <el-tag type="primary" effect="dark">
-                  {{ inProcess.length }} 件
-                </el-tag>
-                <span class="autoplay-hint" v-if="inProcess.length > 1">
-                  {{ paused ? '已暂停' : '自动切换中' }}
+      <el-col :xs="24" :lg="7">
+        <div class="right-stack">
+          <el-card shadow="never" class="board-card delivery-card">
+            <template #header>
+              <div class="card-header">
+                <span class="card-title">
+                  <el-icon class="card-icon"><Calendar /></el-icon>
+                  未来 7 日交期分布
                 </span>
+                <el-tag type="primary" effect="dark">
+                  {{ totalUpcoming }} 件
+                </el-tag>
+              </div>
+            </template>
+            <div class="delivery-chart">
+              <div
+                v-for="(bar, idx) in upcomingDelivery"
+                :key="bar.date"
+                :class="['bar-col', { today: idx === 0 }]"
+              >
+                <div class="bar-count">
+                  <span v-if="bar.count > 0" class="bar-num">{{ bar.count }}</span>
+                </div>
+                <div class="bar-track">
+                  <div
+                    class="bar-fill"
+                    :style="{ height: barHeight(bar.count) }"
+                  ></div>
+                </div>
+                <div class="bar-label">
+                  <div class="bar-day">{{ dayLabel(idx) }}</div>
+                  <div class="bar-date">{{ formatShortDate(bar.date) }}</div>
+                </div>
               </div>
             </div>
-          </template>
+            <div class="delivery-foot">
+              <span class="foot-stat">
+                <span class="foot-dot dot-warn"></span>
+                今日 {{ upcomingDelivery[0]?.count ?? 0 }} 件
+              </span>
+              <span class="foot-stat">
+                <span class="foot-dot dot-info"></span>
+                后 6 日 {{ totalUpcoming - (upcomingDelivery[0]?.count ?? 0) }} 件
+              </span>
+            </div>
+          </el-card>
 
-          <div v-if="inProcess.length === 0" class="empty">
-            暂无正在加工的零件
-          </div>
-          <el-carousel
-            v-else
-            :interval="5000"
-            arrow="never"
-            indicator-position="outside"
-            :autoplay="inProcess.length > 1"
-            :pause-on-hover="true"
-            height="220px"
-            @change="onCarouselChange"
-            class="process-carousel"
-            ref="carouselRef"
-          >
+          <el-card shadow="never" class="board-card inprocess-card">
+            <template #header>
+              <div class="card-header">
+                <span class="card-title">
+                  <el-icon class="card-icon"><Tools /></el-icon>
+                  正在加工
+                  <span class="card-subtitle">· 自动切换</span>
+                </span>
+                <div class="header-right-tags">
+                  <el-tag type="primary" effect="dark">
+                    {{ inProcess.length }} 件
+                  </el-tag>
+                  <span class="autoplay-hint" v-if="inProcess.length > 1">
+                    {{ paused ? '已暂停' : '自动切换中' }}
+                  </span>
+                </div>
+              </div>
+            </template>
+
+            <div v-if="inProcess.length === 0" class="empty">
+              暂无正在加工的零件
+            </div>
+            <el-carousel
+              v-else
+              :interval="5000"
+              arrow="never"
+              indicator-position="outside"
+              :autoplay="inProcess.length > 1"
+              :pause-on-hover="true"
+              height="200px"
+              @change="onCarouselChange"
+              class="process-carousel"
+              ref="carouselRef"
+            >
             <el-carousel-item
               v-for="(item, idx) in inProcess"
               :key="item.id"
@@ -222,6 +210,7 @@
             </el-carousel-item>
           </el-carousel>
         </el-card>
+        </div>
       </el-col>
     </el-row>
   </div>
@@ -427,41 +416,6 @@ onBeforeUnmount(() => {
   padding: 4px;
 }
 
-.header-card {
-  margin-bottom: 16px;
-}
-
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.title {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.title-text {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.subtitle {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
 .dot {
   display: inline-block;
   width: 8px;
@@ -476,12 +430,44 @@ onBeforeUnmount(() => {
 .dot.closed { background: #d9534f; }
 
 .board-row {
-  margin-bottom: 16px;
+  margin-bottom: 0;
 }
-.board-row:last-child { margin-bottom: 0; }
 
+.board-row-main {
+  height: calc(100vh - 60px);
+}
+
+// 主区左侧：待加工队列占满高度
+.ready-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+// 右侧双卡纵向堆叠
+.right-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+}
+
+.right-stack .delivery-card {
+  flex: 0 0 auto;
+  height: 38%;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-stack .inprocess-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// 兼容旧用法（顶层 board-card 默认高度）
 .board-card {
-  height: calc(100vh - 220px);
   display: flex;
   flex-direction: column;
 }
@@ -490,6 +476,28 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow: auto;
   padding: 12px;
+}
+
+.right-stack .inprocess-card :deep(.el-card__body) {
+  overflow: hidden;
+  padding: 8px 12px;
+}
+
+// 状态小标：缩到 header 右侧一行
+.status-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-mini-text {
+  font-weight: 500;
+}
+
+.status-mini-time {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
 }
 
 .card-header {
@@ -637,8 +645,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  height: calc(100% - 60px);
-  padding: 0 4px 8px;
+  height: calc(100% - 36px);
+  padding: 0 4px 4px;
 }
 
 .bar-col {
@@ -743,37 +751,41 @@ onBeforeUnmount(() => {
 // 加工中幻灯片
 // ============================================================
 
-.inprocess-card {
+// 嵌套在 .right-stack 中时，inprocess-card 高度由父 flex 控制；
+// 顶层（旧路径）使用时给一个保底高度
+.inprocess-card:not(.right-stack *) {
   height: 340px;
 }
 
 .inprocess-card :deep(.el-card__body) {
-  padding: 12px 16px;
+  padding: 8px 12px;
   overflow: hidden;
 }
 
 .process-carousel {
-  height: 260px;
+  height: 100%;
 }
 
 .process-carousel :deep(.el-carousel__container) {
-  height: 220px;
+  height: calc(100% - 28px); // 留出 indicators 空间
 }
 
 .process-carousel :deep(.el-carousel__indicators--outside) {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .process-carousel :deep(.el-carousel__button) {
-  width: 20px;
+  width: 16px;
 }
 
 .process-slide {
   height: 100%;
+  // 窄列下改为单列纵向布局（左侧信息 + 下方工人信息）
   display: grid;
-  grid-template-columns: 1fr 220px;
-  gap: 20px;
-  padding: 8px 12px;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr auto;
+  gap: 8px;
+  padding: 8px 10px;
   background: linear-gradient(135deg, #fafbfc 0%, #f0f5fa 100%);
   border-radius: 6px;
   border: 1px solid var(--border-color);
@@ -799,22 +811,23 @@ onBeforeUnmount(() => {
 .process-right {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px;
+  gap: 10px;
+  padding: 6px 10px;
   background: var(--white);
   border-radius: 6px;
   border: 1px solid var(--border-color);
+  min-height: 48px;
 }
 
 .worker-avatar {
-  width: 56px;
-  height: 56px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 600;
   flex-shrink: 0;
 }

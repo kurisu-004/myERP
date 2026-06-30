@@ -1,38 +1,95 @@
 name: myerp
 
 services:
+  # ---------- PostgreSQL ----------
   postgres:
     image: postgres:18-alpine
     container_name: myerp-postgres
     restart: unless-stopped
-
+    env_file: .env
     environment:
-      # 管理员账号（超管）
-      POSTGRES_USER: hsh
-      POSTGRES_PASSWORD: "6065161"
-      # 默认数据库名（启动时会自动创建）
-      POSTGRES_DB: myerp
-      # 时区
       TZ: Asia/Shanghai
-
-    ports:
-      # 宿主机端口:容器端口，按需修改左侧端口避免冲突
-      - "5432:5432"
-
+    expose:
+      - "5432"   # 仅容器间暴露，不映射到宿主机
     volumes:
-      # PostgreSQL 18+ 使用按主版本分目录的布局（pg_ctlcluster 兼容），
-      # 必须挂载父目录 /var/lib/postgresql，让镜像在内部创建如 18/main/ 的子目录。
-      # 实际数据会落在 ./data/18/main/ 下；切勿直接挂载 /var/lib/postgresql/data。
-      # 参考：https://github.com/docker-library/postgres/pull/1259
-      - ./data:/var/lib/postgresql
-
-    # 日志驱动：限制单个日志文件大小，避免占满磁盘
+      # PG18 按主版本分目录（pg_ctlcluster 兼容），挂父目录让镜像内部创建 18/main/
+      # 实际数据落在 ./data/postgres/18/main/ 下
+      - ./data/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - myerp-net
 
-    # 注释掉下面这行可以放后台运行
-    # stdin_open: true
-    # tty: true
+  # ---------- Backend (FastAPI) ----------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # GHCR 镜像（CI 推送目标）。本地 docker compose build 时用此标签，
+    # 服务器部署时由 docker compose pull 从 GHCR 拉取。
+    image: ghcr.io/kurisu-004/myerp-backend:latest
+    container_name: myerp-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Asia/Shanghai
+      # 容器内 host=postgres（docker service 名），不是 localhost；
+      # 注意：compose 自带的 postgres 服务端口是 5432，不是宿主机映射的 5433。
+      # 如果改用宿主机独立跑的 postgres-dev，需要把 host/port 改成 127.0.0.1:5433。
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    expose:
+      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"   # 仅宿主机可达，便于本地直连排查
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - myerp-net
+
+  # ---------- Frontend (nginx + SPA + /api/ 反代) ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    # GHCR 镜像（CI 推送目标）。本地 docker compose build 时用此标签，
+    # 服务器部署时由 docker compose pull 从 GHCR 拉取。
+    image: ghcr.io/kurisu-004/myerp-frontend:latest
+    container_name: myerp-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"   # 宿主机 8080 → 容器 80
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - myerp-net
+
+networks:
+  myerp-net:
+    driver: bridge

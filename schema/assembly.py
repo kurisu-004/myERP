@@ -1,0 +1,119 @@
+"""装配件相关 schema。"""
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from schema.drawing import DrawingFileOut
+from schema.part import PartOut
+
+
+class AssemblyOut(BaseModel):
+    """装配件展示用出参。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    drawing_no: str = Field(description="总图图号（如 E42FX1020107101）")
+    name: str = Field(description="装配体名称（如 精研挡料座）")
+    applicant_name: str | None = None
+    customer_id: int
+    customer_name: str | None = Field(
+        default=None, description="客户名（二级叶子节点）"
+    )
+    parent_customer_name: str | None = Field(
+        default=None, description="上级客户名（一级集团）"
+    )
+    customer_path: str | None = Field(default=None, description="客户完整路径")
+    request_date: date
+    planned_delivery_date: date
+    actual_delivery_date: date | None = None
+    is_urgent: bool
+    status: str = Field(description="PENDING / COMPLETED")
+    child_count: int = Field(description="子零件数量")
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssemblyListQuery(BaseModel):
+    """装配体列表查询参数。"""
+
+    customer_id: int | None = Field(default=None, description="客户 id")
+    status: str | None = Field(default=None, description="PENDING / COMPLETED")
+    is_urgent: bool | None = Field(default=None, description="是否加急")
+    drawing_no_like: str | None = Field(default=None, description="图号模糊匹配")
+    name_like: str | None = Field(default=None, description="名称模糊匹配")
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class AssemblyListOut(BaseModel):
+    items: list[AssemblyOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class AssemblyChildCreateRequest(BaseModel):
+    """装配件上传时的子零件条目。
+
+    仅 PDF 中**有图纸页**的零件才传；BOM 中的国标件
+    （如 `圆柱销 GB/T 119.1`、`弹簧 GB/T 2089`）不在这里录入。
+    """
+
+    drawing_no: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+    quantity: int = Field(default=1, ge=1)
+    unit_price: Decimal = Field(default=Decimal("0"), ge=0)
+    total_price: Decimal | None = Field(default=None, ge=0)
+    applicant_name: str | None = Field(default=None, max_length=50)
+    page_index: int = Field(
+        ...,
+        ge=2,
+        description=(
+            "该子件在 PDF 中的页码（从 2 开始；page 1 固定是装配件总图）。"
+        ),
+    )
+
+    @field_validator("drawing_no", "name", "applicant_name")
+    @classmethod
+    def strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None
+
+
+class AssemblyCreateRequest(BaseModel):
+    """装配件创建请求体（不含 PDF，PDF 通过 multipart 单文件传）。"""
+
+    name: str = Field(..., max_length=200)
+    drawing_no: str = Field(..., min_length=1, max_length=100)
+    applicant_name: str | None = Field(default=None, max_length=50)
+    customer_id: int = Field(description="二级叶子客户 id")
+    request_date: date
+    planned_delivery_date: date
+    is_urgent: bool = False
+    children: list[AssemblyChildCreateRequest] = Field(..., min_length=1)
+
+    @field_validator("name", "drawing_no", "applicant_name")
+    @classmethod
+    def strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None
+
+
+class AssemblyCreateResult(BaseModel):
+    """装配件创建结果。"""
+
+    assembly: AssemblyOut
+    children: list[PartOut] = Field(description="子零件列表（含分配的序列号）")
+    files: list[DrawingFileOut] = Field(
+        description="装配件 PDF 1 条 + 各子件 page_index 引用 N 条"
+    )
+
+
+class AssemblyDetail(BaseModel):
+    """装配件详情（统一用于装配体详情页 / 子零件反查）。"""
+
+    assembly: AssemblyOut
+    children: list[PartOut]
+    files: list[DrawingFileOut]

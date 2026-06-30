@@ -57,6 +57,47 @@ const routes: RouteRecordRaw[] = [
         props: true,
       },
       {
+        path: 'assemblies',
+        name: 'AssemblyList',
+        component: () => import('@/views/assemblies/AssemblyList.vue'),
+        meta: {
+          title: '装配件一览',
+          icon: 'Connection',
+          breadcrumb: [
+            { label: '订单管理', path: '/assemblies' },
+            { label: '装配件一览' },
+          ],
+        },
+      },
+      {
+        path: 'assemblies/new',
+        name: 'AssemblyCreate',
+        component: () => import('@/views/assemblies/AssemblyCreate.vue'),
+        meta: {
+          title: '新建装配件',
+          breadcrumb: [
+            { label: '订单管理', path: '/assemblies' },
+            { label: '装配件一览', path: '/assemblies' },
+            { label: '新建' },
+          ],
+        },
+      },
+      {
+        // 动态段放最后；assemblies/new 必须先匹配
+        path: 'assemblies/:id(\\d+)',
+        name: 'AssemblyDetail',
+        component: () => import('@/views/assemblies/AssemblyDetail.vue'),
+        meta: {
+          title: '装配件详情',
+          breadcrumb: [
+            { label: '订单管理', path: '/assemblies' },
+            { label: '装配件一览', path: '/assemblies' },
+            { label: '详情' },
+          ],
+        },
+        props: true,
+      },
+      {
         path: 'workers',
         name: 'WorkerList',
         component: () => import('@/views/WorkerList.vue'),

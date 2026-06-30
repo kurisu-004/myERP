@@ -134,6 +134,20 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    # ===== 装配体关联 =====
+    async def list_children(self, assembly_id: int) -> list[TPart]:
+        """取装配件的所有子零件，按 drawing_no 升序（保证 PDF 页顺序）。"""
+        stmt = (
+            select(TPart)
+            .where(
+                TPart.assembly_id == assembly_id,
+                TPart.deleted_at.is_(None),
+            )
+            .order_by(TPart.drawing_no.asc(), TPart.id.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 内部 =====
     def _build_filter_stmt(
         self,
