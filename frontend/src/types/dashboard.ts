@@ -2,7 +2,7 @@
 
 /** 大屏 ready_queue / in_process 共用的最小数据项 */
 export interface DashboardPartItem {
-  id: number
+  id: string
   serial_no: string | null
   name: string
   drawing_no: string
@@ -11,7 +11,7 @@ export interface DashboardPartItem {
   planned_delivery_date: string | null
   released_at: string | null
   picked_up_at: string | null
-  current_worker_id: number | null
+  current_worker_id: string | null
   worker_name: string | null
   customer_name: string | null
   customer_path: string | null

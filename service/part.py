@@ -537,12 +537,12 @@ class PartService:
         return items[0]
 
     async def pick_up_by_scan(self, data: PartPickUpRequest) -> PartOut:
-        """工人扫图纸 + 工牌：READY → IN_PROCESS，记录工人。"""
-        part = await self.parts.get_by_drawing_no(data.drawing_code)
+        """工人扫 serial_no + 工牌：READY → IN_PROCESS，记录工人。"""
+        part = await self.parts.get_by_serial(data.serial_no)
         if part is None:
             raise BizError(
                 code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part with drawing_no {data.drawing_code!r} not found",
+                message=f"part with serial_no {data.serial_no!r} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         worker = await self.workers.get_by_badge_code(data.badge_code)
@@ -571,7 +571,7 @@ class PartService:
             from_status=from_status,
             to_status=to_status,
             worker_id=worker.id,
-            drawing_code=data.drawing_code,
+            drawing_code=data.serial_no,
             badge_code=data.badge_code,
         )
         await self._broadcast()
@@ -587,12 +587,12 @@ class PartService:
         return items[0]
 
     async def scan_event(self, data: PartScanRequest) -> PartOut:
-        """工人扫图纸（无工牌）触发归还 / 送检。"""
-        part = await self.parts.get_by_drawing_no(data.drawing_code)
+        """工人扫 serial_no（无工牌）触发归还 / 送检。"""
+        part = await self.parts.get_by_serial(data.serial_no)
         if part is None:
             raise BizError(
                 code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part with drawing_no {data.drawing_code!r} not found",
+                message=f"part with serial_no {data.serial_no!r} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         event_type = _parse_event_type(data.event_type)
@@ -601,12 +601,12 @@ class PartService:
         if event_type == PartEventType.RETURNED:
             to_status = PartStatus.READY
             worker_id_for_event = part.current_worker_id
-            drawing_code_for_event = data.drawing_code
+            drawing_code_for_event = data.serial_no
             badge_code_for_event: str | None = None
         elif event_type == PartEventType.INSPECTED:
             to_status = PartStatus.INSPECTION
             worker_id_for_event = part.current_worker_id
-            drawing_code_for_event = data.drawing_code
+            drawing_code_for_event = data.serial_no
             badge_code_for_event = None
         else:
             raise BizError(

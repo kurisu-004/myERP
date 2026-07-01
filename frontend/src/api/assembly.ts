@@ -42,13 +42,13 @@ export async function listAssemblies(
   return unwrap<AssemblyListResult>(resp)
 }
 
-export async function getAssembly(id: number): Promise<AssemblyDetail> {
+export async function getAssembly(id: string): Promise<AssemblyDetail> {
   const resp = await fetch(`/api/v1/assemblies/${id}`)
   return unwrap<AssemblyDetail>(resp)
 }
 
 export async function getAssemblyForPart(
-  partId: number,
+  partId: string,
 ): Promise<AssemblyDetail> {
   const resp = await fetch(`/api/v1/parts/${partId}/assembly`)
   return unwrap<AssemblyDetail>(resp)
@@ -68,7 +68,7 @@ export async function createAssembly(
   return unwrap<AssemblyCreateResult>(resp)
 }
 
-export async function softDeleteAssembly(id: number): Promise<void> {
+export async function softDeleteAssembly(id: string): Promise<void> {
   const resp = await fetch(`/api/v1/assemblies/${id}/soft-delete`, {
     method: 'POST',
   })
@@ -78,14 +78,14 @@ export async function softDeleteAssembly(id: number): Promise<void> {
 // ---- 文件相关 ----
 
 export async function listAssemblyFiles(
-  id: number,
+  id: string,
 ): Promise<DrawingFileItem[]> {
   const resp = await fetch(`/api/v1/assemblies/${id}/files`)
   return unwrap<DrawingFileItem[]>(resp)
 }
 
 export async function uploadAssemblyFile(
-  id: number,
+  id: string,
   file: File,
 ): Promise<DrawingFileItem> {
   const form = new FormData()
@@ -97,13 +97,13 @@ export async function uploadAssemblyFile(
   return unwrap<DrawingFileItem>(resp)
 }
 
-export async function listPartFiles(partId: number): Promise<DrawingFileItem[]> {
+export async function listPartFiles(partId: string): Promise<DrawingFileItem[]> {
   const resp = await fetch(`/api/v1/parts/${partId}/files`)
   return unwrap<DrawingFileItem[]>(resp)
 }
 
 export async function uploadPartFile(
-  partId: number,
+  partId: string,
   file: File,
 ): Promise<DrawingFileItem> {
   const form = new FormData()
@@ -115,14 +115,14 @@ export async function uploadPartFile(
   return unwrap<DrawingFileItem>(resp)
 }
 
-export async function deleteFile(fileId: number): Promise<void> {
+export async function deleteFile(fileId: string): Promise<void> {
   const resp = await fetch(`/api/v1/drawings/${fileId}/delete`, {
     method: 'POST',
   })
   await unwrap<{ ok: boolean }>(resp)
 }
 
-export async function getDownloadUrl(fileId: number): Promise<string> {
+export async function getDownloadUrl(fileId: string): Promise<string> {
   const resp = await fetch(`/api/v1/drawings/${fileId}/download-url`)
   return unwrap<{ url: string }>(resp).then((d) => d.url)
 }

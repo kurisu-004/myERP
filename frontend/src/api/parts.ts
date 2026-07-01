@@ -2,9 +2,11 @@
 
 import type { OrderStatus, PartEventType, PartSortKey, SortDir } from '@/types/parts'
 
-/** 后端 PartOut 接口（与 Pydantic schema PartOut 对齐） */
+/** 后端 PartOut 接口（与 Pydantic schema PartOut 对齐）
+ *  id / assembly_id 是字符串（雪花 ID 经后端 IdStr 序列化），避免 JS 精度截断。
+ */
 export interface PartItem {
-  id: number
+  id: string
   serial_no: string | null
   name: string
   drawing_no: string
@@ -17,7 +19,7 @@ export interface PartItem {
   parent_customer_name: string | null
   customer_path: string | null
   /** 所属装配件 id；NULL = 普通独立零件 */
-  assembly_id: number | null
+  assembly_id: string | null
 }
 
 export interface PartListResult {
@@ -27,6 +29,7 @@ export interface PartListResult {
   offset: number
 }
 
+/** 入参侧 customer_id 仍按数字（数据库 BigInteger），由前端在调用前 Number() 转。 */
 export interface ListPartsParams {
   customer_id?: number
   status?: OrderStatus
@@ -58,19 +61,19 @@ export interface PartStatusChangePayload {
 }
 
 export interface PartPickUpPayload {
-  drawing_code: string
+  serial_no: string
   badge_code: string
 }
 
 export interface PartScanPayload {
-  drawing_code: string
+  serial_no: string
   event_type: PartEventType
 }
 
 export interface PartEvent {
-  id: number
-  part_id: number
-  worker_id: number | null
+  id: string
+  part_id: string
+  worker_id: string | null
   worker_name: string | null
   event_type: string
   from_status: string | null
@@ -108,7 +111,7 @@ export async function listParts(
   return unwrap<PartListResult>(resp)
 }
 
-export async function getPart(id: number): Promise<PartItem> {
+export async function getPart(id: string): Promise<PartItem> {
   const resp = await fetch(`/api/v1/parts/${id}`)
   return unwrap<PartItem>(resp)
 }
@@ -123,7 +126,7 @@ export async function createPart(payload: PartCreatePayload): Promise<PartItem> 
 }
 
 export async function changePartStatus(
-  id: number,
+  id: string,
   payload: PartStatusChangePayload,
 ): Promise<PartItem> {
   const resp = await fetch(`/api/v1/parts/${id}/change-status`, {
@@ -134,7 +137,7 @@ export async function changePartStatus(
   return unwrap<PartItem>(resp)
 }
 
-export async function releasePart(id: number): Promise<PartItem> {
+export async function releasePart(id: string): Promise<PartItem> {
   const resp = await fetch(`/api/v1/parts/${id}/release`, { method: 'POST' })
   return unwrap<PartItem>(resp)
 }
@@ -157,7 +160,7 @@ export async function scanPart(payload: PartScanPayload): Promise<PartItem> {
   return unwrap<PartItem>(resp)
 }
 
-export async function listPartEvents(id: number): Promise<PartEvent[]> {
+export async function listPartEvents(id: string): Promise<PartEvent[]> {
   const resp = await fetch(`/api/v1/parts/${id}/events`)
   return unwrap<PartEvent[]>(resp)
 }
@@ -183,7 +186,7 @@ export async function batchCreateParts(
   return unwrap<PartBatchResult>(resp)
 }
 
-export async function softDeletePart(id: number): Promise<void> {
+export async function softDeletePart(id: string): Promise<void> {
   const resp = await fetch(`/api/v1/parts/${id}/soft-delete`, { method: 'POST' })
   await unwrap<{ ok: boolean }>(resp)
 }

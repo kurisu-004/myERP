@@ -18,9 +18,9 @@ async function unwrap<T>(resp: Response): Promise<T> {
 }
 
 export interface Customer {
-  id: number
+  id: string
   name: string
-  parent_id: number | null
+  parent_id: string | null
   /** 仅叶子节点的二级客户有 parent_name；一级节点为 null。 */
   parent_name: string | null
 }

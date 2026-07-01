@@ -36,7 +36,7 @@ export async function listWorkers(params: {
   return unwrap<WorkerListResult>(await fetch(url))
 }
 
-export async function getWorker(id: number): Promise<Worker> {
+export async function getWorker(id: string): Promise<Worker> {
   return unwrap<Worker>(await fetch(`/api/v1/workers/${id}`))
 }
 
@@ -50,7 +50,7 @@ export async function createWorker(payload: WorkerCreatePayload): Promise<Worker
 }
 
 export async function updateWorker(
-  id: number,
+  id: string,
   payload: WorkerUpdatePayload,
 ): Promise<Worker> {
   const resp = await fetch(`/api/v1/workers/${id}/update`, {
@@ -61,14 +61,14 @@ export async function updateWorker(
   return unwrap<Worker>(resp)
 }
 
-export async function deactivateWorker(id: number): Promise<Worker> {
+export async function deactivateWorker(id: string): Promise<Worker> {
   const resp = await fetch(`/api/v1/workers/${id}/deactivate`, {
     method: 'POST',
   })
   return unwrap<Worker>(resp)
 }
 
-export async function reactivateWorker(id: number): Promise<Worker> {
+export async function reactivateWorker(id: string): Promise<Worker> {
   const resp = await fetch(`/api/v1/workers/${id}/reactivate`, {
     method: 'POST',
   })

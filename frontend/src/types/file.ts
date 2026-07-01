@@ -4,10 +4,10 @@
 
 /** 图纸文件项（与后端 DrawingFileOut 对齐） */
 export interface DrawingFileItem {
-  id: number
+  id: string
   /** "assembly" | "part" */
   owner_type: string
-  owner_id: number
+  owner_id: string
   /** PDF / STEP / DWG / DXF */
   file_type: string
   original_filename: string

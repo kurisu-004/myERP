@@ -1,12 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from schema._types import IdStrNonNull
 from schema.order import OrderOut
 
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: IdStrNonNull
     username: str
 
 
@@ -25,6 +26,6 @@ class UserPage(BaseModel):
 class UserWithOrdersOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: IdStrNonNull
     username: str
     orders: list[OrderOut]

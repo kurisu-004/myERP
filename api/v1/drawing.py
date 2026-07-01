@@ -84,6 +84,31 @@ async def get_download_url(
     return {"url": url}
 
 
+@file_router.get(
+    "/{file_id}/content",
+    summary="通过后端代理获取文件内容（预览/下载），不直接暴露 COS URL",
+)
+async def get_file_content(
+    file_id: int,
+    drawings: DrawingService = Depends(get_drawing_service),
+):
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+
+    data, content_type, filename = await drawings.get_file_content(file_id)
+    # RFC 5987: 非 ASCII 文件名必须用 filename*=UTF-8''<pct-encoded> 格式，
+    # 否则 Starlette 在编码 HTTP 头部时会抛 UnicodeEncodeError。
+    encoded = quote(filename, safe="")
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded}",
+        },
+    )
+
+
 @file_router.post(
     "/{file_id}/delete",
     summary="软删文件（COS 对象异步清理）",

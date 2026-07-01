@@ -2,7 +2,7 @@
 
 格式：`<单字母客户代码><4 位数字>`，如 F1000 / L1234 / H1050。
 
-- 每客户独立循环，pool 大小 = 5000（1000..5999 走完回到 1000，wrap 由
+- 每客户独立循环，pool 大小 = 9000（1000..9999 走完回到 1000，wrap 由
   `counter % SERIAL_POOL_SIZE` 实现）；
 - 释放条件：状态变为 COMPLETED / CANCELLED 时 service 层把
   `serial_no` 置 NULL，号回到同客户的可用池里；counter 不动；
@@ -15,13 +15,13 @@ from __future__ import annotations
 from model.enums import PartStatus
 
 SERIAL_MIN = 1000
-SERIAL_MAX = 5999  # 由 9999 改为 5999（公式 1000 + counter % 5000 的上界）
-SERIAL_POOL_SIZE = 5000  # 单前缀同时活跃工单上限
-SERIAL_FORMAT_LENGTH = 8  # "F5999" = 5 chars，留余量
+SERIAL_MAX = 9999
+SERIAL_POOL_SIZE = 9000  # 单前缀同时活跃工单上限
+SERIAL_FORMAT_LENGTH = 8  # "F9999" = 5 chars，留余量
 
 # 计数器按 prefix 串行化时单次最多绕一圈（= pool size），
 # 再绕说明已用尽，service 抛 BIZ_PART_SERIAL_EXHAUSTED。
-SERIAL_ALLOC_MAX_ATTEMPTS = 5000
+SERIAL_ALLOC_MAX_ATTEMPTS = 9000
 
 # 一级客户名 → 单字母代码的硬编码映射。
 # 扩展新一级客户时：在此加一行 + 在 t_serial_counter 种子迁移里加一行。

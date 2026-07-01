@@ -6,20 +6,21 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from schema._types import IdStr, IdStrNonNull
 from schema.drawing import DrawingFileOut
 from schema.part import PartOut
 
 
 class AssemblyOut(BaseModel):
-    """装配件展示用出参。"""
+    """装配件展示用出参。`id` / `customer_id` 序列化为字符串。"""
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: IdStrNonNull
     drawing_no: str = Field(description="总图图号（如 E42FX1020107101）")
     name: str = Field(description="装配体名称（如 精研挡料座）")
     applicant_name: str | None = None
-    customer_id: int
+    customer_id: IdStrNonNull
     customer_name: str | None = Field(
         default=None, description="客户名（二级叶子节点）"
     )

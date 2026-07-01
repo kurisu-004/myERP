@@ -201,17 +201,20 @@ async def download_object(key: str) -> bytes:
 # ============================================================
 
 async def presigned_get_url(key: str, expires: int | None = None) -> str:
-    """生成 GET 临时签名 URL。
+    """生成 GET 临时签名下载 URL。
 
     `expires` 单位秒；None 时用 `settings.cos_presign_expire_seconds`。
     返回的 URL 含签名参数，浏览器直接 GET 可在有效期内下载。
+
+    使用 `get_presigned_download_url`（非 `get_object_url`）以支持自定义
+    过期时间。`get_object_url` 不接收 `Expired` 参数，会报 TypeError。
     """
     client = get_cos_client()
     expire = expires if expires is not None else settings.cos_presign_expire_seconds
     return await asyncio.to_thread(
         _wrap_cos_call,
-        "get_object_url",
-        client.get_object_url,
+        "get_presigned_download_url",
+        client.get_presigned_download_url,
         Bucket=settings.cos_bucket,
         Key=key,
         Expired=expire,

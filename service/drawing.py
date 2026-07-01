@@ -248,6 +248,21 @@ class DrawingService:
             )
         return await cos_mod.presigned_get_url(f.object_key)
 
+    async def get_file_content(self, file_id: int) -> tuple[bytes, str, str]:
+        """获取文件内容（用于后端代理预览/下载）。
+
+        返回 (data, content_type, filename) 三元组。
+        """
+        f = await self.files.get_by_id(file_id)
+        if f is None:
+            raise BizError(
+                code=ErrCode.BIZ_DRAWING_FILE_NOT_FOUND,
+                message=f"file {file_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        data = await cos_mod.download_object(f.object_key)
+        return data, f.content_type, f.original_filename
+
     # ===== 软删 + 异步 COS 清理 =====
     async def delete_file(self, file_id: int) -> None:
         f = await self.files.get_by_id(file_id)

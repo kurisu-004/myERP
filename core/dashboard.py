@@ -196,13 +196,20 @@ async def _picked_up_at_map(
 
 
 async def _fetch_worker_names(
-    session: AsyncSession, worker_ids: list[int]
-) -> dict[int, str]:
+    session: AsyncSession, worker_ids: list[str]
+) -> dict[str, str]:
+    """每个 worker_id → name。
+
+    worker_ids 接收字符串（与 _to_dict 输出对齐），查询前转回 int——
+    PostgreSQL 不会自动把 varchar cast 成 bigint，直接传 str 会导致
+    `operator does not exist: bigint = character varying`。
+    """
     if not worker_ids:
         return {}
-    stmt = select(TWorker).where(TWorker.id.in_(worker_ids))
+    int_ids = [int(wid) for wid in worker_ids]
+    stmt = select(TWorker).where(TWorker.id.in_(int_ids))
     workers = list((await session.execute(stmt)).scalars().all())
-    return {w.id: w.name for w in workers}
+    return {str(w.id): w.name for w in workers}
 
 
 def _to_dict(
@@ -212,8 +219,10 @@ def _to_dict(
     picked_up_at: Any | None,
 ) -> dict[str, Any]:
     cust_info = cust_map.get(part.customer_id, {})
+    # id 类字段全部序列化为字符串，避免 JS Number.MAX_SAFE_INTEGER 精度截断
+    # 见 schema/_types.py IdStr 的设计意图
     return {
-        "id": part.id,
+        "id": str(part.id),
         "serial_no": part.serial_no,
         "name": part.name,
         "drawing_no": part.drawing_no,
@@ -226,7 +235,10 @@ def _to_dict(
         if part.released_at
         else None,
         "picked_up_at": picked_up_at.isoformat() + "Z" if picked_up_at else None,
-        "current_worker_id": part.current_worker_id,
+        "current_worker_id": (
+            str(part.current_worker_id) if part.current_worker_id else None
+        ),
+        "customer_id": str(part.customer_id) if part.customer_id else None,
         "customer_name": cust_info.get("customer_name"),
         "customer_path": cust_info.get("customer_path"),
     }

@@ -50,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import {
   ArrowLeft,
   ArrowRight,
@@ -95,12 +95,16 @@ async function load() {
     totalPages.value = pdfDoc.numPages
     if (page.value < 1) page.value = 1
     if (page.value > totalPages.value) page.value = totalPages.value
-    await render()
   } catch (e) {
     error.value = (e as Error).message ?? 'PDF 加载失败'
-  } finally {
     loading.value = false
+    return
   }
+  // 先让 Vue 把 canvas-wrap（含 canvas）插入 DOM，
+  // 否则 render() 中 canvasRef.value 为 null，绘画被静默跳过。
+  loading.value = false
+  await nextTick()
+  await render()
 }
 
 async function render() {

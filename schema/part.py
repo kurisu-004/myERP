@@ -4,6 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
+from schema._types import IdStr, IdStrNonNull
 
 
 class PartListQuery(BaseModel):
@@ -23,11 +24,15 @@ class PartListQuery(BaseModel):
 
 
 class PartOut(BaseModel):
-    """零件展示用出参（数据大屏用）。"""
+    """零件展示用出参（数据大屏用）。
+
+    `id` / `assembly_id` 序列化为字符串，避免 JS `Number.MAX_SAFE_INTEGER`
+    精度截断。DB 仍存 BigInteger 雪花 ID。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: IdStrNonNull
     serial_no: str | None = Field(
         default=None, description="序列号（每客户独立循环，COMPLETED/CANCELLED 时释放）"
     )
@@ -47,7 +52,7 @@ class PartOut(BaseModel):
     customer_path: str | None = Field(
         default=None, description="客户完整路径，如 法拉电子 / 母排厂"
     )
-    assembly_id: int | None = Field(
+    assembly_id: IdStr = Field(
         default=None,
         description="所属装配件 id（NULL = 普通独立零件，非任何装配件的子件）",
     )
@@ -127,33 +132,33 @@ class PartReleaseRequest(BaseModel):
 
 
 class PartPickUpRequest(BaseModel):
-    """工人扫码领取：图纸码 + 工牌码。
+    """工人扫码领取：流水号 + 工牌码。
 
-    - `drawing_code` 与 t_part.drawing_no 完全相等时定位零件。
+    - `serial_no` 与 t_part.serial_no 完全相等时定位零件。
     - `badge_code` 与 t_worker.badge_code 完全相等时定位工人。
     """
 
-    drawing_code: str = Field(min_length=1, max_length=100)
+    serial_no: str = Field(min_length=1, max_length=8)
     badge_code: str = Field(min_length=1, max_length=50)
 
-    @field_validator("drawing_code", "badge_code")
+    @field_validator("serial_no", "badge_code")
     @classmethod
     def strip(cls, v: str) -> str:
         return v.strip()
 
 
 class PartScanRequest(BaseModel):
-    """工人扫图纸（无工牌）触发归还 / 送检。
+    """工人扫序列号（无工牌）触发归还 / 送检。
 
     event_type ∈ {RETURNED, INSPECTED}。其他值由 service 拒收。
     """
 
-    drawing_code: str = Field(min_length=1, max_length=100)
+    serial_no: str = Field(min_length=1, max_length=8)
     event_type: PartEventType = Field(
         description="扫码事件类型；扫归还用 RETURNED，送检用 INSPECTED"
     )
 
-    @field_validator("drawing_code")
+    @field_validator("serial_no")
     @classmethod
     def strip(cls, v: str) -> str:
         return v.strip()
@@ -164,9 +169,9 @@ class PartEventOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    part_id: int
-    worker_id: int | None = None
+    id: IdStrNonNull
+    part_id: IdStrNonNull
+    worker_id: IdStr = None
     worker_name: str | None = None
     event_type: str = Field(description="PartEventType 值")
     from_status: str | None = None

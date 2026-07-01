@@ -358,7 +358,7 @@ const rules: FormRules = {
           cb(new Error('请选择二级客户节点'))
           return
         }
-        const c = customers.value.find((x) => x.id === value)
+        const c = customers.value.find((x) => String(x.id) === String(value))
         if (!c || c.parent_id === null) {
           cb(new Error('请选择二级客户节点（一级集团不允许）'))
           return

@@ -8,13 +8,19 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from schema._types import IdStr, IdStrNonNull
+
 
 class CustomerOut(BaseModel):
-    """单条客户展示用出参。"""
+    """单条客户展示用出参。
+
+    `id` / `parent_id` 序列化为字符串，避免 JS `Number.MAX_SAFE_INTEGER`
+    精度截断。DB 仍存 BigInteger / auto-increment int。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: IdStrNonNull
     name: str
-    parent_id: int | None = None
+    parent_id: IdStr = None
     parent_name: str | None = None

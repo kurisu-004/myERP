@@ -4,11 +4,11 @@
 
 /** 装配件（与后端 TAssembly 对齐） */
 export interface AssemblyItem {
-  id: number
+  id: string
   drawing_no: string
   name: string
   applicant_name: string | null
-  customer_id: number
+  customer_id: string
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null

@@ -166,10 +166,10 @@ const router = useRouter()
 const detail = ref<AssemblyDetail | null>(null)
 const loading = ref(false)
 
-const assemblyId = computed<number>(() => {
+// id 是后端 IdStr 序列化的字符串，雪花 ID 完整保留；不再 Number() 转回去
+const assemblyId = computed<string>(() => {
   const raw = route.params.id
-  const n = Number(Array.isArray(raw) ? raw[0] : raw)
-  return Number.isFinite(n) ? n : 0
+  return String(Array.isArray(raw) ? raw[0] : raw ?? '')
 })
 
 function statusTag(s: string): 'success' | 'info' {
@@ -206,7 +206,7 @@ function formatDateTime(iso: string): string {
 }
 
 async function fetchData(): Promise<void> {
-  if (assemblyId.value <= 0) return
+  if (!assemblyId.value) return
   loading.value = true
   try {
     detail.value = await getAssembly(assemblyId.value)

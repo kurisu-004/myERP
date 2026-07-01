@@ -1,5 +1,5 @@
 export interface Worker {
-  id: number
+  id: string
   badge_code: string
   name: string
   is_active: boolean

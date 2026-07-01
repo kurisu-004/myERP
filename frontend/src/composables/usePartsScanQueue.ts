@@ -24,7 +24,7 @@ export type PartEntryPhase = 'loading' | 'pending' | 'success' | 'error'
 
 export interface PartEntry {
   uid: string
-  drawingCode: string
+  serialNo: string
   /** 提交前是 'loading' / 'pending'；提交过程中及之后是 'success' / 'error'。 */
   phase: PartEntryPhase
   part?: PartItem
@@ -61,11 +61,11 @@ export function usePartsScanQueue() {
   async function addOrIgnore(rawCode: string): Promise<void> {
     const c = rawCode.trim()
     if (!c) return
-    if (parts.value.some((p) => p.drawingCode === c)) {
+    if (parts.value.some((p) => p.serialNo === c)) {
       ElMessage.warning(`已扫过: ${c}`)
       return
     }
-    const entry: PartEntry = { uid: makeUid(), drawingCode: c, phase: 'loading' }
+    const entry: PartEntry = { uid: makeUid(), serialNo: c, phase: 'loading' }
     parts.value = [...parts.value, entry]
     try {
       const part = await getPartBySerial(c)
@@ -94,17 +94,17 @@ export function usePartsScanQueue() {
       try {
         if (action === 'PICK_UP') {
           entry.part = await pickUpPart({
-            drawing_code: entry.drawingCode,
+            serial_no: entry.serialNo,
             badge_code: badgeCode,
           })
         } else if (action === 'RETURN') {
           entry.part = await scanPart({
-            drawing_code: entry.drawingCode,
+            serial_no: entry.serialNo,
             event_type: 'RETURNED',
           })
         } else {
           entry.part = await scanPart({
-            drawing_code: entry.drawingCode,
+            serial_no: entry.serialNo,
             event_type: 'INSPECTED',
           })
         }

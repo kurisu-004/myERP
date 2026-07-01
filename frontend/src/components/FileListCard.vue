@@ -80,17 +80,17 @@
       </div>
     </div>
 
-    <!-- PDF 预览弹窗 -->
+    <!-- PDF 预览弹窗（全屏） -->
     <el-dialog
       v-model="previewVisible"
       :title="previewTitle"
-      width="900px"
+      fullscreen
       :close-on-click-modal="false"
       destroy-on-close
     >
       <PdfViewer
         v-if="previewFile && isPdf(previewFile.file_type)"
-        :url="previewFile.download_url"
+        :url="`/api/v1/drawings/${previewFile.id}/content`"
         :page="previewFile.page_index ?? defaultPage ?? 1"
         :initial-scale="1.4"
       />
@@ -130,7 +130,8 @@ import type { DrawingFileItem } from '@/types/file'
 interface Props {
   files: DrawingFileItem[]
   ownerType: 'assembly' | 'part'
-  ownerId: number
+  /** 后端 IdStr 序列化为字符串；雪花 ID 完整保留 */
+  ownerId: string
   defaultPage?: number
   showUpload?: boolean
   showDelete?: boolean
@@ -143,7 +144,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   uploaded: [DrawingFileItem]
-  deleted: [number]
+  deleted: [string]
   refresh: []
 }>()
 
@@ -214,7 +215,7 @@ function onPreview(f: DrawingFileItem): void {
 function downloadCurrent(): void {
   if (!previewFile.value) return
   const a = document.createElement('a')
-  a.href = previewFile.value.download_url
+  a.href = `/api/v1/drawings/${previewFile.value.id}/content`
   a.target = '_blank'
   a.rel = 'noopener'
   a.download = ''

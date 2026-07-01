@@ -71,7 +71,7 @@
             <span class="part-index">{{ idx + 1 }}</span>
             <div class="part-info">
               <div class="part-line-1">
-                <span class="drawing-code">{{ entry.drawingCode }}</span>
+                <span class="serial-no">{{ entry.serialNo }}</span>
                 <el-tag
                   v-if="entry.part"
                   :type="statusToTagType(entry.part.status)"
@@ -160,7 +160,7 @@
             <span class="part-index">{{ idx + 1 }}</span>
             <div class="part-info">
               <div class="part-line-1">
-                <span class="drawing-code">{{ entry.drawingCode }}</span>
+                <span class="serial-no">{{ entry.serialNo }}</span>
               </div>
               <div v-if="entry.phase === 'success' && entry.part" class="part-line-2 success">
                 <el-icon color="#67c23a"><CircleCheckFilled /></el-icon>
@@ -214,7 +214,7 @@
             <span class="part-index">{{ idx + 1 }}</span>
             <div class="part-info">
               <div class="part-line-1">
-                <span class="drawing-code">{{ entry.drawingCode }}</span>
+                <span class="serial-no">{{ entry.serialNo }}</span>
                 <span v-if="entry.part" class="part-name-inline">
                   · {{ entry.part.name }}
                 </span>
@@ -487,7 +487,7 @@ function backToAction(): void {
   align-items: center;
   gap: 10px;
 }
-.drawing-code {
+.serial-no {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
   font-size: 18px;
   font-weight: 700;

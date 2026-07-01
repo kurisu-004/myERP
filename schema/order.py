@@ -2,12 +2,14 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from schema._types import IdStrNonNull
+
 
 class OrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    user_id: int
+    id: IdStrNonNull
+    user_id: IdStrNonNull
     price: Decimal
 
 

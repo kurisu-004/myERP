@@ -3,6 +3,8 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from schema._types import IdStrNonNull
+
 # 18 位身份证（最后一位可为 X）
 ID_CARD_RE = re.compile(r"^\d{17}[\dXx]$")
 # 中国大陆手机号（11 位，1 开头）
@@ -88,7 +90,7 @@ class WorkerOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: IdStrNonNull
     badge_code: str
     name: str
     id_card_no: str | None = None
