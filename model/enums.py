@@ -29,6 +29,47 @@ class PartStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"           # 已取消
 
 
+class AssemblyStatus(str, enum.Enum):
+    """装配件状态机。
+
+    DB 存 `varchar(20)`，Python 层靠本 Enum 做合法值校验，service 层抛
+    `BIZ_INVALID_VALUE` / `BIZ_INVALID_TRANSITION`。
+
+    流转示意（service 层 / 事件触发维护）：
+        PENDING ──任一子件进入生产/品检/待送货/已送货──▶ IN_PROCESS
+                                                                  │
+        所有子件 COMPLETED ────────────────────────────────────▶ COMPLETED
+        手动取消（整装级联，所有子件一同 CANCELLED）───▶ CANCELLED
+
+    注意：
+    - IN_PROCESS / COMPLETED 切换由 service 在子件状态变更事件里**自动维护**，
+      不会走 `change-status` 端点（避免与子件状态不一致）。
+    - CANCELLED 是**显式动作**：调用 `POST /assemblies/{id}/cancel` 端点，
+      service 在该事务内把所有未完成的子件也置为 CANCELLED（保留审计事件）。
+    - 终态（COMPLETED / CANCELLED）不接受任何再变更。
+    """
+
+    PENDING = "PENDING"           # 创建时初始状态
+    IN_PROCESS = "IN_PROCESS"     # 至少有一个子件进入生产环节
+    COMPLETED = "COMPLETED"       # 所有子件均 COMPLETED
+    CANCELLED = "CANCELLED"       # 手动取消（含级联子件）
+
+
+# Assembly 合法状态转换矩阵（service 层校验）。
+# - PENDING → IN_PROCESS：由子件状态变更事件触发
+# - IN_PROCESS → COMPLETED：所有子件都 COMPLETED 时由事件触发
+# - * → CANCELLED：手动调用 cancel 端点
+# 终态（COMPLETED / CANCELLED）不出现在 from 侧。
+ASSEMBLY_TRANSITIONS: frozenset[tuple[AssemblyStatus, AssemblyStatus]] = frozenset(
+    {
+        (AssemblyStatus.PENDING, AssemblyStatus.IN_PROCESS),
+        (AssemblyStatus.PENDING, AssemblyStatus.CANCELLED),
+        (AssemblyStatus.IN_PROCESS, AssemblyStatus.COMPLETED),
+        (AssemblyStatus.IN_PROCESS, AssemblyStatus.CANCELLED),
+    }
+)
+
+
 # Part 合法状态转换矩阵（service 层校验）。
 # 注意：任意状态 → CANCELLED 不列在内，由 service 单独放行。
 PART_TRANSITIONS: frozenset[tuple[PartStatus, PartStatus]] = frozenset(

@@ -28,3 +28,15 @@ class ErrCode(IntEnum):
 
     BIZ_WORKER_NOT_FOUND = 20201
     BIZ_WORKER_INACTIVE = 20202
+
+    # ---- 装配体（图文档 + 子件）----
+    # 203xx：装配体相关
+    BIZ_ASSEMBLY_NOT_FOUND = 20301
+    BIZ_ASSEMBLY_BAD_CUSTOMER = 20302  # 客户节点不允许（一级集团 / 不存在）
+
+    # ---- 图纸文件（t_drawing_file + COS）----
+    # 204xx：图纸文件相关
+    BIZ_DRAWING_FILE_NOT_FOUND = 20401
+    BIZ_DRAWING_FILE_BAD_TYPE = 20402   # 扩展名不在 COS_ALLOWED_TYPES 白名单
+    BIZ_DRAWING_FILE_TOO_LARGE = 20403  # 文件大小 ≤0 或 > cos_max_file_size_bytes
+    BIZ_DRAWING_UPLOAD_FAILED = 20404   # COS SDK 抛错（含 put/delete/get/head）

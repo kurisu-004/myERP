@@ -8,10 +8,27 @@
   `set_cos_client_for_testing` 在测试时替换为 fake。
 - 所有方法抛 `BizError(BIZ_DRAWING_UPLOAD_FAILED, 502)` 包装原始异常，
   上层 service 只关心业务错误码。
+- **统一后端上传**：本进程用长期 SecretId/Key 直接调 SDK；不签临时
+  URL、不走前端直传。前端要预览/下载，走 `presigned_get_url` 拿 GET
+  签名即可。
+
+本模块覆盖 COS SDK 在后端的全部典型用法（与 docs/example/cos_example.py
+一一对应）：
+
+| 上层用法                  | SDK 方法                  | 本模块入口              |
+|---------------------------|---------------------------|-------------------------|
+| 小文件 / 内存字节直接上传 | `put_object(Body=bytes)`  | `upload_object`         |
+| 本地临时文件直传          | `put_object_from_local_file` | `upload_from_path`   |
+| 大文件分块/并发上传       | `upload_file`             | `upload_file_advanced`  |
+| 下载到内存                | `get_object` + `get_raw_stream()` | `download_object` |
+| GET 临时签名 URL          | `get_object_url`          | `presigned_get_url`     |
+| 单个 / 批量删除           | `delete_object(s)`        | `delete_object(s)`      |
+| HEAD                      | `head_object`             | `head_object`           |
 """
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from qcloud_cos import CosConfig, CosS3Client
@@ -66,8 +83,16 @@ def _wrap_cos_call(label: str, fn, /, *args, **kwargs):
         ) from e
 
 
+# ============================================================
+# 上传
+# ============================================================
+
 async def upload_object(key: str, data: bytes, content_type: str) -> dict:
-    """上传对象。`data` 是已读入内存的字节（前端走 multipart 一次性读完）。"""
+    """上传对象。`data` 是已读入内存的字节（前端走 multipart 一次性读完）。
+
+    适合 ≤ 几十 MB 的小文件；内部走 `put_object` 简单上传（<5GB 限制）。
+    大文件请改用 `upload_file_advanced`（自动分块）。
+    """
     client = get_cos_client()
     return await asyncio.to_thread(
         _wrap_cos_call,
@@ -79,6 +104,123 @@ async def upload_object(key: str, data: bytes, content_type: str) -> dict:
         ContentType=content_type,
     )
 
+
+async def upload_from_path(
+    key: str,
+    local_path: str | Path,
+    content_type: str,
+) -> dict:
+    """从本地文件路径上传到 COS（SDK 推荐做法）。
+
+    对应示例 `docs/example/cos_example.py::upload_file`，内部走
+    `put_object_from_local_file`：SDK 自己用 rb 打开文件并流式 PUT，
+    不会把整个文件读进进程内存，适合"前端把 multipart 落盘后由后端转传"
+    这类场景。文件大小仍受 5GB 上限约束；超过请用 `upload_file_advanced`。
+    """
+    local = Path(local_path)
+    if not local.is_file():
+        # SDK 自己也会报 FileNotFoundError，但更早给出中文错误，便于排查。
+        raise BizError(
+            code=ErrCode.BIZ_DRAWING_UPLOAD_FAILED,
+            message=f"local file not found: {local}",
+            http_status=400,
+        )
+    client = get_cos_client()
+    return await asyncio.to_thread(
+        _wrap_cos_call,
+        "put_object_from_local_file",
+        client.put_object_from_local_file,
+        Bucket=settings.cos_bucket,
+        Key=key,
+        LocalFilePath=str(local),
+        ContentType=content_type,
+    )
+
+
+async def upload_file_advanced(
+    key: str,
+    local_path: str | Path,
+    *,
+    part_size: int = 10,
+    max_thread: int = 5,
+) -> dict:
+    """大文件分块上传（SDK 自动决定简单上传 / 分块上传）。
+
+    对应 SDK `upload_file(Bucket, LocalFilePath, Key, PartSize, MAXThread, ...)`：
+    - `PartSize`：分块大小（MB），默认 10；
+    - `MAXThread`：并发上传线程数，默认 5；
+    - 文件 < 5MB 走简单上传；≥ 5MB 自动分块；分块大小可调。
+
+    仅当上传文件确实"很大"（建议 ≥ 50MB）才用，HTTP multipart 一次性读完
+    的小文件用 `upload_object` / `upload_from_path` 更轻量。
+    """
+    local = Path(local_path)
+    if not local.is_file():
+        raise BizError(
+            code=ErrCode.BIZ_DRAWING_UPLOAD_FAILED,
+            message=f"local file not found: {local}",
+            http_status=400,
+        )
+    client = get_cos_client()
+    return await asyncio.to_thread(
+        _wrap_cos_call,
+        "upload_file",
+        client.upload_file,
+        Bucket=settings.cos_bucket,
+        Key=key,
+        LocalFilePath=str(local),
+        PartSize=part_size,
+        MAXThread=max_thread,
+    )
+
+
+# ============================================================
+# 下载
+# ============================================================
+
+async def download_object(key: str) -> bytes:
+    """下载 COS 对象到内存。
+
+    对应示例 `docs/example/cos_example.py::main` 第 3 步：先
+    `client.get_object(Bucket, Key)` 拿到带 `Body` 的响应，再用
+    `response['Body'].get_raw_stream().read()` 取字节流。
+    """
+    client = get_cos_client()
+    # get_object 本身只读响应头 + 拿到 Body 这一层；真正的字节流读取
+    # 仍会阻塞，所以整体丢到线程池里。
+    def _do_download() -> bytes:
+        resp = client.get_object(Bucket=settings.cos_bucket, Key=key)
+        body = resp["Body"]
+        return body.get_raw_stream().read()
+
+    return await asyncio.to_thread(_wrap_cos_call, "get_object", _do_download)
+
+
+# ============================================================
+# 临时签名 URL
+# ============================================================
+
+async def presigned_get_url(key: str, expires: int | None = None) -> str:
+    """生成 GET 临时签名 URL。
+
+    `expires` 单位秒；None 时用 `settings.cos_presign_expire_seconds`。
+    返回的 URL 含签名参数，浏览器直接 GET 可在有效期内下载。
+    """
+    client = get_cos_client()
+    expire = expires if expires is not None else settings.cos_presign_expire_seconds
+    return await asyncio.to_thread(
+        _wrap_cos_call,
+        "get_object_url",
+        client.get_object_url,
+        Bucket=settings.cos_bucket,
+        Key=key,
+        Expired=expire,
+    )
+
+
+# ============================================================
+# 删除 / HEAD
+# ============================================================
 
 async def delete_object(key: str) -> None:
     """删除单个对象；对象不存在时 SDK 不抛错（幂等）。"""
@@ -109,24 +251,6 @@ async def delete_objects(keys: list[str]) -> None:
         )
 
 
-async def presigned_get_url(key: str, expires: int | None = None) -> str:
-    """生成 GET 临时签名 URL。
-
-    `expires` 单位秒；None 时用 `settings.cos_presign_expire_seconds`。
-    返回的 URL 含签名参数，浏览器直接 GET 可在有效期内下载。
-    """
-    client = get_cos_client()
-    expire = expires if expires is not None else settings.cos_presign_expire_seconds
-    return await asyncio.to_thread(
-        _wrap_cos_call,
-        "get_object_url",
-        client.get_object_url,
-        Bucket=settings.cos_bucket,
-        Key=key,
-        Expired=expire,
-    )
-
-
 async def head_object(key: str) -> dict | None:
     """HEAD 对象。对象不存在时返回 None（不抛错）。"""
     client = get_cos_client()
@@ -137,7 +261,8 @@ async def head_object(key: str) -> dict | None:
             Key=key,
         )
     except CosServiceError as e:
-        if e.get("Code") == "NoSuchKey" or e.get("status_code") == 404:
+        # 对象不存在 → 视作 None（不抛错）；其它服务端错误 → 抛 BizError。
+        if e.get_error_code() == "NoSuchKey" or e.get_status_code() == 404:
             return None
         raise BizError(
             code=ErrCode.BIZ_DRAWING_UPLOAD_FAILED,

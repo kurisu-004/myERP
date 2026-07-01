@@ -21,15 +21,23 @@ class TAssembly(Base, AuditMixin):
     与 `t_part` 的关系：
     - 装配件描述"这一整套东西要装起来"，挂总图 PDF + 客户 + 计划交期；
     - `t_part` 的子件行通过 `assembly_id` 反向挂到这里；
-    - 装配件自身**不**走 `t_part` 的 8 态状态机，只有 PENDING /
-      COMPLETED 两种状态；COMPLETED 由 service 在所有子件 COMPLETED 时
-      触发（本期不实现联动，留给后续事件触发补）。
+    - 装配件自身**不**走 `t_part` 的 8 态状态机，而是 4 态：
+        PENDING → IN_PROCESS → COMPLETED
+                          └─→ CANCELLED
+      其中：
+      - PENDING → IN_PROCESS 由"任一子件进入生产/品检/待送货/已送货"
+        事件触发（service 层自动维护）。
+      - IN_PROCESS → COMPLETED 由"所有子件都 COMPLETED"事件触发。
+      - * → CANCELLED 走显式 `POST /assemblies/{id}/cancel` 端点，
+        事务内把未完成的子件一同置 CANCELLED（保留审计事件）。
+      - 终态（COMPLETED / CANCELLED）不接受再变更。
 
     注意：
     - 项目约定 **不在 DB 层加物理外键**；`customer_id` 是逻辑外键 → `t_customer.id`，
       是否为叶子节点、是否存在由 service 层校验。
     - 审计字段由 `AuditMixin` 提供，本类不重复声明。
-    - 状态字段是 `varchar(20)`，取值合法性由 service 层校验。
+    - 状态字段是 `varchar(20)`，取值合法性由 Python `AssemblyStatus` 在
+      service 层校验。
     """
 
     __tablename__ = "t_assembly"
@@ -76,7 +84,7 @@ class TAssembly(Base, AuditMixin):
         default="PENDING",
         server_default="PENDING",
         index=True,
-        comment="PENDING（默认）/ COMPLETED",
+        comment="PENDING（默认）/ IN_PROCESS / COMPLETED / CANCELLED",
     )
 
     __table_args__ = (
