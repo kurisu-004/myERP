@@ -8,16 +8,23 @@ from repository import (
     AssemblyRepository,
     CustomerRepository,
     DrawingFileRepository,
+    MenuRepository,
     PartEventRepository,
     PartRepository,
     SerialCounterRepository,
+    ShelfRepository,
+    UserRepository,
+    UserRoleRepository,
     WorkerRepository,
 )
 from service import (
     AssemblyService,
+    AuthService,
     CustomerService,
     DrawingService,
     PartService,
+    ShelfService,
+    UserService,
     WorkerService,
 )
 
@@ -39,6 +46,56 @@ def get_serial_counter_repo(
     return SerialCounterRepository(session)
 
 
+def get_user_repo(
+    session: AsyncSession = Depends(get_session),
+) -> UserRepository:
+    return UserRepository(session)
+
+
+def get_user_role_repo(
+    session: AsyncSession = Depends(get_session),
+) -> UserRoleRepository:
+    return UserRoleRepository(session)
+
+
+def get_shelf_repo(
+    session: AsyncSession = Depends(get_session),
+) -> ShelfRepository:
+    return ShelfRepository(session)
+
+
+def get_menu_repo(
+    session: AsyncSession = Depends(get_session),
+) -> MenuRepository:
+    return MenuRepository(session)
+
+
+def get_auth_service(
+    users: UserRepository = Depends(get_user_repo),
+    user_roles: UserRoleRepository = Depends(get_user_role_repo),
+    shelves: ShelfRepository = Depends(get_shelf_repo),
+    menus: MenuRepository = Depends(get_menu_repo),
+) -> AuthService:
+    return AuthService(
+        users=users, user_roles=user_roles, shelves=shelves, menus=menus
+    )
+
+
+def get_user_service(
+    users: UserRepository = Depends(get_user_repo),
+    user_roles: UserRoleRepository = Depends(get_user_role_repo),
+    shelves: ShelfRepository = Depends(get_shelf_repo),
+) -> UserService:
+    return UserService(users=users, user_roles=user_roles, shelves=shelves)
+
+
+def get_shelf_service(
+    shelves: ShelfRepository = Depends(get_shelf_repo),
+    user_roles: UserRoleRepository = Depends(get_user_role_repo),
+) -> ShelfService:
+    return ShelfService(shelves=shelves, user_roles=user_roles)
+
+
 def get_part_service(
     session: AsyncSession = Depends(get_session),
     serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
@@ -51,7 +108,7 @@ def get_part_service(
     同时注入两个闭包：
     - `_broadcaster()`：触发整张 snapshot 立即重推；
     - `_event_broadcaster(event_type, payload)`：触发单条业务事件推送
-      （PICKED_UP / RELEASED），由前端横幅组件消费。
+      （PICKED_UP / RELEASED / PLACED_ON_SHELF），由前端横幅组件消费。
     """
     from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
@@ -67,6 +124,7 @@ def get_part_service(
         workers=WorkerRepository(session),
         events=PartEventRepository(session),
         serial_counters=serial_counters,
+        shelves=ShelfRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
     )
@@ -111,6 +169,7 @@ def get_assembly_service(
     customers_repo = CustomerRepository(session)
     workers_repo = WorkerRepository(session)
     events_repo = PartEventRepository(session)
+    shelves_repo = ShelfRepository(session)
 
     part_service = PartService(
         parts=parts_repo,
@@ -118,6 +177,7 @@ def get_assembly_service(
         workers=workers_repo,
         events=events_repo,
         serial_counters=serial_counters,
+        shelves=shelves_repo,
     )
     drawings = DrawingService(
         files=files_repo, parts=parts_repo, assemblies=assemblies_repo

@@ -236,6 +236,18 @@
         <el-button type="primary" size="large" @click="onAgain">再来一组</el-button>
       </div>
     </div>
+    <!-- 品检货架选择对话框 -->
+    <el-dialog v-model="showInspDialog" title="选择目标品检货架" width="360px" :close-on-click-modal="false">
+      <el-radio-group v-model="targetInspectionShelfId">
+        <el-radio v-for="s in inspShelves" :key="s.id" :value="Number(s.id)" style="display:block;margin-bottom:8px">
+          {{ s.code }} — {{ s.name }}
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="showInspDialog = false">取消</el-button>
+        <el-button type="primary" @click="inspectorConfirm">确认送检</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -254,18 +266,13 @@ import {
   Loading,
   Select,
 } from '@element-plus/icons-vue'
-import {
-  ORDER_STATUS_LABEL,
-  ORDER_STATUS_TAG_TYPE,
-  type OrderStatus,
-} from '@/types/parts'
-import {
-  ACTION_LABEL,
-  ACTION_TAG_TYPE,
-  useScanSession,
-} from '@/composables/useScanSession'
+import { ORDER_STATUS_LABEL, ORDER_STATUS_TAG_TYPE, type OrderStatus } from '@/types/parts'
+import { ACTION_LABEL, ACTION_TAG_TYPE, useScanSession } from '@/composables/useScanSession'
 import { usePartsScanQueue } from '@/composables/usePartsScanQueue'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
+import { useAuthSession } from '@/composables/useAuthSession'
+import { listShelves } from '@/api/shelves'
+import type { Shelf } from '@/types/shelf'
 
 type PageState = 'scanning' | 'submitting' | 'done'
 
@@ -274,72 +281,70 @@ const router = useRouter()
 const { worker, action, setAction, requireWorkerAndAction, slugToAction } = useScanSession()
 const queue = usePartsScanQueue()
 const { onScan } = useBarcodeScanner()
+const { isAuthenticated, refreshOrLogout, user, activeShelfId } = useAuthSession()
 
 const state = ref<PageState>('scanning')
+const shelfId = ref<number>(0)
+const showInspDialog = ref(false)
+const inspShelves = ref<Shelf[]>([])
+const targetInspectionShelfId = ref<number>()
 
 const actionLabel = computed(() => (action.value ? ACTION_LABEL[action.value] : ''))
-const actionTagType = computed(() =>
-  action.value ? ACTION_TAG_TYPE[action.value] : 'info',
-)
+const actionTagType = computed(() => (action.value ? ACTION_TAG_TYPE[action.value] : 'info'))
 
 const { parts, total, submittedCount, successCount, failCount, addOrIgnore, remove, reset, submit } = queue
 
-const canSubmit = computed(
-  () => parts.value.length > 0 && parts.value.every((p) => p.phase !== 'loading'),
-)
+const canSubmit = computed(() => parts.value.length > 0 && parts.value.every((p) => p.phase !== 'loading'))
 
-function statusLabel(s: OrderStatus): string {
-  return ORDER_STATUS_LABEL[s] ?? s
-}
-function statusToTagType(s: OrderStatus): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
-  return ORDER_STATUS_TAG_TYPE[s] ?? 'info'
-}
+function statusLabel(s: OrderStatus): string { return ORDER_STATUS_LABEL[s] ?? s }
+function statusToTagType(s: OrderStatus): 'primary' | 'success' | 'warning' | 'info' | 'danger' { return ORDER_STATUS_TAG_TYPE[s] ?? 'info' }
 
-// ============ 守卫 ============
-onBeforeMount(() => {
+onBeforeMount(async () => {
+  if (!isAuthenticated()) { const ok = await refreshOrLogout(router); if (!ok) return }
   if (!requireWorkerAndAction(router)) return
 
-  // query action 缺失/非法时，从 session 里读一次；仍不行则回 action 选择页
   const a = slugToAction(route.query.action)
-  if (a && a !== action.value) {
-    // url 和 session 不一致：以 url 为准，同步 session
-    setAction(a)
-  } else if (!a) {
-    void router.replace('/scan/action')
-  }
+  if (a && a !== action.value) { setAction(a) } else if (!a) { void router.replace('/scan/action') }
+
+  // 取当前货架
+  const sid = activeShelfId()
+  sid && (shelfId.value = sid)
 })
 
-// ============ 扫码订阅 ============
-const unsubscribe = onScan((code) => {
-  // 只在扫描态消费；submitting / done 都不接受扫码
-  if (state.value !== 'scanning') return
-  void addOrIgnore(code)
-})
+const unsubscribe = onScan((code) => { if (state.value !== 'scanning') return; void addOrIgnore(code) })
 
-onBeforeUnmount(() => {
-  unsubscribe()
-})
+onBeforeUnmount(() => { unsubscribe() })
 
-function onRemove(uid: string): void {
-  remove(uid)
-}
+function onRemove(uid: string): void { remove(uid) }
 
 async function onSubmit(): Promise<void> {
   if (!worker.value || !action.value) return
   if (parts.value.length === 0) return
+  if (!shelfId.value) { ElMessage.warning('未找到当前货架信息，请重新登录'); return }
+
+  // INSPECT 需要先弹窗选目标品检货架
+  if (action.value === 'INSPECT') {
+    inspShelves.value = (await listShelves({ zone: 'INSPECTION', is_active: true })).items
+    targetInspectionShelfId.value = undefined
+    showInspDialog.value = true
+    return
+  }
+
+  await doSubmit()
+}
+
+async function doSubmit(): Promise<void> {
   state.value = 'submitting'
-  await submit(worker.value.badge_code, action.value)
+  await submit(shelfId.value, worker.value!.badge_code, action.value!, targetInspectionShelfId.value)
   state.value = 'done'
 }
 
-function onAgain(): void {
-  reset()
-  state.value = 'scanning'
-  ElMessage.info('请继续扫码')
-}
-
-function backToAction(): void {
-  void router.replace('/scan/action')
+function onAgain(): void { reset(); state.value = 'scanning'; ElMessage.info('请继续扫码') }
+function backToAction(): void { void router.replace('/scan/action') }
+function inspectorConfirm(): void {
+  if (!targetInspectionShelfId.value) { ElMessage.warning('请选择目标品检货架'); return }
+  showInspDialog.value = false
+  void doSubmit()
 }
 </script>
 

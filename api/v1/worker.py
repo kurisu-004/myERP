@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_worker_service
+from core.permission import require_role
+from model.enums import UserRole
 from schema.worker import (
     WorkerCreateRequest,
     WorkerListOut,
@@ -10,7 +12,11 @@ from schema.worker import (
 )
 from service import WorkerService
 
-router = APIRouter(prefix="/workers", tags=["工人管理"])
+router = APIRouter(
+    prefix="/workers",
+    tags=["工人管理"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
 
 
 @router.get(

@@ -15,6 +15,11 @@ dependencies = [
     "snowflake-id>=1.0.0",
     "python-barcode>=0.16.1",
     "pillow>=12.2.0",
+    "pyjwt>=2.8",
+    "cos-python-sdk-v5>=1.9.44",
+    "python-multipart>=0.0.32",
+    "bcrypt<5.0",
+    "websockets>=16.0",
 ]
 
 [tool.pytest.ini_options]

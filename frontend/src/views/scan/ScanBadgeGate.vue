@@ -13,6 +13,10 @@
       <h1 class="title">工位扫码台</h1>
       <p class="hint">请扫描工牌条码以开始</p>
       <p class="sub-hint">扫描后请等待系统识别...</p>
+      <div v-if="user" class="shelf-info">
+        <span>当前账号: {{ user.full_name }}</span>
+        <el-button link type="warning" @click="switchAccount">切换账号</el-button>
+      </div>
       <div class="footer-links">
         <el-button link type="info" @click="goHome">管理员入口 · 返回首页</el-button>
       </div>
@@ -25,6 +29,7 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Aim } from '@element-plus/icons-vue'
+import { useAuthSession } from '@/composables/useAuthSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useScanSession } from '@/composables/useScanSession'
 import { useWorkerCache } from '@/composables/useWorkerCache'
@@ -33,9 +38,14 @@ const router = useRouter()
 const { onScan } = useBarcodeScanner()
 const { setWorker } = useScanSession()
 const { findByBadge } = useWorkerCache()
+const { isAuthenticated, refreshOrLogout, user } = useAuthSession()
 
-onMounted(() => {
-  // 预热 worker 缓存；失败无所谓，下次扫码会重试
+onMounted(async () => {
+  if (!isAuthenticated()) {
+    const ok = await refreshOrLogout(router)
+    if (!ok) return
+  }
+  // 预热 worker 缓存
   findByBadge('').catch(() => undefined)
 })
 
@@ -57,9 +67,9 @@ onBeforeUnmount(() => {
   unsubscribe()
 })
 
-function goHome(): void {
-  void router.push('/dashboard')
-}
+const { logout } = useAuthSession()
+async function switchAccount(): Promise<void> { await logout(); router.replace('/login') }
+function goHome(): void { void router.push('/dashboard') }
 </script>
 
 <style lang="scss" scoped>

@@ -11,11 +11,17 @@ from .enums import (
     PartSortKey,
     PartStatus,
     SCAN_EVENT_TYPES,
+    ShelfZone,
     SortDir,
+    UserRole,
 )
+from .menu import TMenu, TRoleMenu
 from .part import TPart
 from .part_event import TPartEvent
 from .serial_counter import TSerialCounter
+from .shelf import TShelf
+from .user import TUser
+from .user_role import TUserRole
 from .worker import TWorker
 
 __all__ = [
@@ -25,16 +31,23 @@ __all__ = [
     "TAssembly",
     "TCustomer",
     "TDrawingFile",
+    "TMenu",
     "TPart",
     "TPartEvent",
+    "TRoleMenu",
     "TSerialCounter",
+    "TShelf",
+    "TUser",
+    "TUserRole",
     "TWorker",
-    "PartStatus",
-    "PartEventType",
-    "PartSortKey",
-    "SortDir",
     "AssemblyStatus",
     "PART_TRANSITIONS",
     "ASSEMBLY_TRANSITIONS",
+    "PartEventType",
+    "PartSortKey",
+    "PartStatus",
     "SCAN_EVENT_TYPES",
+    "ShelfZone",
+    "SortDir",
+    "UserRole",
 ]

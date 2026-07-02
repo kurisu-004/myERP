@@ -32,13 +32,19 @@ class TPart(Base, AuditMixin):
 
     注意：
     - 项目约定 **不在 DB 层加物理外键**。
-      `customer_id` / `current_worker_id` 是逻辑外键，分别指向
-      t_customer.id 和 t_worker.id，是否存在、是否被删除、是否允许
-      写入都在 service 层处理。
-    - 审计字段（created_at / created_by / updated_at / updated_by / deleted_at）
-      由 `AuditMixin` 提供。
+      `customer_id` / `assembly_id` / `current_holder_id` 是逻辑外键，
+      是否存在、是否被删除、是否允许写入都在 service 层处理。
+    - 审计字段由 `AuditMixin` 提供。
     - **不用 DB ENUM**（CLAUDE.md 待补 §9）：`status` 列是 `varchar(20)`，
       取值合法性由 Python `PartStatus` 在 service 层校验。
+
+    多态 holder：
+    - `current_holder_id` 同时承载 `t_worker.id` 与 `t_shelf.id`；
+      含义由 `status` + service 层校验共同决定。
+      - `status=IN_PROCESS` 且 holder 在 `t_shelf`(zone=PRODUCTION) → 在生产货架
+      - `status=IN_PROCESS` 且 holder 在 `t_worker`(is_active) → 工人持有
+      - `status=INSPECTION` 且 holder 在 `t_shelf`(zone=INSPECTION) → 在品检货架
+      - 否则 NULL
     """
 
     __tablename__ = "t_part"
@@ -48,12 +54,6 @@ class TPart(Base, AuditMixin):
     )
 
     # —— 业务字段 ——
-    # 序列号：每客户独立循环，形式 "F1000" / "L1234" / "H1050"。
-    # - 状态在 (PENDING, READY, IN_PROCESS, INSPECTION, READY_TO_SHIP,
-    #   DELIVERED, REPAIRING) 时非空；
-    # - 状态变为 COMPLETED / CANCELLED 时 service 层置 NULL → 释放回池。
-    # 由 SerialCounterRepository.acquire_serial 在写入前分配，
-    # 范围 [1000, 5999]（counter % 5000 + 1000），单 prefix 同时活跃上限 5000。
     serial_no: Mapped[str | None] = mapped_column(
         String(8), nullable=True, index=True
     )
@@ -98,13 +98,16 @@ class TPart(Base, AuditMixin):
     )
 
     # —— 报工字段 ——
-    # current_worker_id：IN_PROCESS 时持有该零件的工人；逻辑外键 → t_worker.id
-    current_worker_id: Mapped[int | None] = mapped_column(
+    # current_holder_id：零件当前持有者；逻辑指向 t_worker.id 或 t_shelf.id。
+    # - IN_PROCESS 时可指向生产货架（holder=shelf）或被工人持有（holder=worker）。
+    # - INSPECTION 时指向品检货架。
+    # 不在 DB 层加物理外键；service 层校验。
+    current_holder_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, index=True
     )
-    # released_at：文员点击"开始生产"的时间（PENDING → READY 时置位）；
-    # 数据大屏"待加工队列"按此升序排序。
-    released_at: Mapped[datetime | None] = mapped_column(
+    # placed_at：文员首次把零件放到生产货架上的时间（PENDING→IN_PROCESS 时置位）。
+    # 数据大屏「按货架分组」展示「已放置 X 分钟」。
+    placed_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, index=True
     )
 
@@ -121,8 +124,6 @@ class TPart(Base, AuditMixin):
     )
 
     # —— 装配字段 ——
-    # 逻辑外键 → t_assembly.id（NULL = 普通独立零件 / 非任何装配件的子件）。
-    # service 层校验装配存在、未软删；删除装配件时级联软删子件。
     assembly_id: Mapped[int | None] = mapped_column(
         BigInteger,
         nullable=True,
@@ -130,8 +131,15 @@ class TPart(Base, AuditMixin):
         comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
     )
 
-    # —— 组合索引：按客户+状态查按交期排序，是高频看板查询
+    # —— 组合索引 ——
+    # `ix_t_part_status_holder`：按状态 + holder 查询（Dashboard「按货架分组」）。
+    # `ix_t_part_customer_status_delivery`：按客户 + 状态 + 交期查询。
     __table_args__ = (
+        Index(
+            "ix_t_part_status_holder",
+            "status",
+            "current_holder_id",
+        ),
         Index(
             "ix_t_part_customer_status_delivery",
             "customer_id",

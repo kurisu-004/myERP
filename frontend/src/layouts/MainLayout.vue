@@ -17,55 +17,13 @@
         class="sidebar-menu"
         router
       >
-        <el-menu-item index="/dashboard">
-          <el-icon><House /></el-icon>
-          <template #title>首页</template>
-        </el-menu-item>
-
-        <el-sub-menu index="order">
-          <template #title>
-            <el-icon><Tickets /></el-icon>
-            <span>订单管理</span>
-          </template>
-          <el-menu-item index="/parts">
-            <el-icon><Box /></el-icon>
-            <template #title>零件一览</template>
-          </el-menu-item>
-          <el-menu-item index="/parts/new">
-            <el-icon><Plus /></el-icon>
-            <template #title>新建零件</template>
-          </el-menu-item>
-          <el-menu-item index="/assemblies">
-            <el-icon><Connection /></el-icon>
-            <template #title>装配件一览</template>
-          </el-menu-item>
-          <el-menu-item index="/assemblies/new">
-            <el-icon><Plus /></el-icon>
-            <template #title>新建装配件</template>
-          </el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="auth">
-          <template #title>
-            <el-icon><Key /></el-icon>
-            <span>权限管理</span>
-          </template>
-          <el-menu-item index="/workers">
-            <el-icon><User /></el-icon>
-            <template #title>工人一览</template>
-          </el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="floor">
-          <template #title>
-            <el-icon><Tools /></el-icon>
-            <span>车间</span>
-          </template>
-          <el-menu-item index="/scan">
-            <el-icon><Promotion /></el-icon>
-            <template #title>扫码台</template>
-          </el-menu-item>
-        </el-sub-menu>
+        <!-- 菜单来自后端 t_menu + t_role_menu（登录时拉回，存 localStorage）。
+             菜单项定义见 MainLayout.vue 之外的 @/layouts/components/MenuTreeItem.vue
+             —— 它递归渲染 <el-sub-menu> 与 <el-menu-item>。 -->
+        <template v-if="menuList.length > 0">
+          <MenuTreeItem v-for="m in menuList" :key="m.id" :menu="m" />
+        </template>
+        <div v-else class="sidebar-empty">暂无可用菜单</div>
       </el-menu>
     </el-aside>
 
@@ -104,7 +62,7 @@
 
           <el-dropdown trigger="click" @command="handleUserCmd">
             <div class="user-info">
-              <el-avatar :size="32" :src="userAvatar" class="user-avatar" />
+              <el-avatar :size="32" class="user-avatar" />
               <span class="user-name">{{ userInfo.name }}</span>
               <el-icon><ArrowDown /></el-icon>
             </div>
@@ -141,26 +99,29 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, type Component as VueComponent } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, Tools, Promotion, Tickets, Key, Plus, Connection } from '@element-plus/icons-vue'
+import {
+  Box, Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, House,
+} from '@element-plus/icons-vue'
+import { useAuthSession } from '@/composables/useAuthSession'
+import { me as apiMe } from '@/api/auth'
+import MenuTreeItem from '@/layouts/components/MenuTreeItem.vue'
+import type { CurrentUser } from '@/types/user'
 
 type UserCmd = 'profile' | 'settings' | 'logout'
-
-interface UserInfo {
-  name: string
-}
 
 const route = useRoute()
 const router = useRouter()
 
 const isCollapse = ref(false)
+const currentUser = ref<CurrentUser | null>(null)
+const { logout, menus } = useAuthSession()
 
-const userInfo = ref<UserInfo>({ name: '管理员' })
-const userAvatar = ref<string>(
-  'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'
-)
+const menuList = computed(() => menus())
+
+const userInfo = computed(() => ({ name: currentUser.value?.full_name || currentUser.value?.username || '未登录' }))
 
 const activeMenu = computed<string>(() => route.path)
 
@@ -169,36 +130,33 @@ const breadcrumbItems = computed<{ label: string; to?: string }[]>(() => {
   const list = raw.length > 0 ? raw : [{ label: route.meta?.title || '首页' }]
   return list.map((it, idx, arr) => ({
     label: it.label,
-    // 最后一项（当前页）不可点击；中间项若有 path 则可跳转
     to: idx === arr.length - 1 || !it.path ? undefined : it.path,
   }))
 })
 
-const toggleCollapse = (): void => {
-  isCollapse.value = !isCollapse.value
-}
+const toggleCollapse = (): void => { isCollapse.value = !isCollapse.value }
 
-const reload = (): void => {
-  ElMessage.success('刷新成功')
-  router.go(0)
-}
+const reload = (): void => { ElMessage.success('刷新成功'); router.go(0) }
 
-const handleUserCmd = (cmd: string | number | object): void => {
+const handleUserCmd = async (cmd: string | number | object): Promise<void> => {
   const command = cmd as UserCmd
   if (command === 'logout') {
-    ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-      .then(() => ElMessage.success('已退出登录'))
-      .catch(() => undefined)
+    try {
+      await ElMessageBox.confirm('确定要退出登录吗？', '提示', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' })
+      await logout()
+      ElMessage.success('已退出登录')
+      router.replace('/login')
+    } catch { /* cancelled */ }
   } else if (command === 'profile') {
     ElMessage.info('个人信息')
   } else if (command === 'settings') {
     ElMessage.info('系统设置')
   }
 }
+
+onMounted(async () => {
+  try { currentUser.value = await apiMe() } catch { router.replace('/login') }
+})
 </script>
 
 <style lang="scss" scoped>
@@ -241,6 +199,14 @@ const handleUserCmd = (cmd: string | number | object): void => {
   flex: 1;
   border-right: none;
   background-color: var(--sidebar-bg);
+}
+
+.sidebar-empty {
+  color: var(--sidebar-text);
+  opacity: 0.6;
+  text-align: center;
+  padding: 24px 8px;
+  font-size: 13px;
 }
 
 :deep(.el-menu-item:hover),

@@ -1,12 +1,17 @@
 """客户管理 API。"""
-
 from fastapi import APIRouter, Depends
 
 from api.deps import get_customer_service
+from core.permission import require_role
+from model.enums import UserRole
 from schema.customer import CustomerOut
 from service import CustomerService
 
-router = APIRouter(prefix="/customers", tags=["客户管理"])
+router = APIRouter(
+    prefix="/customers",
+    tags=["客户管理"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
 
 
 @router.get(

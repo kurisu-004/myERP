@@ -1,10 +1,9 @@
-// 后端零件 API 封装（fetch）。统一处理 R<T> 解包。
+// 后端零件 API 封装（走 @/api/http 统一 axios 客户端）。
+// 所有 ID 在前端是字符串（雪花 ID 经后端 IdStr 序列化）。
 
+import { api } from '@/api/http'
 import type { OrderStatus, PartEventType, PartSortKey, SortDir } from '@/types/parts'
 
-/** 后端 PartOut 接口（与 Pydantic schema PartOut 对齐）
- *  id / assembly_id 是字符串（雪花 ID 经后端 IdStr 序列化），避免 JS 精度截断。
- */
 export interface PartItem {
   id: string
   serial_no: string | null
@@ -18,8 +17,11 @@ export interface PartItem {
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null
-  /** 所属装配件 id；NULL = 普通独立零件 */
   assembly_id: string | null
+  current_holder_id: string | null
+  current_holder_kind: 'shelf' | 'worker' | null
+  shelf_code: string | null
+  placed_at: string | null
 }
 
 export interface PartListResult {
@@ -62,12 +64,16 @@ export interface PartStatusChangePayload {
 
 export interface PartPickUpPayload {
   serial_no: string
+  shelf_id: number
   badge_code: string
 }
 
 export interface PartScanPayload {
   serial_no: string
   event_type: PartEventType
+  shelf_id: number
+  badge_code: string
+  target_inspection_shelf_id?: number | null
 }
 
 export interface PartEvent {
@@ -84,87 +90,6 @@ export interface PartEvent {
   created_at: string
 }
 
-interface ApiEnvelope<T> {
-  code: number
-  message: string
-  data: T
-}
-
-async function unwrap<T>(resp: Response): Promise<T> {
-  const json = (await resp.json()) as ApiEnvelope<T>
-  if (json.code !== 0) {
-    throw new Error(json.message || `API error code=${json.code}`)
-  }
-  return json.data
-}
-
-export async function listParts(
-  params: ListPartsParams = {},
-): Promise<PartListResult> {
-  const qs = new URLSearchParams()
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined || v === null || v === '') continue
-    qs.set(k, String(v))
-  }
-  const url = `/api/v1/parts${qs.toString() ? '?' + qs.toString() : ''}`
-  const resp = await fetch(url)
-  return unwrap<PartListResult>(resp)
-}
-
-export async function getPart(id: string): Promise<PartItem> {
-  const resp = await fetch(`/api/v1/parts/${id}`)
-  return unwrap<PartItem>(resp)
-}
-
-export async function createPart(payload: PartCreatePayload): Promise<PartItem> {
-  const resp = await fetch('/api/v1/parts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return unwrap<PartItem>(resp)
-}
-
-export async function changePartStatus(
-  id: string,
-  payload: PartStatusChangePayload,
-): Promise<PartItem> {
-  const resp = await fetch(`/api/v1/parts/${id}/change-status`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return unwrap<PartItem>(resp)
-}
-
-export async function releasePart(id: string): Promise<PartItem> {
-  const resp = await fetch(`/api/v1/parts/${id}/release`, { method: 'POST' })
-  return unwrap<PartItem>(resp)
-}
-
-export async function pickUpPart(payload: PartPickUpPayload): Promise<PartItem> {
-  const resp = await fetch('/api/v1/parts/pick-up', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return unwrap<PartItem>(resp)
-}
-
-export async function scanPart(payload: PartScanPayload): Promise<PartItem> {
-  const resp = await fetch('/api/v1/parts/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return unwrap<PartItem>(resp)
-}
-
-export async function listPartEvents(id: string): Promise<PartEvent[]> {
-  const resp = await fetch(`/api/v1/parts/${id}/events`)
-  return unwrap<PartEvent[]>(resp)
-}
-
 export interface PartBatchFailure {
   index: number
   message: string
@@ -175,23 +100,79 @@ export interface PartBatchResult {
   failed: PartBatchFailure[]
 }
 
+// axios 会自动丢掉 undefined/null；但空串不会丢（会触发 LIKE '%%'）。
+// 这里显式 filter 一下，确保空字符串参数也跳过。
+function cleanParams<T extends object>(p: T): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(p)) {
+    if (v === undefined || v === null || v === '') continue
+    out[k] = v
+  }
+  return out
+}
+
+export async function listParts(
+  params: ListPartsParams = {},
+): Promise<PartListResult> {
+  const resp = await api.get<PartListResult>('/parts', { params: cleanParams(params) })
+  return resp.data
+}
+
+export async function getPart(id: string): Promise<PartItem> {
+  const resp = await api.get<PartItem>(`/parts/${id}`)
+  return resp.data
+}
+
+export async function createPart(payload: PartCreatePayload): Promise<PartItem> {
+  const resp = await api.post<PartItem>('/parts', payload)
+  return resp.data
+}
+
+export async function changePartStatus(
+  id: string,
+  payload: PartStatusChangePayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/change-status`, payload)
+  return resp.data
+}
+
+export async function placeOnShelf(
+  id: number | string,
+  shelfId: number,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/place-on-shelf`, { shelf_id: shelfId })
+  return resp.data
+}
+
+export async function pickUpPart(payload: PartPickUpPayload): Promise<PartItem> {
+  const resp = await api.post<PartItem>('/parts/pick-up', payload)
+  return resp.data
+}
+
+export async function scanPart(payload: PartScanPayload): Promise<PartItem> {
+  const resp = await api.post<PartItem>('/parts/scan', payload)
+  return resp.data
+}
+
+export async function listPartEvents(id: string): Promise<PartEvent[]> {
+  const resp = await api.get<PartEvent[]>(`/parts/${id}/events`)
+  return resp.data
+}
+
 export async function batchCreateParts(
   items: PartCreatePayload[],
 ): Promise<PartBatchResult> {
-  const resp = await fetch('/api/v1/parts/batch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items }),
-  })
-  return unwrap<PartBatchResult>(resp)
+  const resp = await api.post<PartBatchResult>('/parts/batch', { items })
+  return resp.data
 }
 
 export async function softDeletePart(id: string): Promise<void> {
-  const resp = await fetch(`/api/v1/parts/${id}/soft-delete`, { method: 'POST' })
-  await unwrap<{ ok: boolean }>(resp)
+  await api.post(`/parts/${id}/soft-delete`)
 }
 
 export async function getPartBySerial(serialNo: string): Promise<PartItem> {
-  const resp = await fetch(`/api/v1/parts/by-serial/${encodeURIComponent(serialNo)}`)
-  return unwrap<PartItem>(resp)
+  const resp = await api.get<PartItem>(
+    `/parts/by-serial/${encodeURIComponent(serialNo)}`,
+  )
+  return resp.data
 }

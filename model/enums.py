@@ -9,19 +9,16 @@ class PartStatus(str, enum.Enum):
     `BIZ_INVALID_TRANSITION`。
 
     流转示意：
-        PENDING ─release─▶ READY ─pick_up─▶ IN_PROCESS ─return─▶ READY
-        (待生产)              (就绪/待加工区)    (生产中)             ↗
-                                                   │
-                                                   └──finish──▶ INSPECTION ── ... ──▶ COMPLETED
-                                                   └────────────────finish (从 READY 也可)──▶ INSPECTION
-        任意状态 ──▶ REPAIRING ──▶ IN_PROCESS（返修后回生产）
+        PENDING ─place_on_shelf─▶ IN_PROCESS ─pick_up─▶ IN_PROCESS（holder=工人）
+                                                       ─return──▶ IN_PROCESS（holder=货架）
+                                                       ─inspect──▶ INSPECTION ──▶ READY_TO_SHIP ──▶ DELIVERED ──▶ COMPLETED
+        （INSPECTION / IN_PROCESS / READY_TO_SHIP / DELIVERED）──▶ REPAIRING ──▶ IN_PROCESS
         任意状态 ──▶ CANCELLED（取消）
     """
 
-    PENDING = "PENDING"               # 待生产
-    READY = "READY"                   # 就绪（待加工区，等待工人领取）
-    IN_PROCESS = "IN_PROCESS"         # 生产中（工人持有）
-    INSPECTION = "INSPECTION"         # 待品检
+    PENDING = "PENDING"               # 待生产（还没放到货架上，办公室暂存）
+    IN_PROCESS = "IN_PROCESS"         # 生产中（在生产货架上 OR 在工人手里）
+    INSPECTION = "INSPECTION"         # 待品检（在品检货架上）
     READY_TO_SHIP = "READY_TO_SHIP"   # 待送货
     DELIVERED = "DELIVERED"           # 已送货
     REPAIRING = "REPAIRING"           # 返修中
@@ -72,22 +69,19 @@ ASSEMBLY_TRANSITIONS: frozenset[tuple[AssemblyStatus, AssemblyStatus]] = frozens
 
 # Part 合法状态转换矩阵（service 层校验）。
 # 注意：任意状态 → CANCELLED 不列在内，由 service 单独放行。
+# 工人领取 / 归还（PICKED_UP / RETURNED）**不**是状态转换，
+# 只是 `current_holder_id` 在「工人↔货架」之间切换，状态恒为 IN_PROCESS。
 PART_TRANSITIONS: frozenset[tuple[PartStatus, PartStatus]] = frozenset(
     {
-        # 文员 release（文员点击"开始生产"）
-        (PartStatus.PENDING, PartStatus.READY),
-        # 工人扫码领取 / 归还（可在 ready / in_process 间反复）
-        (PartStatus.READY, PartStatus.IN_PROCESS),
-        (PartStatus.IN_PROCESS, PartStatus.READY),
-        # 工人扫图纸送检（ready 或 in_process 都可）
-        (PartStatus.READY, PartStatus.INSPECTION),
+        # 文员把零件放到生产货架上（PENDING -> IN_PROCESS）
+        (PartStatus.PENDING, PartStatus.IN_PROCESS),
+        # 工人扫图纸送检（IN_PROCESS -> INSPECTION）
         (PartStatus.IN_PROCESS, PartStatus.INSPECTION),
         # 既有正向流水线
         (PartStatus.INSPECTION, PartStatus.READY_TO_SHIP),
         (PartStatus.READY_TO_SHIP, PartStatus.DELIVERED),
         (PartStatus.DELIVERED, PartStatus.COMPLETED),
         # 返修闭环
-        (PartStatus.IN_PROCESS, PartStatus.REPAIRING),
         (PartStatus.INSPECTION, PartStatus.REPAIRING),
         (PartStatus.READY_TO_SHIP, PartStatus.REPAIRING),
         (PartStatus.DELIVERED, PartStatus.REPAIRING),
@@ -102,10 +96,11 @@ class PartEventType(str, enum.Enum):
     DB 存 `varchar(30)`，Python 层校验。t_part_event.event_type 取值集合。
 
     - CREATED          零件创建
-    - RELEASED         文员点击"开始生产"（PENDING → READY）
-    - PICKED_UP        工人扫码领取（READY → IN_PROCESS）
-    - RETURNED         工人扫图纸归还（IN_PROCESS → READY）
-    - INSPECTED        工人扫图纸送检（→ INSPECTION）
+    - RELEASED         历史值，保留以兼容历史行（PENDING → READY 旧流程）。不再触发新事件。
+    - PLACED_ON_SHELF  文员把零件放到生产货架（PENDING → IN_PROCESS）
+    - PICKED_UP        工人领取（holder 由货架改为工人；状态不变）
+    - RETURNED         工人归还（holder 由工人改回货架；状态不变）
+    - INSPECTED        工人扫图纸送检（→ INSPECTION，并改 holder 到品检货架）
     - STATUS_CHANGED   通用状态变更（含 change-status 端点的非扫码转换）
     - REPAIR_STARTED   → REPAIRING
     - REPAIR_COMPLETED REPAIRING → IN_PROCESS
@@ -114,7 +109,8 @@ class PartEventType(str, enum.Enum):
     """
 
     CREATED = "CREATED"
-    RELEASED = "RELEASED"
+    RELEASED = "RELEASED"                 # 历史值保留
+    PLACED_ON_SHELF = "PLACED_ON_SHELF"
     PICKED_UP = "PICKED_UP"
     RETURNED = "RETURNED"
     INSPECTED = "INSPECTED"
@@ -130,6 +126,31 @@ class PartEventType(str, enum.Enum):
 SCAN_EVENT_TYPES: frozenset[PartEventType] = frozenset(
     {PartEventType.PICKED_UP, PartEventType.RETURNED, PartEventType.INSPECTED}
 )
+
+
+class ShelfZone(str, enum.Enum):
+    """货架所属区域。
+
+    DB 存 `varchar(16)`。PRODUCTION = 生产区；INSPECTION = 品检区。
+    """
+
+    PRODUCTION = "PRODUCTION"
+    INSPECTION = "INSPECTION"
+
+
+class UserRole(str, enum.Enum):
+    """账号角色。
+
+    DB 存 `varchar(20)`（t_user_role.role）。一个用户可有多个角色。
+
+    SHELF_ACCOUNT 角色必须配 `scope_type='shelf' / scope_id=<shelf.id>`；
+    其它角色（MANAGER / CLERK / INSPECTOR）scope 通常为 NULL。
+    """
+
+    MANAGER = "MANAGER"               # 后台管理员；可访问所有管理端点
+    SHELF_ACCOUNT = "SHELF_ACCOUNT"   # 货架一体机登录账号；必须 scope 到具体 shelf
+    CLERK = "CLERK"                   # 预留：文员下单 / 投放
+    INSPECTOR = "INSPECTOR"           # 预留：品检员验收
 
 
 class PartSortKey(str, enum.Enum):

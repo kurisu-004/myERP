@@ -86,26 +86,25 @@ export function usePartsScanQueue() {
     parts.value = []
   }
 
-  async function submit(badgeCode: string, action: WorkAction): Promise<void> {
+  async function submit(
+    shelfId: number,
+    badgeCode: string,
+    action: WorkAction,
+    targetInspectionShelfId?: number | null,
+  ): Promise<void> {
     if (parts.value.length === 0) return
     for (const entry of parts.value) {
-      // 只对加载成功的零件发提交（loading 状态说明上一次查无此码）
       if (entry.phase !== 'pending') continue
       try {
         if (action === 'PICK_UP') {
-          entry.part = await pickUpPart({
-            serial_no: entry.serialNo,
-            badge_code: badgeCode,
-          })
+          entry.part = await pickUpPart({ serial_no: entry.serialNo, shelf_id: shelfId, badge_code: badgeCode })
         } else if (action === 'RETURN') {
-          entry.part = await scanPart({
-            serial_no: entry.serialNo,
-            event_type: 'RETURNED',
-          })
+          entry.part = await scanPart({ serial_no: entry.serialNo, event_type: 'RETURNED', shelf_id: shelfId, badge_code: badgeCode })
         } else {
           entry.part = await scanPart({
-            serial_no: entry.serialNo,
-            event_type: 'INSPECTED',
+            serial_no: entry.serialNo, event_type: 'INSPECTED',
+            shelf_id: shelfId, badge_code: badgeCode,
+            target_inspection_shelf_id: targetInspectionShelfId ?? null,
           })
         }
         entry.phase = 'success'

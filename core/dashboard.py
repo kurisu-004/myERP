@@ -1,9 +1,12 @@
 """数据大屏快照构建。
 
-- ready_queue: status=READY 的零件，按 *加急优先 → 交期近优先* 排序，前 top_n。
-- in_process: status=IN_PROCESS 的零件，按 id 倒序；含 current_worker.name。
-- upcoming_delivery: 未来 7 天（含今天）每天的待交零件数，
-  排除 COMPLETED / CANCELLED 终态；零计数日期也补齐，返回固定 7 条。
+- on_production_shelves: status=IN_PROCESS 且 holder 在生产货架上的零件，
+  按 shelf 分组，按 planned_delivery_date ASC、id ASC 排序。
+- on_inspection_shelves: status=INSPECTION 且 holder 在品检货架上的零件（扁平）。
+- in_process:             status=IN_PROCESS 且 holder 是工人的零件。
+- upcoming_delivery:      未来 7 天（含今天）按计划交期分桶的待交数，
+                          排除 COMPLETED / CANCELLED 终态；
+                          零计数日期也补齐，返回固定 7 条。
 
 DB 不存 ENUM，所以这里用 `PartStatus.<X>.value` 字面量比较。
 """
@@ -16,8 +19,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model import TPart, TPartEvent, TWorker
-from model.enums import PartEventType, PartStatus
+from model import TPart, TPartEvent, TShelf, TWorker
+from model.enums import (
+    PartEventType,
+    PartStatus,
+    ShelfZone,
+)
 
 
 DASHBOARD_TOP_N = 20
@@ -27,12 +34,14 @@ DASHBOARD_TOP_N = 20
 class DashboardSnapshot:
     """数据大屏快照结构（dict-like，便于 json 序列化）。"""
 
-    ready_queue: list[dict[str, Any]]
+    on_production_shelves: list[dict[str, Any]]
+    on_inspection_shelves: list[dict[str, Any]]
     in_process: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "ready_queue": self.ready_queue,
+            "on_production_shelves": self.on_production_shelves,
+            "on_inspection_shelves": self.on_inspection_shelves,
             "in_process": self.in_process,
         }
 
@@ -42,31 +51,72 @@ async def build_snapshot(
 ) -> dict[str, Any]:
     """异步构建一次完整快照。
 
-    返回 `{"ready_queue": [...], "in_process": [...],
-            "upcoming_delivery": [...], "ts": iso8601}`。
+    返回 `{on_production_shelves, on_inspection_shelves, in_process,
+            upcoming_delivery, ts}`。
     """
-    ready_parts = await _fetch_ready(session, top_n)
-    in_process_parts = await _fetch_in_process(session, top_n)
+    on_prod_parts = await _fetch_on_zone_shelves(
+        session, zone=ShelfZone.PRODUCTION.value, top_n=top_n
+    )
+    on_insp_parts = await _fetch_on_zone_shelves(
+        session, zone=ShelfZone.INSPECTION.value, top_n=top_n
+    )
+    worker_parts = await _fetch_in_process_worker(session, top_n)
 
     # 批量取客户路径
-    cust_ids = list({p.customer_id for p in ready_parts + in_process_parts})
+    cust_ids = list(
+        {p.customer_id for p in on_prod_parts + on_insp_parts + worker_parts}
+    )
     cust_map = await _fetch_customer_path(session, cust_ids)
 
-    # 每个 in_process 零件最近一次 PICKED_UP 时间
+    # 批量取工人名字（仅 in_process 部分）
+    worker_ids = [
+        p.current_holder_id for p in worker_parts if p.current_holder_id
+    ]
+    worker_name_map = await _fetch_worker_names(session, worker_ids)
+
+    # 批量取货架 code
+    shelf_ids = {
+        p.current_holder_id
+        for p in on_prod_parts + on_insp_parts
+        if p.current_holder_id
+    }
+    shelf_map = await _fetch_shelves_by_ids(session, list(shelf_ids))
+
+    # 批量取最近一次 PICKED_UP 时间
     picked_at_map = await _picked_up_at_map(
-        session, [p.id for p in in_process_parts]
+        session, [p.id for p in worker_parts]
     )
 
-    ready_items = [_to_dict(p, cust_map, picked_up_at=None) for p in ready_parts]
+    on_prod_groups = _group_by_shelf(
+        on_prod_parts, shelf_map, cust_map, holder_kind="shelf"
+    )
+    on_insp_items = [
+        _to_dict(
+            p,
+            cust_map=cust_map,
+            holder_kind="shelf",
+            shelf_code=(shelf_map[p.current_holder_id].code
+                        if p.current_holder_id in shelf_map else None),
+            placed_at=getattr(p, "placed_at", None),
+        )
+        for p in on_insp_parts
+    ]
     in_process_items = [
-        _to_dict(p, cust_map, picked_up_at=picked_at_map.get(p.id))
-        for p in in_process_parts
+        _to_dict(
+            p,
+            cust_map=cust_map,
+            holder_kind="worker",
+            worker_name=worker_name_map.get(p.current_holder_id),
+            picked_up_at=picked_at_map.get(p.id),
+        )
+        for p in worker_parts
     ]
 
     upcoming_delivery = await _fetch_upcoming_delivery(session, days=7)
 
     out = {
-        "ready_queue": ready_items,
+        "on_production_shelves": on_prod_groups,
+        "on_inspection_shelves": on_insp_items,
         "in_process": in_process_items,
         "upcoming_delivery": upcoming_delivery,
         "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -74,20 +124,30 @@ async def build_snapshot(
     return out
 
 
-async def _fetch_ready(
-    session: AsyncSession, top_n: int
+# ============================================================
+# 抓取：按货架 zone 列出 IN_PROCESS / INSPECTION 零件
+# ============================================================
+async def _fetch_on_zone_shelves(
+    session: AsyncSession, *, zone: str, top_n: int
 ) -> list[TPart]:
-    """READY 队列：加急优先 → 交期近优先 → id 兜底。
-
-    - is_urgent DESC：True(1) 排在 False(0) 前；
-    - planned_delivery_date ASC：交期近的先；
-    - id ASC：同交期时按创建先后稳定排序。
-    """
+    """status ∈ {IN_PROCESS, INSPECTION} ∩ holder ∈ t_shelf(z=zone)。"""
+    subq = select(TShelf.id).where(
+        TShelf.zone == zone,
+        TShelf.deleted_at.is_(None),
+        TShelf.is_active.is_(True),
+    )
+    status_value = (
+        PartStatus.IN_PROCESS.value
+        if zone == ShelfZone.PRODUCTION.value
+        else PartStatus.INSPECTION.value
+    )
     stmt = (
         select(TPart)
-        .where(TPart.status == PartStatus.READY.value)
+        .where(TPart.status == status_value)
         .where(TPart.deleted_at.is_(None))
+        .where(TPart.current_holder_id.in_(subq))
         .order_by(
+            TPart.current_holder_id.asc(),
             TPart.is_urgent.desc(),
             TPart.planned_delivery_date.asc(),
             TPart.id.asc(),
@@ -98,19 +158,32 @@ async def _fetch_ready(
     return list(result.scalars().all())
 
 
+async def _fetch_in_process_worker(
+    session: AsyncSession, top_n: int
+) -> list[TPart]:
+    """IN_PROCESS 且 holder 在 t_worker(is_active) 集合内。"""
+    worker_subq = select(TWorker.id).where(
+        TWorker.deleted_at.is_(None),
+        TWorker.is_active.is_(True),
+    )
+    stmt = (
+        select(TPart)
+        .where(TPart.status == PartStatus.IN_PROCESS.value)
+        .where(TPart.deleted_at.is_(None))
+        .where(TPart.current_holder_id.in_(worker_subq))
+        .order_by(TPart.id.desc())
+        .limit(top_n)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def _fetch_upcoming_delivery(
     session: AsyncSession, days: int = 7
 ) -> list[dict[str, Any]]:
-    """未来 `days` 天（含今天）按计划交期分桶的待交零件数。
-
-    - 排除终态（COMPLETED / CANCELLED）；
-    - 排除软删记录；
-    - 零计数日期也补齐返回固定 `days` 条，保证前端 7 根柱子稳定；
-    - 返回 `[{"date": "YYYY-MM-DD", "count": int}, ...]`，按 date 升序。
-    """
+    """未来 days 天（含今天）按计划交期分桶的待交零件数。"""
     today = date.today()
     end = today + timedelta(days=days - 1)
-    # 用 SQL 端参数化，避免函数调用在 WHERE 里无法走索引
     stmt = (
         select(TPart.planned_delivery_date, func.count(TPart.id))
         .where(TPart.deleted_at.is_(None))
@@ -132,24 +205,9 @@ async def _fetch_upcoming_delivery(
     return out
 
 
-async def _fetch_in_process(
-    session: AsyncSession, top_n: int
-) -> list[TPart]:
-    stmt = (
-        select(TPart)
-        .where(TPart.status == PartStatus.IN_PROCESS.value)
-        .where(TPart.deleted_at.is_(None))
-        .order_by(TPart.id.desc())
-        .limit(top_n)
-    )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
-
 async def _fetch_customer_path(
     session: AsyncSession, cust_ids: list[int]
 ) -> dict[int, dict[str, Any]]:
-    """取客户全路径（一级 / 二级）。"""
     if not cust_ids:
         return {}
     from model import TCustomer
@@ -178,13 +236,24 @@ async def _fetch_customer_path(
     return out
 
 
+async def _fetch_shelves_by_ids(
+    session: AsyncSession, ids: list[int]
+) -> dict[int, TShelf]:
+    if not ids:
+        return {}
+    stmt = select(TShelf).where(
+        TShelf.id.in_(ids),
+        TShelf.deleted_at.is_(None),
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return {s.id: s for s in rows}
+
+
 async def _picked_up_at_map(
     session: AsyncSession, part_ids: list[int]
 ) -> dict[int, Any]:
-    """每个 in_process 零件最近一次 PICKED_UP 事件的 created_at。"""
     if not part_ids:
         return {}
-    # PG: 用 DISTINCT ON 拿每个 part_id 的最新一条
     stmt = (
         select(TPartEvent.part_id, TPartEvent.created_at)
         .where(TPartEvent.part_id.in_(part_ids))
@@ -196,31 +265,80 @@ async def _picked_up_at_map(
 
 
 async def _fetch_worker_names(
-    session: AsyncSession, worker_ids: list[str]
-) -> dict[str, str]:
-    """每个 worker_id → name。
-
-    worker_ids 接收字符串（与 _to_dict 输出对齐），查询前转回 int——
-    PostgreSQL 不会自动把 varchar cast 成 bigint，直接传 str 会导致
-    `operator does not exist: bigint = character varying`。
-    """
+    session: AsyncSession, worker_ids: list[int]
+) -> dict[int, str]:
     if not worker_ids:
         return {}
-    int_ids = [int(wid) for wid in worker_ids]
-    stmt = select(TWorker).where(TWorker.id.in_(int_ids))
+    stmt = select(TWorker).where(
+        TWorker.id.in_(worker_ids),
+        TWorker.deleted_at.is_(None),
+    )
     workers = list((await session.execute(stmt)).scalars().all())
-    return {str(w.id): w.name for w in workers}
+    return {w.id: w.name for w in workers}
+
+
+# ============================================================
+# 拼装响应
+# ============================================================
+def _group_by_shelf(
+    parts: list[TPart],
+    shelf_map: dict[int, TShelf],
+    cust_map: dict[int, dict[str, Any]],
+    *,
+    holder_kind: str,
+) -> list[dict[str, Any]]:
+    """按 current_holder_id (= shelf.id) 分组并按 shelf 顺序返回。
+
+    每组：`{shelf_id, shelf_code, shelf_name, items:[...]}`。
+    items 已按 SQL 排序，再按 holder 分桶即可。
+    """
+    buckets: dict[int, list[TPart]] = {}
+    order: list[int] = []
+    for p in parts:
+        sid = p.current_holder_id
+        if sid is None:
+            continue
+        if sid not in buckets:
+            buckets[sid] = []
+            order.append(sid)
+        buckets[sid].append(p)
+
+    groups: list[dict[str, Any]] = []
+    for sid in order:
+        shelf = shelf_map.get(sid)
+        if shelf is None:
+            continue
+        groups.append(
+            {
+                "shelf_id": str(shelf.id),
+                "shelf_code": shelf.code,
+                "shelf_name": shelf.name,
+                "items": [
+                    _to_dict(
+                        p,
+                        cust_map=cust_map,
+                        holder_kind=holder_kind,
+                        shelf_code=shelf.code,
+                        placed_at=getattr(p, "placed_at", None),
+                    )
+                    for p in buckets[sid]
+                ],
+            }
+        )
+    return groups
 
 
 def _to_dict(
     part: TPart,
-    cust_map: dict[int, dict[str, Any]],
     *,
-    picked_up_at: Any | None,
+    cust_map: dict[int, dict[str, Any]],
+    holder_kind: str | None,
+    worker_name: str | None = None,
+    picked_up_at: Any | None = None,
+    shelf_code: str | None = None,
+    placed_at: Any | None = None,
 ) -> dict[str, Any]:
     cust_info = cust_map.get(part.customer_id, {})
-    # id 类字段全部序列化为字符串，避免 JS Number.MAX_SAFE_INTEGER 精度截断
-    # 见 schema/_types.py IdStr 的设计意图
     return {
         "id": str(part.id),
         "serial_no": part.serial_no,
@@ -231,13 +349,13 @@ def _to_dict(
         "planned_delivery_date": part.planned_delivery_date.isoformat()
         if part.planned_delivery_date
         else None,
-        "released_at": part.released_at.isoformat() + "Z"
-        if part.released_at
-        else None,
         "picked_up_at": picked_up_at.isoformat() + "Z" if picked_up_at else None,
-        "current_worker_id": (
-            str(part.current_worker_id) if part.current_worker_id else None
+        "current_holder_id": (
+            str(part.current_holder_id) if part.current_holder_id else None
         ),
+        "current_holder_kind": holder_kind,
+        "shelf_code": shelf_code,
+        "placed_at": placed_at.isoformat() + "Z" if placed_at else None,
         "customer_id": str(part.customer_id) if part.customer_id else None,
         "customer_name": cust_info.get("customer_name"),
         "customer_path": cust_info.get("customer_path"),
@@ -247,15 +365,8 @@ def _to_dict(
 async def build_snapshot_with_workers(
     session: AsyncSession, top_n: int = DASHBOARD_TOP_N
 ) -> dict[str, Any]:
-    """在 build_snapshot 基础上，再补 worker_name。"""
-    snap = await build_snapshot(session, top_n)
-    worker_ids = [
-        item.get("current_worker_id")
-        for item in snap["in_process"]
-        if item.get("current_worker_id")
-    ]
-    worker_name_map = await _fetch_worker_names(session, worker_ids)
-    for item in snap["in_process"]:
-        wid = item.get("current_worker_id")
-        item["worker_name"] = worker_name_map.get(wid) if wid else None
-    return snap
+    """`build_snapshot` 的薄包装，保留 ws 端点的调用契约。
+
+    实际填充已在 `build_snapshot` 内完成（含 worker_name / shelf_code）。
+    """
+    return await build_snapshot(session, top_n)

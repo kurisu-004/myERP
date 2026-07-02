@@ -4,6 +4,9 @@
   由 lifespan 启动的后台任务每 5 秒再推一次。
 - 业务侧（service 层）状态变更成功后调用 `broadcast_dashboard_snapshot`
   触发立即推送，不等 5 秒周期。
+
+权限：连接时必须带有效 JWT（`?token=...` 或 `Authorization: Bearer ...`），
+任意已登录用户（MANAGER / SHELF_ACCOUNT）可订阅。
 """
 from __future__ import annotations
 
@@ -12,16 +15,44 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status as http_status
 
 from core.database import SessionLocal
 from core.dashboard import build_snapshot_with_workers
+from core.error_code import ErrCode
+from core.exception import BizError
+from core.security import decode_access_token
+from model import TUser
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 PUSH_INTERVAL_SEC = 5.0
+
+
+async def _resolve_user_from_ws(ws: WebSocket, token: str | None) -> int | None:
+    """从 WS query/header 取 token，校验有效；返回 user_id 或 None。"""
+    if not token:
+        # fallback: header
+        auth = ws.headers.get("authorization") or ws.headers.get("Authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1]
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload["sub"])
+    except BizError:
+        return None
+    except (KeyError, ValueError, TypeError):
+        return None
+    async with SessionLocal() as session:
+        user = (await session.execute(select(TUser).where(TUser.id == user_id))).scalar_one_or_none()
+    if user is None or user.deleted_at is not None or not user.is_active:
+        return None
+    return user_id
 
 
 class ConnectionManager:
@@ -66,7 +97,6 @@ def _snapshot_payload(data: dict) -> str:
 
 
 async def _build_and_broadcast() -> None:
-    """取一次快照并广播。供 lifespan 周期任务和 service 触发调用。"""
     try:
         async with SessionLocal() as session:
             data = await build_snapshot_with_workers(session)
@@ -76,7 +106,17 @@ async def _build_and_broadcast() -> None:
 
 
 @router.websocket("/ws/dashboard")
-async def ws_dashboard(ws: WebSocket) -> None:
+async def ws_dashboard(
+    ws: WebSocket,
+    token: str | None = Query(default=None, description="Bearer JWT（也可走 Authorization header）"),
+) -> None:
+    user_id = await _resolve_user_from_ws(ws, token)
+    if user_id is None:
+        # 接受后立即关闭，避免泄露任何数据
+        await ws.accept()
+        await ws.close(code=status.http.WS_1008_POLICY_VIOLATION)
+        logger.info("ws dashboard rejected: missing/invalid token")
+        return
     await manager.connect(ws)
     try:
         # 1) 连接即推：首屏立即有数据
@@ -84,8 +124,7 @@ async def ws_dashboard(ws: WebSocket) -> None:
             data = await build_snapshot_with_workers(session)
         await ws.send_text(_snapshot_payload(data))
 
-        # 2) 保持连接。客户端可以发任意文本当心跳；服务端不依赖它，
-        #    但需要持续 read 才能让 close 立即被检测到。
+        # 2) 保持连接
         while True:
             try:
                 await asyncio.wait_for(ws.receive_text(), timeout=1.0)
@@ -100,7 +139,6 @@ async def ws_dashboard(ws: WebSocket) -> None:
 
 
 async def dashboard_push_loop() -> None:
-    """后台任务：每 PUSH_INTERVAL_SEC 秒向所有 dashboard 客户端广播一次。"""
     while True:
         await asyncio.sleep(PUSH_INTERVAL_SEC)
         if not manager.active:
@@ -108,24 +146,13 @@ async def dashboard_push_loop() -> None:
         await _build_and_broadcast()
 
 
-# ============================================================
-# 供 service 层注入的"业务触发"回调
-# ============================================================
 async def broadcast_dashboard_snapshot() -> None:
-    """service 层在状态变更成功后调这个，触发立即推送。
-
-    由 `api.deps.get_part_service` 把它包成闭包注入到 PartService.broadcaster。
-    """
     if not manager.active:
         return
     await _build_and_broadcast()
 
 
 def _event_payload(event_type: str, data: dict) -> str:
-    """包装业务事件消息（区别于 snapshot 周期推送）。
-
-    信封与 snapshot 一致，仅 `type` 和 `event_type` 不同；前端按 type 分发。
-    """
     return json.dumps(
         {
             "type": "event",
@@ -138,12 +165,6 @@ def _event_payload(event_type: str, data: dict) -> str:
 
 
 async def broadcast_dashboard_event(event_type: str, payload: dict) -> None:
-    """service 层在 PICKED_UP / RELEASED 等关键动作后调这个。
-
-    由 `api.deps.get_part_service` 包成闭包注入到
-    `PartService.event_broadcaster`，触发立即推送一条 event 消息给所有
-    dashboard 客户端。**无活跃连接时静默 no-op**，不报错。
-    """
     if not manager.active:
         return
     await manager.broadcast(_event_payload(event_type, payload))

@@ -7,6 +7,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status as http_status
 
 from api.deps import get_assembly_service, get_drawing_service
+from core.permission import require_role
+from model.enums import UserRole
 from schema.assembly import (
     AssemblyCreateRequest,
     AssemblyCreateResult,
@@ -18,8 +20,12 @@ from schema.drawing import DrawingFileOut
 from service.assembly import AssemblyService
 from service.drawing import DrawingService
 
-# 装配体自身的 CRUD
-router = APIRouter(prefix="/assemblies", tags=["装配体管理"])
+# 装配体自身的 CRUD（仅 MANAGER）
+router = APIRouter(
+    prefix="/assemblies",
+    tags=["装配体管理"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
 
 
 @router.get(
@@ -92,8 +98,32 @@ async def soft_delete_assembly(
     return {"ok": True}
 
 
-# 装配件级文件管理（multipart 子路由挂同一个 prefix）
-file_router = APIRouter(prefix="/assemblies", tags=["装配体管理"])
+# ---------- 子件反查（MANAGER-only） ----------
+child_router = APIRouter(
+    prefix="/parts",
+    tags=["零件管理"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
+
+
+@child_router.get(
+    "/{part_id}/assembly",
+    response_model=AssemblyDetail,
+    summary="从任意子零件反查所属装配件（装配件自身/兄弟/文件）",
+)
+async def get_assembly_for_child(
+    part_id: int,
+    svc: AssemblyService = Depends(get_assembly_service),
+) -> AssemblyDetail:
+    return await svc.get_assembly_for_child(part_id)
+
+
+# 装配件级文件管理（仅 MANAGER）
+file_router = APIRouter(
+    prefix="/assemblies",
+    tags=["装配体管理"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
 
 
 @file_router.post(

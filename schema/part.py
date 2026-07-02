@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -26,8 +27,8 @@ class PartListQuery(BaseModel):
 class PartOut(BaseModel):
     """零件展示用出参（数据大屏用）。
 
-    `id` / `assembly_id` 序列化为字符串，避免 JS `Number.MAX_SAFE_INTEGER`
-    精度截断。DB 仍存 BigInteger 雪花 ID。
+    `id` / `assembly_id` / `current_holder_id` 序列化为字符串，避免 JS
+    `Number.MAX_SAFE_INTEGER` 精度截断。DB 仍存 BigInteger 雪花 ID。
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -55,6 +56,23 @@ class PartOut(BaseModel):
     assembly_id: IdStr = Field(
         default=None,
         description="所属装配件 id（NULL = 普通独立零件，非任何装配件的子件）",
+    )
+    # —— 多态 holder ——
+    current_holder_id: IdStr = Field(
+        default=None,
+        description="当前持有者（worker.id 或 shelf.id；含义看 current_holder_kind）",
+    )
+    current_holder_kind: Literal["shelf", "worker"] | None = Field(
+        default=None,
+        description="holder 实际指向哪张表（service 层批查 t_shelf ∪ t_worker 判定）",
+    )
+    shelf_code: str | None = Field(
+        default=None,
+        description="若 holder 是 shelf，填它的 code（便于前端展示）",
+    )
+    placed_at: datetime | None = Field(
+        default=None,
+        description="首次放到生产货架的时间（PENDING→IN_PROCESS 时置位）",
     )
 
 
@@ -125,20 +143,31 @@ class PartBatchCreateResult(BaseModel):
 
 
 # ============================================================
-# 报工流程新增 schema
+# 报工流程 schema（货架 → IN_PROCESS / 工人 → IN_PROCESS）
 # ============================================================
-class PartReleaseRequest(BaseModel):
-    """文员点击"开始生产" — 空体，仅靠 path 上的 part_id。"""
+class PlaceOnShelfRequest(BaseModel):
+    """文员把 PENDING 零件放到生产货架：PENDING → IN_PROCESS。"""
+
+    shelf_id: int = Field(description="目标生产货架 id")
+
+    @field_validator("shelf_id")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("shelf_id 必须 > 0")
+        return v
 
 
 class PartPickUpRequest(BaseModel):
-    """工人扫码领取：流水号 + 工牌码。
+    """工人扫码领取：serial_no + 当前货架 id + 工牌码。
 
     - `serial_no` 与 t_part.serial_no 完全相等时定位零件。
+    - `shelf_id` 用于「跨货架拒绝」校验（JWT 内 SHELF_ACCOUNT 的 scope 必须包含该 shelf）。
     - `badge_code` 与 t_worker.badge_code 完全相等时定位工人。
     """
 
     serial_no: str = Field(min_length=1, max_length=8)
+    shelf_id: int = Field(description="操作所在货架 id")
     badge_code: str = Field(min_length=1, max_length=50)
 
     @field_validator("serial_no", "badge_code")
@@ -148,17 +177,26 @@ class PartPickUpRequest(BaseModel):
 
 
 class PartScanRequest(BaseModel):
-    """工人扫序列号（无工牌）触发归还 / 送检。
+    """工人扫序列号触发归还 / 送检。
 
-    event_type ∈ {RETURNED, INSPECTED}。其他值由 service 拒收。
+    event_type ∈ {RETURNED, INSPECTED}。
+
+    - RETURNED：把当前由工人持有的零件放回货架；`shelf_id` 为目标货架。
+    - INSPECTED：送品检；`shelf_id` 为当前操作货架，`target_inspection_shelf_id` 为目标品检货架。
     """
 
     serial_no: str = Field(min_length=1, max_length=8)
     event_type: PartEventType = Field(
         description="扫码事件类型；扫归还用 RETURNED，送检用 INSPECTED"
     )
+    shelf_id: int = Field(description="操作所在货架 id")
+    badge_code: str = Field(min_length=1, max_length=50)
+    target_inspection_shelf_id: int | None = Field(
+        default=None,
+        description="仅 INSPECTED 需要；目标品检货架 id（必须 zone=INSPECTION）",
+    )
 
-    @field_validator("serial_no")
+    @field_validator("serial_no", "badge_code")
     @classmethod
     def strip(cls, v: str) -> str:
         return v.strip()

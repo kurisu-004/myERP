@@ -1,21 +1,8 @@
-// api/customer.ts
-//
-// 客户 API 封装。Excel 批量导入零件时用 listCustomers() 拉全量客户，
+// 客户 API（走 @/api/http 统一 axios 客户端）。
+// Excel 批量导入零件时用 listCustomers() 拉全量客户，
 // 客户端按 `parent_name / name` 唯一定位叶子客户的 id。
 
-interface ApiEnvelope<T> {
-  code: number
-  message: string
-  data: T
-}
-
-async function unwrap<T>(resp: Response): Promise<T> {
-  const json = (await resp.json()) as ApiEnvelope<T>
-  if (json.code !== 0) {
-    throw new Error(json.message || `API error code=${json.code}`)
-  }
-  return json.data
-}
+import { api } from '@/api/http'
 
 export interface Customer {
   id: string
@@ -26,6 +13,6 @@ export interface Customer {
 }
 
 export async function listCustomers(): Promise<Customer[]> {
-  const resp = await fetch('/api/v1/customers')
-  return unwrap<Customer[]>(resp)
+  const resp = await api.get<Customer[]>('/customers')
+  return resp.data
 }

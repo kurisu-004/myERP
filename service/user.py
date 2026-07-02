@@ -1,0 +1,296 @@
+"""UserService：账号 CRUD + 角色管理。
+
+- `create_user` 默认不分配角色，MANAGER 创建后单独 `add_role`。
+- `add_role` SHELF_ACCOUNT 时强校验 scope_type='shelf' 且 scope_id 对应
+  shelf 存在、is_active。
+- 唯一冲突由 `IntegrityError` 翻成 `BIZ_USER_*`。
+"""
+from __future__ import annotations
+
+from fastapi import status as http_status
+
+from core.error_code import ErrCode
+from core.exception import BizError
+from core.security import hash_password
+from model import TShelf, TUser, TUserRole
+from model.enums import ShelfZone, UserRole
+from repository.shelf import ShelfRepository
+from repository.user import UserRepository, UserRoleRepository
+from schema.user import (
+    UserCreateRequest,
+    UserListOut,
+    UserListQuery,
+    UserOut,
+    UserRoleOut,
+    UserUpdateRequest,
+)
+from utils.id_gen import new_id
+
+
+class UserService:
+    def __init__(
+        self,
+        users: UserRepository,
+        user_roles: UserRoleRepository,
+        shelves: ShelfRepository,
+    ) -> None:
+        self.users = users
+        self.user_roles = user_roles
+        self.shelves = shelves
+
+    # ============================================================
+    # 列表
+    # ============================================================
+    async def list_users(self, query: UserListQuery) -> UserListOut:
+        rows = await self.users.list_with_filters(
+            username_like=query.username_like,
+            is_active=query.is_active,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        total = await self.users.count_with_filters(
+            username_like=query.username_like,
+            is_active=query.is_active,
+        )
+        items = [await self._to_out(u) for u in rows]
+        return UserListOut(
+            items=items, total=total, limit=query.limit, offset=query.offset
+        )
+
+    async def get_user(self, user_id: int) -> UserOut:
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        return await self._to_out(u)
+
+    # ============================================================
+    # 创建 / 更新 / 软删
+    # ============================================================
+    async def create_user(self, data: UserCreateRequest) -> UserOut:
+        username = data.username.strip().lower()
+        existing = await self.users.get_by_username(username)
+        if existing is not None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_DUPLICATE_USERNAME,
+                message=f"username {username!r} already exists",
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
+        u = TUser(
+            id=new_id(),
+            username=username,
+            password_hash=hash_password(data.password),
+            full_name=data.full_name.strip(),
+            phone=(data.phone or "").strip() or None,
+            is_active=True,
+        )
+        await self.users.create(u)
+        return await self._to_out(u)
+
+    async def update_user(
+        self, user_id: int, data: UserUpdateRequest
+    ) -> UserOut:
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if data.full_name is not None:
+            u.full_name = data.full_name.strip()
+        if data.phone is not None:
+            u.phone = data.phone.strip() or None
+        if data.password is not None:
+            u.password_hash = hash_password(data.password)
+        if data.is_active is not None:
+            u.is_active = data.is_active
+        await self.users.update(u)
+        return await self._to_out(u)
+
+    async def soft_delete_user(self, user_id: int) -> UserOut:
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        await self.users.soft_delete(u)
+        return await self._to_out(u, include_deleted=True)
+
+    # ============================================================
+    # 角色管理
+    # ============================================================
+    async def list_user_roles(self, user_id: int) -> list[UserRoleOut]:
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        rows = await self.user_roles.list_by_user(u.id)
+        shelf_ids = [r.scope_id for r in rows if r.scope_id]
+        shelf_map = await self._shelf_map(shelf_ids)
+        return [
+            UserRoleOut(
+                id=r.id,
+                role=r.role,
+                scope_type=r.scope_type,
+                scope_id=r.scope_id,
+                shelf_code=(shelf_map[r.scope_id].code if r.scope_id in shelf_map else None),
+                shelf_name=(shelf_map[r.scope_id].name if r.scope_id in shelf_map else None),
+            )
+            for r in rows
+        ]
+
+    async def add_role(
+        self,
+        user_id: int,
+        role: UserRole,
+        scope_type: str | None,
+        scope_id: int | None,
+    ) -> UserRoleOut:
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        await self._validate_role_scope(role, scope_type, scope_id)
+
+        r = TUserRole(
+            id=new_id(),
+            user_id=u.id,
+            role=role.value,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+        try:
+            await self.user_roles.create(r)
+        except Exception as e:
+            # IntegrityError 视为重复（唯一约束冲突）
+            msg = str(e).lower()
+            if "unique" in msg or "duplicate" in msg or "uk_t_user_role" in msg:
+                raise BizError(
+                    code=ErrCode.BIZ_USER_ROLE_DUPLICATE,
+                    message=(
+                        f"role {role.value} (scope={scope_type}/{scope_id}) "
+                        "already assigned to this user"
+                    ),
+                    http_status=http_status.HTTP_409_CONFLICT,
+                ) from e
+            raise
+
+        shelf_map: dict[int, TShelf] = {}
+        if role == UserRole.SHELF_ACCOUNT and scope_id is not None:
+            shelf_map = await self._shelf_map([scope_id])
+        return UserRoleOut(
+            id=r.id,
+            role=r.role,
+            scope_type=r.scope_type,
+            scope_id=r.scope_id,
+            shelf_code=(shelf_map[scope_id].code if scope_id in shelf_map else None) if shelf_map else None,
+            shelf_name=(shelf_map[scope_id].name if scope_id in shelf_map else None) if shelf_map else None,
+        )
+
+    async def remove_role(self, user_id: int, role_id: int) -> None:
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        r = await self.user_roles.get_by_id(role_id)
+        if r is None or r.user_id != u.id or r.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ROLE_NOT_FOUND,
+                message=f"role {role_id} not found for user {user_id}",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        await self.user_roles.soft_delete(r)
+
+    # ============================================================
+    # 内部
+    # ============================================================
+    async def _validate_role_scope(
+        self,
+        role: UserRole,
+        scope_type: str | None,
+        scope_id: int | None,
+    ) -> None:
+        if role == UserRole.SHELF_ACCOUNT:
+            if scope_type != "shelf" or scope_id is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="SHELF_ACCOUNT role requires scope_type='shelf' and scope_id",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            shelf = await self.shelves.get_by_id(scope_id)
+            if shelf is None or shelf.deleted_at is not None:
+                raise BizError(
+                    code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                    message=f"shelf {scope_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if shelf.zone not in (ShelfZone.PRODUCTION.value, ShelfZone.INSPECTION.value):
+                raise BizError(
+                    code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                    message=f"shelf {scope_id} has invalid zone {shelf.zone!r}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if not shelf.is_active:
+                raise BizError(
+                    code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                    message=f"shelf {shelf.code!r} is inactive; cannot bind",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            # MANAGER / CLERK / INSPECTOR 暂不接 scope
+            if scope_type is not None or scope_id is not None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=f"role {role.value} does not accept scope",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+    async def _shelf_map(self, ids: list[int]) -> dict[int, TShelf]:
+        if not ids:
+            return {}
+        rows = await self.shelves.list_by_ids([int(x) for x in ids if x])
+        return {s.id: s for s in rows}
+
+    async def _to_out(
+        self, u: TUser, *, include_deleted: bool = False
+    ) -> UserOut:
+        roles = await self.user_roles.list_by_user(u.id)
+        shelf_ids = [r.scope_id for r in roles if r.scope_id]
+        shelf_map = await self._shelf_map(shelf_ids)
+        role_outs = [
+            UserRoleOut(
+                id=r.id,
+                role=r.role,
+                scope_type=r.scope_type,
+                scope_id=r.scope_id,
+                shelf_code=(shelf_map[r.scope_id].code if r.scope_id in shelf_map else None),
+                shelf_name=(shelf_map[r.scope_id].name if r.scope_id in shelf_map else None),
+            )
+            for r in roles
+        ]
+        return UserOut(
+            id=u.id,
+            username=u.username,
+            full_name=u.full_name,
+            phone=u.phone,
+            is_active=u.is_active,
+            last_login_at=u.last_login_at,
+            created_at=u.created_at,
+            updated_at=u.updated_at,
+            roles=role_outs,
+        )

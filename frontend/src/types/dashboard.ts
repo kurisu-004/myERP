@@ -1,6 +1,5 @@
-// 大屏 WebSocket 数据类型。包含 snapshot（周期/状态变更推送）和 event（单条业务事件）两类消息。
+// 大屏 WebSocket 数据类型。snapshot（周期/状态变更）和 event（单条业务事件）两类。
 
-/** 大屏 ready_queue / in_process 共用的最小数据项 */
 export interface DashboardPartItem {
   id: string
   serial_no: string | null
@@ -9,23 +8,31 @@ export interface DashboardPartItem {
   quantity: number
   is_urgent: boolean
   planned_delivery_date: string | null
-  released_at: string | null
   picked_up_at: string | null
-  current_worker_id: string | null
-  worker_name: string | null
+  current_holder_id: string | null
+  current_holder_kind: 'shelf' | 'worker' | null
+  shelf_code: string | null
+  placed_at: string | null
+  worker_name?: string | null
   customer_name: string | null
   customer_path: string | null
 }
 
-/** 未来某一天需要交货的零件数（按 date 升序） */
+export interface DashboardShelfGroup {
+  shelf_id: string
+  shelf_code: string
+  shelf_name: string
+  items: DashboardPartItem[]
+}
+
 export interface UpcomingDeliveryEntry {
-  /** YYYY-MM-DD */
   date: string
   count: number
 }
 
 export interface DashboardSnapshotData {
-  ready_queue: DashboardPartItem[]
+  on_production_shelves: DashboardShelfGroup[]
+  on_inspection_shelves: DashboardPartItem[]
   in_process: DashboardPartItem[]
   upcoming_delivery: UpcomingDeliveryEntry[]
   ts: string
@@ -41,7 +48,7 @@ export interface DashboardSnapshot {
 // 业务事件消息（横幅通知消费）
 // ============================================================
 
-export type DashboardEventType = 'PICKED_UP' | 'RELEASED'
+export type DashboardEventType = 'PICKED_UP' | 'RELEASED' | 'PLACED_ON_SHELF' | 'RETURNED' | 'INSPECTED'
 
 export interface DashboardEventPayload {
   serial_no: string | null
@@ -51,6 +58,7 @@ export interface DashboardEventPayload {
   is_urgent: boolean
   planned_delivery_date: string | null
   worker_name?: string | null
+  shelf_code?: string | null
 }
 
 export interface DashboardEvent {
@@ -60,7 +68,5 @@ export interface DashboardEvent {
   ts: string
 }
 
-/** 服务端可能推送的两类消息联合类型（前端按 type 分发） */
 export type DashboardServerMessage = DashboardSnapshot | DashboardEvent
-
 export type ConnectionStatus = 'connecting' | 'open' | 'closed'

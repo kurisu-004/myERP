@@ -29,7 +29,15 @@ const statusSubs = new Set<StatusHandler>()
 
 function url(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${location.host}/api/v1/ws/dashboard`
+  const base = `${proto}://${location.host}/api/v1/ws/dashboard`
+  const raw = localStorage.getItem('auth_session')
+  if (raw) {
+    try {
+      const s = JSON.parse(raw)
+      if (s.token) return `${base}?token=${encodeURIComponent(s.token)}`
+    } catch { /* ignore */ }
+  }
+  return base
 }
 
 function notifyStatus(s: ConnectionStatus): void {

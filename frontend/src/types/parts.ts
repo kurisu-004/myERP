@@ -5,7 +5,6 @@ export type WarehouseStatus = '未入库' | '部分入库' | '已入库'
 /** 后端订单状态枚举（数据大屏用） */
 export type OrderStatus =
   | 'PENDING'
-  | 'READY'
   | 'IN_PROCESS'
   | 'INSPECTION'
   | 'READY_TO_SHIP'
@@ -16,7 +15,6 @@ export type OrderStatus =
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   PENDING: '待生产',
-  READY: '就绪',
   IN_PROCESS: '生产中',
   INSPECTION: '待品检',
   READY_TO_SHIP: '待送货',
@@ -28,7 +26,6 @@ export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
 
 export const ORDER_STATUS_TAG_TYPE: Record<OrderStatus, 'info' | 'warning' | 'success' | 'danger' | 'primary'> = {
   PENDING: 'info',
-  READY: 'warning',
   IN_PROCESS: 'primary',
   INSPECTION: 'warning',
   READY_TO_SHIP: 'warning',
@@ -49,6 +46,7 @@ export type SortDir = 'ASC' | 'DESC'
 export type PartEventType =
   | 'CREATED'
   | 'RELEASED'
+  | 'PLACED_ON_SHELF'
   | 'PICKED_UP'
   | 'RETURNED'
   | 'INSPECTED'
@@ -61,6 +59,7 @@ export type PartEventType =
 export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   CREATED: '创建',
   RELEASED: '开始生产',
+  PLACED_ON_SHELF: '放置到货架',
   PICKED_UP: '领取',
   RETURNED: '归还',
   INSPECTED: '送检',
@@ -74,6 +73,7 @@ export const PART_EVENT_LABEL: Record<PartEventType, string> = {
 export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 'warning' | 'info' | 'danger'> = {
   CREATED: 'primary',
   RELEASED: 'success',
+  PLACED_ON_SHELF: 'success',
   PICKED_UP: 'warning',
   RETURNED: 'info',
   INSPECTED: 'primary',

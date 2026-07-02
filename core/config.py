@@ -23,6 +23,19 @@ class Settings(BaseSettings):
         default=1735689600000, alias="SNOWFLAKE_EPOCH"
     )
 
+    # ---- JWT (t_user 登录) ----
+    jwt_secret: str = Field(alias="JWT_SECRET")
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    jwt_access_token_expire_minutes: int = Field(
+        default=720, alias="JWT_ACCESS_TOKEN_EXPIRE_MINUTES", ge=1
+    )
+    jwt_issuer: str = Field(default="myerp", alias="JWT_ISSUER")
+
+    # ---- Dev seed (t_user / t_shelf 迁移后自动 seed) ----
+    shelf_seed_on_migrate: bool = Field(
+        default=False, alias="SHELF_SEED_ON_MIGRATE"
+    )
+
     # ---- 腾讯云 COS（图纸上传 / 下载 / 预签）----
     # 本进程用长期 SecretId/Key 调 SDK（仅后端内部用）；前端要走 STS 临时凭证。
     cos_secret_id: str = Field(alias="COS_SECRET_ID")

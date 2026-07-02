@@ -1,5 +1,6 @@
-// 后端工人 API 封装（fetch）。统一处理 R<T> 解包。
+// 后端工人 API（走 @/api/http 统一 axios 客户端）。
 
+import { api } from '@/api/http'
 import type {
   Worker,
   WorkerCreatePayload,
@@ -7,72 +8,57 @@ import type {
   WorkerUpdatePayload,
 } from '@/types/worker'
 
-interface ApiEnvelope<T> {
-  code: number
-  message: string
-  data: T
-}
-
-async function unwrap<T>(resp: Response): Promise<T> {
-  const json = (await resp.json()) as ApiEnvelope<T>
-  if (json.code !== 0) {
-    throw new Error(json.message || `API error code=${json.code}`)
-  }
-  return json.data
-}
-
-export async function listWorkers(params: {
+export interface ListWorkersParams {
   name_like?: string
   is_active?: boolean
   limit?: number
   offset?: number
-} = {}): Promise<WorkerListResult> {
-  const qs = new URLSearchParams()
-  for (const [k, v] of Object.entries(params)) {
+}
+
+function cleanParams<T extends object>(p: T): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(p)) {
     if (v === undefined || v === null || v === '') continue
-    qs.set(k, String(v))
+    out[k] = v
   }
-  const url = `/api/v1/workers${qs.toString() ? '?' + qs.toString() : ''}`
-  return unwrap<WorkerListResult>(await fetch(url))
+  return out
+}
+
+export async function listWorkers(
+  params: ListWorkersParams = {},
+): Promise<WorkerListResult> {
+  const resp = await api.get<WorkerListResult>('/workers', {
+    params: cleanParams(params),
+  })
+  return resp.data
 }
 
 export async function getWorker(id: string): Promise<Worker> {
-  return unwrap<Worker>(await fetch(`/api/v1/workers/${id}`))
+  const resp = await api.get<Worker>(`/workers/${id}`)
+  return resp.data
 }
 
 export async function createWorker(payload: WorkerCreatePayload): Promise<Worker> {
-  const resp = await fetch('/api/v1/workers', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return unwrap<Worker>(resp)
+  const resp = await api.post<Worker>('/workers', payload)
+  return resp.data
 }
 
 export async function updateWorker(
   id: string,
   payload: WorkerUpdatePayload,
 ): Promise<Worker> {
-  const resp = await fetch(`/api/v1/workers/${id}/update`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return unwrap<Worker>(resp)
+  const resp = await api.post<Worker>(`/workers/${id}/update`, payload)
+  return resp.data
 }
 
 export async function deactivateWorker(id: string): Promise<Worker> {
-  const resp = await fetch(`/api/v1/workers/${id}/deactivate`, {
-    method: 'POST',
-  })
-  return unwrap<Worker>(resp)
+  const resp = await api.post<Worker>(`/workers/${id}/deactivate`)
+  return resp.data
 }
 
 export async function reactivateWorker(id: string): Promise<Worker> {
-  const resp = await fetch(`/api/v1/workers/${id}/reactivate`, {
-    method: 'POST',
-  })
-  return unwrap<Worker>(resp)
+  const resp = await api.post<Worker>(`/workers/${id}/reactivate`)
+  return resp.data
 }
 
 // ============ 工牌扫码查找（客户端缓存） ============

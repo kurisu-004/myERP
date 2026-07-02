@@ -1,38 +1,31 @@
-"""图纸文件 + 子件反查 API。
+"""图纸文件 API。
 
-子件反查：`/parts/{part_id}/assembly`
+子件反查：`/parts/{part_id}/assembly`（见 assembly router）
 子件文件：`/parts/{part_id}/files`
 绘图管理：`/drawings/{file_id}/...`
+
+权限：所有路由 MANAGER-only（图纸管理属于后台模块）。
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, UploadFile, status as http_status
+from urllib.parse import quote
 
-from api.deps import get_assembly_service, get_drawing_service
-from schema.assembly import AssemblyDetail
+from fastapi import APIRouter, Depends, File, UploadFile, status as http_status
+from fastapi.responses import Response
+
+from api.deps import get_drawing_service
+from core.permission import require_role
+from model.enums import UserRole
 from schema.drawing import DrawingFileOut
-from service.assembly import AssemblyService
 from service.drawing import DrawingService
 
 
-# ---------- 子件反查 ----------
-child_router = APIRouter(prefix="/parts", tags=["零件管理"])
-
-
-@child_router.get(
-    "/{part_id}/assembly",
-    response_model=AssemblyDetail,
-    summary="从任意子零件反查所属装配件（装配件自身/兄弟/文件）",
-)
-async def get_assembly_for_child(
-    part_id: int,
-    svc: AssemblyService = Depends(get_assembly_service),
-) -> AssemblyDetail:
-    return await svc.get_assembly_for_child(part_id)
-
-
 # ---------- 子件文件 ----------
-child_file_router = APIRouter(prefix="/parts", tags=["零件管理"])
+child_file_router = APIRouter(
+    prefix="/parts",
+    tags=["零件管理"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
 
 
 @child_file_router.post(
@@ -69,7 +62,11 @@ async def list_part_files(
 
 
 # ---------- 文件级操作（不关心归属） ----------
-file_router = APIRouter(prefix="/drawings", tags=["图纸文件"])
+file_router = APIRouter(
+    prefix="/drawings",
+    tags=["图纸文件"],
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
+)
 
 
 @file_router.get(
@@ -92,20 +89,12 @@ async def get_file_content(
     file_id: int,
     drawings: DrawingService = Depends(get_drawing_service),
 ):
-    from urllib.parse import quote
-
-    from fastapi.responses import Response
-
     data, content_type, filename = await drawings.get_file_content(file_id)
-    # RFC 5987: 非 ASCII 文件名必须用 filename*=UTF-8''<pct-encoded> 格式，
-    # 否则 Starlette 在编码 HTTP 头部时会抛 UnicodeEncodeError。
     encoded = quote(filename, safe="")
     return Response(
         content=data,
         media_type=content_type,
-        headers={
-            "Content-Disposition": f"inline; filename*=UTF-8''{encoded}",
-        },
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{encoded}"},
     )
 
 

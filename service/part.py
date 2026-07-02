@@ -1,3 +1,18 @@
+"""PartService：零件业务逻辑层。
+
+新流程（去掉 READY 后）：
+- PENDING → IN_PROCESS (放在生产货架上；holder=shelf_id)
+- IN_PROCESS (shelf↔worker 之间切换 holder；状态不变)
+- IN_PROCESS → INSPECTION (送检；holder=inspection_shelf_id)
+- INSPECTION → READY_TO_SHIP → DELIVERED → COMPLETED
+- 任意非终态 → REPAIRING → IN_PROCESS
+- 任意非终态 → CANCELLED
+
+货架与 SHELF_ACCOUNT 的耦合已经在 api/v1 层用 `require_shelf_account_from_body`
+校验；service 层只关心「传进来的 shelf_id 是否真的存在且生效」。
+"""
+from __future__ import annotations
+
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 
@@ -6,12 +21,13 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.serial import SERIAL_RELEASE_STATUSES, code_for_parent
-from model import PART_TRANSITIONS, TCustomer, TPart, TPartEvent, TWorker
-from model.enums import PartEventType, PartStatus
+from model import PART_TRANSITIONS, TCustomer, TPart, TPartEvent, TShelf, TWorker
+from model.enums import PartEventType, PartStatus, ShelfZone
 from repository.customer import CustomerRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.serial_counter import SerialCounterRepository
+from repository.shelf import ShelfRepository
 from repository.worker import WorkerRepository
 from schema.part import (
     PartBatchCreateItemFailure,
@@ -25,6 +41,7 @@ from schema.part import (
     PartPickUpRequest,
     PartScanRequest,
     PartStatusChangeRequest,
+    PlaceOnShelfRequest,
 )
 from utils.id_gen import new_id
 
@@ -33,7 +50,6 @@ from utils.id_gen import new_id
 ALL_NON_TERMINAL_STATUSES: frozenset[PartStatus] = frozenset(
     {
         PartStatus.PENDING,
-        PartStatus.READY,
         PartStatus.IN_PROCESS,
         PartStatus.INSPECTION,
         PartStatus.READY_TO_SHIP,
@@ -42,14 +58,11 @@ ALL_NON_TERMINAL_STATUSES: frozenset[PartStatus] = frozenset(
     }
 )
 
-# 触发 dashboard 广播的回调签名：(no args) -> awaitable[None]
 Broadcaster = Callable[[], Awaitable[None]]
-# 触发单条业务事件推送的回调签名：(event_type, payload) -> awaitable[None]
 EventBroadcaster = Callable[[str, dict], Awaitable[None]]
 
 
 def _parse_status(value: str | PartStatus | None) -> PartStatus | None:
-    """字符串/枚举统一成 PartStatus；非法值抛 BizError(BIZ_INVALID_VALUE)。"""
     if value is None:
         return None
     if isinstance(value, PartStatus):
@@ -65,7 +78,6 @@ def _parse_status(value: str | PartStatus | None) -> PartStatus | None:
 
 
 def _parse_event_type(value: str | PartEventType) -> PartEventType:
-    """字符串/枚举统一成 PartEventType。"""
     if isinstance(value, PartEventType):
         return value
     try:
@@ -79,19 +91,6 @@ def _parse_event_type(value: str | PartEventType) -> PartEventType:
 
 
 class PartService:
-    """零件业务逻辑层。
-
-    负责：
-    - 调用 PartRepository / WorkerRepository / PartEventRepository 做数据访问；
-    - 拼装客户全路径（一级 / 二级）以避免 N+1；
-    - **状态机校验**：所有 PartStatus 转换都在 service 层校验，
-      DB 不加任何约束。详见 `model.enums.PART_TRANSITIONS`。
-    - **事件写入**：每次成功的状态变更都要写一条 `t_part_event`，
-      与状态变更在同一个事务里。
-    - **仪表盘广播**：状态变更成功后调用 `broadcaster()` 回调，
-      由 deps.py 注入，避免 service → ws 循环依赖。
-    """
-
     def __init__(
         self,
         parts: PartRepository,
@@ -99,6 +98,7 @@ class PartService:
         workers: WorkerRepository,
         events: PartEventRepository,
         serial_counters: SerialCounterRepository,
+        shelves: ShelfRepository,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
     ) -> None:
@@ -107,6 +107,7 @@ class PartService:
         self.workers = workers
         self.events = events
         self.serial_counters = serial_counters
+        self.shelves = shelves
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
 
@@ -122,7 +123,6 @@ class PartService:
                     message=f"customer {query.customer_id} not found",
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
-
         rows = await self.parts.list_with_filters(
             customer_id=query.customer_id,
             status=_parse_status(query.status),
@@ -141,7 +141,6 @@ class PartService:
             drawing_no_like=query.drawing_no_like,
             name_like=query.name_like,
         )
-
         items = await self._to_out(rows)
         return PartListOut(
             items=items, total=total, limit=query.limit, offset=query.offset
@@ -159,7 +158,6 @@ class PartService:
         return items[0]
 
     async def list_events(self, part_id: int) -> list[PartEventOut]:
-        """按 part_id 拉取该零件的全生命周期事件流（按 created_at 升序）。"""
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -168,7 +166,6 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         events = await self.events.list_by_part(part_id)
-        # 拼 worker_name
         worker_ids = {e.worker_id for e in events if e.worker_id}
         worker_map: dict[int, TWorker] = {}
         if worker_ids:
@@ -201,11 +198,9 @@ class PartService:
     def _assert_transition(
         self, from_status: PartStatus, to_status: PartStatus
     ) -> None:
-        """校验 from → to 合法。CANCELLED 允许从任意非终态进入；否则查表。"""
         if to_status == PartStatus.CANCELLED:
             if from_status in ALL_NON_TERMINAL_STATUSES:
                 return
-            # COMPLETED → CANCELLED 不允许
             raise BizError(
                 code=ErrCode.BIZ_INVALID_TRANSITION,
                 message=f"cannot cancel from terminal status {from_status.value}",
@@ -249,36 +244,28 @@ class PartService:
         try:
             await self.broadcaster()
         except Exception:  # noqa: BLE001
-            # 推送失败不影响主业务
             import logging
-
             logging.getLogger(__name__).exception("dashboard broadcast failed")
 
     async def _broadcast_event(self, event_type: str, payload: dict) -> None:
-        """触发单条业务事件推送（如 PICKED_UP / RELEASED）。
-
-        失败不影响主业务；调用方无需 try/except。
-        payload 仅含 UI 横幅所需最小集，**不要传全 PartOut**。
-        """
         if self.event_broadcaster is None:
             return
         try:
             await self.event_broadcaster(event_type, payload)
         except Exception:  # noqa: BLE001
             import logging
-
             logging.getLogger(__name__).exception(
                 "dashboard event broadcast failed: %s", event_type
             )
 
     @staticmethod
     def _banner_payload(
-        part: TPart, *, customer_path: str | None, worker_name: str | None = None
+        part: TPart,
+        *,
+        customer_path: str | None,
+        worker_name: str | None = None,
+        shelf_code: str | None = None,
     ) -> dict:
-        """拼横幅事件 payload（最小字段集）。
-
-        `customer_path` 由调用方从 `_to_out(...)` 拿，避免重复查 customer。
-        """
         return {
             "serial_no": part.serial_no,
             "drawing_no": part.drawing_no,
@@ -289,13 +276,13 @@ class PartService:
             if part.planned_delivery_date
             else None,
             "worker_name": worker_name,
+            "shelf_code": shelf_code,
         }
 
     # ============================================================
     # 写操作
     # ============================================================
     async def create_part(self, data: PartCreateRequest) -> PartOut:
-        """新增 PENDING 零件。系统按客户代码自动分配序列号。"""
         cust = await self.customers.get_by_id(data.customer_id)
         if cust is None:
             raise BizError(
@@ -357,15 +344,6 @@ class PartService:
     async def create_parts_batch(
         self, payload: PartBatchCreateRequest
     ) -> PartBatchCreateResult:
-        """批量新增零件（Excel 导入用）。
-
-        行为：
-        - **校验阶段**：仅 SELECT（customer 存在 / 是叶子节点 / parent 存在 / 一级客户有序列号代码），
-          失败行写入 `failed`，整体不下任何写入。
-        - **写入阶段**：校验全部通过后，逐行调用 `create_part()`，共享同一请求级 session
-          同一个事务；任一 DB 写失败 → session 回滚（由 `get_session` 处理），整个 batch 失败。
-        - 校验阶段对 customer / parent 做内存级缓存，避免 N 行重复查同一节点。
-        """
         customer_cache: dict[int, TCustomer | None] = {}
         parent_cache: dict[int, TCustomer | None] = {}
         code_cache: dict[str, str | None] = {}
@@ -389,63 +367,32 @@ class PartService:
         for idx, item in enumerate(payload.items):
             cust = await get_customer(item.customer_id)
             if cust is None:
-                failed.append(
-                    PartBatchCreateItemFailure(
-                        index=idx,
-                        message=f"customer {item.customer_id} not found",
-                    )
-                )
+                failed.append(PartBatchCreateItemFailure(index=idx, message=f"customer {item.customer_id} not found"))
                 continue
             if cust.parent_id is None:
-                failed.append(
-                    PartBatchCreateItemFailure(
-                        index=idx,
-                        message="序列号只能分配给二级客户节点（一级集团不允许挂零件）",
-                    )
-                )
+                failed.append(PartBatchCreateItemFailure(index=idx, message="序列号只能分配给二级客户节点（一级集团不允许挂零件）"))
                 continue
             parent = await get_parent(cust.parent_id)
             if parent is None:
-                failed.append(
-                    PartBatchCreateItemFailure(
-                        index=idx,
-                        message=f"parent customer {cust.parent_id} not found",
-                    )
-                )
+                failed.append(PartBatchCreateItemFailure(index=idx, message=f"parent customer {cust.parent_id} not found"))
                 continue
             if get_code(parent.name) is None:
-                failed.append(
-                    PartBatchCreateItemFailure(
-                        index=idx,
-                        message=f"未配置一级客户「{parent.name}」的序列号代码",
-                    )
-                )
+                failed.append(PartBatchCreateItemFailure(index=idx, message=f"未配置一级客户「{parent.name}」的序列号代码"))
                 continue
 
         if failed:
             return PartBatchCreateResult(created=[], failed=failed)
 
-        # 全部校验通过；逐行写入，共用同一事务。
-        # 任一 raise → session 上下文管理器回滚，batch 整体失败由 FastAPI 错误处理统一包装。
         created: list[PartOut] = []
         for item in payload.items:
             out = await self.create_part(item)
             created.append(out)
         return PartBatchCreateResult(created=created, failed=[])
 
-    # ===== 通用状态变更（兼容 change-status 端点） =====
+    # ===== 通用状态变更（admin fallback） =====
     async def change_status(
         self, part_id: int, payload: PartStatusChangeRequest
     ) -> PartOut:
-        """通用状态变更。
-
-        根据 from→to 自动选 `PartEventType`：
-        - → COMPLETED    → COMPLETED
-        - → CANCELLED    → CANCELLED
-        - → REPAIRING    → REPAIR_STARTED
-        - REPAIRING → IN_PROCESS → REPAIR_COMPLETED
-        - 其他           → STATUS_CHANGED
-        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -462,7 +409,6 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         if to_status == from_status:
-            # 同状态不写事件
             items = await self._to_out([part])
             return items[0]
         self._assert_transition(from_status, to_status)
@@ -472,7 +418,6 @@ class PartService:
             part.serial_no = None
         await self.parts.update(part)
 
-        # 选 event_type
         if to_status == PartStatus.COMPLETED:
             event_type = PartEventType.COMPLETED
         elif to_status == PartStatus.CANCELLED:
@@ -481,6 +426,10 @@ class PartService:
             event_type = PartEventType.REPAIR_STARTED
         elif from_status == PartStatus.REPAIRING and to_status == PartStatus.IN_PROCESS:
             event_type = PartEventType.REPAIR_COMPLETED
+        elif from_status == PartStatus.INSPECTION and to_status == PartStatus.REPAIRING:
+            # 进入返修时清空 holder（让生产区工人重新接走）
+            part.current_holder_id = None
+            event_type = PartEventType.REPAIR_STARTED
         else:
             event_type = PartEventType.STATUS_CHANGED
 
@@ -505,10 +454,15 @@ class PartService:
         await self.parts.soft_delete(part)
 
     # ============================================================
-    # 报工流程动作
+    # 新报工流程（货架 + 工人 + 品检）
     # ============================================================
-    async def release_to_floor(self, part_id: int) -> PartOut:
-        """文员点击"开始生产"：PENDING → READY。"""
+    async def place_on_shelf(
+        self, part_id: int, data: PlaceOnShelfRequest
+    ) -> PartOut:
+        """PENDING → IN_PROCESS：把零件放到生产货架。
+
+        `shelf_id` 必须在 t_shelf 中存在 / is_active / zone=PRODUCTION。
+        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -516,33 +470,155 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        shelf = await self.shelves.get_by_id(data.shelf_id)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {data.shelf_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not shelf.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message=f"shelf {shelf.code!r} is inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if shelf.zone != ShelfZone.PRODUCTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
+                    "place_on_shelf requires PRODUCTION"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
         from_status = _parse_status(part.status)
-        to_status = PartStatus.READY
+        to_status = PartStatus.IN_PROCESS
         self._assert_transition(from_status, to_status)
         part.status = to_status.value
-        part.released_at = datetime.utcnow()
+        part.current_holder_id = shelf.id
+        part.placed_at = datetime.utcnow()
         await self.parts.update(part)
         await self._write_event(
             part=part,
-            event_type=PartEventType.RELEASED,
+            event_type=PartEventType.PLACED_ON_SHELF,
             from_status=from_status,
             to_status=to_status,
+            note=f"shelf={shelf.code}",
         )
         await self._broadcast()
         items = await self._to_out([part])
         await self._broadcast_event(
-            "RELEASED",
-            self._banner_payload(part, customer_path=items[0].customer_path),
+            "PLACED_ON_SHELF",
+            self._banner_payload(
+                part,
+                customer_path=items[0].customer_path,
+                shelf_code=shelf.code,
+            ),
         )
         return items[0]
 
     async def pick_up_by_scan(self, data: PartPickUpRequest) -> PartOut:
-        """工人扫 serial_no + 工牌：READY → IN_PROCESS，记录工人。"""
+        """工人扫 serial_no 领取：状态仍是 IN_PROCESS；holder 由 shelf → worker。
+
+        不再是状态变更；只是 `current_holder_id` 在「工人↔货架」之间切换。
+        加 `with_for_update()` 防两人并发领同一 serial。
+        """
+        # 货架和工人先取出
+        shelf = await self.shelves.get_by_id(data.shelf_id)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {data.shelf_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if shelf.zone != ShelfZone.PRODUCTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
+                    "pick-up only valid at PRODUCTION shelf"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        worker = await self.workers.get_by_badge_code(data.badge_code)
+        if worker is None:
+            raise BizError(
+                code=ErrCode.BIZ_WORKER_NOT_FOUND,
+                message=f"worker with badge_code {data.badge_code!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not worker.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_WORKER_INACTIVE,
+                message=f"worker {worker.name} is inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
         part = await self.parts.get_by_serial(data.serial_no)
         if part is None:
             raise BizError(
                 code=ErrCode.BIZ_PART_NOT_FOUND,
                 message=f"part with serial_no {data.serial_no!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        from_status = _parse_status(part.status)
+        if from_status != PartStatus.IN_PROCESS:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"pick-up requires IN_PROCESS; current status is {from_status.value}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if part.current_holder_id != shelf.id:
+            raise BizError(
+                code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
+                message=(
+                    f"part is currently held by {part.current_holder_id}; "
+                    f"expected this shelf {shelf.id}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        part.current_holder_id = worker.id
+        await self.parts.update(part)
+        await self._write_event(
+            part=part,
+            event_type=PartEventType.PICKED_UP,
+            from_status=from_status,
+            to_status=from_status,
+            worker_id=worker.id,
+            drawing_code=data.serial_no,
+            badge_code=data.badge_code,
+            note=f"shelf={shelf.code}",
+        )
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "PICKED_UP",
+            self._banner_payload(
+                part,
+                customer_path=items[0].customer_path,
+                worker_name=worker.name,
+                shelf_code=shelf.code,
+            ),
+        )
+        return items[0]
+
+    async def scan_event(self, data: PartScanRequest) -> PartOut:
+        """RETURNED：把当前由工人持有的零件放回生产货架（holder = shelf_id）；
+        状态不变（仍是 IN_PROCESS）。
+
+        INSPECTED：从工人手送检到品检货架；状态 → INSPECTION；holder → inspection shelf。
+        """
+        shelf = await self.shelves.get_by_id(data.shelf_id)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {data.shelf_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         worker = await self.workers.get_by_badge_code(data.badge_code)
@@ -559,35 +635,6 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        from_status = _parse_status(part.status)
-        to_status = PartStatus.IN_PROCESS
-        self._assert_transition(from_status, to_status)
-        part.status = to_status.value
-        part.current_worker_id = worker.id
-        await self.parts.update(part)
-        await self._write_event(
-            part=part,
-            event_type=PartEventType.PICKED_UP,
-            from_status=from_status,
-            to_status=to_status,
-            worker_id=worker.id,
-            drawing_code=data.serial_no,
-            badge_code=data.badge_code,
-        )
-        await self._broadcast()
-        items = await self._to_out([part])
-        await self._broadcast_event(
-            "PICKED_UP",
-            self._banner_payload(
-                part,
-                customer_path=items[0].customer_path,
-                worker_name=worker.name,
-            ),
-        )
-        return items[0]
-
-    async def scan_event(self, data: PartScanRequest) -> PartOut:
-        """工人扫 serial_no（无工牌）触发归还 / 送检。"""
         part = await self.parts.get_by_serial(data.serial_no)
         if part is None:
             raise BizError(
@@ -595,48 +642,146 @@ class PartService:
                 message=f"part with serial_no {data.serial_no!r} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        event_type = _parse_event_type(data.event_type)
+
         from_status = _parse_status(part.status)
+        event_type = _parse_event_type(data.event_type)
 
         if event_type == PartEventType.RETURNED:
-            to_status = PartStatus.READY
-            worker_id_for_event = part.current_worker_id
-            drawing_code_for_event = data.serial_no
-            badge_code_for_event: str | None = None
-        elif event_type == PartEventType.INSPECTED:
-            to_status = PartStatus.INSPECTION
-            worker_id_for_event = part.current_worker_id
-            drawing_code_for_event = data.serial_no
-            badge_code_for_event = None
-        else:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message=(
-                    f"scan endpoint only accepts RETURNED or INSPECTED, "
-                    f"got {event_type.value!r}"
-                ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
+            if from_status != PartStatus.IN_PROCESS:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_TRANSITION,
+                    message=(
+                        f"return requires IN_PROCESS; current status is {from_status.value}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if shelf.zone != ShelfZone.PRODUCTION.value:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
+                        "return only valid at PRODUCTION shelf"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if part.current_holder_id != worker.id:
+                raise BizError(
+                    code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
+                    message=(
+                        f"part is not held by worker {worker.id}; "
+                        "only the current holder can return it"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
 
-        self._assert_transition(from_status, to_status)
-        part.status = to_status.value
-        part.current_worker_id = None
-        await self.parts.update(part)
-        await self._write_event(
-            part=part,
-            event_type=event_type,
-            from_status=from_status,
-            to_status=to_status,
-            worker_id=worker_id_for_event,
-            drawing_code=drawing_code_for_event,
-            badge_code=badge_code_for_event,
+            to_status = from_status  # 不变
+            worker_id_for_event = worker.id
+            drawing_code_for_event = data.serial_no
+            badge_code_for_event = data.badge_code
+            note = f"returned to shelf {shelf.code}"
+            target_shelf_code: str | None = shelf.code
+
+            part.current_holder_id = shelf.id
+            await self.parts.update(part)
+
+            await self._write_event(
+                part=part,
+                event_type=event_type,
+                from_status=from_status,
+                to_status=to_status,
+                worker_id=worker_id_for_event,
+                drawing_code=drawing_code_for_event,
+                badge_code=badge_code_for_event,
+                note=note,
+            )
+            await self._broadcast()
+            items = await self._to_out([part])
+            await self._broadcast_event(
+                "RETURNED",
+                self._banner_payload(
+                    part,
+                    customer_path=items[0].customer_path,
+                    worker_name=worker.name,
+                    shelf_code=target_shelf_code,
+                ),
+            )
+            return items[0]
+
+        if event_type == PartEventType.INSPECTED:
+            if data.target_inspection_shelf_id is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="INSPECTED requires target_inspection_shelf_id",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            target = await self.shelves.get_by_id(data.target_inspection_shelf_id)
+            if target is None or target.deleted_at is not None:
+                raise BizError(
+                    code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                    message=f"inspection shelf {data.target_inspection_shelf_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if target.zone != ShelfZone.INSPECTION.value:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"target shelf {target.code!r} is zone={target.zone!r}; "
+                        "INSPECTED requires INSPECTION zone"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if not target.is_active:
+                raise BizError(
+                    code=ErrCode.BIZ_SHELF_IN_USE,
+                    message=f"inspection shelf {target.code!r} is inactive",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if part.current_holder_id != worker.id:
+                raise BizError(
+                    code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
+                    message="part is not held by current worker",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+            to_status = PartStatus.INSPECTION
+            self._assert_transition(from_status, to_status)
+
+            part.status = to_status.value
+            part.current_holder_id = target.id
+            await self.parts.update(part)
+            await self._write_event(
+                part=part,
+                event_type=event_type,
+                from_status=from_status,
+                to_status=to_status,
+                worker_id=worker.id,
+                drawing_code=data.serial_no,
+                badge_code=data.badge_code,
+                note=f"to inspection shelf {target.code}",
+            )
+            await self._broadcast()
+            items = await self._to_out([part])
+            await self._broadcast_event(
+                "INSPECTED",
+                self._banner_payload(
+                    part,
+                    customer_path=items[0].customer_path,
+                    worker_name=worker.name,
+                    shelf_code=target.code,
+                ),
+            )
+            return items[0]
+
+        raise BizError(
+            code=ErrCode.BIZ_INVALID_VALUE,
+            message=(
+                f"scan endpoint only accepts RETURNED or INSPECTED, got {event_type.value!r}"
+            ),
+            http_status=http_status.HTTP_400_BAD_REQUEST,
         )
-        await self._broadcast()
-        items = await self._to_out([part])
-        return items[0]
 
     # ============================================================
-    # 内部：拼客户路径
+    # 内部：拼客户路径 + 多态 holder 字段
     # ============================================================
     async def _to_out(self, rows: list[TPart]) -> list[PartOut]:
         if not rows:
@@ -648,7 +793,17 @@ class PartService:
         parents = (
             await self.customers.list_by_ids(parent_ids) if parent_ids else []
         )
-        parent_map: dict[int, TCustomer] = {c.id: c for c in parents}
+        parent_map: dict[int, TCustomer] = {p.id: p for p in parents}
+
+        # 多态 holder：批查 t_shelf ∪ t_worker 判别
+        holder_ids = [p.current_holder_id for p in rows if p.current_holder_id]
+        shelves_for_part = await self.shelves.list_by_ids(list({int(x) for x in holder_ids}))
+        shelf_index = {s.id: s for s in shelves_for_part}
+        workers_for_part = (
+            await self.workers.list_with_filters(is_active=None, limit=max(100, len(holder_ids)))
+            if holder_ids else []
+        )
+        worker_index = {w.id: w for w in workers_for_part if w.id in set(holder_ids)}
 
         out: list[PartOut] = []
         for p in rows:
@@ -668,6 +823,17 @@ class PartService:
             elif parent_name:
                 path = parent_name
 
+            holder_kind: str | None = None
+            shelf_code: str | None = None
+            if p.current_holder_id is not None:
+                if p.current_holder_id in shelf_index:
+                    holder_kind = "shelf"
+                    shelf_code = shelf_index[p.current_holder_id].code
+                elif p.current_holder_id in worker_index:
+                    holder_kind = "worker"
+                else:
+                    holder_kind = None
+
             out.append(
                 PartOut(
                     id=p.id,
@@ -683,6 +849,10 @@ class PartService:
                     parent_customer_name=parent_name,
                     customer_path=path,
                     assembly_id=p.assembly_id,
+                    current_holder_id=p.current_holder_id,
+                    current_holder_kind=holder_kind,
+                    shelf_code=shelf_code,
+                    placed_at=getattr(p, "placed_at", None),
                 )
             )
         return out
