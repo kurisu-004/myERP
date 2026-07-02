@@ -97,6 +97,22 @@
       </template>
     </el-card>
 
+    <!-- 条形码（仅当存在 serial_no 时显示） -->
+    <el-card v-if="part && part.serial_no" shadow="never" class="barcode-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">
+            <el-icon><PriceTag /></el-icon>
+            <span>序列号条码</span>
+          </span>
+          <span class="mono serial-label">{{ part.serial_no }}</span>
+        </div>
+      </template>
+      <div class="barcode-wrap">
+        <Barcode :value="part.serial_no" format="CODE39" :height="80" :width="2" />
+      </div>
+    </el-card>
+
     <!-- 所属装配件（仅子零件） -->
     <el-card
       v-if="part && part.assembly_id != null"
@@ -274,8 +290,9 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowRight, Connection, Right, User } from '@element-plus/icons-vue'
+import { ArrowRight, Connection, PriceTag, Right, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
+import Barcode from '@/components/Barcode.vue'
 import {
   cancelPart,
   getPart,
@@ -564,6 +581,22 @@ watch(
 }
 .mono {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.barcode-card {
+  :deep(.el-card__body) {
+    padding: 16px 20px;
+    display: flex;
+    justify-content: center;
+  }
+  .serial-label {
+    font-weight: 600;
+    color: var(--primary-color);
+  }
+  .barcode-wrap {
+    background: #fff;
+    padding: 8px 12px;
+  }
 }
 
 .assembly-card {

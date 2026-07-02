@@ -11,6 +11,16 @@ class PartEventRepository:
         self.session = session
 
     # ===== 写入 =====
+    def add(self, event: TPartEvent) -> TPartEvent:
+        """同步登记事件，供状态机同步回调调用。
+
+        只执行 ``session.add``，把对象 stage 到当前 session；真正的 INSERT
+        留到后续 ``session.flush()``（通常由同一事务内的 ``update`` 触发）。
+        异步场景请用 ``create``。
+        """
+        self.session.add(event)
+        return event
+
     async def create(self, event: TPartEvent) -> TPartEvent:
         self.session.add(event)
         await self.session.flush()

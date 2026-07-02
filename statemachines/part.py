@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from statemachine import State, StateChart
 
 from model.enums import PartEventType, PartStatus
+from model.part_event import TPartEvent
 
 if TYPE_CHECKING:
     from model.part import TPart
@@ -161,8 +162,7 @@ class PartStateMachine(StateChart):
 
     def on_place_on_shelf(self, shelf=None, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.PLACED_ON_SHELF,
                 from_status=PartStatus.PENDING,
@@ -172,8 +172,7 @@ class PartStateMachine(StateChart):
 
     def on_pick_up(self, worker=None, shelf=None, event_repo=None, **_):
         if event_repo and self.model and worker:
-            from model.part import TPartEvent
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.PICKED_UP,
                 from_status=PartStatus.IN_PROCESS,
@@ -185,9 +184,8 @@ class PartStateMachine(StateChart):
 
     def on_return_to_shelf(self, worker=None, shelf=None, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
             shelf_code = shelf.code if shelf and hasattr(shelf, "code") else ""
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.RETURNED,
                 from_status=PartStatus.IN_PROCESS,
@@ -200,9 +198,8 @@ class PartStateMachine(StateChart):
 
     def on_inspect(self, worker=None, target_shelf=None, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
             shelf_code = target_shelf.code if target_shelf and hasattr(target_shelf, "code") else ""
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.INSPECTED,
                 from_status=PartStatus.IN_PROCESS,
@@ -215,8 +212,7 @@ class PartStateMachine(StateChart):
 
     def on_pass_inspection(self, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.STATUS_CHANGED,
                 from_status=PartStatus.INSPECTION,
@@ -225,8 +221,7 @@ class PartStateMachine(StateChart):
 
     def on_deliver(self, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.STATUS_CHANGED,
                 from_status=PartStatus.READY_TO_SHIP,
@@ -235,8 +230,7 @@ class PartStateMachine(StateChart):
 
     def on_complete(self, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.COMPLETED,
                 from_status=PartStatus.DELIVERED,
@@ -245,9 +239,8 @@ class PartStateMachine(StateChart):
 
     def on_start_repair(self, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
             from_status = PartStatus(self._from_status) if self._from_status else None
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.REPAIR_STARTED,
                 from_status=from_status,
@@ -256,8 +249,7 @@ class PartStateMachine(StateChart):
 
     def on_complete_repair(self, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.REPAIR_COMPLETED,
                 from_status=PartStatus.REPAIRING,
@@ -266,9 +258,8 @@ class PartStateMachine(StateChart):
 
     def on_cancel(self, event_repo=None, **_):
         if event_repo and self.model:
-            from model.part import TPartEvent
             from_status = PartStatus(self._from_status) if self._from_status else None
-            event_repo.create(TPartEvent(
+            event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.CANCELLED,
                 from_status=from_status,
