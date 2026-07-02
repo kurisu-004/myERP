@@ -284,10 +284,12 @@ const { onScan } = useBarcodeScanner()
 const { isAuthenticated, refreshOrLogout, user, activeShelfId } = useAuthSession()
 
 const state = ref<PageState>('scanning')
-const shelfId = ref<number>(0)
+// shelf_id 在前端保持字符串：雪花 ID 长度 > 2^53，Number() 会丢精度。
+// 后端 Pydantic v2 默认接受 JSON string → int。
+const shelfId = ref<string>('')
 const showInspDialog = ref(false)
 const inspShelves = ref<Shelf[]>([])
-const targetInspectionShelfId = ref<number>()
+const targetInspectionShelfId = ref<string>()
 
 const actionLabel = computed(() => (action.value ? ACTION_LABEL[action.value] : ''))
 const actionTagType = computed(() => (action.value ? ACTION_TAG_TYPE[action.value] : 'info'))
@@ -306,9 +308,9 @@ onBeforeMount(async () => {
   const a = slugToAction(route.query.action)
   if (a && a !== action.value) { setAction(a) } else if (!a) { void router.replace('/scan/action') }
 
-  // 取当前货架
+  // 取当前货架（activeShelfId 现在直接返回 string，不再 Number()）
   const sid = activeShelfId()
-  sid && (shelfId.value = sid)
+  if (sid) shelfId.value = sid
 })
 
 const unsubscribe = onScan((code) => { if (state.value !== 'scanning') return; void addOrIgnore(code) })

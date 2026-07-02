@@ -23,6 +23,22 @@ export const api = axios.create({
   baseURL: '/api/v1',
   // 不显式设 Content-Type：axios 会按 body 类型自动选 application/json / multipart/form-data。
   timeout: 30_000,
+  // FastAPI 期望数组参数格式: ?statuses=A&statuses=B（无 [] 后缀）
+  paramsSerializer: (params) => {
+    const parts: string[] = []
+    for (const key of Object.keys(params)) {
+      const val = params[key]
+      if (val === undefined || val === null) continue
+      if (Array.isArray(val)) {
+        for (const v of val) {
+          parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(v)}`)
+        }
+      } else {
+        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
+      }
+    }
+    return parts.join('&')
+  },
 })
 
 interface ApiEnvelope<T> {

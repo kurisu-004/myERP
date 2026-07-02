@@ -65,7 +65,7 @@
         </el-form-item>
         <el-form-item v-if="addRoleForm.role === 'SHELF_ACCOUNT'" label="货架">
           <el-select v-model="addRoleForm.shelfId" placeholder="选货架" style="width:160px" clearable>
-            <el-option v-for="s in shelfOptions" :key="s.id" :label="`${s.code} (${s.zone === 'PRODUCTION' ? '生产' : '品检'})`" :value="Number(s.id)" />
+            <el-option v-for="s in shelfOptions" :key="s.id" :label="`${s.code} (${s.zone === 'PRODUCTION' ? '生产' : '品检'})`" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item><el-button @click="doAddRole" :disabled="!addRoleForm.role">添加</el-button></el-form-item>
@@ -102,7 +102,8 @@ const showRoles = ref(false)
 const roleUser = ref<UserOut | null>(null)
 const roleList = ref<UserRoleOut[]>([])
 const shelfOptions = ref<Shelf[]>([])
-const addRoleForm = reactive<{ role: string; shelfId: number | null }>({ role: '', shelfId: null })
+// shelfId 在前端保持字符串：雪花 ID 长度 > 2^53，Number() 会丢精度。
+const addRoleForm = reactive<{ role: string; shelfId: string | null }>({ role: '', shelfId: null })
 
 async function fetchData() {
   loading.value = true

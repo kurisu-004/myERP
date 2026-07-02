@@ -4,10 +4,9 @@ from .base import Base
 from .customer import TCustomer
 from .drawing_file import TDrawingFile
 from .enums import (
-    ASSEMBLY_TRANSITIONS,
     AssemblyStatus,
-    PART_TRANSITIONS,
     PartEventType,
+    PartLocation,
     PartSortKey,
     PartStatus,
     SCAN_EVENT_TYPES,
@@ -41,9 +40,8 @@ __all__ = [
     "TUserRole",
     "TWorker",
     "AssemblyStatus",
-    "PART_TRANSITIONS",
-    "ASSEMBLY_TRANSITIONS",
     "PartEventType",
+    "PartLocation",
     "PartSortKey",
     "PartStatus",
     "SCAN_EVENT_TYPES",

@@ -29,15 +29,14 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Aim } from '@element-plus/icons-vue'
+import { findWorkerByBadge } from '@/api/worker'
 import { useAuthSession } from '@/composables/useAuthSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useScanSession } from '@/composables/useScanSession'
-import { useWorkerCache } from '@/composables/useWorkerCache'
 
 const router = useRouter()
 const { onScan } = useBarcodeScanner()
 const { setWorker } = useScanSession()
-const { findByBadge } = useWorkerCache()
 const { isAuthenticated, refreshOrLogout, user } = useAuthSession()
 
 onMounted(async () => {
@@ -45,13 +44,13 @@ onMounted(async () => {
     const ok = await refreshOrLogout(router)
     if (!ok) return
   }
-  // 预热 worker 缓存
-  findByBadge('').catch(() => undefined)
+  // 不再预热 worker 缓存：findWorkerByBadge 改为后端单点 query（POST /workers/verify-badge）。
+  // 扫描时直接打到后端，结果强一致、无 500 条硬上限、无 TTL 失效问题。
 })
 
 const unsubscribe = onScan(async (code) => {
   try {
-    const worker = await findByBadge(code)
+    const worker = await findWorkerByBadge(code)
     if (!worker) {
       ElMessage.warning(`未识别工牌: ${code}`)
       return

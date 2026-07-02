@@ -1,31 +1,35 @@
-"""init_seed: load 20 customers, 8 workers, 10 assemblies, 50 parts
+"""init_seed: load all seed data — serial counters, customers, workers, assemblies,
+parts, users, shelves, menus
 
 Revision ID: 000000000002
 Revises: 000000000001
-Create Date: 2026-07-01
+Create Date: 2026-07-02
 
 说明：
 - 测试用种子数据，**不**进入生产库。仅在本地 dev 库跑。
+- 整合原 5 个迁移中的全部 seed。
 - 数据分布：
   - 20 条 t_customer：2 个一级（法拉电子/路达）+ 18 个二级叶子节点。
-  - 8 条 t_worker：5 人持有 IN_PROCESS 零件、3 人空闲（其中 1 人停用）。
-  - 10 条 t_assembly：4 态 PENDING/IN_PROCESS/COMPLETED/CANCELLED 分布
-    = 2 PENDING + 5 IN_PROCESS + 2 COMPLETED + 1 CANCELLED；含 4 条加急。
-  - 50 条 t_part：覆盖 PartStatus 全 9 状态均匀分布
-    (PENDING×6 / READY×6 / IN_PROCESS×6 / INSPECTION×5 / READY_TO_SHIP×5
+  - 8 条 t_worker：5 人在职 + 2 人在职空闲 + 1 人停用。
+  - 3 条 t_shelf：PROD-A1 / PROD-B1（生产区）+ INSP-I1（品检区）。
+  - 10 条 t_assembly：4 态分布 = 2 PENDING + 5 IN_PROCESS + 2 COMPLETED + 1 CANCELLED。
+  - 50 条 t_part：覆盖 PartStatus 全 8 状态均匀分布
+    (PENDING×6 / IN_PROCESS×12 / INSPECTION×5 / READY_TO_SHIP×5
      / DELIVERED×6 / REPAIRING×5 / COMPLETED×6 / CANCELLED×5)；
-    12 条加急；16 条挂装配体（前 9 个装配体各 1-4 个子件，第 10 个无子件）。
-- 装配体状态与子件状态自洽：
-    PENDING    → 所有子件都 PENDING
-    IN_PROCESS → 任一子件处于 IN_PROCESS/INSPECTION/READY_TO_SHIP/DELIVERED
-    COMPLETED  → 所有子件都 COMPLETED
-    CANCELLED  → 所有未完成子件被级联置 CANCELLED（这里 1 个子件 CANCELLED）
-- 6 条 IN_PROCESS 零件中 5 条关联到工人（current_worker_id = 工人雪花 ID）。
-- 雪花 ID 用 `utils.id_gen.new_id` 在 Python 端生成；序列号 serial_no
-  按客户前缀（L/F）分配，COMPLETED/CANCELLED 时置 NULL。
+    12 条加急；16 条挂装配体。
+  - IN_PROCESS 零件随机分布在工人手中和生产货架上（固定种子可复现）；
+    INSPECTION 零件全部放在品检货架 INSP-I1。
+  - location 严格匹配 status：
+    PENDING→OFFICE, IN_PROCESS(worker)→WORKER,
+    IN_PROCESS(shelf)→PRODUCTION_SHELF, INSPECTION→INSPECTION_SHELF,
+    其余状态→NULL。
+  - 1 admin MANAGER + 3 SHELF_ACCOUNT 账号 + 角色关联。
+  - 12 menu + MANAGER/SHELF_ACCOUNT 角色菜单分配。
+- 装配体状态与子件状态自洽。
 - upgrade 头部会清理可能的残留（dev 期反复 rerun 累积），保证幂等。
 - downgrade 清理所有种子（不删 schema）。
 """
+import random
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -37,6 +41,9 @@ revision: str = "000000000002"
 down_revision: Union[str, None] = "000000000001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+# 固定随机种子，保证每次运行种子数据分布一致
+_RANDOM_SEED = 42
 
 
 # =============================================================================
@@ -67,7 +74,7 @@ _CUSTOMERS = [
 
 
 # =============================================================================
-# 工人数据：8 条
+# 工人数据：8 条（5 在职可用 + 2 在职空闲 + 1 停用）
 # =============================================================================
 _WORKERS = [
     # (badge_code, name, id_card_no, phone, is_active)
@@ -80,15 +87,17 @@ _WORKERS = [
     ("Z007", "黄文斌", "110101198705123910", "13800138007", False),  # 停用
     ("Z008", "吴文军", "110101198912305216", "13800138008", True),
 ]
-# 工牌 → 持有零件 drawing_no
-_WORKER_HOLDS: dict[str, list[str]] = {
-    "Z001": ["E42804FZJ076101"],
-    "Z002": ["F42XJ-3380-1", "F42XJ-3380-2"],
-    "Z003": ["E42BZCF90491103"],
-    "Z004": ["E42FX1020107105"],
-    "Z005": ["L22-9012-C"],
-    # Z006/Z007/Z008 不持有
-}
+
+
+# =============================================================================
+# 货架数据：2 生产 + 1 品检
+# =============================================================================
+_SHELVES = [
+    # (code, name, zone)
+    ("PROD-A1", "生产区-A1 货架", "PRODUCTION"),
+    ("PROD-B1", "生产区-B1 货架", "PRODUCTION"),
+    ("INSP-I1", "品检区-1 货架",  "INSPECTION"),
+]
 
 
 # =============================================================================
@@ -112,7 +121,7 @@ _ASSEMBLIES = [
 # =============================================================================
 # 零件数据：50 条
 # 装配体 0-8 各 1-4 子件，装配体 9 无子件
-# 状态分布：9 状态均匀（6/6/6/5/5/6/5/6/5），加急 12 条
+# 状态分布：8 状态均匀（7/12/5/5/6/5/6/5），加急 12 条
 # =============================================================================
 _PARTS = [
     # (drawing_no, name, applicant, qty, unit_price, customer_id,
@@ -142,32 +151,34 @@ _PARTS = [
     ("L23-0114-A",      "贴标机底板",         "周健",   1, 3200.00, 17, "2026-06-22", "2026-07-28", None, "INSPECTION", True,  7),
     # —— 装配体 8 子件（CANCELLED 级联） ——
     ("E42DZ-5550-A",    "绕线模具芯",         "吴敏",   1, 6800.00, 7,  "2026-06-05", "2026-08-15", None, "CANCELLED", False, 8),
-    # —— 剩余 34 条（不挂装配体），凑齐 9 状态均匀分布 ——
-    # PENDING：补 3
+    # —— 剩余 34 条（不挂装配体），凑齐 8 状态均匀分布 ——
+    # PENDING：补 4
     ("E42804FZJ076105", "精研定位板",         "林雪强", 1,  950.00, 4,  "2026-06-18", "2026-08-01", None, "PENDING",     False, None),
     ("L22-9012-B",      "测试架横梁",         "李娜",   2,  780.00, 15, "2026-06-20", "2026-08-08", None, "PENDING",     False, None),
     ("F42HG-2200-2",    "清洗喷嘴",           "郑浩",   4,  240.00, 8,  "2026-05-25", "2026-07-05", None, "PENDING",     False, None),
-    # READY ×6
-    ("E42804FZJ076106", "精研上模备件",       "林雪强", 1, 1800.00, 4,  "2026-06-15", "2026-07-30", None, "READY",       False, None),
-    ("E42FX1020107104", "精研端盖",           "陈伟杰", 1, 1500.00, 7,  "2026-05-22", "2026-07-08", None, "READY",       False, None),
-    ("L21-7884-D",      "分选气缸座",         "张磊",   2,  340.00, 13, "2026-05-15", "2026-06-28", None, "READY",       False, None),
-    ("F42JC-7711-2",    "检验底座",           "孙芳",   1,  980.00, 12, "2026-05-26", "2026-06-25", None, "READY",       False, None),
-    ("L23-0114-B",      "贴标机侧板",         "周健",   2,  640.00, 17, "2026-06-23", "2026-07-30", None, "READY",       True,  None),
-    ("F42HG-2200-3",    "清洗托盘",           "郑浩",   2,  420.00, 8,  "2026-05-19", "2026-06-30", None, "READY",       False, None),
-    # IN_PROCESS：补 3
+    ("E42FX1020107108", "精研调整块",         "陈伟杰", 2,  640.00, 7,  "2026-06-20", "2026-08-05", None, "PENDING",     False, None),
+    # IN_PROCESS：9 条（原 3 + 原 READY 6 条改为 IN_PROCESS）
+    ("E42804FZJ076106", "精研上模备件",       "林雪强", 1, 1800.00, 4,  "2026-06-15", "2026-07-30", None, "IN_PROCESS",  False, None),
+    ("E42FX1020107104", "精研端盖",           "陈伟杰", 1, 1500.00, 7,  "2026-05-22", "2026-07-08", None, "IN_PROCESS",  False, None),
+    ("L21-7884-D",      "分选气缸座",         "张磊",   2,  340.00, 13, "2026-05-15", "2026-06-28", None, "IN_PROCESS",  False, None),
+    ("F42JC-7711-2",    "检验底座",           "孙芳",   1,  980.00, 12, "2026-05-26", "2026-06-25", None, "IN_PROCESS",  False, None),
+    ("L23-0114-B",      "贴标机侧板",         "周健",   2,  640.00, 17, "2026-06-23", "2026-07-30", None, "IN_PROCESS",  True,  None),
+    ("F42HG-2200-3",    "清洗托盘",           "郑浩",   2,  420.00, 8,  "2026-05-19", "2026-06-30", None, "IN_PROCESS",  False, None),
     ("E42FX1020107105", "精研压板",           "陈伟杰", 2,  640.00, 7,  "2026-05-18", "2026-06-28", None, "IN_PROCESS",  False, None),
     ("L22-9012-C",      "测试架底座",         "李娜",   1, 1800.00, 15, "2026-06-12", "2026-08-05", None, "IN_PROCESS",  False, None),
     ("F42XJ-3380-2",    "校形下模",           "赵勇",   1, 4800.00, 5,  "2026-06-18", "2026-08-12", None, "IN_PROCESS",  False, None),
     # INSPECTION：补 2
     ("E42804FZJ076107", "精研垫片",           "林雪强", 10,  18.00, 4,  "2026-05-12", "2026-06-25", None, "INSPECTION",  False, None),
     ("F42JC-7711-3",    "检验滑轨",           "孙芳",   2,  380.00, 12, "2026-05-20", "2026-06-18", None, "INSPECTION",  False, None),
-    # READY_TO_SHIP：补 2
+    # READY_TO_SHIP：补 3
     ("E42FX1020107106", "精研弹簧",           "陈伟杰", 6,   45.00, 7,  "2026-05-15", "2026-06-25", None, "READY_TO_SHIP", False, None),
     ("L22-9012-D",      "测试架连接件",       "李娜",   8,   85.00, 15, "2026-05-28", "2026-07-15", None, "READY_TO_SHIP", False, None),
-    # DELIVERED：补 3
+    ("L22-9012-F",      "测试架导轨",         "李娜",   2,  260.00, 15, "2026-05-25", "2026-07-10", None, "READY_TO_SHIP", False, None),
+    # DELIVERED：补 4
     ("E42804FZJ076108", "精研压板",           "林雪强", 1, 1050.00, 4,  "2026-05-25", "2026-06-30", "2026-07-02", "DELIVERED", False, None),
     ("E42BZCF90491104", "激光定位销",         "王莉",   6,   85.00, 6,  "2026-05-12", "2026-06-25", "2026-06-28", "DELIVERED", False, None),
     ("F42HG-2200-4",    "清洗密封圈",         "郑浩",   8,   35.00, 8,  "2026-05-08", "2026-06-20", "2026-06-23", "DELIVERED", False, None),
+    ("F42JC-7711-5",    "检验转接板",         "孙芳",   1,  560.00, 12, "2026-05-08", "2026-06-12", "2026-06-15", "DELIVERED", False, None),
     # REPAIRING ×5
     ("E42FX1020107107", "精研上模",           "陈伟杰", 1, 2200.00, 7,  "2026-05-08", "2026-06-15", None, "REPAIRING",   True,  None),
     ("L21-7884-E",      "分选感应块",         "张磊",   2,  180.00, 13, "2026-04-28", "2026-06-12", None, "REPAIRING",   True,  None),
@@ -178,18 +189,122 @@ _PARTS = [
     ("E42804FZJ076109", "精研导套",           "林雪强", 1,  680.00, 4,  "2026-04-08", "2026-05-22", "2026-05-20", "COMPLETED", False, None),
     ("E42BZCF90491105", "激光备用夹",         "王莉",   1, 1900.00, 6,  "2026-04-20", "2026-06-05", "2026-06-02", "COMPLETED", False, None),
     ("L22-9012-E",      "测试架盖板",         "李娜",   1, 1200.00, 15, "2026-04-12", "2026-05-28", "2026-05-26", "COMPLETED", False, None),
-    # CANCELLED：补 3
+    # CANCELLED：补 4
     ("E42804FZJ076110", "精研隔套",           "林雪强", 2,  340.00, 4,  "2026-05-15", "2026-07-10", None, "CANCELLED",  False, None),
     ("L21-7884-F",      "分选废品盒",         "张磊",   1,  150.00, 13, "2026-05-02", "2026-06-10", None, "CANCELLED",  True,  None),
     ("F42HG-2200-6",    "清洗试验件",         "郑浩",   1,  420.00, 8,  "2026-05-10", "2026-06-12", None, "CANCELLED",  False, None),
-    # 凑数（再补 1 PENDING + 1 READY_TO_SHIP + 1 DELIVERED + 1 CANCELLED）
-    ("E42FX1020107108", "精研调整块",         "陈伟杰", 2,  640.00, 7,  "2026-06-20", "2026-08-05", None, "PENDING",        False, None),
-    ("L22-9012-F",      "测试架导轨",         "李娜",   2,  260.00, 15, "2026-05-25", "2026-07-10", None, "READY_TO_SHIP",  False, None),
-    ("F42JC-7711-5",    "检验转接板",         "孙芳",   1,  560.00, 12, "2026-05-08", "2026-06-12", "2026-06-15", "DELIVERED", False, None),
-    ("E42DZ-5550-C",    "绕线试验件",         "吴敏",   1,  780.00, 7,  "2026-05-18", "2026-07-20", None, "CANCELLED",      False, None),
+    ("E42DZ-5550-C",    "绕线试验件",         "吴敏",   1,  780.00, 7,  "2026-05-18", "2026-07-20", None, "CANCELLED",  False, None),
 ]
-# 验证：状态分布
 assert len(_PARTS) == 50, f"expect 50 parts, got {len(_PARTS)}"
+
+
+# =============================================================================
+# 菜单 seed
+# =============================================================================
+_MENU_SEED: list[dict] = [
+    {"code": "home",            "parent": None,           "title": "首页",       "path": "/dashboard",      "icon": "House",     "sort_order": 10},
+    {"code": "order_group",     "parent": None,           "title": "订单管理",   "path": None,              "icon": "Tickets",   "sort_order": 20},
+    {"code": "parts_list",      "parent": "order_group",  "title": "零件一览",   "path": "/parts",          "icon": "Box",       "sort_order": 10},
+    {"code": "parts_new",       "parent": "order_group",  "title": "新建零件",   "path": "/parts/new",      "icon": "Plus",      "sort_order": 20},
+    {"code": "assemblies_list", "parent": "order_group",  "title": "装配件一览", "path": "/assemblies",     "icon": "Connection","sort_order": 30},
+    {"code": "assemblies_new",  "parent": "order_group",  "title": "新建装配件", "path": "/assemblies/new", "icon": "Plus",      "sort_order": 40},
+    {"code": "auth_group",      "parent": None,           "title": "权限管理",   "path": None,              "icon": "Key",       "sort_order": 30},
+    {"code": "workers_list",    "parent": "auth_group",   "title": "工人一览",   "path": "/workers",        "icon": "User",      "sort_order": 10},
+    {"code": "users_list",      "parent": "auth_group",   "title": "账号管理",   "path": "/users",          "icon": "List",      "sort_order": 20},
+    {"code": "floor_group",     "parent": None,           "title": "车间",       "path": None,              "icon": "Tools",     "sort_order": 40},
+    {"code": "shelves_list",    "parent": "floor_group",  "title": "货架管理",   "path": "/shelves",        "icon": "Platform",  "sort_order": 10},
+    {"code": "scan_badge",      "parent": "floor_group",  "title": "扫码台",     "path": "/scan/badge",     "icon": "Promotion", "sort_order": 20},
+]
+
+_ROLE_MENU_SEED: list[tuple[str, str]] = [
+    ("MANAGER", "home"),
+    ("MANAGER", "order_group"),
+    ("MANAGER", "parts_list"),
+    ("MANAGER", "parts_new"),
+    ("MANAGER", "assemblies_list"),
+    ("MANAGER", "assemblies_new"),
+    ("MANAGER", "auth_group"),
+    ("MANAGER", "workers_list"),
+    ("MANAGER", "users_list"),
+    ("MANAGER", "floor_group"),
+    ("MANAGER", "shelves_list"),
+    ("MANAGER", "scan_badge"),
+    ("SHELF_ACCOUNT", "home"),
+    ("SHELF_ACCOUNT", "floor_group"),
+    ("SHELF_ACCOUNT", "scan_badge"),
+]
+
+
+# =============================================================================
+# location 推导
+# =============================================================================
+def _derive_location(status: str, holder_type: str | None) -> str | None:
+    """根据状态 + holder 类型推导 location 值。
+
+    holder_type: 'worker' | 'shelf' | None
+    """
+    if status == "PENDING":
+        return "OFFICE"
+    if status == "IN_PROCESS":
+        if holder_type == "worker":
+            return "WORKER"
+        if holder_type == "shelf":
+            return "PRODUCTION_SHELF"
+        # 不应该出现 IN_PROCESS 但无 holder 的情况，但保留安全值
+        return "PRODUCTION_SHELF"
+    if status == "INSPECTION":
+        return "INSPECTION_SHELF"
+    # READY_TO_SHIP / DELIVERED / REPAIRING / COMPLETED / CANCELLED
+    return None
+
+
+# =============================================================================
+# 随机分配 IN_PROCESS 零件到 worker 或 shelf（固定种子，可复现）
+# =============================================================================
+def _assign_in_process_holders(
+    parts: list[tuple],
+    active_worker_ids: list[int],
+    shelf_ids: dict[str, int],
+) -> tuple[dict[int, int | None], dict[int, str | None]]:
+    """为 IN_PROCESS 零件随机分配 holder（工人或货架）。
+
+    返回:
+      holder_map: part_index → current_holder_id (worker_id 或 shelf_id)
+      holder_type_map: part_index → 'worker' | 'shelf'
+    """
+    rng = random.Random(_RANDOM_SEED)
+
+    # 找到所有 IN_PROCESS 零件索引
+    in_process_indices = [
+        i for i, p in enumerate(parts) if p[9] == "IN_PROCESS"
+    ]
+
+    # 生产货架列表
+    prod_shelf_codes = ["PROD-A1", "PROD-B1"]
+
+    # 约 40% 分配给工人（至少有 1 个给工人，体现 WORKER 状态）
+    num_to_workers = max(1, len(in_process_indices) * 2 // 5)
+    worker_bound_indices = set(rng.sample(in_process_indices, num_to_workers))
+
+    holder_map: dict[int, int | None] = {}
+    holder_type_map: dict[int, str | None] = {}
+
+    for idx in in_process_indices:
+        if idx in worker_bound_indices:
+            holder_map[idx] = rng.choice(active_worker_ids)
+            holder_type_map[idx] = "worker"
+        else:
+            shelf_code = rng.choice(prod_shelf_codes)
+            holder_map[idx] = shelf_ids[shelf_code]
+            holder_type_map[idx] = "shelf"
+
+    # INSPECTION 零件全部放在品检货架
+    for i, p in enumerate(parts):
+        if p[9] == "INSPECTION":
+            holder_map[i] = shelf_ids["INSP-I1"]
+            holder_type_map[i] = "shelf"
+
+    return holder_map, holder_type_map
 
 
 # =============================================================================
@@ -202,14 +317,34 @@ def upgrade() -> None:
     def _d(s: str | None) -> date | None:
         return date.fromisoformat(s) if s else None
 
-    # 0. 清理可能的残留（dev 期反复 rerun 保护）。
+    # =========================================================================
+    # 0. 清理可能的残留（dev 期反复 rerun 保护）
+    # =========================================================================
+    op.execute("DELETE FROM t_part_event")
+    op.execute("DELETE FROM t_role_menu")
+    op.execute("DELETE FROM t_menu")
+    op.execute("DELETE FROM t_user_role")
     op.execute("DELETE FROM t_part")
     op.execute("DELETE FROM t_assembly")
+    op.execute("DELETE FROM t_user")
+    op.execute("DELETE FROM t_shelf")
     op.execute("DELETE FROM t_worker")
     op.execute("DELETE FROM t_customer")
-    op.execute("UPDATE t_serial_counter SET counter = 0 WHERE prefix IN ('F', 'L')")
+    op.execute("DELETE FROM t_serial_counter")
 
-    # 1. 客户：20 条
+    # =========================================================================
+    # 1. 流水号种子：L / F / H，counter=0
+    # =========================================================================
+    op.execute(
+        sa.text(
+            "INSERT INTO t_serial_counter (prefix, counter) "
+            "VALUES ('L', 0), ('F', 0), ('H', 0)"
+        )
+    )
+
+    # =========================================================================
+    # 2. 客户：20 条
+    # =========================================================================
     customer_rows = [
         {
             "id": cid, "name": name, "parent_id": parent_id,
@@ -226,7 +361,9 @@ def upgrade() -> None:
         sa.column("deleted_at", sa.DateTime),
     ), customer_rows)
 
-    # 2. 工人：8 条（雪花 ID 在 Python 端生成；记录 badge→id 映射给 part 行用）
+    # =========================================================================
+    # 3. 工人：8 条
+    # =========================================================================
     worker_id_by_badge: dict[str, int] = {}
     worker_rows = []
     for badge, name, id_card, phone, is_active in _WORKERS:
@@ -250,8 +387,13 @@ def upgrade() -> None:
         sa.column("updated_at", sa.DateTime),
         sa.column("deleted_at", sa.DateTime),
     ), worker_rows)
+    active_worker_ids = [
+        worker_id_by_badge[w[0]] for w in _WORKERS if w[4]  # is_active
+    ]
 
-    # 3. 装配体：10 条
+    # =========================================================================
+    # 4. 装配体：10 条
+    # =========================================================================
     assembly_ids: list[int] = []
     assembly_rows = []
     for drawing_no, name, applicant, cust_id, req_d, plan_d, urgent, status in _ASSEMBLIES:
@@ -283,18 +425,40 @@ def upgrade() -> None:
         sa.column("deleted_at", sa.DateTime),
     ), assembly_rows)
 
-    # 4. 零件：50 条
-    #    serial_no 按一级客户前缀分配：法拉 F、路达 L；COMPLETED/CANCELLED 置 NULL。
-    #    IN_PROCESS 时给一个 current_worker_id：根据 _WORKER_HOLDS 反向查。
+    # =========================================================================
+    # 5. 货架：3 条（必须在零件之前创建，以便零件引用 shelf.id）
+    # =========================================================================
+    bind = op.get_bind()
+    shelf_ids: dict[str, int] = {}
+    for code, name, zone in _SHELVES:
+        sid = new_id()
+        shelf_ids[code] = sid
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_shelf (id, code, name, zone, is_active, created_at, updated_at)
+                VALUES (:id, :code, :name, :zone, true, now(), now())
+                """
+            ),
+            {"id": sid, "code": code, "name": name, "zone": zone},
+        )
+
+    # =========================================================================
+    # 6. 零件：50 条
+    #    - IN_PROCESS 零件随机分配到工人或生产货架（固定种子可复现）
+    #    - INSPECTION 零件全部放在品检货架 INSP-I1
+    #    - serial_no 按一级客户前缀：法拉 F、路达 L；COMPLETED/CANCELLED 置 NULL
+    #    - placed_at 对已下发过的状态设置为 request_date
+    # =========================================================================
+    holder_map, holder_type_map = _assign_in_process_holders(
+        _PARTS, active_worker_ids, shelf_ids,
+    )
+
     f_counter = 1000
     l_counter = 1000
-    drawing_to_worker_id: dict[str, int] = {}
-    for badge, drawings in _WORKER_HOLDS.items():
-        for d in drawings:
-            drawing_to_worker_id[d] = worker_id_by_badge[badge]
 
     part_rows = []
-    for drawing_no, name, applicant, qty, unit_price, cust_id, req_d, plan_d, actual_d, status, urgent, assy_idx in _PARTS:
+    for i, (drawing_no, name, applicant, qty, unit_price, cust_id, req_d, plan_d, actual_d, status, urgent, assy_idx) in enumerate(_PARTS):
         if cust_id in (1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):  # 法拉
             serial_no = f"F{f_counter}"
             f_counter += 1
@@ -305,12 +469,15 @@ def upgrade() -> None:
         if status in ("COMPLETED", "CANCELLED"):
             serial_no = None
 
-        current_worker_id: int | None = drawing_to_worker_id.get(drawing_no)
+        current_holder_id = holder_map.get(i)
+        holder_type = holder_type_map.get(i)
+        location = _derive_location(status, holder_type)
+
         req_date_obj = _d(req_d)
-        released_at = None
-        if status in ("READY", "IN_PROCESS", "INSPECTION", "READY_TO_SHIP",
+        placed_at = None
+        if status in ("IN_PROCESS", "INSPECTION", "READY_TO_SHIP",
                       "DELIVERED", "REPAIRING", "COMPLETED"):
-            released_at = datetime.combine(req_date_obj, datetime.min.time())
+            placed_at = datetime.combine(req_date_obj, datetime.min.time())
 
         part_rows.append({
             "id": new_id(),
@@ -322,9 +489,11 @@ def upgrade() -> None:
             "request_date": req_date_obj,
             "planned_delivery_date": _d(plan_d),
             "actual_delivery_date": _d(actual_d),
-            "status": status, "is_urgent": urgent,
-            "current_worker_id": current_worker_id,
-            "released_at": released_at,
+            "status": status,
+            "location": location,
+            "is_urgent": urgent,
+            "current_holder_id": current_holder_id,
+            "placed_at": placed_at,
             "customer_id": cust_id,
             "assembly_id": assembly_ids[assy_idx] if assy_idx is not None else None,
             "created_at": now, "updated_at": now, "deleted_at": None,
@@ -342,9 +511,10 @@ def upgrade() -> None:
         sa.column("planned_delivery_date", sa.Date),
         sa.column("actual_delivery_date", sa.Date),
         sa.column("status", sa.String),
+        sa.column("location", sa.String),
         sa.column("is_urgent", sa.Boolean),
-        sa.column("current_worker_id", sa.BigInteger),
-        sa.column("released_at", sa.DateTime),
+        sa.column("current_holder_id", sa.BigInteger),
+        sa.column("placed_at", sa.DateTime),
         sa.column("customer_id", sa.BigInteger),
         sa.column("assembly_id", sa.BigInteger),
         sa.column("created_at", sa.DateTime),
@@ -352,7 +522,9 @@ def upgrade() -> None:
         sa.column("deleted_at", sa.DateTime),
     ), part_rows)
 
-    # 5. 更新 t_serial_counter counter 到种子用到的最大号
+    # =========================================================================
+    # 7. 更新 t_serial_counter counter 到种子用到的最大号
+    # =========================================================================
     op.execute(
         f"UPDATE t_serial_counter SET counter = {f_counter}, updated_at = now() "
         f"WHERE prefix = 'F'"
@@ -362,11 +534,177 @@ def upgrade() -> None:
         f"WHERE prefix = 'L'"
     )
 
+    # =========================================================================
+    # 8. 用户 / 角色 seed（admin + 3 shelf accounts + 角色关联）
+    # =========================================================================
+    _seed_users(shelf_ids)
+
+    # =========================================================================
+    # 9. 菜单 / 角色菜单 seed
+    # =========================================================================
+    _seed_menus()
+
+
+# =============================================================================
+# 子函数：用户 / 角色 seed
+# =============================================================================
+def _seed_users(shelf_ids: dict[str, int]) -> None:
+    """插入 1 admin + 3 shelf accounts + 角色关联。
+
+    密码统一 `changeme`（bcrypt rounds=4，dev only）。
+    货架已在零件之前创建，这里只创建用户和角色。
+    """
+    import bcrypt as _bc
+
+    bind = op.get_bind()
+    changeme_hash = _bc.hashpw(b"changeme", _bc.gensalt(rounds=4)).decode("utf-8")
+
+    # 1) admin MANAGER
+    admin_id = new_id()
+    bind.execute(
+        sa.text(
+            """
+            INSERT INTO t_user (id, username, password_hash, full_name, is_active, created_at, updated_at)
+            VALUES (:id, 'admin', :pwd, '系统管理员', true, now(), now())
+            ON CONFLICT (username) WHERE deleted_at IS NULL DO NOTHING
+            """
+        ),
+        {"id": admin_id, "pwd": changeme_hash},
+    )
+
+    # 2) 3 个 SHELF_ACCOUNT 账号
+    shelf_users = [
+        ("proda1", "proda1", "生产-A1 操作员", "PROD-A1"),
+        ("prodb1", "prodb1", "生产-B1 操作员", "PROD-B1"),
+        ("inspi1", "inspi1", "品检-1 操作员", "INSP-I1"),
+    ]
+    for _, username, full_name, _shelf_code in shelf_users:
+        uid = new_id()
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_user (id, username, password_hash, full_name, is_active, created_at, updated_at)
+                VALUES (:id, :username, :pwd, :full_name, true, now(), now())
+                ON CONFLICT (username) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {"id": uid, "username": username, "pwd": changeme_hash, "full_name": full_name},
+        )
+
+    # 回查 user id
+    user_id_map: dict[str, int] = {}
+    rows = bind.execute(
+        sa.text(
+            "SELECT username, id FROM t_user WHERE deleted_at IS NULL AND username IN ('proda1','prodb1','inspi1','admin')"
+        )
+    ).fetchall()
+    for username, uid in rows:
+        user_id_map[username] = int(uid)
+
+    # 3) SHELF_ACCOUNT role 关联
+    for _discard_code, username, _discard_name, shelf_code in shelf_users:
+        uid = user_id_map.get(username)
+        sid = shelf_ids.get(shelf_code)
+        if uid is None or sid is None:
+            continue
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_user_role (id, user_id, role, scope_type, scope_id, created_at, updated_at)
+                VALUES (:id, :uid, 'SHELF_ACCOUNT', 'shelf', :sid, now(), now())
+                ON CONFLICT (user_id, role, scope_type, scope_id) DO NOTHING
+                """
+            ),
+            {"id": new_id(), "uid": uid, "sid": sid},
+        )
+
+    # 4) admin MANAGER role
+    admin_uid = user_id_map.get("admin")
+    if admin_uid is not None:
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_user_role (id, user_id, role, scope_type, scope_id, created_at, updated_at)
+                VALUES (:id, :uid, 'MANAGER', NULL, NULL, now(), now())
+                ON CONFLICT (user_id, role, scope_type, scope_id) DO NOTHING
+                """
+            ),
+            {"id": new_id(), "uid": admin_uid},
+        )
+
+
+# =============================================================================
+# 子函数：菜单 seed
+# =============================================================================
+def _seed_menus() -> None:
+    """插入 12 条默认菜单 + MANAGER / SHELF_ACCOUNT 角色菜单关联。"""
+    bind = op.get_bind()
+
+    id_by_code: dict[str, int] = {}
+    for row in _MENU_SEED:
+        mid = new_id()
+        id_by_code[row["code"]] = mid
+
+    for row in _MENU_SEED:
+        mid = id_by_code[row["code"]]
+        parent_id = id_by_code.get(row["parent"]) if row["parent"] else None
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_menu
+                  (id, parent_id, code, title, path, icon, sort_order, is_active,
+                   created_at, updated_at)
+                VALUES
+                  (:id, :parent_id, :code, :title, :path, :icon, :sort_order, true,
+                   now(), now())
+                ON CONFLICT (code) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {
+                "id": mid,
+                "parent_id": parent_id,
+                "code": row["code"],
+                "title": row["title"],
+                "path": row["path"],
+                "icon": row["icon"],
+                "sort_order": row["sort_order"],
+            },
+        )
+
+    # 回查实际写入的 id
+    rows = bind.execute(
+        sa.text("SELECT code, id FROM t_menu WHERE deleted_at IS NULL")
+    ).fetchall()
+    for code, mid in rows:
+        id_by_code[code] = int(mid)
+
+    # t_role_menu seed
+    for role, code in _ROLE_MENU_SEED:
+        mid = id_by_code.get(code)
+        if mid is None:
+            continue
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_role_menu (id, role, menu_id, created_at, updated_at)
+                VALUES (:id, :role, :menu_id, now(), now())
+                ON CONFLICT (role, menu_id) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {"id": new_id(), "role": role, "menu_id": mid},
+        )
+
 
 def downgrade() -> None:
     # 清掉所有种子数据（不删 schema）
+    op.execute("DELETE FROM t_part_event")
+    op.execute("DELETE FROM t_role_menu")
+    op.execute("DELETE FROM t_menu")
+    op.execute("DELETE FROM t_user_role")
     op.execute("DELETE FROM t_part")
     op.execute("DELETE FROM t_assembly")
+    op.execute("DELETE FROM t_user")
+    op.execute("DELETE FROM t_shelf")
     op.execute("DELETE FROM t_worker")
     op.execute("DELETE FROM t_customer")
-    op.execute("UPDATE t_serial_counter SET counter = 0 WHERE prefix IN ('F', 'L')")
+    op.execute("DELETE FROM t_serial_counter")

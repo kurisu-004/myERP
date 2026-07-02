@@ -26,6 +26,17 @@ class PartStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"           # 已取消
 
 
+class PartLocation(str, enum.Enum):
+    """零件物理位置。
+
+    解决 current_holder_id 多态歧义：通过 location 明确指向 shelf 表还是 worker 表。
+    """
+    OFFICE = "OFFICE"                       # 文员处（PENDING 状态）
+    PRODUCTION_SHELF = "PRODUCTION_SHELF"   # 生产货架（IN_PROCESS 状态）
+    WORKER = "WORKER"                       # 工人手中（IN_PROCESS 状态）
+    INSPECTION_SHELF = "INSPECTION_SHELF"   # 品检货架（INSPECTION 状态）
+
+
 class AssemblyStatus(str, enum.Enum):
     """装配件状态机。
 
@@ -50,44 +61,6 @@ class AssemblyStatus(str, enum.Enum):
     IN_PROCESS = "IN_PROCESS"     # 至少有一个子件进入生产环节
     COMPLETED = "COMPLETED"       # 所有子件均 COMPLETED
     CANCELLED = "CANCELLED"       # 手动取消（含级联子件）
-
-
-# Assembly 合法状态转换矩阵（service 层校验）。
-# - PENDING → IN_PROCESS：由子件状态变更事件触发
-# - IN_PROCESS → COMPLETED：所有子件都 COMPLETED 时由事件触发
-# - * → CANCELLED：手动调用 cancel 端点
-# 终态（COMPLETED / CANCELLED）不出现在 from 侧。
-ASSEMBLY_TRANSITIONS: frozenset[tuple[AssemblyStatus, AssemblyStatus]] = frozenset(
-    {
-        (AssemblyStatus.PENDING, AssemblyStatus.IN_PROCESS),
-        (AssemblyStatus.PENDING, AssemblyStatus.CANCELLED),
-        (AssemblyStatus.IN_PROCESS, AssemblyStatus.COMPLETED),
-        (AssemblyStatus.IN_PROCESS, AssemblyStatus.CANCELLED),
-    }
-)
-
-
-# Part 合法状态转换矩阵（service 层校验）。
-# 注意：任意状态 → CANCELLED 不列在内，由 service 单独放行。
-# 工人领取 / 归还（PICKED_UP / RETURNED）**不**是状态转换，
-# 只是 `current_holder_id` 在「工人↔货架」之间切换，状态恒为 IN_PROCESS。
-PART_TRANSITIONS: frozenset[tuple[PartStatus, PartStatus]] = frozenset(
-    {
-        # 文员把零件放到生产货架上（PENDING -> IN_PROCESS）
-        (PartStatus.PENDING, PartStatus.IN_PROCESS),
-        # 工人扫图纸送检（IN_PROCESS -> INSPECTION）
-        (PartStatus.IN_PROCESS, PartStatus.INSPECTION),
-        # 既有正向流水线
-        (PartStatus.INSPECTION, PartStatus.READY_TO_SHIP),
-        (PartStatus.READY_TO_SHIP, PartStatus.DELIVERED),
-        (PartStatus.DELIVERED, PartStatus.COMPLETED),
-        # 返修闭环
-        (PartStatus.INSPECTION, PartStatus.REPAIRING),
-        (PartStatus.READY_TO_SHIP, PartStatus.REPAIRING),
-        (PartStatus.DELIVERED, PartStatus.REPAIRING),
-        (PartStatus.REPAIRING, PartStatus.IN_PROCESS),
-    }
-)
 
 
 class PartEventType(str, enum.Enum):

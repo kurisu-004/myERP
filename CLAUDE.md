@@ -116,11 +116,11 @@ id: IdStrNonNull                # 非空主键 → JSON: "123456..."
 
 ### 4. 状态机校验在 service 层
 
-`PartStatus`（9 个状态）和 `AssemblyStatus`（4 个状态）定义在 `model/enums.py`。状态流转规则**不**在 DB 约束中实现，而是在 service 层校验。
+`PartStatus`（8 个 DB 状态）和 `AssemblyStatus`（4 个状态）定义在 `model/enums.py`。状态流转规则由 `python-statemachine` (`StateChart`) 管理，详见 [第 9 节](#9-状态机约定)。
 
-Part 状态：`PENDING → READY → IN_PROCESS → INSPECTION → READY_TO_SHIP → DELIVERED → COMPLETED`，另有 `REPAIRING` 分支和 `CANCELLED` 终态。合法跳转矩阵见 `model/enums.py` 的 `PART_TRANSITIONS`。
+旧的手写 `PART_TRANSITIONS` / `ASSEMBLY_TRANSITIONS` frozenset 和 `_assert_transition()` 已移除，迁移到 `statemachines/` 下的状态机类。
 
-Assembly 状态：`PENDING → IN_PROCESS → COMPLETED`，可由任意非终态 → `CANCELLED`。Assembly 的 `IN_PROCESS` / `COMPLETED` 切换由 service 在子件状态变更时**自动维护**，不走 `change-status` 端点。
+Assembly 的 `IN_PROCESS` / `COMPLETED` 切换由 service 在子件状态变更时**自动维护**，不走显式端点。
 
 ### 5. 错误处理
 
@@ -138,7 +138,7 @@ Assembly 状态：`PENDING → IN_PROCESS → COMPLETED`，可由任意非终态
 | 方法 | 用途 | 参数位置 | 例子 |
 |---|---|---|---|
 | `GET` | 查询（无副作用） | URL query string + path | `GET /api/v1/parts?status=PENDING` |
-| `POST` | 创建 / 状态变更 / 登录登出 / 任何需要 body 的请求 | URL path 表达动作 + JSON body | `POST /api/v1/parts`、`POST /api/v1/parts/{id}/change-status` |
+| `POST` | 创建 / 状态变更 / 登录登出 / 任何需要 body 的请求 | URL path 表达动作 + JSON body | `POST /api/v1/parts`、`POST /api/v1/parts/{id}/cancel` |
 
 约定：
 - **不**使用 `PUT` / `PATCH` / `DELETE`。
@@ -155,6 +155,37 @@ Assembly 状态：`PENDING → IN_PROCESS → COMPLETED`，可由任意非终态
 - 前端预览/下载走 `GET /api/v1/drawings/{file_id}/download-url`，后端用 `get_object_url` 签 GET 临时 URL（默认 900s）。
 - 上传走 multipart（`POST /v1/parts/{id}/files`、`POST /v1/assemblies/{id}/files`）。
 - 任何新增文件类型只改 `core/cos.py` 加方法，**不要**引入 presign PUT / STS 代码。
+
+### 9. 状态机约定
+
+Part 和 Assembly 的状态转换由 `python-statemachine` (`StateChart`) 管理。
+
+**位置**: `statemachines/part.py`（PartStateMachine）、`statemachines/assembly.py`（AssemblyStateMachine）。
+
+**集成方式**: ORM 模型通过 `sm` property 创建状态机实例，自动从 `model.status` + `model.location` 恢复当前状态。
+
+**Part 状态（扁平 9 态）**:
+```
+PENDING → ON_SHELF ⇄ WITH_WORKER → INSPECTION → READY_TO_SHIP → DELIVERED → COMPLETED
+                                      ↓
+                                   REPAIRING → ON_SHELF
+                                      ↑
+              INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
+任意非终态 → CANCELLED
+```
+
+- ON_SHELF / WITH_WORKER 映射到 DB `status="IN_PROCESS"`，通过 `location` 字段（`PRODUCTION_SHELF` / `WORKER`）区分。
+- 终态: COMPLETED、CANCELLED。
+
+**Assembly 状态（4 态）**: `PENDING → IN_PROCESS → COMPLETED`，可从 PENDING/IN_PROCESS → CANCELLED。
+
+**回调与副作用**: PartEvent 创建、流水号释放（COMPLETED/CANCELLED）、看板广播均在状态机回调中执行。回调通过 `send()` 的 `**kwargs` 接收依赖（`event_repo`、`shelf`、`worker` 等）。
+
+**Validator**: 需要 DB 访问的校验（货架存在性、区域、工人有效性）在 service 层调用 `sm.send()` 之前执行。状态机内部不包含 DB 访问。
+
+**取消操作**: 
+- Part cancel: `POST /parts/{id}/cancel`
+- Assembly cancel: `POST /assemblies/{id}/cancel`（级联取消所有非终态子件）
 
 ## 前端架构
 

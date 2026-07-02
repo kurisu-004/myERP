@@ -87,10 +87,10 @@ export function usePartsScanQueue() {
   }
 
   async function submit(
-    shelfId: number,
+    shelfId: string,
     badgeCode: string,
     action: WorkAction,
-    targetInspectionShelfId?: number | null,
+    targetInspectionShelfId?: string | null,
   ): Promise<void> {
     if (parts.value.length === 0) return
     for (const entry of parts.value) {

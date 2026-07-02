@@ -18,7 +18,7 @@ from schema.part import (
     PartOut,
     PartPickUpRequest,
     PartScanRequest,
-    PartStatusChangeRequest,
+    PartUpdateRequest,
     PlaceOnShelfRequest,
 )
 from service import PartService
@@ -39,11 +39,10 @@ _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
     dependencies=_mgr_dep,
 )
 async def list_parts(
-    customer_id: int | None = Query(default=None, description="客户 id（二级叶子节点）"),
-    status: str | None = Query(default=None, description="订单状态"),
+    customer_id: int | None = Query(default=None, description="客户 id"),
+    statuses: list[str] | None = Query(default=None, description="订单状态多选"),
     is_urgent: bool | None = Query(default=None, description="是否加急"),
-    drawing_no_like: str | None = Query(default=None, description="图号模糊匹配"),
-    name_like: str | None = Query(default=None, description="名称模糊匹配"),
+    keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -55,10 +54,9 @@ async def list_parts(
     return await svc.list_parts(
         PartListQuery(
             customer_id=customer_id,
-            status=PartStatus(status) if status else None,
+            statuses=[PartStatus(s) for s in statuses] if statuses else None,
             is_urgent=is_urgent,
-            drawing_no_like=drawing_no_like,
-            name_like=name_like,
+            keyword=keyword,
             sort_by=PartSortKey(sort_by),
             sort_dir=SortDir(sort_dir),
             limit=limit,
@@ -94,6 +92,20 @@ async def create_parts_batch(
     return await svc.create_parts_batch(payload)
 
 
+@router.post(
+    "/{part_id}/update",
+    response_model=PartOut,
+    summary="编辑零件基本信息（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def update_part(
+    part_id: int,
+    payload: PartUpdateRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.update_part(part_id, payload)
+
+
 @router.get(
     "/{part_id}",
     response_model=PartOut,
@@ -105,20 +117,6 @@ async def get_part(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.get_part(part_id)
-
-
-@router.post(
-    "/{part_id}/change-status",
-    response_model=PartOut,
-    summary="修改零件状态（MANAGER-only；COMPLETED/CANCELLED 会释放序列号）",
-    dependencies=_mgr_dep,
-)
-async def change_part_status(
-    part_id: int,
-    payload: PartStatusChangeRequest,
-    svc: PartService = Depends(get_part_service),
-) -> PartOut:
-    return await svc.change_status(part_id, payload)
 
 
 @router.post(
@@ -146,6 +144,85 @@ async def place_part_on_shelf(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.place_on_shelf(part_id, payload)
+
+
+@router.post(
+    "/{part_id}/pass-inspection",
+    response_model=PartOut,
+    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def pass_part_inspection(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.pass_inspection(part_id)
+
+
+@router.post(
+    "/{part_id}/deliver",
+    response_model=PartOut,
+    summary="READY_TO_SHIP → DELIVERED：发货（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def deliver_part(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.deliver(part_id)
+
+
+@router.post(
+    "/{part_id}/complete",
+    response_model=PartOut,
+    summary="DELIVERED → COMPLETED：确认完成，释放流水号（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def complete_part(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.complete(part_id)
+
+
+@router.post(
+    "/{part_id}/start-repair",
+    response_model=PartOut,
+    summary="→ REPAIRING：开始返修（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def start_part_repair(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.start_repair(part_id)
+
+
+@router.post(
+    "/{part_id}/complete-repair",
+    response_model=PartOut,
+    summary="REPAIRING → IN_PROCESS：返修完成（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def complete_part_repair(
+    part_id: int,
+    shelf_id: int = Query(..., description="目标生产货架 id"),
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.complete_repair(part_id, shelf_id)
+
+
+@router.post(
+    "/{part_id}/cancel",
+    response_model=PartOut,
+    summary="→ CANCELLED：取消零件，释放流水号（MANAGER-only）",
+    dependencies=_mgr_dep,
+)
+async def cancel_part(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.cancel(part_id)
 
 
 @router.get(

@@ -98,6 +98,18 @@ async def soft_delete_assembly(
     return {"ok": True}
 
 
+@router.post(
+    "/{assembly_id}/cancel",
+    response_model=AssemblyDetail,
+    summary="取消装配体，级联取消所有非终态子件",
+)
+async def cancel_assembly(
+    assembly_id: int,
+    svc: AssemblyService = Depends(get_assembly_service),
+) -> AssemblyDetail:
+    return await svc.cancel_assembly(assembly_id)
+
+
 # ---------- 子件反查（MANAGER-only） ----------
 child_router = APIRouter(
     prefix="/parts",

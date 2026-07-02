@@ -1,6 +1,6 @@
 // 后端工人 API（走 @/api/http 统一 axios 客户端）。
 
-import { api } from '@/api/http'
+import { ApiError, api } from '@/api/http'
 import type {
   Worker,
   WorkerCreatePayload,
@@ -61,41 +61,40 @@ export async function reactivateWorker(id: string): Promise<Worker> {
   return resp.data
 }
 
-// ============ 工牌扫码查找（客户端缓存） ============
+// ============ 工牌扫码定位 ============
 //
-// 后端目前没有 GET /workers/by-badge/{code} 端点，且本轮不动后端。
-// 折中方案：拉一次在职工人列表到本地缓存，按 badge_code 客户端精匹配。
-// 任何对工人增删改之后必须调 invalidateWorkerCache() 让缓存失效。
+// 旧实现：拉一次 GET /workers?is_active=true&limit=500 → 客户端 Array.find。
+// 问题：(1) 整张工人表被无权用户拿走（信息泄露 / 越权）；
+//       (2) SHELF_ACCOUNT 根本无权调 GET /workers（router 强制 MANAGER），原本就是 403 隐患；
+//       (3) 500 条硬上限导致工人 >500 时扫描误报；
+//       (4) 60s TTL 导致新增 / 停用延迟生效。
+// 新实现：POST /workers/verify-badge 单点 query；权限 = require_auth()，
+//       MANAGER 与 SHELF_ACCOUNT 都能调。后端在 service 层做 is_active 校验。
 
-const CACHE_TTL_MS = 60_000
-const CACHE_LIMIT = 500
-
-interface WorkerCache {
-  list: Worker[]
-  ts: number
-}
-
-let workerCache: WorkerCache | null = null
-
-/** 强制失效缓存；下次 findWorkerByBadge 会重新拉 */
-export function invalidateWorkerCache(): void {
-  workerCache = null
-}
+// 后端错误码：20201 = BIZ_WORKER_NOT_FOUND, 20202 = BIZ_WORKER_INACTIVE。
+// 这两种是扫描时的"未识别"业务态，前端按 null 处理；其他错误原样抛出。
+const WORKER_NOT_FOUND = 20201
+const WORKER_INACTIVE = 20202
 
 /**
  * 按工牌码精确匹配工人。
- * - 命中缓存：本地 Array.find，零网络开销
- * - 缓存 miss/过期：拉 listWorkers 重建
- * - 没找到：返回 null（不抛错，调用方按业务决定提示）
+ * - 命中且在职 → 返回 Worker。
+ * - 不存在 / 已停用 → 返回 null（不抛错，调用方按业务决定提示文案）。
+ * - 网络 / 其他错误 → 原样抛 ApiError。
  */
 export async function findWorkerByBadge(badgeCode: string): Promise<Worker | null> {
   const code = badgeCode.trim()
   if (!code) return null
 
-  const now = Date.now()
-  if (!workerCache || now - workerCache.ts > CACHE_TTL_MS) {
-    const res = await listWorkers({ is_active: true, limit: CACHE_LIMIT })
-    workerCache = { list: res.items, ts: now }
+  try {
+    const resp = await api.post<Worker>('/workers/verify-badge', {
+      badge_code: code,
+    })
+    return resp.data
+  } catch (e) {
+    if (e instanceof ApiError && (e.code === WORKER_NOT_FOUND || e.code === WORKER_INACTIVE)) {
+      return null
+    }
+    throw e
   }
-  return workerCache.list.find((w) => w.badge_code === code) ?? null
 }

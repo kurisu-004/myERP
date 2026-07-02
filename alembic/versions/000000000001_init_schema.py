@@ -1,25 +1,34 @@
-"""init_schema: create all tables, columns, indexes, checks, triggers
+"""init_schema: create all tables, columns, indexes, checks
 
 Revision ID: 000000000001
 Revises:
-Create Date: 2026-07-01
+Create Date: 2026-07-02
 
 说明：
-- 把原本的 7 个 schema 迁移（a1f9c2d8e3b4 / b2c3d4e5f6a7 / c3d4e5f6a7b8 /
-  d4e5f6a7b8c9 / e5f6a7b8c9d0 / f1a2b3c4d5e6 / 1a2b3c4d5e6f）整合为一个。
-- **fresh-install only**：本迁移假定数据库为空（无 enum 列、无旧 schema）。
-  整段 "DROP TYPE part_status / enum→varchar 转换" 路径不再需要——
-  因为本迁移从一开始就建 `varchar(20)`，不经过 enum。
+- 整合原 5 个迁移（init_schema / init_seed / user_and_shelf / menu /
+  add_part_location）的 DDL 为一个 schema 迁移。
+- **fresh-install only**：本迁移假定数据库为空。
 - **不使用物理外键**（CLAUDE.md §1）：所有跨表引用都是普通列 + 普通索引。
-- **不使用 DB ENUM**（CLAUDE.md 待补 §9）：t_part.status / t_assembly.status
+- **不使用 DB ENUM**（CLAUDE.md）：t_part.status / t_assembly.status
   全部用 `varchar(20)`，取值合法性由 Python Enum 在 service 层校验。
 - 审计字段（created_at / created_by / updated_at / updated_by / deleted_at）
-  列顺序与 model/audit.py:AuditMixin 严格对齐，避免 alembic
-  compare_column_order 触发虚假重排迁移。
-- t_part_event 是事件流（append-only），继承 EventTimestampMixin，
-  故意不建 updated_at / 操作人 / 软删。
+  列顺序与 model/audit.py:AuditMixin 严格对齐。
+- t_part_event 是事件流（append-only），继承 EventTimestampMixin。
 - 软删约定：默认查询 `deleted_at IS NULL`；repository 已统一加。
-- `t_serial_counter` 启动时种 3 行 L/F/H，counter=0。
+
+表清单（共 12 张）：
+  1. t_customer       — 客户邻接表
+  2. t_part           — 零件订单（含全部列）
+  3. t_worker         — 工人
+  4. t_part_event     — 零件事件流
+  5. t_serial_counter — 流水号计数器
+  6. t_assembly       — 装配体
+  7. t_drawing_file   — 图纸文件元数据
+  8. t_user           — 账号主表
+  9. t_user_role      — 账号↔角色
+  10. t_shelf         — 货架
+  11. t_menu          — 菜单（邻接表）
+  12. t_role_menu     — 角色↔菜单
 """
 from typing import Sequence, Union
 
@@ -40,7 +49,6 @@ def upgrade() -> None:
         "t_customer",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(length=100), nullable=False),
-        # parent_id 是逻辑外键，指向 t_customer.id（无 DB FK 约束）。
         sa.Column("parent_id", sa.BigInteger, nullable=True),
         # —— 审计字段 ——
         sa.Column(
@@ -65,13 +73,15 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 2) t_part：零件订单（不含 serial_no / current_worker_id / released_at / assembly_id）
-    #    后面用 ALTER 加上（保持与原 b2c3d4... + c3d4e5... + 1a2b3c4... 的演进路径对应）
+    # 2) t_part：零件订单（含全部列，一次性建好）
+    #    - current_holder_id：多态 holder（→ t_worker.id 或 t_shelf.id）
+    #    - location：解决多态歧义（OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF）
+    #    - 不含 released_at（READY 状态已移除）
     # =================================================================
-    # 雪花 ID：通过 SQLAlchemy default 注入；DB 层不设置 autoincrement。
     op.create_table(
         "t_part",
         sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("serial_no", sa.String(length=8), nullable=True),
         sa.Column("name", sa.String(length=200), nullable=False),
         sa.Column("drawing_no", sa.String(length=100), nullable=False),
         sa.Column("applicant_name", sa.String(length=50), nullable=False),
@@ -89,18 +99,34 @@ def upgrade() -> None:
         sa.Column("request_date", sa.Date(), nullable=False),
         sa.Column("planned_delivery_date", sa.Date(), nullable=False),
         sa.Column("actual_delivery_date", sa.Date(), nullable=True),
-        # 不使用 DB ENUM：varchar(20) + Python PartStatus 校验。
         sa.Column(
             "status", sa.String(length=20), nullable=False,
             server_default="PENDING",
+        ),
+        sa.Column(
+            "location", sa.String(length=20), nullable=True,
+            comment="零件物理位置: OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF",
         ),
         sa.Column(
             "is_urgent", sa.Boolean(), nullable=False,
             server_default=sa.text("false"),
             comment="是否加急",
         ),
-        # customer_id 是逻辑外键，指向 t_customer.id（无 DB FK 约束）。
+        # 报工字段
+        sa.Column(
+            "current_holder_id", sa.BigInteger(), nullable=True,
+            comment="多态 holder → t_worker.id 或 t_shelf.id",
+        ),
+        sa.Column(
+            "placed_at", sa.DateTime(), nullable=True,
+            comment="PENDING→IN_PROCESS 时置位",
+        ),
+        # 逻辑外键
         sa.Column("customer_id", sa.BigInteger, nullable=False),
+        sa.Column(
+            "assembly_id", sa.BigInteger(), nullable=True,
+            comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
+        ),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -114,6 +140,7 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
+    # t_part 索引
     op.create_index("ix_t_part_name", "t_part", ["name"])
     op.create_index("ix_t_part_drawing_no", "t_part", ["drawing_no"])
     op.create_index("ix_t_part_customer_id", "t_part", ["customer_id"])
@@ -124,21 +151,7 @@ def upgrade() -> None:
         "ix_t_part_planned_delivery_date", "t_part", ["planned_delivery_date"],
     )
     op.create_index("ix_t_part_deleted_at", "t_part", ["deleted_at"])
-    op.create_index(
-        "ix_t_part_customer_status_delivery",
-        "t_part",
-        ["customer_id", "status", "planned_delivery_date"],
-    )
-
-    # =================================================================
-    # 3) ALTER t_part ADD serial_no（对应原 b2c3d4e5f6a7）
-    #    fresh-install 时没有旧数据需要回填，跳过那段 WITH active ... UPDATE
-    # =================================================================
-    op.add_column(
-        "t_part",
-        sa.Column("serial_no", sa.String(length=8), nullable=True),
-    )
-    # 部分唯一索引：仅对非 NULL serial_no，保证全局不重复
+    # serial_no 部分唯一索引
     op.create_index(
         "uk_t_part_serial_no",
         "t_part",
@@ -146,28 +159,33 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("serial_no IS NOT NULL"),
     )
-
-    # =================================================================
-    # 4) ALTER t_part ADD current_worker_id / released_at（对应原 c3d4e5f6a7b8）
-    # =================================================================
-    op.add_column(
+    # current_holder_id
+    op.create_index(
+        "ix_t_part_current_holder_id", "t_part", ["current_holder_id"],
+    )
+    # placed_at
+    op.create_index("ix_t_part_placed_at", "t_part", ["placed_at"])
+    # location
+    op.create_index("ix_t_part_location", "t_part", ["location"])
+    # assembly_id
+    op.create_index("ix_t_part_assembly_id", "t_part", ["assembly_id"])
+    # 复合索引
+    op.create_index(
+        "ix_t_part_customer_status_delivery",
         "t_part",
-        sa.Column("current_worker_id", sa.BigInteger(), nullable=True),
+        ["customer_id", "status", "planned_delivery_date"],
     )
     op.create_index(
-        "ix_t_part_current_worker_id", "t_part", ["current_worker_id"],
-    )
-    op.add_column(
-        "t_part",
-        sa.Column("released_at", sa.DateTime(), nullable=True),
+        "ix_t_part_assembly_id_status", "t_part", ["assembly_id", "status"],
     )
     op.create_index(
-        "ix_t_part_released_at", "t_part", ["released_at"],
+        "ix_t_part_status_holder",
+        "t_part",
+        ["status", "current_holder_id"],
     )
 
     # =================================================================
-    # 5) t_worker：含最终版本的 id_card_no / phone 字段与 uk_t_worker_id_card_no 唯一索引
-    #    （合并原 c3d4e5f6a7b8 + d4e5f6a7b8c9 + e5f6a7b8c9d0）
+    # 3) t_worker
     # =================================================================
     op.create_table(
         "t_worker",
@@ -200,7 +218,6 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime, nullable=True),
     )
-    # 工牌码唯一索引（未删除行内唯一）
     op.create_index(
         "uk_t_worker_badge_code",
         "t_worker",
@@ -208,7 +225,6 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
-    # 身份证号唯一索引：仅对非 NULL 约束
     op.create_index(
         "uk_t_worker_id_card_no",
         "t_worker",
@@ -220,7 +236,7 @@ def upgrade() -> None:
     op.create_index("ix_t_worker_deleted_at", "t_worker", ["deleted_at"])
 
     # =================================================================
-    # 6) t_part_event：订单全生命周期事件流（append-only，EventTimestampMixin）
+    # 4) t_part_event：订单全生命周期事件流（append-only，EventTimestampMixin）
     # =================================================================
     op.create_table(
         "t_part_event",
@@ -244,7 +260,7 @@ def upgrade() -> None:
     op.create_index("ix_part_event_worker_id", "t_part_event", ["worker_id"])
 
     # =================================================================
-    # 7) t_serial_counter + 种子 L/F/H counter=0（对应原 f1a2b3c4d5e6）
+    # 5) t_serial_counter：流水号计数器
     # =================================================================
     op.create_table(
         "t_serial_counter",
@@ -265,31 +281,9 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.BigInteger(), nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
-    op.execute(
-        sa.text(
-            "INSERT INTO t_serial_counter (prefix, counter) "
-            "VALUES ('L', 0), ('F', 0), ('H', 0) "
-            "ON CONFLICT (prefix) DO NOTHING"
-        )
-    )
 
     # =================================================================
-    # 8) ALTER t_part ADD assembly_id（对应原 1a2b3c4d5e6f）
-    # =================================================================
-    op.add_column(
-        "t_part",
-        sa.Column(
-            "assembly_id", sa.BigInteger(), nullable=True,
-            comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
-        ),
-    )
-    op.create_index("ix_t_part_assembly_id", "t_part", ["assembly_id"])
-    op.create_index(
-        "ix_t_part_assembly_id_status", "t_part", ["assembly_id", "status"],
-    )
-
-    # =================================================================
-    # 9) t_assembly：4 态 PENDING/IN_PROCESS/COMPLETED/CANCELLED
+    # 6) t_assembly：4 态 PENDING/IN_PROCESS/COMPLETED/CANCELLED
     # =================================================================
     op.create_table(
         "t_assembly",
@@ -344,7 +338,7 @@ def upgrade() -> None:
     op.create_index("ix_t_assembly_deleted_at", "t_assembly", ["deleted_at"])
 
     # =================================================================
-    # 10) t_drawing_file：COS 上的图纸文件元数据
+    # 7) t_drawing_file：COS 上的图纸文件元数据
     # =================================================================
     op.create_table(
         "t_drawing_file",
@@ -410,10 +404,219 @@ def upgrade() -> None:
         "ix_t_drawing_file_deleted_at", "t_drawing_file", ["deleted_at"],
     )
 
+    # =================================================================
+    # 8) t_user：账号主表
+    # =================================================================
+    op.create_table(
+        "t_user",
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("username", sa.String(length=50), nullable=False),
+        sa.Column("password_hash", sa.String(length=255), nullable=False),
+        sa.Column("full_name", sa.String(length=50), nullable=False),
+        sa.Column("phone", sa.String(length=20), nullable=True),
+        sa.Column(
+            "is_active", sa.Boolean(), nullable=False,
+            server_default=sa.text("true"),
+        ),
+        sa.Column("last_login_at", sa.DateTime(), nullable=True),
+        # —— 审计字段 ——
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index(
+        "uk_t_user_username",
+        "t_user",
+        ["username"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index("ix_t_user_deleted_at", "t_user", ["deleted_at"])
+
+    # =================================================================
+    # 9) t_user_role：账号 ↔ 角色多对多
+    # =================================================================
+    op.create_table(
+        "t_user_role",
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("user_id", sa.BigInteger(), nullable=False),
+        sa.Column("role", sa.String(length=20), nullable=False),
+        sa.Column("scope_type", sa.String(length=20), nullable=True),
+        sa.Column("scope_id", sa.BigInteger(), nullable=True),
+        # —— 审计字段 ——
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.UniqueConstraint(
+            "user_id", "role", "scope_type", "scope_id",
+            name="uk_t_user_role_user_role_scope",
+        ),
+    )
+    op.create_index(
+        "ix_t_user_role_user_id", "t_user_role", ["user_id"],
+    )
+    op.create_index(
+        "ix_t_user_role_scope", "t_user_role", ["scope_type", "scope_id"],
+    )
+    op.create_index("ix_t_user_role_deleted_at", "t_user_role", ["deleted_at"])
+
+    # =================================================================
+    # 10) t_shelf：货架实体
+    # =================================================================
+    op.create_table(
+        "t_shelf",
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("code", sa.String(length=32), nullable=False),
+        sa.Column("name", sa.String(length=100), nullable=False),
+        sa.Column("zone", sa.String(length=16), nullable=False),
+        sa.Column("location", sa.String(length=200), nullable=True),
+        sa.Column(
+            "is_active", sa.Boolean(), nullable=False,
+            server_default=sa.text("true"),
+        ),
+        # —— 审计字段 ——
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index(
+        "uk_t_shelf_code",
+        "t_shelf",
+        ["code"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index("ix_t_shelf_zone", "t_shelf", ["zone"])
+    op.create_index("ix_t_shelf_deleted_at", "t_shelf", ["deleted_at"])
+
+    # =================================================================
+    # 11) t_menu：菜单主表（邻接表）
+    # =================================================================
+    op.create_table(
+        "t_menu",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("parent_id", sa.BigInteger(), nullable=True),
+        sa.Column("code", sa.String(length=64), nullable=False),
+        sa.Column("title", sa.String(length=50), nullable=False),
+        sa.Column("path", sa.String(length=200), nullable=True),
+        sa.Column("icon", sa.String(length=50), nullable=True),
+        sa.Column(
+            "sort_order", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "is_active", sa.Boolean(), nullable=False,
+            server_default=sa.text("true"),
+        ),
+        # —— 审计字段 ——
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint(
+            "parent_id IS NULL OR parent_id <> id",
+            name="ck_t_menu_no_self_loop",
+        ),
+    )
+    op.create_index(
+        "uk_t_menu_code",
+        "t_menu",
+        ["code"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index("ix_t_menu_parent_id", "t_menu", ["parent_id"])
+    op.create_index("ix_t_menu_deleted_at", "t_menu", ["deleted_at"])
+
+    # =================================================================
+    # 12) t_role_menu：角色↔菜单 N:M
+    # =================================================================
+    op.create_table(
+        "t_role_menu",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("role", sa.String(length=20), nullable=False),
+        sa.Column("menu_id", sa.BigInteger(), nullable=False),
+        # —— 审计字段 ——
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index(
+        "uk_t_role_menu_role_menu",
+        "t_role_menu",
+        ["role", "menu_id"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index("ix_t_role_menu_role", "t_role_menu", ["role"])
+    op.create_index("ix_t_role_menu_menu_id", "t_role_menu", ["menu_id"])
+    op.create_index("ix_t_role_menu_deleted_at", "t_role_menu", ["deleted_at"])
+
 
 def downgrade() -> None:
-    # 倒序 drop（注意外键关系：先 drop t_drawing_file / t_part_event，
-    # 再 drop t_part 加的列/索引，最后 drop t_part / t_customer）
+    # 倒序 drop
+    op.drop_index("ix_t_role_menu_deleted_at", table_name="t_role_menu")
+    op.drop_index("ix_t_role_menu_menu_id", table_name="t_role_menu")
+    op.drop_index("ix_t_role_menu_role", table_name="t_role_menu")
+    op.drop_table("t_role_menu")
+
+    op.drop_index("ix_t_menu_deleted_at", table_name="t_menu")
+    op.drop_index("ix_t_menu_parent_id", table_name="t_menu")
+    op.drop_table("t_menu")
+
+    op.drop_index("ix_t_shelf_deleted_at", table_name="t_shelf")
+    op.drop_index("ix_t_shelf_zone", table_name="t_shelf")
+    op.drop_index("uk_t_shelf_code", table_name="t_shelf")
+    op.drop_table("t_shelf")
+
+    op.drop_index("ix_t_user_role_deleted_at", table_name="t_user_role")
+    op.drop_index("ix_t_user_role_scope", table_name="t_user_role")
+    op.drop_index("ix_t_user_role_user_id", table_name="t_user_role")
+    op.drop_table("t_user_role")
+
+    op.drop_index("ix_t_user_deleted_at", table_name="t_user")
+    op.drop_index("uk_t_user_username", table_name="t_user")
+    op.drop_table("t_user")
+
     op.drop_index("ix_t_drawing_file_deleted_at", table_name="t_drawing_file")
     op.drop_index("ix_t_drawing_file_assembly_type", table_name="t_drawing_file")
     op.drop_index("ix_t_drawing_file_part_type", table_name="t_drawing_file")
@@ -429,10 +632,6 @@ def downgrade() -> None:
     op.drop_index("ix_t_assembly_drawing_no", table_name="t_assembly")
     op.drop_table("t_assembly")
 
-    op.drop_index("ix_t_part_assembly_id_status", table_name="t_part")
-    op.drop_index("ix_t_part_assembly_id", table_name="t_part")
-    op.drop_column("t_part", "assembly_id")
-
     op.drop_table("t_serial_counter")
 
     op.drop_index("ix_part_event_worker_id", table_name="t_part_event")
@@ -447,17 +646,14 @@ def downgrade() -> None:
     op.drop_index("uk_t_worker_badge_code", table_name="t_worker")
     op.drop_table("t_worker")
 
-    op.drop_index("ix_t_part_released_at", table_name="t_part")
-    op.drop_column("t_part", "released_at")
-    op.drop_index("ix_t_part_current_worker_id", table_name="t_part")
-    op.drop_column("t_part", "current_worker_id")
-
+    op.drop_index("ix_t_part_status_holder", table_name="t_part")
+    op.drop_index("ix_t_part_assembly_id_status", table_name="t_part")
+    op.drop_index("ix_t_part_customer_status_delivery", table_name="t_part")
+    op.drop_index("ix_t_part_assembly_id", table_name="t_part")
+    op.drop_index("ix_t_part_location", table_name="t_part")
+    op.drop_index("ix_t_part_placed_at", table_name="t_part")
+    op.drop_index("ix_t_part_current_holder_id", table_name="t_part")
     op.drop_index("uk_t_part_serial_no", table_name="t_part")
-    op.drop_column("t_part", "serial_no")
-
-    op.drop_index(
-        "ix_t_part_customer_status_delivery", table_name="t_part",
-    )
     op.drop_index("ix_t_part_deleted_at", table_name="t_part")
     op.drop_index("ix_t_part_planned_delivery_date", table_name="t_part")
     op.drop_index("ix_t_part_request_date", table_name="t_part")

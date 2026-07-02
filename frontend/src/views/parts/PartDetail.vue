@@ -2,50 +2,98 @@
   PartDetail.vue
 
   /parts/:id  零件详情页。
-  - 信息卡：序列号 / 图号 / 名称 / 状态 / 数量 / 客户 / 计划交期 / 实际送货 / 加急 / id
-  - 所属装配件卡：仅当 part.assembly_id 非空时显示，含装配件基础信息 + 兄弟零件入口
-  - 图纸 / 文件卡：FileListCard（PDF 内嵌预览 / STEP 等下载）
-  - 历史卡：调用 GET /api/v1/parts/{id}/events，el-timeline 倒序展示
+  - 信息卡：支持点击「编辑」切换内联编辑模式
+  - 页面底部放置「取消订单」「删除」按钮，需输入流水号确认
 -->
-
 <template>
   <div class="part-detail">
-    
     <!-- 信息卡 -->
     <el-card shadow="never" class="info-card" v-loading="infoLoading">
       <template v-if="part">
-        <el-descriptions :column="3" border>
-          <el-descriptions-item label="序列号">
-            <span v-if="part.serial_no">{{ part.serial_no }}</span>
-            <span v-else class="muted">—</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="图号">{{ part.drawing_no }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="statusTagType(part.status)" effect="plain" size="small">
-              {{ statusLabel(part.status) }}
-            </el-tag>
-          </el-descriptions-item>
+        <template v-if="editing">
+          <el-descriptions :column="3" border>
+            <el-descriptions-item label="序列号">
+              <span v-if="part.serial_no" class="mono">{{ part.serial_no }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="图号">
+              <el-input v-model="form.drawing_no" size="small" />
+            </el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag :type="statusTagType(part.status)" effect="plain" size="small">
+                {{ statusLabel(part.status) }}
+              </el-tag>
+            </el-descriptions-item>
 
-          <el-descriptions-item label="名称" :span="3">{{ part.name }}</el-descriptions-item>
+            <el-descriptions-item label="名称" :span="3">
+              <el-input v-model="form.name" size="small" />
+            </el-descriptions-item>
 
-          <el-descriptions-item label="数量">{{ part.quantity }}</el-descriptions-item>
-          <el-descriptions-item label="加急">
-            <el-tag v-if="part.is_urgent" type="danger" effect="dark" size="small">加急</el-tag>
-            <span v-else class="muted">否</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="客户">
-            <span v-if="part.customer_path">{{ part.customer_path }}</span>
-            <span v-else-if="part.customer_name">{{ part.customer_name }}</span>
-            <span v-else class="muted">—</span>
-          </el-descriptions-item>
+            <el-descriptions-item label="数量">
+              <el-input-number v-model="form.quantity" :min="1" size="small" style="width:100%" />
+            </el-descriptions-item>
+            <el-descriptions-item label="加急">
+              <el-switch v-model="form.is_urgent" active-text="加急" />
+            </el-descriptions-item>
+            <el-descriptions-item label="客户">
+              <span v-if="part.customer_path">{{ part.customer_path }}</span>
+              <span v-else-if="part.customer_name">{{ part.customer_name }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
 
-          <el-descriptions-item label="计划交期">{{ part.planned_delivery_date }}</el-descriptions-item>
-          <el-descriptions-item label="实际送货">
-            <span v-if="part.actual_delivery_date">{{ part.actual_delivery_date }}</span>
-            <span v-else class="muted">—</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="单据 ID">#{{ part.id }}</el-descriptions-item>
-        </el-descriptions>
+            <el-descriptions-item label="计划交期">
+              <el-date-picker v-model="form.planned_delivery_date" type="date" size="small" style="width:100%" />
+            </el-descriptions-item>
+            <el-descriptions-item label="实际送货">
+              <el-date-picker v-model="form.actual_delivery_date" type="date" size="small" style="width:100%" />
+            </el-descriptions-item>
+            <el-descriptions-item label="单据 ID">#{{ part.id }}</el-descriptions-item>
+          </el-descriptions>
+
+          <div class="edit-actions">
+            <el-button @click="onCancelEdit">取消</el-button>
+            <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
+          </div>
+        </template>
+
+        <template v-else>
+          <el-descriptions :column="3" border>
+            <el-descriptions-item label="序列号">
+              <span v-if="part.serial_no" class="mono">{{ part.serial_no }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="图号">{{ part.drawing_no }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag :type="statusTagType(part.status)" effect="plain" size="small">
+                {{ statusLabel(part.status) }}
+              </el-tag>
+            </el-descriptions-item>
+
+            <el-descriptions-item label="名称" :span="3">{{ part.name }}</el-descriptions-item>
+
+            <el-descriptions-item label="数量">{{ part.quantity }}</el-descriptions-item>
+            <el-descriptions-item label="加急">
+              <el-tag v-if="part.is_urgent" type="danger" effect="dark" size="small">加急</el-tag>
+              <span v-else class="muted">否</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="客户">
+              <span v-if="part.customer_path">{{ part.customer_path }}</span>
+              <span v-else-if="part.customer_name">{{ part.customer_name }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
+
+            <el-descriptions-item label="计划交期">{{ part.planned_delivery_date }}</el-descriptions-item>
+            <el-descriptions-item label="实际送货">
+              <span v-if="part.actual_delivery_date">{{ part.actual_delivery_date }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="单据 ID">#{{ part.id }}</el-descriptions-item>
+          </el-descriptions>
+
+          <div class="edit-actions">
+            <el-button type="primary" plain @click="onStartEdit">编辑</el-button>
+          </div>
+        </template>
       </template>
     </el-card>
 
@@ -182,16 +230,62 @@
       </div>
       <el-empty v-else description="暂无历史记录" />
     </el-card>
+
+    <!-- 底部操作：取消订单 / 删除 -->
+    <el-card shadow="never" class="bottom-actions" v-if="part">
+      <div class="action-row">
+        <el-button
+          v-if="part.status !== 'CANCELLED' && part.status !== 'COMPLETED'"
+          type="warning"
+          @click="onCancelOrder"
+        >取消订单</el-button>
+        <el-button type="danger" @click="onDeletePart">删除</el-button>
+      </div>
+    </el-card>
+
+    <!-- 取消 / 删除确认对话框 -->
+    <el-dialog v-model="confirmVisible" :title="confirmTitle" width="420px">
+      <div class="confirm-body">
+        <p class="confirm-hint">{{ confirmHint }}</p>
+        <el-form label-width="80px">
+          <el-form-item label="流水号">
+            <el-input
+              v-model="confirmSerialNo"
+              placeholder="请输入该零件的流水号以确认"
+              clearable
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="confirmVisible = false">取消</el-button>
+        <el-button
+          :type="confirmAction === 'cancel' ? 'warning' : 'danger'"
+          :loading="confirmSubmitting"
+          :disabled="!confirmSerialNo.trim()"
+          @click="onConfirmAction"
+        >确认{{ confirmAction === 'cancel' ? '取消' : '删除' }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Connection, Right, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
-import { getPart, listPartEvents, type PartItem, type PartEvent } from '@/api/parts'
+import {
+  cancelPart,
+  getPart,
+  listPartEvents,
+  softDeletePart,
+  updatePart,
+  type PartItem,
+  type PartEvent,
+  type PartUpdatePayload,
+} from '@/api/parts'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
@@ -206,7 +300,7 @@ import type { DrawingFileItem } from '@/types/file'
 import { listPartFiles } from '@/api/assembly'
 
 const route = useRoute()
-// id 是后端 IdStr 序列化的字符串，雪花 ID 完整保留；不再 Number() 转回去
+const router = useRouter()
 const partId = ref<string>(String(route.params.id ?? ''))
 
 // ============ 数据 ============
@@ -218,6 +312,114 @@ const infoLoading = ref(false)
 const eventsLoading = ref(false)
 const filesLoading = ref(false)
 const assemblyLoading = ref(false)
+
+// ============ 编辑模式 ============
+const editing = ref(false)
+const saving = ref(false)
+const form = reactive({
+  name: '',
+  drawing_no: '',
+  quantity: 1,
+  is_urgent: false,
+  planned_delivery_date: '',
+  actual_delivery_date: '' as string | null,
+})
+
+function onStartEdit(): void {
+  if (!part.value) return
+  form.name = part.value.name
+  form.drawing_no = part.value.drawing_no
+  form.quantity = part.value.quantity
+  form.is_urgent = part.value.is_urgent
+  form.planned_delivery_date = part.value.planned_delivery_date
+  form.actual_delivery_date = part.value.actual_delivery_date
+  editing.value = true
+}
+
+function onCancelEdit(): void {
+  editing.value = false
+}
+
+async function onSave(): Promise<void> {
+  saving.value = true
+  try {
+    const payload: PartUpdatePayload = {
+      name: form.name.trim(),
+      drawing_no: form.drawing_no.trim(),
+      quantity: form.quantity,
+      is_urgent: form.is_urgent,
+      planned_delivery_date: form.planned_delivery_date,
+      actual_delivery_date: form.actual_delivery_date || null,
+    }
+    part.value = await updatePart(partId.value, payload)
+    ElMessage.success('保存成功')
+    editing.value = false
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+// ============ 取消 / 删除 ============
+const confirmVisible = ref(false)
+const confirmAction = ref<'cancel' | 'delete'>('cancel')
+const confirmSerialNo = ref('')
+const confirmSubmitting = ref(false)
+
+const confirmTitle = computed(() =>
+  confirmAction.value === 'cancel' ? '取消订单' : '删除零件'
+)
+
+const confirmHint = computed(() => {
+  const base = confirmAction.value === 'cancel'
+    ? '取消后订单将变为 CANCELLED 状态，流水号将被释放。'
+    : '删除后将软删除该零件记录。'
+  return `${base}\n请输入该零件的流水号以确认操作。`
+})
+
+function onCancelOrder(): void {
+  confirmAction.value = 'cancel'
+  confirmSerialNo.value = ''
+  confirmVisible.value = true
+}
+
+function onDeletePart(): void {
+  confirmAction.value = 'delete'
+  confirmSerialNo.value = ''
+  confirmVisible.value = true
+}
+
+async function onConfirmAction(): Promise<void> {
+  const expected = part.value?.serial_no
+  if (!expected) {
+    ElMessage.error('该零件无流水号，无法执行此操作')
+    return
+  }
+  if (confirmSerialNo.value.trim() !== expected) {
+    ElMessage.error('流水号不匹配，请重新输入')
+    return
+  }
+  confirmSubmitting.value = true
+  try {
+    if (confirmAction.value === 'cancel') {
+      await cancelPart(partId.value)
+      ElMessage.success('已取消')
+      confirmVisible.value = false
+      await fetchPart()
+      void fetchEvents()
+    } else {
+      await softDeletePart(partId.value)
+      ElMessage.success('已删除')
+      confirmVisible.value = false
+      router.push('/parts')
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '操作失败')
+  } finally {
+    confirmSubmitting.value = false
+  }
+}
 
 function statusLabel(s: OrderStatus): string {
   return ORDER_STATUS_LABEL[s] ?? s
@@ -302,13 +504,13 @@ onMounted(() => {
   void fetchFiles()
 })
 
-// 路由参数变化时重新拉
 watch(
   () => route.params.id,
   async (id) => {
     const s = String(id ?? '')
     if (!s) return
     partId.value = s
+    editing.value = false
     assemblyDetail.value = null
     files.value = []
     await fetchPart()
@@ -318,7 +520,6 @@ watch(
   },
 )
 
-// 拿到 part 之后再异步拉装配件信息（不阻塞主流程）
 watch(
   () => part.value?.assembly_id,
   () => {
@@ -334,17 +535,11 @@ watch(
   gap: 12px;
 }
 
-.sheet-title {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f6fb 100%);
-  border: 1px solid var(--border-color);
-  border-bottom: 2px solid var(--primary-color);
-  padding: 14px 20px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--primary-color);
-  letter-spacing: 2px;
-  text-align: center;
-  border-radius: 4px 4px 0 0;
+.edit-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .card-header {
@@ -411,6 +606,23 @@ watch(
 }
 .sib-label {
   font-size: 12px;
+}
+
+.bottom-actions {
+  .action-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+}
+
+.confirm-body {
+  .confirm-hint {
+    white-space: pre-line;
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
 }
 
 .history-card {

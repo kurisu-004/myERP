@@ -1,75 +1,77 @@
 <!--
   PartsList.vue
 
-  零件一览表。字段与后端 PartOut 严格对齐：
-    id / serial_no / drawing_no / name / quantity
-    / planned_delivery_date / actual_delivery_date
-    / is_urgent / status / customer_name / parent_customer_name / customer_path
+  零件一览表。
 
-  - 列表/分页走 GET /api/v1/parts，limit/offset 服务端分页。
-  - 搜索条件：drawing_no_like / name_like / status / is_urgent（与后端 PartListQuery 一一对应）。
-  - 排序仅支持 planned_delivery_date（与后端 PartSortKey 对齐）。
-  - 删除走 POST /api/v1/parts/{id}/soft-delete。
-  - 编辑尚未实装（路由 /parts/{id}/edit 不存在），按钮暂时给 ElMessage 提示。
+  - 进入页面自动查询「生产中 + 返修中」零件
+  - 状态 / 加急使用 checkbox 多选，勾选后即时查询
+  - 图号 + 名称共用一个搜索框，前缀匹配
+  - 新增「所在位置」列：货架显示 code，工人显示姓名
+  - 实际送货时间不在列表展示（详情页可见）
 -->
-
 <template>
   <div class="parts-list">
     <el-card shadow="never" class="filter-card">
-      <el-form :model="search" inline label-width="80px" @submit.prevent="onSearch">
-        <el-form-item label="图号">
-          <el-input
-            v-model="search.drawingNo"
-            placeholder="如：LT39822"
-            clearable
-            style="width: 160px"
-          />
-        </el-form-item>
-        <el-form-item label="名称">
-          <el-input
-            v-model="search.name"
-            placeholder="如：塞规"
-            clearable
-            style="width: 160px"
-          />
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-select
-            v-model="search.status"
-            placeholder="全部"
-            clearable
-            style="width: 150px"
-          >
-            <el-option
-              v-for="opt in statusOptions"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="加急">
-          <el-select
-            v-model="search.isUrgent"
-            placeholder="全部"
-            clearable
-            style="width: 110px"
-          >
-            <el-option label="是" value="true" />
-            <el-option label="否" value="false" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="loading" @click="onSearch">
+      <div class="filter-row">
+        <el-input
+          v-model="search.keyword"
+          placeholder="图号 / 名称（前缀搜索）"
+          clearable
+          style="width: 260px"
+          @keyup.enter="onSearch"
+          @clear="onSearch"
+        >
+          <template #prefix>
             <el-icon><Search /></el-icon>
-            <span>查询</span>
-          </el-button>
-          <el-button @click="onReset">
-            <el-icon><RefreshLeft /></el-icon>
-            <span>重置</span>
-          </el-button>
-        </el-form-item>
-      </el-form>
+          </template>
+        </el-input>
+
+        <el-popover placement="bottom-start" :width="200" trigger="click">
+          <template #reference>
+            <el-button :type="statusTags.length > 0 ? 'primary' : ''" plain>
+              状态<el-tag
+                v-if="statusTags.length > 0"
+                size="small"
+                round
+                effect="dark"
+                style="margin-left:6px"
+              >{{ statusTags.length }}</el-tag>
+            </el-button>
+          </template>
+          <el-checkbox-group v-model="search.statuses" @change="onSearch">
+            <div v-for="opt in statusOptions" :key="opt.value" style="margin-bottom:6px">
+              <el-checkbox :value="opt.value" :label="opt.label" />
+            </div>
+          </el-checkbox-group>
+        </el-popover>
+
+        <el-popover placement="bottom-start" :width="140" trigger="click">
+          <template #reference>
+            <el-button :type="search.isUrgent !== null ? 'primary' : ''" plain>
+              加急<el-tag
+                v-if="search.isUrgent !== null"
+                size="small"
+                round
+                effect="dark"
+                style="margin-left:6px"
+              >1</el-tag>
+            </el-button>
+          </template>
+          <el-checkbox-group
+            :model-value="urgentCheckboxModel"
+            @update:model-value="onUrgentChange"
+          >
+            <div style="margin-bottom:6px">
+              <el-checkbox value="urgent" label="加急" />
+            </div>
+            <div style="margin-bottom:6px">
+              <el-checkbox value="normal" label="非加急" />
+            </div>
+          </el-checkbox-group>
+        </el-popover>
+
+        <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
+      </div>
     </el-card>
 
     <div class="sheet-wrapper">
@@ -84,7 +86,6 @@
         @sort-change="onSortChange"
         :empty-text="emptyText"
       >
-        <!-- <el-table-column type="index" label="#" width="48" fixed="left" /> -->
         <el-table-column prop="serial_no" label="序列号" width="110" fixed="left" show-overflow-tooltip>
           <template #default="{ row }">
             <span :class="{ 'muted': !row.serial_no }">{{ row.serial_no || '—' }}</span>
@@ -98,7 +99,7 @@
             </router-link>
           </template>
         </el-table-column>
-        <el-table-column prop="quantity" label="数量" width="80" align="right" sortable="custom" />
+        <el-table-column prop="quantity" label="数量" width="80" align="right" />
         <el-table-column prop="planned_delivery_date" label="计划交期" width="120" sortable="custom" />
 
         <el-table-column prop="is_urgent" label="加急" width="80" align="center">
@@ -121,6 +122,17 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="所在位置" width="150" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.current_holder_kind === 'shelf' && row.shelf_code">
+              货架 {{ row.shelf_code }}
+            </span>
+            <span v-else-if="row.current_holder_kind === 'worker' && row.worker_name">
+              {{ row.worker_name }}
+            </span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="装配" width="80" align="center">
           <template #default="{ row }">
             <el-tag
@@ -137,15 +149,16 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="actual_delivery_date" label="实际送货" width="120">
-          <template #default="{ row }">
-            <span :class="{ 'muted': !row.actual_delivery_date }">{{ row.actual_delivery_date || '—' }}</span>
-          </template>
-        </el-table-column>
         <el-table-column label="操作" width="130" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="onEdit(row as PartItem)">编辑</el-button>
-            <el-button link type="danger" size="small" @click="onDelete(row as PartItem)">删除</el-button>
+            <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
+            <el-button
+              v-if="row.status === 'PENDING'"
+              link
+              type="success"
+              size="small"
+              @click="onDispatch(row as PartItem)"
+            >下发</el-button>
           </template>
         </el-table-column>
 
@@ -156,32 +169,58 @@
     </div>
 
     <div class="pagination">
-      <span class="total-text">共 {{ total }} 条记录</span>
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
         :page-sizes="[10, 20, 50, 100]"
         :total="total"
-        layout="sizes, prev, pager, next, jumper"
+        layout="total, sizes, prev, pager, next, jumper"
         background
         size="small"
         @current-change="fetchList"
         @size-change="onPageSizeChange"
       />
     </div>
+
+    <!-- 下发对话框 -->
+    <el-dialog v-model="dispatchVisible" title="下发零件" width="400px" @closed="dispatchPartId = null">
+      <el-form label-width="80px">
+        <el-form-item label="目标货架">
+          <el-select
+            v-model="dispatchShelfId"
+            placeholder="选择生产货架"
+            style="width: 100%"
+            filterable
+          >
+            <el-option
+              v-for="s in shelves"
+              :key="s.id"
+              :label="s.name"
+              :value="s.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dispatchVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dispatchSubmitting" :disabled="!dispatchShelfId" @click="onDispatchConfirm">确认下发</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, RefreshLeft, Connection } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { Search, Connection } from '@element-plus/icons-vue'
 import {
   listParts,
-  softDeletePart,
+  placeOnShelf,
   type ListPartsParams,
   type PartItem,
 } from '@/api/parts'
+import { listShelves } from '@/api/shelves'
+import type { Shelf } from '@/types/shelf'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
@@ -190,14 +229,38 @@ import {
   type SortDir,
 } from '@/types/parts'
 
-// ============ 搜索条件（与后端 PartListQuery 对齐）============
+// ============ 搜索条件 ============
 const initialSearch = () => ({
-  drawingNo: '',
-  name: '',
-  status: '' as '' | OrderStatus,
-  isUrgent: '' as '' | 'true' | 'false',
+  keyword: '',
+  statuses: ['IN_PROCESS', 'REPAIRING'] as OrderStatus[],
+  isUrgent: null as boolean | null,
 })
 const search = reactive(initialSearch())
+
+const statusTags = computed(() => search.statuses)
+
+const urgentCheckboxModel = computed<string[]>(() => {
+  const out: string[] = []
+  if (search.isUrgent === true) out.push('urgent')
+  if (search.isUrgent === false) out.push('normal')
+  return out
+})
+
+function onUrgentChange(vals: unknown): void {
+  const arr: string[] = Array.isArray(vals) ? vals.map(String) : []
+  const hasUrgent = arr.includes('urgent')
+  const hasNormal = arr.includes('normal')
+  if (hasUrgent && hasNormal) {
+    search.isUrgent = null // 两者都选 = 不限
+  } else if (hasUrgent) {
+    search.isUrgent = true
+  } else if (hasNormal) {
+    search.isUrgent = false
+  } else {
+    search.isUrgent = null
+  }
+  onSearch()
+}
 
 const statusOptions: { value: OrderStatus; label: string }[] = (
   Object.keys(ORDER_STATUS_LABEL) as OrderStatus[]
@@ -224,10 +287,9 @@ function statusTagType(s: OrderStatus): 'primary' | 'success' | 'warning' | 'inf
 
 function buildParams(): ListPartsParams {
   return {
-    drawing_no_like: search.drawingNo.trim() || undefined,
-    name_like: search.name.trim() || undefined,
-    status: search.status || undefined,
-    is_urgent: search.isUrgent === '' ? undefined : search.isUrgent === 'true',
+    statuses: search.statuses.length > 0 ? search.statuses : undefined,
+    is_urgent: search.isUrgent ?? undefined,
+    keyword: search.keyword.trim() || undefined,
     sort_by: sortBy.value,
     sort_dir: sortDir.value,
     limit: pageSize.value,
@@ -256,13 +318,8 @@ onMounted(() => {
   void fetchList()
 })
 
-// ============ 搜索 / 重置 / 排序 / 分页 ============
+// ============ 搜索 / 排序 / 分页 ============
 const onSearch = (): void => {
-  page.value = 1
-  void fetchList()
-}
-const onReset = (): void => {
-  Object.assign(search, initialSearch())
   page.value = 1
   void fetchList()
 }
@@ -273,11 +330,8 @@ const onSortChange = ({
   prop: string | null
   order: 'ascending' | 'descending' | null
 }): void => {
-  // 暂时只把 planned_delivery_date 映射成后端 PartSortKey
   if (prop === 'planned_delivery_date') {
     sortBy.value = 'PLANNED_DELIVERY_DATE'
-  } else if (prop === 'quantity') {
-    // quantity 后端无对应 sort_by，按点击顺序切换升降序表达，不传后端
   }
   if (order === 'ascending') sortDir.value = 'ASC'
   else if (order === 'descending') sortDir.value = 'DESC'
@@ -289,34 +343,42 @@ const onPageSizeChange = (size: number): void => {
   void fetchList()
 }
 
-// ============ 行操作 ============
-const onEdit = (row: PartItem): void => {
-  ElMessage.info(`编辑 #${row.id}（${row.drawing_no}）— 待实装`)
+// ============ 下发 ============
+// shelf_id 在前端保持字符串：雪花 ID 长度 > 2^53，`Number(s.id)` 会丢精度
+// （实测 `Number("198362487928651776")` → "198362487928651780"，差 4）。
+// 后端 Pydantic v2 默认 lax 模式会从 JSON string 自动 coerce 到 int。
+const shelves = ref<Shelf[]>([])
+const dispatchVisible = ref(false)
+const dispatchShelfId = ref<string | null>(null)
+const dispatchPartId = ref<string | null>(null)
+const dispatchSubmitting = ref(false)
+
+async function onDispatch(row: PartItem): Promise<void> {
+  dispatchPartId.value = row.id
+  dispatchShelfId.value = null
+  // 拉取生产货架列表
+  try {
+    const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
+    shelves.value = resp.items
+  } catch {
+    shelves.value = []
+  }
+  dispatchVisible.value = true
 }
-const onDelete = (row: PartItem): void => {
-  ElMessageBox.confirm(
-    `确认删除零件「${row.name}」（图号：${row.drawing_no}）？此操作将软删。`,
-    '提示',
-    {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-    },
-  )
-    .then(async () => {
-      try {
-        await softDeletePart(row.id)
-        ElMessage.success('删除成功')
-        // 当前页删完后退到上一页；否则保持当前页
-        if (items.value.length === 1 && page.value > 1) {
-          page.value -= 1
-        }
-        void fetchList()
-      } catch (e) {
-        ElMessage.error((e as Error).message ?? '删除失败')
-      }
-    })
-    .catch(() => undefined)
+
+async function onDispatchConfirm(): Promise<void> {
+  if (!dispatchPartId.value || !dispatchShelfId.value) return
+  dispatchSubmitting.value = true
+  try {
+    await placeOnShelf(dispatchPartId.value, dispatchShelfId.value)
+    ElMessage.success('下发成功')
+    dispatchVisible.value = false
+    void fetchList()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '下发失败')
+  } finally {
+    dispatchSubmitting.value = false
+  }
 }
 </script>
 
@@ -329,8 +391,21 @@ const onDelete = (row: PartItem): void => {
 
 .filter-card {
   :deep(.el-card__body) {
-    padding-bottom: 0;
+    padding: 12px 16px;
   }
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.total-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-left: auto;
 }
 
 .sheet-wrapper {
@@ -343,14 +418,9 @@ const onDelete = (row: PartItem): void => {
 
 .pagination {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   padding: 0 4px;
-}
-
-.total-text {
-  color: var(--text-secondary);
-  font-size: 13px;
 }
 
 .muted {

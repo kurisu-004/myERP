@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -88,6 +89,11 @@ class TPart(Base, AuditMixin):
         index=True,
     )
 
+    location: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, index=True,
+        comment="零件物理位置: OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF",
+    )
+
     is_urgent: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -130,6 +136,12 @@ class TPart(Base, AuditMixin):
         index=True,
         comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
     )
+
+    @property
+    def sm(self) -> "PartStateMachine":
+        """返回此零件的状态机实例。"""
+        from statemachines.part import PartStateMachine
+        return PartStateMachine(model=self)
 
     # —— 组合索引 ——
     # `ix_t_part_status_holder`：按状态 + holder 查询（Dashboard「按货架分组」）。

@@ -49,6 +49,17 @@ class WorkerRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_by_ids(
+        self, worker_ids: list[int], *, include_deleted: bool = False
+    ) -> list[TWorker]:
+        if not worker_ids:
+            return []
+        stmt = select(TWorker).where(TWorker.id.in_(worker_ids))
+        if not include_deleted:
+            stmt = stmt.where(TWorker.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 列表 =====
     async def list_with_filters(
         self,

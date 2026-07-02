@@ -11,11 +11,14 @@ from schema._types import IdStr, IdStrNonNull
 class PartListQuery(BaseModel):
     """零件列表查询参数（同时作为 URL Query 参数）。"""
 
-    customer_id: int | None = Field(default=None, description="客户 id（二级叶子节点）")
-    status: PartStatus | None = Field(default=None, description="订单状态精确匹配")
-    is_urgent: bool | None = Field(default=None, description="是否加急")
-    drawing_no_like: str | None = Field(default=None, description="图号模糊匹配（ILIKE）")
-    name_like: str | None = Field(default=None, description="名称模糊匹配（ILIKE）")
+    customer_id: int | None = Field(default=None, description="客户 id")
+    statuses: list[PartStatus] | None = Field(
+        default=None, description="订单状态多选（空=全部）"
+    )
+    is_urgent: bool | None = Field(default=None, description="是否加急（null=全部）")
+    keyword: str | None = Field(
+        default=None, description="图号/名称前缀搜索（对两列 OR ILIKE '...%'）"
+    )
     sort_by: PartSortKey = Field(
         default=PartSortKey.PLANNED_DELIVERY_DATE, description="排序字段"
     )
@@ -73,6 +76,14 @@ class PartOut(BaseModel):
     placed_at: datetime | None = Field(
         default=None,
         description="首次放到生产货架的时间（PENDING→IN_PROCESS 时置位）",
+    )
+    location: str | None = Field(
+        default=None,
+        description="零件物理位置: OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF",
+    )
+    worker_name: str | None = Field(
+        default=None,
+        description="当 holder 是工人时返回工人姓名；否则 null",
     )
 
 
@@ -156,6 +167,22 @@ class PlaceOnShelfRequest(BaseModel):
         if v <= 0:
             raise ValueError("shelf_id 必须 > 0")
         return v
+
+
+class PartUpdateRequest(BaseModel):
+    """编辑零件基本信息（所有字段可选，只更新传入的非 None 字段）。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    drawing_no: str | None = Field(default=None, min_length=1, max_length=100)
+    applicant_name: str | None = Field(default=None, max_length=50)
+    quantity: int | None = Field(default=None, ge=1)
+    unit_price: Decimal | None = Field(default=None, ge=0)
+    total_price: Decimal | None = Field(default=None, ge=0)
+    request_date: date | None = None
+    planned_delivery_date: date | None = None
+    actual_delivery_date: date | None = None
+    is_urgent: bool | None = None
+    customer_id: int | None = Field(default=None, description="客户 id")
 
 
 class PartPickUpRequest(BaseModel):

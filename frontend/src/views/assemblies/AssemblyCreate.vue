@@ -11,7 +11,7 @@
   5. 成功 → 跳到 /assemblies/:id；失败 → 行内 ElMessage 错误
 
   关键约束（与后端 AssemblyService 对齐）：
-  - customer_id 必须是二级叶子节点（前端用 cascader 限制）
+  - customer_id 可填一级或二级客户节点（前端用 cascader 选择）
   - children 至少 1 行；每行 page_index >= 2（page 1 是总装图）
   - PDF 文件名后缀必须是 .pdf；其他类型后端拒收
 -->
@@ -54,7 +54,7 @@
 
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="客户（二级叶子）" prop="customer_id">
+            <el-form-item label="客户" prop="customer_id">
               <el-cascader
                 v-model="form.customer_id"
                 :options="customerTree"
@@ -65,7 +65,7 @@
                   checkStrictly: true,
                   emitPath: false,
                 }"
-                placeholder="选择二级客户节点（一级集团不允许）"
+                placeholder="选择一级 / 二级客户"
                 style="width: 100%"
                 clearable
               />
@@ -354,13 +354,14 @@ const rules: FormRules = {
     {
       required: true,
       validator: (_r, value, cb) => {
-        if (typeof value !== 'number') {
-          cb(new Error('请选择二级客户节点'))
+        // cascader emitPath:false 返回选中节点的 id，来自 Customer.id（string）
+        if (value === null || value === undefined || value === '') {
+          cb(new Error('请选择客户'))
           return
         }
         const c = customers.value.find((x) => String(x.id) === String(value))
-        if (!c || c.parent_id === null) {
-          cb(new Error('请选择二级客户节点（一级集团不允许）'))
+        if (!c) {
+          cb(new Error('客户不存在'))
           return
         }
         cb()
@@ -426,7 +427,7 @@ async function onSubmit(): Promise<void> {
       drawing_no: form.drawing_no.trim(),
       name: form.name.trim(),
       applicant_name: form.applicant_name.trim() || null,
-      customer_id: form.customer_id as number,
+      customer_id: Number(form.customer_id),
       request_date: form.request_date,
       planned_delivery_date: form.planned_delivery_date,
       is_urgent: form.is_urgent,

@@ -11,6 +11,27 @@ ID_CARD_RE = re.compile(r"^\d{17}[\dXx]$")
 PHONE_CN_RE = re.compile(r"^\+?\d{6,20}$")
 
 
+class BadgeVerifyRequest(BaseModel):
+    """扫码台校验工牌。POST body 仅含 badge_code，不传其他字段。
+
+    与 GET /workers/{id} 相比：
+    - 走 path 而非 list：避免一次性拉所有工人导致信息泄露 / 越权。
+    - 任何已登录用户（MANAGER / SHELF_ACCOUNT）都可调，不限定 MANAGER。
+    - 命中后端单点 query：再无客户端缓存 TTL / 500 条硬上限问题。
+    """
+
+    badge_code: str = Field(
+        min_length=1,
+        max_length=50,
+        description="工牌扫码值；车间扫码台以此定位工人",
+    )
+
+    @field_validator("badge_code")
+    @classmethod
+    def strip(cls, v: str) -> str:
+        return v.strip()
+
+
 class WorkerCreateRequest(BaseModel):
     """新增工人。"""
 

@@ -48,6 +48,39 @@ class WorkerService:
             )
         return _worker_to_out(w)
 
+    async def verify_badge(self, badge_code: str) -> WorkerOut:
+        """扫码台按工牌码定位工人（单点查询，不返列表）。
+
+        - 不存在 → 404 BIZ_WORKER_NOT_FOUND
+        - 已停用 → 400 BIZ_WORKER_INACTIVE
+        - 命中且在职 → 返回完整 WorkerOut
+
+        复用 repository.get_by_badge_code（默认过滤 deleted_at IS NULL）。
+        与 get_worker 行为对齐：deleted 或未命中都按 404 处理。
+        入参自动 strip：API 层 schema 已经 strip，service 再做一次防御。
+        """
+        code = badge_code.strip()
+        if not code:
+            raise BizError(
+                code=ErrCode.BIZ_WORKER_NOT_FOUND,
+                message="badge_code is empty",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        w = await self.workers.get_by_badge_code(code)
+        if w is None:
+            raise BizError(
+                code=ErrCode.BIZ_WORKER_NOT_FOUND,
+                message=f"badge_code {code!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not w.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_WORKER_INACTIVE,
+                message=f"worker {w.name} (badge {w.badge_code!r}) is inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return _worker_to_out(w)
+
     # ===== 写 =====
     async def create_worker(self, data: WorkerCreateRequest) -> WorkerOut:
         existing = await self.workers.get_by_badge_code(data.badge_code)

@@ -66,7 +66,7 @@ export async function listUserRoles(userId: string): Promise<UserRoleOut[]> {
 export interface AddUserRolePayload {
   role: string
   scope_type?: string | null
-  scope_id?: number | null
+  scope_id?: string | null
 }
 
 export async function addUserRole(

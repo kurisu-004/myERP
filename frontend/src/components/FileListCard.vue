@@ -87,10 +87,11 @@
       fullscreen
       :close-on-click-modal="false"
       destroy-on-close
+      @closed="onPreviewClosed"
     >
       <PdfViewer
         v-if="previewFile && isPdf(previewFile.file_type)"
-        :url="`/api/v1/drawings/${previewFile.id}/content`"
+        :url="previewBlobUrl"
         :page="previewFile.page_index ?? defaultPage ?? 1"
         :initial-scale="1.4"
       />
@@ -124,7 +125,8 @@ import {
 } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
 import PdfViewer from './PdfViewer.vue'
-import { deleteFile } from '@/api/assembly'
+import { api } from '@/api/http'
+import { deleteFile, getDownloadUrl, uploadAssemblyFile, uploadPartFile } from '@/api/assembly'
 import type { DrawingFileItem } from '@/types/file'
 
 interface Props {
@@ -152,6 +154,7 @@ const ACCEPT = '.pdf,.step,.stp,.dwg,.dxf'
 const uploading = ref(false)
 const previewVisible = ref(false)
 const previewFile = ref<DrawingFileItem | null>(null)
+const previewBlobUrl = ref<string>('')
 
 const previewTitle = computed<string>(
   () => `预览 — ${previewFile.value?.original_filename ?? ''}`,
@@ -182,23 +185,12 @@ async function onPick(uploadFile: UploadFile): Promise<void> {
   if (!uploadFile.raw) return
   uploading.value = true
   try {
-    const url =
+    const result: DrawingFileItem =
       props.ownerType === 'assembly'
-        ? '/api/v1/assemblies/' + props.ownerId + '/files'
-        : '/api/v1/parts/' + props.ownerId + '/files'
-    const form = new FormData()
-    form.append('file', uploadFile.raw)
-    const resp = await fetch(url, { method: 'POST', body: form })
-    const json = (await resp.json()) as {
-      code: number
-      message: string
-      data: DrawingFileItem
-    }
-    if (json.code !== 0) {
-      throw new Error(json.message || `API error code=${json.code}`)
-    }
-    ElMessage.success(`已上传：${json.data.original_filename}`)
-    emit('uploaded', json.data)
+        ? await uploadAssemblyFile(props.ownerId, uploadFile.raw)
+        : await uploadPartFile(props.ownerId, uploadFile.raw)
+    ElMessage.success(`已上传：${result.original_filename}`)
+    emit('uploaded', result)
     emit('refresh')
   } catch (e) {
     ElMessage.error((e as Error).message ?? '上传失败')
@@ -207,21 +199,41 @@ async function onPick(uploadFile: UploadFile): Promise<void> {
   }
 }
 
-function onPreview(f: DrawingFileItem): void {
+async function onPreview(f: DrawingFileItem): Promise<void> {
   previewFile.value = f
   previewVisible.value = true
+  // 通过 axios 拉取文件内容（带上 Authorization header），生成 blob URL 给 pdfjs
+  try {
+    const resp = await api.get(`/drawings/${f.id}/content`, { responseType: 'blob' })
+    if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
+    previewBlobUrl.value = URL.createObjectURL(resp.data)
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载文件失败')
+  }
 }
 
-function downloadCurrent(): void {
+function onPreviewClosed(): void {
+  if (previewBlobUrl.value) {
+    URL.revokeObjectURL(previewBlobUrl.value)
+    previewBlobUrl.value = ''
+  }
+}
+
+async function downloadCurrent(): Promise<void> {
   if (!previewFile.value) return
-  const a = document.createElement('a')
-  a.href = `/api/v1/drawings/${previewFile.value.id}/content`
-  a.target = '_blank'
-  a.rel = 'noopener'
-  a.download = ''
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
+  try {
+    const url = await getDownloadUrl(previewFile.value.id)
+    const a = document.createElement('a')
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener'
+    a.download = ''
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '下载失败')
+  }
 }
 
 async function onDelete(f: DrawingFileItem): Promise<void> {

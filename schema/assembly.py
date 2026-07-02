@@ -32,7 +32,7 @@ class AssemblyOut(BaseModel):
     planned_delivery_date: date
     actual_delivery_date: date | None = None
     is_urgent: bool
-    status: str = Field(description="PENDING / COMPLETED")
+    status: str = Field(description="PENDING / IN_PROCESS / COMPLETED / CANCELLED")
     child_count: int = Field(description="子零件数量")
     created_at: datetime
     updated_at: datetime
@@ -42,7 +42,7 @@ class AssemblyListQuery(BaseModel):
     """装配体列表查询参数。"""
 
     customer_id: int | None = Field(default=None, description="客户 id")
-    status: str | None = Field(default=None, description="PENDING / COMPLETED")
+    status: str | None = Field(default=None, description="PENDING / IN_PROCESS / COMPLETED / CANCELLED")
     is_urgent: bool | None = Field(default=None, description="是否加急")
     drawing_no_like: str | None = Field(default=None, description="图号模糊匹配")
     name_like: str | None = Field(default=None, description="名称模糊匹配")

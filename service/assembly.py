@@ -58,7 +58,7 @@ def _parse_status(value: str | None) -> str | None:
     if value is None:
         return None
     v = value.strip().upper()
-    if v not in {"PENDING", "COMPLETED"}:
+    if v not in {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}:
         raise BizError(
             code=ErrCode.BIZ_INVALID_VALUE,
             message=f"invalid assembly status: {value!r}",
@@ -128,12 +128,6 @@ class AssemblyService:
                 code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
                 message=f"customer {data.customer_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        if cust.parent_id is None:
-            raise BizError(
-                code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
-                message="装配件只能挂在二级客户节点（一级集团不允许）",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
         # 1. 写 t_assembly（先拿到 id，后面所有 COS key / 外键都依赖它）
@@ -362,6 +356,37 @@ class AssemblyService:
                 ),
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        return await self._build_detail(asm)
+
+    # ============================================================
+    # 取消（级联）
+    # ============================================================
+    async def cancel_assembly(self, assembly_id: int) -> AssemblyDetail:
+        """取消装配体，级联取消所有非终态子件。
+
+        - Assembly: PENDING/IN_PROCESS → CANCELLED
+        - 每个非终态子 Part → CANCELLED
+        - 终态（COMPLETED, CANCELLED）的子件不处理
+        """
+        asm = await self.assemblies.get_by_id(assembly_id)
+        if asm is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
+                message=f"assembly {assembly_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        # 级联取消所有非终态子件
+        children = await self.parts.list_children(assembly_id)
+        for child in children:
+            if child.status not in ("COMPLETED", "CANCELLED"):
+                child.sm.cancel(event_repo=self.events)
+                await self.parts.session.flush()
+
+        # 取消装配体自身
+        asm.sm.cancel()
+        await self.assemblies.session.flush()
+
         return await self._build_detail(asm)
 
     # ============================================================

@@ -84,11 +84,9 @@ import {
   useScanSession,
   type WorkAction,
 } from '@/composables/useScanSession'
-import { useWorkerCache } from '@/composables/useWorkerCache'
 
 const router = useRouter()
 const { worker, setAction, reset, requireWorker } = useScanSession()
-const { invalidate } = useWorkerCache()
 
 onBeforeMount(() => {
   if (!requireWorker(router)) return
@@ -101,7 +99,7 @@ function selectAction(a: WorkAction): void {
 }
 
 function rescanBadge(): void {
-  invalidate()
+  // 不再需要清客户端缓存：findWorkerByBadge 直接打后端，结果强一致。
   reset()
   void router.replace('/scan/badge')
 }

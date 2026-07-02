@@ -1,7 +1,7 @@
 // composables/useAuthSession.ts
 //
 // 通用账号 session（不是业务 worker；后者保持在 useScanSession）。
-// - 模块级单例，跨组件共享（与 useScanSession / useWorkerCache 同构）。
+// - 模块级单例，跨组件共享（与 useScanSession / useBarcodeScanner 同构）。
 // - localStorage key: 'auth_session'；内容 { token, user }。
 // - login() → POST /auth/login；logout() → 清 storage + 回 /login。
 // - hasRole / canOperateShelf 供路由守卫和组件使用。
@@ -52,15 +52,22 @@ export function useAuthSession() {
     return user.value?.roles.includes(role) ?? false
   }
 
-  function canOperateShelf(shelfId: number): boolean {
+  function canOperateShelf(shelfId: string): boolean {
     if (hasRole('MANAGER')) return true
     if (!hasRole('SHELF_ACCOUNT')) return false
-    return (user.value?.shelf_ids ?? []).includes(String(shelfId))
+    return (user.value?.shelf_ids ?? []).includes(shelfId)
   }
 
-  function activeShelfId(): number | null {
+  /**
+   * 当前 SHELF_ACCOUNT 账号 scope 到的第一个货架 id（字符串）。
+   *
+   * 注意：返回 string 而非 number —— 雪花 ID 长度 > 2^53，`Number(...)` 会丢精度
+   * （实测 Number("198362487928651776") → 198362487928651780，差 4）。
+   * 后端 Pydantic v2 默认 lax 模式会从 JSON string 自动 coerce 到 int。
+   */
+  function activeShelfId(): string | null {
     const ids = user.value?.shelf_ids ?? []
-    return ids.length > 0 ? Number(ids[0]) : null
+    return ids.length > 0 ? ids[0] : null
   }
 
   /** 当前可见菜单树（顶层列表；children 在节点里）。 */

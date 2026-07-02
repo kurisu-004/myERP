@@ -21,6 +21,8 @@ export interface PartItem {
   current_holder_id: string | null
   current_holder_kind: 'shelf' | 'worker' | null
   shelf_code: string | null
+  worker_name: string | null
+  location: string | null
   placed_at: string | null
 }
 
@@ -34,10 +36,9 @@ export interface PartListResult {
 /** 入参侧 customer_id 仍按数字（数据库 BigInteger），由前端在调用前 Number() 转。 */
 export interface ListPartsParams {
   customer_id?: number
-  status?: OrderStatus
+  statuses?: OrderStatus[]
   is_urgent?: boolean
-  drawing_no_like?: string
-  name_like?: string
+  keyword?: string
   sort_by?: PartSortKey
   sort_dir?: SortDir
   limit?: number
@@ -62,18 +63,32 @@ export interface PartStatusChangePayload {
   status: OrderStatus
 }
 
+export interface PartUpdatePayload {
+  name?: string
+  drawing_no?: string
+  applicant_name?: string
+  quantity?: number
+  unit_price?: number
+  total_price?: number | null
+  request_date?: string
+  planned_delivery_date?: string
+  actual_delivery_date?: string | null
+  is_urgent?: boolean
+  customer_id?: number
+}
+
 export interface PartPickUpPayload {
   serial_no: string
-  shelf_id: number
+  shelf_id: string
   badge_code: string
 }
 
 export interface PartScanPayload {
   serial_no: string
   event_type: PartEventType
-  shelf_id: number
+  shelf_id: string
   badge_code: string
-  target_inspection_shelf_id?: number | null
+  target_inspection_shelf_id?: string | null
 }
 
 export interface PartEvent {
@@ -106,6 +121,7 @@ function cleanParams<T extends object>(p: T): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(p)) {
     if (v === undefined || v === null || v === '') continue
+    if (Array.isArray(v) && v.length === 0) continue
     out[k] = v
   }
   return out
@@ -138,7 +154,7 @@ export async function changePartStatus(
 
 export async function placeOnShelf(
   id: number | string,
-  shelfId: number,
+  shelfId: string,
 ): Promise<PartItem> {
   const resp = await api.post<PartItem>(`/parts/${id}/place-on-shelf`, { shelf_id: shelfId })
   return resp.data
@@ -168,6 +184,19 @@ export async function batchCreateParts(
 
 export async function softDeletePart(id: string): Promise<void> {
   await api.post(`/parts/${id}/soft-delete`)
+}
+
+export async function updatePart(
+  id: string,
+  payload: PartUpdatePayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/update`, payload)
+  return resp.data
+}
+
+export async function cancelPart(id: string): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/cancel`)
+  return resp.data
 }
 
 export async function getPartBySerial(serialNo: string): Promise<PartItem> {

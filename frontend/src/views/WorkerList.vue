@@ -109,7 +109,6 @@ import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import {
   createWorker,
   deactivateWorker,
-  invalidateWorkerCache,
   listWorkers,
   reactivateWorker,
   updateWorker,
@@ -192,8 +191,7 @@ async function onSave(): Promise<void> {
       })
       ElMessage.success('已新增')
     }
-    // 工位扫码的 worker 缓存也要同步
-    invalidateWorkerCache()
+    // 客户端不再持有 worker 缓存（findWorkerByBadge 改打后端），无需手动失效。
     dialogVisible.value = false
     fetchList()
   } catch (e) {
@@ -218,7 +216,6 @@ async function onDeactivate(row: Worker): Promise<void> {
     .then(async () => {
       await deactivateWorker(row.id)
       ElMessage.success('已停用')
-      invalidateWorkerCache()
       fetchList()
     })
     .catch(() => undefined)
@@ -228,7 +225,6 @@ async function onReactivate(row: Worker): Promise<void> {
   try {
     await reactivateWorker(row.id)
     ElMessage.success('已重新启用')
-    invalidateWorkerCache()
     fetchList()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '启用失败')

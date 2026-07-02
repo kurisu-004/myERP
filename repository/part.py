@@ -7,15 +7,6 @@ from model import TPart
 from model.enums import PartSortKey, PartStatus, SortDir
 
 
-def _validate_status(value: str | PartStatus | None) -> PartStatus | None:
-    """把字符串/枚举统一成 `PartStatus`；非法值抛 `ValueError`。"""
-    if value is None:
-        return None
-    if isinstance(value, PartStatus):
-        return value
-    return PartStatus(value)
-
-
 class PartRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -53,30 +44,25 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    # ===== 列表查询（核心：模糊查询 + 多维过滤 + 排序） =====
+    # ===== 列表查询（核心：前缀搜索 + 多维过滤 + 排序） =====
     async def list_with_filters(
         self,
         *,
         customer_id: int | None = None,
-        status: PartStatus | str | None = None,
+        statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
-        drawing_no_like: str | None = None,
-        name_like: str | None = None,
+        keyword: str | None = None,
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[TPart]:
-        # 把 status 字符串强转成枚举：防止 service 漏校验导致 SQLAlchemy 报枚举错。
-        status_enum = _validate_status(status)
-
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
-            status=status_enum,
+            statuses=statuses,
             is_urgent=is_urgent,
-            drawing_no_like=drawing_no_like,
-            name_like=name_like,
+            keyword=keyword,
             include_deleted=include_deleted,
         )
         sort_col = {
@@ -96,19 +82,16 @@ class PartRepository:
         self,
         *,
         customer_id: int | None = None,
-        status: PartStatus | str | None = None,
+        statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
-        drawing_no_like: str | None = None,
-        name_like: str | None = None,
+        keyword: str | None = None,
         include_deleted: bool = False,
     ) -> int:
-        status_enum = _validate_status(status)
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
-            status=status_enum,
+            statuses=statuses,
             is_urgent=is_urgent,
-            drawing_no_like=drawing_no_like,
-            name_like=name_like,
+            keyword=keyword,
             include_deleted=include_deleted,
         ).with_only_columns(func.count(TPart.id))
         result = await self.session.execute(stmt)
@@ -153,10 +136,9 @@ class PartRepository:
         self,
         *,
         customer_id: int | None,
-        status: PartStatus | None,
+        statuses: list[PartStatus] | None,
         is_urgent: bool | None,
-        drawing_no_like: str | None,
-        name_like: str | None,
+        keyword: str | None,
         include_deleted: bool,
     ):
         stmt = select(TPart)
@@ -164,15 +146,17 @@ class PartRepository:
             stmt = stmt.where(TPart.deleted_at.is_(None))
         if customer_id is not None:
             stmt = stmt.where(TPart.customer_id == customer_id)
-        if status is not None:
-            stmt = stmt.where(TPart.status == status.value)
+        if statuses:
+            stmt = stmt.where(
+                TPart.status.in_([s.value for s in statuses])
+            )
         if is_urgent is not None:
             stmt = stmt.where(TPart.is_urgent.is_(is_urgent))
-        if drawing_no_like:
-            # 大小写不敏感模糊匹配
-            stmt = stmt.where(
-                TPart.drawing_no.ilike(f"%{drawing_no_like}%")
-            )
-        if name_like:
-            stmt = stmt.where(TPart.name.ilike(f"%{name_like}%"))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                )
         return stmt

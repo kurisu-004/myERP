@@ -87,6 +87,13 @@ class TAssembly(Base, AuditMixin):
         comment="PENDING（默认）/ IN_PROCESS / COMPLETED / CANCELLED",
     )
 
+    @property
+    def sm(self) -> "AssemblyStateMachine":
+        """返回此装配体的状态机实例。"""
+        from statemachines.assembly import AssemblyStateMachine
+
+        return AssemblyStateMachine(model=self)
+
     __table_args__ = (
         Index("ix_t_assembly_customer_status", "customer_id", "status"),
         Index("ix_t_assembly_planned_delivery", "planned_delivery_date"),

@@ -437,14 +437,14 @@ const rules: FormRules = {
     {
       required: true,
       validator: (_rule, value, callback) => {
-        if (typeof value !== 'number' || !Number.isFinite(value)) {
-          callback(new Error('请选择客户（必须是二级叶子节点）'))
+        // cascader emitPath:false 返回选中节点的 id，来自 Customer.id（string）
+        if (value === null || value === undefined || value === '') {
+          callback(new Error('请选择客户'))
           return
         }
-        // cascader 选项都是二级叶子节点（构建 customerTree 时只挂 parent_id 非空的）
         const c = customers.value.find((x) => String(x.id) === String(value))
-        if (!c || c.parent_id === null) {
-          callback(new Error('请选择二级客户节点'))
+        if (!c) {
+          callback(new Error('客户不存在'))
           return
         }
         callback()
@@ -500,9 +500,14 @@ async function onAddConfirm(): Promise<void> {
   } catch {
     return
   }
-  // cascader value → customerId（emitPath:false 时直接是 number/string）
-  const customerId = form.customerId
-  if (typeof customerId !== 'number') {
+  // cascader value → customerId（Customer.id 为 string，emitPath:false 返回 string）
+  const rawId = form.customerId
+  if (rawId === null || rawId === undefined || rawId === '') {
+    ElMessage.error('请选择客户')
+    return
+  }
+  const customerId = Number(rawId)
+  if (!Number.isFinite(customerId)) {
     ElMessage.error('请选择客户')
     return
   }

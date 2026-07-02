@@ -6,7 +6,8 @@
 // 任意步骤都可 reset() 清空（重新扫工牌 / 退至首页）。
 //
 // 设计要点：
-// - 模块级单例，跨组件共享（与 useBarcodeScanner / useWorkerCache 一致）。
+// - 模块级单例，跨组件共享（与 useBarcodeScanner 一致；useWorkerCache 已删，
+//   扫码定位工牌改为 api/worker.findWorkerByBadge 直打后端）。
 // - 不引入 Pinia：session 只在这三个扫码路由之间流动，没其他消费者。
 // - 用一个 requireXxx() 守卫把"未扫工牌就直接进操作选择/扫码页"挡掉。
 
