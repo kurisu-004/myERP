@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Debug: print vars and env context
+      - name: "Debug: print vars and env context"
         run: |
           echo "vars.DOCKER_REPO=[${{ vars.DOCKER_REPO }}]"
           echo "REGISTRY=[${{ env.REGISTRY }}]"
