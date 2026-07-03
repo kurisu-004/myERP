@@ -18,20 +18,18 @@ cd "$(dirname "$0")/.."
 ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE="docker compose --env-file $ENV_FILE"
 
-# 兜底：把 $ENV_FILE 里的 DOCKER_USERNAME/PASSWORD 导到当前 shell
-# （docker compose 自己会读 $ENV_FILE 一次；但脚本自己 shell 也要用）
-if [ -z "${DOCKER_USERNAME:-}" ] || [ -z "${DOCKER_PASSWORD:-}" ]; then
-  if [ -f "$ENV_FILE" ]; then
-    while IFS='=' read -r key val; do
-      case "$key" in
-        DOCKER_USERNAME|DOCKER_PASSWORD)
-          if [ -z "${!key:-}" ]; then
-            export "$key=$val"
-          fi
-          ;;
-      esac
-    done < <(grep -E '^DOCKER_(USERNAME|PASSWORD)=' "$ENV_FILE" || true)
-  fi
+# 兜底：把 $ENV_FILE 里的关键变量导到当前 shell
+# （docker compose 自己会读 $ENV_FILE 一次；但脚本自己 shell 也要用这些值）
+if [ -f "$ENV_FILE" ]; then
+  while IFS='=' read -r key val; do
+    case "$key" in
+      DOCKER_USERNAME|DOCKER_PASSWORD|DOCKER_REPO|FRONTEND_PORT|IMAGE_TAG)
+        if [ -z "${!key:-}" ]; then
+          export "$key=$val"
+        fi
+        ;;
+    esac
+  done < <(grep -E '^(DOCKER_USERNAME|DOCKER_PASSWORD|DOCKER_REPO|FRONTEND_PORT|IMAGE_TAG)=' "$ENV_FILE" || true)
 fi
 
 echo "==> 当前部署目录: $(pwd)"
