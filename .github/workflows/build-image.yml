@@ -11,6 +11,8 @@ concurrency:
 
 env:
   REGISTRY: ccr.ccs.tencentyun.com
+  # 兜底值：若 vars.DOCKER_REPO 未注入（环境/权限/作用域问题），至少能拿到正确镜像仓库地址
+  DOCKER_REPO: ${{ vars.DOCKER_REPO || 'ccr.ccs.tencentyun.com/hsh-erp' }}
 
 jobs:
   build-and-push:
@@ -33,6 +35,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Debug: print vars and env context
+        run: |
+          echo "vars.DOCKER_REPO=[${{ vars.DOCKER_REPO }}]"
+          echo "REGISTRY=[${{ env.REGISTRY }}]"
+          echo "DOCKER_REPO shell=[$DOCKER_REPO]"
+          echo "DOCKER_REPO env-resolved=[${{ env.DOCKER_REPO }}]"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -51,8 +65,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ vars.DOCKER_REPO }}/prod-${{ matrix.service }}:latest
-            ${{ vars.DOCKER_REPO }}/prod-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.DOCKER_REPO }}/prod-${{ matrix.service }}:latest
+            ${{ env.DOCKER_REPO }}/prod-${{ matrix.service }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.title=myerp-${{ matrix.service }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
