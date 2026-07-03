@@ -39,7 +39,10 @@ echo "$DOCKER_PASSWORD" | docker login "$REGISTRY_HOST" -u "$DOCKER_USERNAME" --
 
 echo
 echo "==> 2/4 构建 backend  ($TAG_PREFIX-backend:$SHA)"
+# --platform linux/amd64：Mac Apple Silicon 本地 build 默认出 arm64，
+# CVM 是 amd64，必须显式指定。push 之后 CVM 才能正常拉取。
 docker build \
+  --platform linux/amd64 \
   -t "$DOCKER_REPO/$TAG_PREFIX-backend:$SHA" \
   -t "$DOCKER_REPO/$TAG_PREFIX-backend:latest" \
   --label "org.opencontainers.image.revision=$SHA" \
@@ -49,6 +52,7 @@ docker build \
 echo
 echo "==> 3/4 构建 frontend ($TAG_PREFIX-frontend:$SHA)"
 docker build \
+  --platform linux/amd64 \
   -t "$DOCKER_REPO/$TAG_PREFIX-frontend:$SHA" \
   -t "$DOCKER_REPO/$TAG_PREFIX-frontend:latest" \
   --label "org.opencontainers.image.revision=$SHA" \
