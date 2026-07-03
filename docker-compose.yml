@@ -1,0 +1,73 @@
+name: myerp
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: myerp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # 端口不暴露给宿主机；只通过 backend service 网络访问
+
+  backend:
+    image: ${DOCKER_REPO}/prod-backend:${IMAGE_TAG:-latest}
+    container_name: myerp-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # DATABASE_URL 改写：连 compose 网络里的 postgres service
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # 以下透传 .env（Settings 期望的字段名）
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-hsh}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-2880}
+      SNOWFLAKE_INSTANCE: ${SNOWFLAKE_INSTANCE:-0}
+      SNOWFLAKE_SEQ: ${SNOWFLAKE_SEQ:-0}
+      SNOWFLAKE_EPOCH: ${SNOWFLAKE_EPOCH:-1735689600000}
+      SHELF_SEED_ON_MIGRATE: ${SHELF_SEED_ON_MIGRATE:-false}
+      COS_SECRET_ID: ${COS_SECRET_ID}
+      COS_SECRET_KEY: ${COS_SECRET_KEY}
+      COS_REGION: ${COS_REGION:-ap-guangzhou}
+      COS_BUCKET: ${COS_BUCKET}
+      COS_SCHEME: ${COS_SCHEME:-https}
+      COS_ENDPOINT: ${COS_ENDPOINT:-}
+      COS_UPLOAD_PREFIX: ${COS_UPLOAD_PREFIX:-drawings/}
+      COS_PRESIGN_EXPIRE: ${COS_PRESIGN_EXPIRE:-900}
+      COS_MAX_FILE_SIZE: ${COS_MAX_FILE_SIZE:-104857600}
+      COS_ALLOWED_TYPES: ${COS_ALLOWED_TYPES:-pdf,step,dwg,dxf}
+      TZ: ${TZ:-Asia/Shanghai}
+    # 端口不暴露给宿主机；只通过 frontend service 网络访问
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    image: ${DOCKER_REPO}/prod-frontend:${IMAGE_TAG:-latest}
+    container_name: myerp-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    # frontend/nginx.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
+
+volumes:
+  pgdata:
+    name: myerp-pgdata
