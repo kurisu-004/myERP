@@ -18,6 +18,22 @@ cd "$(dirname "$0")/.."
 ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE="docker compose --env-file $ENV_FILE"
 
+# 兜底：把 $ENV_FILE 里的 DOCKER_USERNAME/PASSWORD 导到当前 shell
+# （docker compose 自己会读 $ENV_FILE 一次；但脚本自己 shell 也要用）
+if [ -z "${DOCKER_USERNAME:-}" ] || [ -z "${DOCKER_PASSWORD:-}" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    while IFS='=' read -r key val; do
+      case "$key" in
+        DOCKER_USERNAME|DOCKER_PASSWORD)
+          if [ -z "${!key:-}" ]; then
+            export "$key=$val"
+          fi
+          ;;
+      esac
+    done < <(grep -E '^DOCKER_(USERNAME|PASSWORD)=' "$ENV_FILE" || true)
+  fi
+fi
+
 echo "==> 当前部署目录: $(pwd)"
 echo "==> 环境文件:     $ENV_FILE"
 echo "==> IMAGE_TAG:    ${IMAGE_TAG:-latest}"
@@ -26,9 +42,10 @@ echo
 # 确认 TCR 登录
 if ! docker info 2>/dev/null | grep -q "Username"; then
   echo "==> 未登录 TCR，先登录"
-  : "${DOCKER_USERNAME:?DOCKER_USERNAME 未设置}"
-  : "${DOCKER_PASSWORD:?DOCKER_PASSWORD 未设置}"
-  echo "$DOCKER_PASSWORD" | docker login ccr.ccs.tencentyun.com -u "$DOCKER_USERNAME" --password-stdin
+  : "${DOCKER_USERNAME:?DOCKER_USERNAME 未设置（在 .env.production 里加 DOCKER_USERNAME=xxx 和 DOCKER_PASSWORD=xxx，或先 docker login）}"
+  : "${DOCKER_PASSWORD:?DOCKER_PASSWORD 未设置（在 .env.production 里加 DOCKER_USERNAME=xxx 和 DOCKER_PASSWORD=xxx，或先 docker login）}"
+  REGISTRY_HOST=$(echo "${DOCKER_REPO:-ccr.ccs.tencentyun.com/hsh-erp}" | cut -d/ -f1)
+  echo "$DOCKER_PASSWORD" | docker login "$REGISTRY_HOST" -u "$DOCKER_USERNAME" --password-stdin
 fi
 
 echo
