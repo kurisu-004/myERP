@@ -1,0 +1,57 @@
+# ---------- VCS / CI ----------
+.git
+.gitignore
+.github
+
+# ---------- Python 虚拟环境与缓存 ----------
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# ---------- 前端（最大头，节省 node_modules / dist）----------
+frontend/
+
+# ---------- 文档 / 数据 / 临时文件 ----------
+docs/
+data/
+tmp/
+tests/
+.alembic/
+
+# ---------- 本地工具 / 编辑器 ----------
+.claude/
+.agents/
+.idea/
+.vscode/
+.DS_Store
+*.log
+*.md
+
+# ---------- 环境变量 / 密钥（务必忽略）----------
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+secrets.yaml
+secrets.json
+
+# ---------- 测试夹具 ----------
+.pyre/
+.tox/
+.nox/
+.hypothesis/
