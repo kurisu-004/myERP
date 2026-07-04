@@ -32,5 +32,6 @@ dev = [
     "openpyxl>=3.1.5",
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
     "xlrd>=2.0.2",
 ]
