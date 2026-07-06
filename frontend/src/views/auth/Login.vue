@@ -50,13 +50,12 @@ async function doLogin() {
   error.value = ''
   try {
     const u = await login(form.username, form.password)
-    // 按角色自动跳。优先级：MANAGER → /dashboard；CNC_PROGRAMMER → /cnc/pending；
-    // CLERK → /parts；纯 SHELF_ACCOUNT → /scan/badge。
+    // 按角色自动跳。优先级：MANAGER → /dashboard；
+    // CLERK / CNC_PROGRAMMER → /parts（编程员默认筛选 PROGRAMMING）；
+    // 纯 SHELF_ACCOUNT → /scan/badge。
     if (u.roles.includes('MANAGER')) {
       router.replace('/dashboard')
-    } else if (u.roles.includes('CNC_PROGRAMMER')) {
-      router.replace('/cnc/pending')
-    } else if (u.roles.includes('CLERK')) {
+    } else if (u.roles.includes('CLERK') || u.roles.includes('CNC_PROGRAMMER')) {
       router.replace('/parts')
     } else if (u.roles.includes('SHELF_ACCOUNT')) {
       router.replace('/scan/badge')

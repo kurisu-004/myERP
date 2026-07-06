@@ -49,8 +49,8 @@ _read_lots_dep = [
 @router.get(
     "",
     response_model=PartListOut,
-    summary="分页查询零件列表（MANAGER / CLERK）",
-    dependencies=_office_dep,
+    summary="分页查询零件列表（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_lots_dep,
 )
 async def list_parts(
     customer_id: int | None = Query(default=None, description="客户 id"),

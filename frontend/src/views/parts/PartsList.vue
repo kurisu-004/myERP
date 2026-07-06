@@ -70,6 +70,9 @@
           </el-checkbox-group>
         </el-popover>
 
+        <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
+          编程员视图：默认查看「编程中」零件
+        </el-tag>
         <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
       </div>
     </el-card>
@@ -282,11 +285,17 @@ import {
   type PartSortKey,
   type SortDir,
 } from '@/types/parts'
+import { useAuthSession } from '@/composables/useAuthSession'
 
 // ============ 搜索条件 ============
+// CNC_PROGRAMMER 默认只看编程中；其他角色保持现状（生产中 + 返修中）。
+const { hasRole } = useAuthSession()
+const isCncProgrammer = hasRole('CNC_PROGRAMMER')
 const initialSearch = () => ({
   keyword: '',
-  statuses: ['IN_PROCESS', 'REPAIRING'] as OrderStatus[],
+  statuses: (isCncProgrammer
+    ? ['PROGRAMMING']
+    : ['IN_PROCESS', 'REPAIRING']) as OrderStatus[],
   isUrgent: null as boolean | null,
 })
 const search = reactive(initialSearch())

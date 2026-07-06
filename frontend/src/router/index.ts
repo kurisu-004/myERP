@@ -91,17 +91,6 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '货架管理', icon: 'Platform', menuCode: 'shelves_list', breadcrumb: [{ label: '车间', path: '/shelves' }, { label: '货架管理' }] },
       },
       {
-        path: 'cnc/pending',
-        name: 'PendingProgrammingList',
-        component: () => import('@/views/cnc/PendingProgrammingList.vue'),
-        meta: {
-          title: '待编程一览',
-          icon: 'Cpu',
-          menuCode: 'pending_programming',
-          breadcrumb: [{ label: '待编程一览' }],
-        },
-      },
-      {
         path: 'settings/work-types',
         name: 'WorkTypeList',
         component: () => import('@/views/settings/WorkTypeList.vue'),

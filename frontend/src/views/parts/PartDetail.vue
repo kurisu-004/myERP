@@ -623,12 +623,6 @@ async function fetchAssembly(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void fetchPart()
-  void fetchEvents()
-  void fetchFiles()
-})
-
 watch(
   () => route.params.id,
   async (id) => {
