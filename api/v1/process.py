@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_process_service
-from core.permission import require_role
+from core.permission import require_role, require_roles
 from model.enums import ProcessCategory, UserRole
 from schema.process import (
     ProcessCreateRequest,
@@ -13,15 +13,21 @@ from schema.process import (
 )
 from service import ProcessService
 
+# 写操作 MANAGER-only；读开放给 MANAGER + CLERK + CNC_PROGRAMMER（下拉用）。
 router = APIRouter(prefix="/processes", tags=["工序管理"])
 _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
+_read_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+    ))
+]
 
 
 @router.get(
     "",
     response_model=ProcessListOut,
-    summary="工序列表",
-    dependencies=_mgr_dep,
+    summary="工序列表（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_dep,
 )
 async def list_processes(
     code_like: str | None = Query(default=None),
@@ -57,8 +63,8 @@ async def create_process(
 @router.get(
     "/{process_id}",
     response_model=ProcessOut,
-    summary="工序详情",
-    dependencies=_mgr_dep,
+    summary="工序详情（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_dep,
 )
 async def get_process(
     process_id: int,

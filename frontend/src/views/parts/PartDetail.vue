@@ -191,6 +191,56 @@
       @refresh="fetchFiles"
     />
 
+    <!-- CNC 程序（仅 PROGRAMMING 状态展示上传入口；其他状态仅可看列表） -->
+    <el-card shadow="never" class="cnc-card" v-loading="cncLoading">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">
+            <el-icon><Cpu /></el-icon>
+            <span>CNC 程序（G 代码）</span>
+          </span>
+          <span v-if="cncPrograms" class="event-count">共 {{ cncPrograms.length }} 个</span>
+        </div>
+      </template>
+      <div v-if="cncPrograms && cncPrograms.length > 0" class="cnc-list">
+        <div v-for="p in cncPrograms" :key="p.id" class="cnc-row">
+          <el-tag size="small" type="info">{{ p.file_type }}</el-tag>
+          <span class="cnc-name">{{ p.original_filename }}</span>
+          <span class="cnc-size">{{ formatBytes(p.file_size) }}</span>
+          <span class="cnc-time">{{ formatDateTime(p.created_at) }}</span>
+          <el-button link type="primary" size="small" @click="onDownloadCnc(p)">下载</el-button>
+          <el-button
+            v-if="canManageCnc"
+            link
+            type="danger"
+            size="small"
+            @click="onDeleteCnc(p.id)"
+          >删除</el-button>
+        </div>
+      </div>
+      <el-empty v-else description="暂无 G 代码程序" :image-size="80" />
+      <div v-if="canUploadCnc" class="cnc-upload">
+        <el-upload
+          :http-request="onUploadCnc"
+          :show-file-list="false"
+          accept=".nc,.tap,.cnc,.mpf,.ngc,.txt"
+          :before-upload="beforeCncUpload"
+        >
+          <el-button type="primary" plain>
+            <el-icon><Upload /></el-icon><span>上传 G 代码</span>
+          </el-button>
+        </el-upload>
+        <el-button
+          v-if="part?.status === 'PROGRAMMING'"
+          type="success"
+          :loading="releaseSubmitting"
+          @click="onOpenReleaseDialog"
+        >
+          下发到 CNC 货架
+        </el-button>
+      </div>
+    </el-card>
+
     <!-- 历史记录 -->
     <el-card shadow="never" class="history-card" v-loading="eventsLoading">
       <template #header>
@@ -283,6 +333,51 @@
         >确认{{ confirmAction === 'cancel' ? '取消' : '删除' }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- 下发到 CNC 货架对话框（PROGRAMMING → IN_PROCESS） -->
+    <el-dialog v-model="releaseVisible" title="下发到 CNC 货架" width="440px" @closed="onReleaseClosed">
+      <el-form label-width="96px">
+        <el-form-item label="目标货架" required>
+          <el-select
+            v-model="releaseShelfId"
+            placeholder="选择生产货架"
+            style="width: 100%"
+            filterable
+          >
+            <el-option
+              v-for="s in productionShelves"
+              :key="s.id"
+              :label="s.name"
+              :value="s.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="下一道工序" required>
+          <el-select
+            v-model="releaseNextProcessId"
+            placeholder="选择工序（必填）"
+            style="width: 100%"
+            filterable
+          >
+            <el-option
+              v-for="p in processes"
+              :key="p.id"
+              :label="`${p.code} / ${p.name}`"
+              :value="p.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="releaseVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="releaseSubmitting"
+          :disabled="!releaseShelfId || !releaseNextProcessId"
+          @click="onReleaseConfirm"
+        >确认下发</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -290,19 +385,31 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowRight, Connection, PriceTag, Right, User } from '@element-plus/icons-vue'
+import { ArrowRight, Connection, Cpu, PriceTag, Right, Upload, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
 import Barcode from '@/components/Barcode.vue'
 import {
   cancelPart,
   getPart,
   listPartEvents,
+  releaseFromProgramming,
   softDeletePart,
   updatePart,
   type PartItem,
   type PartEvent,
   type PartUpdatePayload,
 } from '@/api/parts'
+import {
+  deleteCncProgram,
+  getCncDownloadUrl,
+  listPartCncPrograms,
+  uploadPartCncProgram,
+} from '@/api/cnc'
+import type { CncProgramItem } from '@/types/cnc'
+import { listShelves } from '@/api/shelves'
+import type { Shelf } from '@/types/shelf'
+import { listProcesses } from '@/api/process'
+import type { Process } from '@/types/process'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
@@ -315,6 +422,7 @@ import { getAssemblyForPart } from '@/api/assembly'
 import type { AssemblyDetail } from '@/types/assembly'
 import type { DrawingFileItem } from '@/types/file'
 import { listPartFiles } from '@/api/assembly'
+import { useAuthSession } from '@/composables/useAuthSession'
 
 const route = useRoute()
 const router = useRouter()
@@ -530,10 +638,12 @@ watch(
     editing.value = false
     assemblyDetail.value = null
     files.value = []
+    cncPrograms.value = null
     await fetchPart()
     void fetchEvents()
     void fetchFiles()
     void fetchAssembly()
+    void fetchCncPrograms()
   },
 )
 
@@ -543,6 +653,134 @@ watch(
     void fetchAssembly()
   },
 )
+
+// ============ 角色权限（前端 UI 控制；后端有真权限校验兜底） ============
+const { hasRole } = useAuthSession()
+const canManageCnc = computed(() =>
+  hasRole('MANAGER') || hasRole('CNC_PROGRAMMER'),
+)
+const canUploadCnc = computed(() => {
+  if (!part.value) return false
+  if (!(hasRole('MANAGER') || hasRole('CNC_PROGRAMMER'))) return false
+  // 任何状态下都可上传；PROGRAMMING 状态显眼展示。
+  return true
+})
+
+// ============ CNC 程序 ============
+const cncLoading = ref(false)
+const cncPrograms = ref<CncProgramItem[] | null>(null)
+
+async function fetchCncPrograms(): Promise<void> {
+  cncLoading.value = true
+  try {
+    cncPrograms.value = await listPartCncPrograms(partId.value)
+  } catch (e) {
+    cncPrograms.value = []
+    ElMessage.error((e as Error).message ?? '加载 CNC 程序失败')
+  } finally {
+    cncLoading.value = false
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+
+function beforeCncUpload(file: File): boolean {
+  if (file.size > 100 * 1024 * 1024) {
+    ElMessage.error('文件超过 100MB 上限')
+    return false
+  }
+  return true
+}
+
+async function onUploadCnc(req: {
+  file: File
+}): Promise<void> {
+  try {
+    await uploadPartCncProgram(partId.value, req.file)
+    ElMessage.success('上传成功')
+    void fetchCncPrograms()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '上传失败')
+  }
+}
+
+async function onDownloadCnc(p: CncProgramItem): Promise<void> {
+  try {
+    const url = await getCncDownloadUrl(p.id)
+    window.open(url, '_blank')
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '获取下载链接失败')
+  }
+}
+
+async function onDeleteCnc(id: string): Promise<void> {
+  try {
+    await deleteCncProgram(id)
+    ElMessage.success('已删除')
+    void fetchCncPrograms()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '删除失败')
+  }
+}
+
+// ============ 下发到 CNC 货架 ============
+const releaseVisible = ref(false)
+const releaseShelfId = ref<string | null>(null)
+const releaseNextProcessId = ref<string | null>(null)
+const releaseSubmitting = ref(false)
+const productionShelves = ref<Shelf[]>([])
+const processes = ref<Process[]>([])
+
+async function onOpenReleaseDialog(): Promise<void> {
+  releaseShelfId.value = null
+  releaseNextProcessId.value = null
+  try {
+    const [shelfResp, procResp] = await Promise.all([
+      listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 }),
+      listProcesses({ limit: 200 }),
+    ])
+    productionShelves.value = shelfResp.items
+    processes.value = procResp.items
+  } catch {
+    productionShelves.value = []
+    processes.value = []
+  }
+  releaseVisible.value = true
+}
+
+function onReleaseClosed(): void {
+  releaseShelfId.value = null
+  releaseNextProcessId.value = null
+}
+
+async function onReleaseConfirm(): Promise<void> {
+  if (!releaseShelfId.value || !releaseNextProcessId.value) return
+  releaseSubmitting.value = true
+  try {
+    await releaseFromProgramming(
+      partId.value, releaseShelfId.value, releaseNextProcessId.value,
+    )
+    ElMessage.success('已下发到生产货架')
+    releaseVisible.value = false
+    await fetchPart()
+    void fetchEvents()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '下发失败')
+  } finally {
+    releaseSubmitting.value = false
+  }
+}
+
+onMounted(() => {
+  void fetchPart()
+  void fetchEvents()
+  void fetchFiles()
+  void fetchCncPrograms()
+})
 </script>
 
 <style lang="scss" scoped>
@@ -720,6 +958,42 @@ watch(
     background: #fdf6ec;
     padding: 4px 8px;
     border-radius: 4px;
+  }
+}
+
+.cnc-card {
+  :deep(.el-card__body) {
+    padding: 16px 20px;
+  }
+  .cnc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .cnc-row {
+    display: grid;
+    grid-template-columns: 60px 1fr 80px 130px auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .cnc-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cnc-size,
+  .cnc-time {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+  .cnc-upload {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
   }
 }
 </style>

@@ -1,4 +1,5 @@
 from .assembly import AssemblyRepository
+from .cnc_program import CncProgramRepository
 from .customer import CustomerRepository
 from .drawing_file import DrawingFileRepository
 from .menu import MenuRepository
@@ -14,6 +15,7 @@ from .work_type_process import WorkTypeProcessRepository
 
 __all__ = [
     "AssemblyRepository",
+    "CncProgramRepository",
     "CustomerRepository",
     "DrawingFileRepository",
     "MenuRepository",

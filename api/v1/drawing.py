@@ -4,7 +4,8 @@
 子件文件：`/parts/{part_id}/files`
 绘图管理：`/drawings/{file_id}/...`
 
-权限：所有路由 MANAGER-only（图纸管理属于后台模块）。
+权限：上传 MANAGER+CLERK；列表/下载 MANAGER+CLERK+CNC_PROGRAMMER
+（CNC 编程员要在详情页下载图纸 / 3D 模型来写程序）。
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, status as http_status
 from fastapi.responses import Response
 
 from api.deps import get_drawing_service
-from core.permission import require_role
+from core.permission import require_roles
 from model.enums import UserRole
 from schema.drawing import DrawingFileOut
 from service.drawing import DrawingService
@@ -24,7 +25,9 @@ from service.drawing import DrawingService
 child_file_router = APIRouter(
     prefix="/parts",
     tags=["零件管理"],
-    dependencies=[Depends(require_role(UserRole.MANAGER))],
+    dependencies=[
+        Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
+    ],
 )
 
 
@@ -53,6 +56,11 @@ async def upload_part_file(
     "/{part_id}/files",
     response_model=list[DrawingFileOut],
     summary="列出子零件的所有文件",
+    dependencies=[
+        Depends(require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+        ))
+    ],
 )
 async def list_part_files(
     part_id: int,
@@ -65,7 +73,11 @@ async def list_part_files(
 file_router = APIRouter(
     prefix="/drawings",
     tags=["图纸文件"],
-    dependencies=[Depends(require_role(UserRole.MANAGER))],
+    dependencies=[
+        Depends(require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+        ))
+    ],
 )
 
 

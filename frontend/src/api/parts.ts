@@ -174,6 +174,36 @@ export async function placeOnShelf(
   return resp.data
 }
 
+/** PENDING → PROGRAMMING：文员把零件发送至 CNC 编程。 */
+export async function sendToProgramming(id: number | string): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/send-to-programming`)
+  return resp.data
+}
+
+/** PROGRAMMING → IN_PROCESS：编程员上传完 G 代码后下发到生产货架。 */
+export async function releaseFromProgramming(
+  id: number | string,
+  shelfId: string,
+  nextProcessId: string,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/release-from-programming`,
+    { shelf_id: shelfId, next_process_id: nextProcessId },
+  )
+  return resp.data
+}
+
+/** 待编程一览：status=PROGRAMMING 的零件列表。 */
+export async function listPendingProgramming(
+  params: Omit<ListPartsParams, 'statuses' | 'is_urgent'> = {},
+): Promise<PartListResult> {
+  const resp = await api.get<PartListResult>(
+    '/parts/pending-programming',
+    { params: cleanParams(params) },
+  )
+  return resp.data
+}
+
 export async function pickUpPart(payload: PartPickUpPayload): Promise<PartItem> {
   const resp = await api.post<PartItem>('/parts/pick-up', payload)
   return resp.data

@@ -31,6 +31,7 @@ class PartStateMachine(StateChart):
     # ============================================================
 
     PENDING = State("PENDING", initial=True, value="PENDING")
+    PROGRAMMING = State("PROGRAMMING", value="PROGRAMMING")
     ON_SHELF = State("ON_SHELF", value="ON_SHELF")
     WITH_WORKER = State("WITH_WORKER", value="WITH_WORKER")
     INSPECTION = State("INSPECTION", value="INSPECTION")
@@ -45,6 +46,8 @@ class PartStateMachine(StateChart):
     # ============================================================
 
     place_on_shelf = PENDING.to(ON_SHELF)
+    send_to_programming = PENDING.to(PROGRAMMING)
+    release_from_programming = PROGRAMMING.to(ON_SHELF)
     pick_up = ON_SHELF.to(WITH_WORKER)
     return_to_shelf = WITH_WORKER.to(ON_SHELF)
     inspect = WITH_WORKER.to(INSPECTION)
@@ -59,6 +62,7 @@ class PartStateMachine(StateChart):
     complete_repair = REPAIRING.to(ON_SHELF)
     cancel = (
         PENDING.to(CANCELLED)
+        | PROGRAMMING.to(CANCELLED)
         | ON_SHELF.to(CANCELLED)
         | WITH_WORKER.to(CANCELLED)
         | INSPECTION.to(CANCELLED)
@@ -80,6 +84,8 @@ class PartStateMachine(StateChart):
                 start_value = "WITH_WORKER" if location == "WORKER" else "ON_SHELF"
             elif status == "PENDING":
                 start_value = "PENDING"
+            elif status == "PROGRAMMING":
+                start_value = "PROGRAMMING"
             else:
                 start_value = status  # INSPECTION, READY_TO_SHIP, etc.
         super().__init__(
@@ -102,6 +108,13 @@ class PartStateMachine(StateChart):
     def on_enter_PENDING(self, **_):
         if self.model:
             self.model.status = "PENDING"
+            self.model.location = "OFFICE"
+            self.model.current_holder_id = None
+
+    def on_enter_PROGRAMMING(self, **_):
+        if self.model:
+            self.model.status = "PROGRAMMING"
+            # 编程中不占货架，逻辑上仍在办公室 / 编程员处。
             self.model.location = "OFFICE"
             self.model.current_holder_id = None
 
@@ -177,6 +190,32 @@ class PartStateMachine(StateChart):
                 part_id=self.model.id,
                 event_type=PartEventType.PLACED_ON_SHELF,
                 from_status=PartStatus.PENDING,
+                to_status=PartStatus.IN_PROCESS,
+                note="; ".join(note_parts) or None,
+            ))
+
+    def on_send_to_programming(self, event_repo=None, **_):
+        if event_repo and self.model:
+            event_repo.add(TPartEvent(
+                part_id=self.model.id,
+                event_type=PartEventType.SENT_TO_PROGRAMMING,
+                from_status=PartStatus.PENDING,
+                to_status=PartStatus.PROGRAMMING,
+            ))
+
+    def on_release_from_programming(self, shelf=None, process=None, event_repo=None, **_):
+        if event_repo and self.model:
+            shelf_code = shelf.code if shelf and hasattr(shelf, "code") else None
+            process_code = process.code if process and hasattr(process, "code") else None
+            note_parts = []
+            if shelf_code:
+                note_parts.append(f"shelf={shelf_code}")
+            if process_code:
+                note_parts.append(f"next_process={process_code}")
+            event_repo.add(TPartEvent(
+                part_id=self.model.id,
+                event_type=PartEventType.CNC_RELEASED,
+                from_status=PartStatus.PROGRAMMING,
                 to_status=PartStatus.IN_PROCESS,
                 note="; ".join(note_parts) or None,
             ))

@@ -5,7 +5,7 @@ from api.deps import (
     get_work_type_process_service,
     get_work_type_service,
 )
-from core.permission import require_role
+from core.permission import require_role, require_roles
 from model.enums import UserRole
 from schema.work_type import (
     WorkTypeCreateRequest,
@@ -20,15 +20,21 @@ from schema.work_type_process import (
 )
 from service import WorkTypeProcessService, WorkTypeService
 
+# 写操作 MANAGER-only；读开放给 MANAGER + CLERK + CNC_PROGRAMMER（下拉用）。
 router = APIRouter(prefix="/work-types", tags=["工种管理"])
 _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
+_read_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+    ))
+]
 
 
 @router.get(
     "",
     response_model=WorkTypeListOut,
-    summary="工种列表",
-    dependencies=_mgr_dep,
+    summary="工种列表（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_dep,
 )
 async def list_work_types(
     code_like: str | None = Query(default=None),
@@ -58,8 +64,8 @@ async def create_work_type(
 @router.get(
     "/{work_type_id}",
     response_model=WorkTypeOut,
-    summary="工种详情",
-    dependencies=_mgr_dep,
+    summary="工种详情（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_dep,
 )
 async def get_work_type(
     work_type_id: int,

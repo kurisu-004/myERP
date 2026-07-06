@@ -1,5 +1,5 @@
 /** 与后端 enum UserRole 对齐 */
-export type UserRole = 'MANAGER' | 'SHELF_ACCOUNT' | 'CLERK' | 'INSPECTOR'
+export type UserRole = 'MANAGER' | 'SHELF_ACCOUNT' | 'CLERK' | 'INSPECTOR' | 'CNC_PROGRAMMER'
 
 export interface UserOut {
   id: string

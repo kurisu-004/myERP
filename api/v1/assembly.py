@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status as http_status
 
 from api.deps import get_assembly_service, get_drawing_service
-from core.permission import require_role
+from core.permission import require_role, require_roles
 from model.enums import UserRole
 from schema.assembly import (
     AssemblyCreateRequest,
@@ -20,11 +20,13 @@ from schema.drawing import DrawingFileOut
 from service.assembly import AssemblyService
 from service.drawing import DrawingService
 
-# 装配体自身的 CRUD（仅 MANAGER）
+# 装配体自身的 CRUD（MANAGER + CLERK：文员也能建/查/编辑装配体）
 router = APIRouter(
     prefix="/assemblies",
     tags=["装配体管理"],
-    dependencies=[Depends(require_role(UserRole.MANAGER))],
+    dependencies=[
+        Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
+    ],
 )
 
 
@@ -110,11 +112,15 @@ async def cancel_assembly(
     return await svc.cancel_assembly(assembly_id)
 
 
-# ---------- 子件反查（MANAGER-only） ----------
+# ---------- 子件反查（MANAGER + CLERK + CNC_PROGRAMMER） ----------
 child_router = APIRouter(
     prefix="/parts",
     tags=["零件管理"],
-    dependencies=[Depends(require_role(UserRole.MANAGER))],
+    dependencies=[
+        Depends(require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+        ))
+    ],
 )
 
 
@@ -130,11 +136,15 @@ async def get_assembly_for_child(
     return await svc.get_assembly_for_child(part_id)
 
 
-# 装配件级文件管理（仅 MANAGER）
+# 装配件级文件管理（MANAGER + CLERK + CNC_PROGRAMMER 读；上传仅 MANAGER+CLERK）
 file_router = APIRouter(
     prefix="/assemblies",
     tags=["装配体管理"],
-    dependencies=[Depends(require_role(UserRole.MANAGER))],
+    dependencies=[
+        Depends(require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+        ))
+    ],
 )
 
 

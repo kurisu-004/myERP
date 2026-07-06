@@ -133,6 +133,30 @@ def require_role(role: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
     return _dep
 
 
+def require_roles(*roles: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
+    """依赖工厂：要求账号命中任一 role。
+
+    业务场景：CLERK 与 MANAGER 都能下单/下发；CNC_PROGRAMMER 与 MANAGER 都能下发到
+    CNC 货架，等等。带多种角色读权限的端点统一用这个工厂。
+    """
+    if not roles:
+        raise ValueError("require_roles() needs at least one role")
+
+    async def _dep(
+        user: CurrentUser = Depends(get_current_user),
+    ) -> CurrentUser:
+        if not any(user.has_role(r) for r in roles):
+            expected = ", ".join(r.value for r in roles)
+            raise BizError(
+                code=ErrCode.FORBIDDEN,
+                message=f"one of roles [{expected}] required",
+                http_status=http_status.HTTP_403_FORBIDDEN,
+            )
+        return user
+
+    return _dep
+
+
 def require_auth() -> Callable[..., Awaitable[CurrentUser]]:
     """依赖工厂：仅要求已登录（任意角色）。
 

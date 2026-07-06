@@ -428,44 +428,10 @@ class PartService:
         `shelf_id` 必须在 t_shelf 中存在 / is_active / zone=PRODUCTION。
         `next_process_id` 必填，service 校验 process 存在后喂给状态机。
         """
-        part = await self.parts.get_by_id(part_id)
-        if part is None:
-            raise BizError(
-                code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part {part_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        shelf = await self.shelves.get_by_id(data.shelf_id)
-        if shelf is None or shelf.deleted_at is not None:
-            raise BizError(
-                code=ErrCode.BIZ_SHELF_NOT_FOUND,
-                message=f"shelf {data.shelf_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        if not shelf.is_active:
-            raise BizError(
-                code=ErrCode.BIZ_SHELF_IN_USE,
-                message=f"shelf {shelf.code!r} is inactive",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        if shelf.zone != ShelfZone.PRODUCTION.value:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message=(
-                    f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
-                    "place_on_shelf requires PRODUCTION"
-                ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-
-        # 校验 next_process_id 必填且存在
-        if data.next_process_id is None:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message="place_on_shelf requires next_process_id",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        process = await self._get_process(data.next_process_id)
+        part = await self._get_part_or_404(part_id)
+        shelf, process = await self._validate_production_shelf_and_process(
+            data.shelf_id, data.next_process_id,
+        )
 
         # state machine handles status/location/holder mutation + event creation;
         # 状态机 on_enter_ON_SHELF 会同时把 next_process_id 设到 model 上。
@@ -484,6 +450,105 @@ class PartService:
             ),
         )
         return items[0]
+
+    async def send_to_programming(self, part_id: int) -> PartOut:
+        """PENDING → PROGRAMMING：把零件发送至 CNC 编程。
+
+        编程员在「待编程一览」看到这个零件，下载图纸/3D → 写程序 →
+        上传 G 代码 → 在编程员端调用 `release_from_programming` 下发到货架。
+        """
+        part = await self._get_part_or_404(part_id)
+        part.sm.send_to_programming(event_repo=self.events)
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "SENT_TO_PROGRAMMING",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+            ),
+        )
+        return items[0]
+
+    async def release_from_programming(
+        self, part_id: int, data: PlaceOnShelfRequest
+    ) -> PartOut:
+        """PROGRAMMING → IN_PROCESS：编程员把零件下发到生产货架。
+
+        与 place_on_shelf 走同一个货架/工序校验，落到 ON_SHELF 状态机入口
+        复用同一份 on_enter_ON_SHELF 副作用；事件类型为 CNC_RELEASED
+        （见 on_release_from_programming 回调）。
+        """
+        part = await self._get_part_or_404(part_id)
+        shelf, process = await self._validate_production_shelf_and_process(
+            data.shelf_id, data.next_process_id,
+        )
+        part.sm.release_from_programming(
+            shelf=shelf, process=process, event_repo=self.events,
+        )
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "CNC_RELEASED",
+            self._banner_payload(
+                part,
+                customer_path=items[0].customer_path,
+                shelf_code=shelf.code,
+            ),
+        )
+        return items[0]
+
+    async def _get_part_or_404(self, part_id: int) -> TPart:
+        part = await self.parts.get_by_id(part_id)
+        if part is None:
+            raise BizError(
+                code=ErrCode.BIZ_PART_NOT_FOUND,
+                message=f"part {part_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        return part
+
+    async def _validate_production_shelf_and_process(
+        self, shelf_id: int | None, next_process_id: int | None,
+    ) -> tuple[TShelf, TProcess]:
+        """校验 `shelf_id` 是 PRODUCTION 区 active 货架 + `next_process_id` 存在。"""
+        if shelf_id is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="shelf_id is required",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        shelf = await self.shelves.get_by_id(shelf_id)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {shelf_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not shelf.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message=f"shelf {shelf.code!r} is inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if shelf.zone != ShelfZone.PRODUCTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
+                    "this operation requires PRODUCTION"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if next_process_id is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="next_process_id is required",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        process = await self._get_process(next_process_id)
+        return shelf, process
 
     async def _get_process(self, process_id: int) -> TProcess:
         """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""

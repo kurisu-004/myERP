@@ -5,6 +5,7 @@ from core.permission import (
     CurrentUser,
     require_auth,
     require_role,
+    require_roles,
     require_shelf_account_from_body,
 )
 from model.enums import UserRole
@@ -31,12 +32,25 @@ router = APIRouter(prefix="/parts", tags=["零件管理"])
 # ============================================================
 _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
 
+# MANAGER + CLERK：文员能下单/查看/编辑/下发/发送CNC编程/取消等前台操作。
+# 用户管理、货架管理、工种-工序配置仍保持 MANAGER-only。
+_office_dep = [
+    Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
+]
+
+# MANAGER + CLERK + CNC_PROGRAMMER：待编程一览 / 详情只读 / 文件下载
+_read_lots_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+    ))
+]
+
 
 @router.get(
     "",
     response_model=PartListOut,
-    summary="分页查询零件列表（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="分页查询零件列表（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def list_parts(
     customer_id: int | None = Query(default=None, description="客户 id"),
@@ -69,8 +83,8 @@ async def list_parts(
     "",
     response_model=PartOut,
     status_code=http_status.HTTP_201_CREATED,
-    summary="新增 PENDING 零件（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="新增 PENDING 零件（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def create_part(
     payload: PartCreateRequest,
@@ -82,8 +96,8 @@ async def create_part(
 @router.post(
     "/batch",
     response_model=PartBatchCreateResult,
-    summary="批量新增零件（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="批量新增零件（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def create_parts_batch(
     payload: PartBatchCreateRequest,
@@ -95,8 +109,8 @@ async def create_parts_batch(
 @router.post(
     "/{part_id}/update",
     response_model=PartOut,
-    summary="编辑零件基本信息（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="编辑零件基本信息（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def update_part(
     part_id: int,
@@ -107,10 +121,41 @@ async def update_part(
 
 
 @router.get(
+    "/pending-programming",
+    response_model=PartListOut,
+    summary="待编程一览：status=PROGRAMMING 的零件（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_lots_dep,
+)
+async def list_pending_programming_parts(
+    customer_id: int | None = Query(default=None, description="客户 id"),
+    keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
+    sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
+    sort_dir: str = Query(default="ASC", description="排序方向"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    svc: PartService = Depends(get_part_service),
+) -> PartListOut:
+    from model.enums import PartSortKey, PartStatus, SortDir
+
+    return await svc.list_parts(
+        PartListQuery(
+            customer_id=customer_id,
+            statuses=[PartStatus.PROGRAMMING],
+            is_urgent=None,
+            keyword=keyword,
+            sort_by=PartSortKey(sort_by),
+            sort_dir=SortDir(sort_dir),
+            limit=limit,
+            offset=offset,
+        )
+    )
+
+
+@router.get(
     "/{part_id}",
     response_model=PartOut,
-    summary="零件详情（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="零件详情（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_lots_dep,
 )
 async def get_part(
     part_id: int,
@@ -135,8 +180,8 @@ async def soft_delete_part(
 @router.post(
     "/{part_id}/place-on-shelf",
     response_model=PartOut,
-    summary="PENDING → IN_PROCESS：把零件放到生产货架（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="PENDING → IN_PROCESS：把零件放到生产货架（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def place_part_on_shelf(
     part_id: int,
@@ -147,10 +192,39 @@ async def place_part_on_shelf(
 
 
 @router.post(
+    "/{part_id}/send-to-programming",
+    response_model=PartOut,
+    summary="PENDING → PROGRAMMING：把零件发送至 CNC 编程（MANAGER / CLERK）",
+    dependencies=_office_dep,
+)
+async def send_part_to_programming(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.send_to_programming(part_id)
+
+
+@router.post(
+    "/{part_id}/release-from-programming",
+    response_model=PartOut,
+    summary="PROGRAMMING → IN_PROCESS：编程员下发到生产货架（MANAGER / CNC_PROGRAMMER）",
+    dependencies=[
+        Depends(require_roles(UserRole.MANAGER, UserRole.CNC_PROGRAMMER))
+    ],
+)
+async def release_part_from_programming(
+    part_id: int,
+    payload: PlaceOnShelfRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.release_from_programming(part_id, payload)
+
+
+@router.post(
     "/{part_id}/pass-inspection",
     response_model=PartOut,
-    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def pass_part_inspection(
     part_id: int,
@@ -162,8 +236,8 @@ async def pass_part_inspection(
 @router.post(
     "/{part_id}/deliver",
     response_model=PartOut,
-    summary="READY_TO_SHIP → DELIVERED：发货（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="READY_TO_SHIP → DELIVERED：发货（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def deliver_part(
     part_id: int,
@@ -175,8 +249,8 @@ async def deliver_part(
 @router.post(
     "/{part_id}/complete",
     response_model=PartOut,
-    summary="DELIVERED → COMPLETED：确认完成，释放流水号（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="DELIVERED → COMPLETED：确认完成，释放流水号（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def complete_part(
     part_id: int,
@@ -188,8 +262,8 @@ async def complete_part(
 @router.post(
     "/{part_id}/start-repair",
     response_model=PartOut,
-    summary="→ REPAIRING：开始返修（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="→ REPAIRING：开始返修（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def start_part_repair(
     part_id: int,
@@ -201,8 +275,8 @@ async def start_part_repair(
 @router.post(
     "/{part_id}/complete-repair",
     response_model=PartOut,
-    summary="REPAIRING → IN_PROCESS：返修完成（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="REPAIRING → IN_PROCESS：返修完成（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def complete_part_repair(
     part_id: int,
@@ -215,8 +289,8 @@ async def complete_part_repair(
 @router.post(
     "/{part_id}/cancel",
     response_model=PartOut,
-    summary="→ CANCELLED：取消零件，释放流水号（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="→ CANCELLED：取消零件，释放流水号（MANAGER / CLERK）",
+    dependencies=_office_dep,
 )
 async def cancel_part(
     part_id: int,
@@ -228,8 +302,8 @@ async def cancel_part(
 @router.get(
     "/{part_id}/events",
     response_model=list[PartEventOut],
-    summary="该零件的全生命周期事件流（MANAGER-only）",
-    dependencies=_mgr_dep,
+    summary="该零件的全生命周期事件流（MANAGER / CLERK / CNC_PROGRAMMER）",
+    dependencies=_read_lots_dep,
 )
 async def list_part_events(
     part_id: int,

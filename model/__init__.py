@@ -1,6 +1,7 @@
 from .assembly import TAssembly
 from .audit import AuditMixin, EventTimestampMixin
 from .base import Base
+from .cnc_program import TCncProgram
 from .customer import TCustomer
 from .drawing_file import TDrawingFile
 from .enums import (
@@ -34,6 +35,7 @@ __all__ = [
     "TAssembly",
     "TCustomer",
     "TDrawingFile",
+    "TCncProgram",
     "TMenu",
     "TPart",
     "TPartEvent",

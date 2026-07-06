@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import SessionLocal
 from repository import (
     AssemblyRepository,
+    CncProgramRepository,
     CustomerRepository,
     DrawingFileRepository,
     MenuRepository,
@@ -23,6 +24,7 @@ from repository import (
 from service import (
     AssemblyService,
     AuthService,
+    CncProgramService,
     CustomerService,
     DrawingService,
     PartService,
@@ -220,6 +222,15 @@ def get_drawing_service(
         files=DrawingFileRepository(session),
         parts=PartRepository(session),
         assemblies=AssemblyRepository(session),
+    )
+
+
+def get_cnc_program_service(
+    session: AsyncSession = Depends(get_session),
+) -> CncProgramService:
+    return CncProgramService(
+        programs=CncProgramRepository(session),
+        parts=PartRepository(session),
     )
 
 

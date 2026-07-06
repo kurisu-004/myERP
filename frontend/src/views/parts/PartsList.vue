@@ -191,42 +191,70 @@
     </div>
 
     <!-- 下发对话框 -->
-    <el-dialog v-model="dispatchVisible" title="下发零件" width="440px" @closed="dispatchPartId = null">
-      <el-form label-width="80px">
-        <el-form-item label="目标货架" required>
-          <el-select
-            v-model="dispatchShelfId"
-            placeholder="选择生产货架"
-            style="width: 100%"
-            filterable
-          >
-            <el-option
-              v-for="s in shelves"
-              :key="s.id"
-              :label="s.name"
-              :value="s.id"
-            />
-          </el-select>
+    <el-dialog
+      v-model="dispatchVisible"
+      :title="dispatchMode === 'cnc' ? '发送至 CNC 编程' : '下发零件'"
+      width="480px"
+      @closed="onDispatchClosed"
+    >
+      <el-form label-width="96px">
+        <el-form-item label="下发方式">
+          <el-radio-group v-model="dispatchMode">
+            <el-radio value="direct">直接下到生产货架</el-radio>
+            <el-radio value="cnc">发送至 CNC 编程</el-radio>
+          </el-radio-group>
         </el-form-item>
-        <el-form-item label="下一道工序" required>
-          <el-select
-            v-model="dispatchNextProcessId"
-            placeholder="选择工序（必填）"
-            style="width: 100%"
-            filterable
-          >
-            <el-option
-              v-for="p in processes"
-              :key="p.id"
-              :label="`${p.code} / ${p.name}`"
-              :value="p.id"
-            />
-          </el-select>
+        <template v-if="dispatchMode === 'direct'">
+          <el-form-item label="目标货架" required>
+            <el-select
+              v-model="dispatchShelfId"
+              placeholder="选择生产货架"
+              style="width: 100%"
+              filterable
+            >
+              <el-option
+                v-for="s in shelves"
+                :key="s.id"
+                :label="s.name"
+                :value="s.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="下一道工序" required>
+            <el-select
+              v-model="dispatchNextProcessId"
+              placeholder="选择工序（必填）"
+              style="width: 100%"
+              filterable
+            >
+              <el-option
+                v-for="p in processes"
+                :key="p.id"
+                :label="`${p.code} / ${p.name}`"
+                :value="p.id"
+              />
+            </el-select>
+          </el-form-item>
+        </template>
+        <el-form-item v-else>
+          <el-alert
+            type="info"
+            :closable="false"
+            title="将零件发送至 CNC 编程环节，零件状态变为「编程中」。"
+            description="CNC 编程员在「待编程一览」中下载图纸、上传 G 代码后，会再下发到生产货架。"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dispatchVisible = false">取消</el-button>
-        <el-button type="primary" :loading="dispatchSubmitting" :disabled="!dispatchShelfId || !dispatchNextProcessId" @click="onDispatchConfirm">确认下发</el-button>
+        <el-button
+          type="primary"
+          :loading="dispatchSubmitting"
+          :disabled="dispatchMode === 'direct' && (!dispatchShelfId || !dispatchNextProcessId)"
+          @click="onDispatchConfirm"
+        >
+          {{ dispatchMode === 'cnc' ? '发送至 CNC 编程' : '确认下发' }}
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -239,6 +267,7 @@ import { Search, Connection } from '@element-plus/icons-vue'
 import {
   listParts,
   placeOnShelf,
+  sendToProgramming,
   type ListPartsParams,
   type PartItem,
 } from '@/api/parts'
@@ -388,11 +417,14 @@ const dispatchShelfId = ref<string | null>(null)
 const dispatchNextProcessId = ref<string | null>(null)
 const dispatchPartId = ref<string | null>(null)
 const dispatchSubmitting = ref(false)
+/** 下发方式：direct = 直接放到生产货架；cnc = 发送至 CNC 编程。 */
+const dispatchMode = ref<'direct' | 'cnc'>('direct')
 
 async function onDispatch(row: PartItem): Promise<void> {
   dispatchPartId.value = row.id
   dispatchShelfId.value = null
   dispatchNextProcessId.value = null
+  dispatchMode.value = 'direct'
   // 拉取生产货架列表 + 工序列表
   try {
     const [shelfResp, procResp] = await Promise.all([
@@ -408,12 +440,28 @@ async function onDispatch(row: PartItem): Promise<void> {
   dispatchVisible.value = true
 }
 
+function onDispatchClosed(): void {
+  dispatchPartId.value = null
+  dispatchShelfId.value = null
+  dispatchNextProcessId.value = null
+  dispatchMode.value = 'direct'
+}
+
 async function onDispatchConfirm(): Promise<void> {
-  if (!dispatchPartId.value || !dispatchShelfId.value || !dispatchNextProcessId.value) return
+  if (!dispatchPartId.value) return
+  if (dispatchMode.value === 'direct'
+      && (!dispatchShelfId.value || !dispatchNextProcessId.value)) return
   dispatchSubmitting.value = true
   try {
-    await placeOnShelf(dispatchPartId.value, dispatchShelfId.value, dispatchNextProcessId.value)
-    ElMessage.success('下发成功')
+    if (dispatchMode.value === 'cnc') {
+      await sendToProgramming(dispatchPartId.value)
+      ElMessage.success('已发送至 CNC 编程')
+    } else {
+      await placeOnShelf(
+        dispatchPartId.value, dispatchShelfId.value!, dispatchNextProcessId.value!,
+      )
+      ElMessage.success('下发成功')
+    }
     dispatchVisible.value = false
     void fetchList()
   } catch (e) {

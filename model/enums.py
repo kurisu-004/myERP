@@ -17,6 +17,7 @@ class PartStatus(str, enum.Enum):
     """
 
     PENDING = "PENDING"               # 待生产（还没放到货架上，办公室暂存）
+    PROGRAMMING = "PROGRAMMING"       # 编程中（已发送至 CNC 编程，等待/正在编程）
     IN_PROCESS = "IN_PROCESS"         # 生产中（在生产货架上 OR 在工人手里）
     INSPECTION = "INSPECTION"         # 待品检（在品检货架上）
     READY_TO_SHIP = "READY_TO_SHIP"   # 待送货
@@ -70,6 +71,8 @@ class PartEventType(str, enum.Enum):
 
     - CREATED          零件创建
     - RELEASED         历史值，保留以兼容历史行（PENDING → READY 旧流程）。不再触发新事件。
+    - SENT_TO_PROGRAMMING  文员把零件发送至 CNC 编程（PENDING → PROGRAMMING）
+    - CNC_RELEASED     编程员上传 G 代码后下发到生产货架（PROGRAMMING → IN_PROCESS）
     - PLACED_ON_SHELF  文员把零件放到生产货架（PENDING → IN_PROCESS）
     - PICKED_UP        工人领取（holder 由货架改为工人；状态不变）
     - RETURNED         工人归还（holder 由工人改回货架；状态不变）
@@ -83,6 +86,8 @@ class PartEventType(str, enum.Enum):
 
     CREATED = "CREATED"
     RELEASED = "RELEASED"                 # 历史值保留
+    SENT_TO_PROGRAMMING = "SENT_TO_PROGRAMMING"
+    CNC_RELEASED = "CNC_RELEASED"
     PLACED_ON_SHELF = "PLACED_ON_SHELF"
     PICKED_UP = "PICKED_UP"
     RETURNED = "RETURNED"
@@ -117,13 +122,14 @@ class UserRole(str, enum.Enum):
     DB 存 `varchar(20)`（t_user_role.role）。一个用户可有多个角色。
 
     SHELF_ACCOUNT 角色必须配 `scope_type='shelf' / scope_id=<shelf.id>`；
-    其它角色（MANAGER / CLERK / INSPECTOR）scope 通常为 NULL。
+    其它角色（MANAGER / CLERK / INSPECTOR / CNC_PROGRAMMER）scope 通常为 NULL。
     """
 
     MANAGER = "MANAGER"               # 后台管理员；可访问所有管理端点
     SHELF_ACCOUNT = "SHELF_ACCOUNT"   # 货架一体机登录账号；必须 scope 到具体 shelf
-    CLERK = "CLERK"                   # 预留：文员下单 / 投放
+    CLERK = "CLERK"                   # 文员：下单 / 投放 / 下发 / 发送至 CNC 编程
     INSPECTOR = "INSPECTOR"           # 预留：品检员验收
+    CNC_PROGRAMMER = "CNC_PROGRAMMER"  # CNC 编程员：待编程一览 / 上传 G 代码 / 下发生产
 
 
 class PartSortKey(str, enum.Enum):

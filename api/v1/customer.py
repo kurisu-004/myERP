@@ -2,15 +2,20 @@
 from fastapi import APIRouter, Depends
 
 from api.deps import get_customer_service
-from core.permission import require_role
+from core.permission import require_role, require_roles
 from model.enums import UserRole
 from schema.customer import CustomerOut
 from service import CustomerService
 
+# 客户读：MANAGER + CLERK + CNC_PROGRAMMER。文员/编程员要拉客户列表做筛选。
 router = APIRouter(
     prefix="/customers",
     tags=["客户管理"],
-    dependencies=[Depends(require_role(UserRole.MANAGER))],
+    dependencies=[
+        Depends(require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+        ))
+    ],
 )
 
 

@@ -1,5 +1,6 @@
 from .assembly import AssemblyService
 from .auth import AuthService
+from .cnc_program import CncProgramService
 from .customer import CustomerService
 from .drawing import DrawingService
 from .menu import build_menu_tree
@@ -14,6 +15,7 @@ from .work_type_process import WorkTypeProcessService
 __all__ = [
     "AssemblyService",
     "AuthService",
+    "CncProgramService",
     "CustomerService",
     "DrawingService",
     "PartService",

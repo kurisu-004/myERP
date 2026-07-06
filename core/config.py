@@ -56,8 +56,9 @@ class Settings(BaseSettings):
         default=100 * 1024 * 1024, alias="COS_MAX_FILE_SIZE", ge=1
     )
     # 允许的扩展名（逗号分隔）。service 层做白名单校验。
+    # 含图纸类（pdf/step/stp/dwg/dxf）与 CNC G 代码类（nc/tap/cnc/mpf/ngc）。
     cos_allowed_types: str = Field(
-        default="pdf,step,stp,dwg,dxf", alias="COS_ALLOWED_TYPES"
+        default="pdf,step,stp,dwg,dxf,nc,tap,cnc,mpf,ngc", alias="COS_ALLOWED_TYPES"
     )
 
 
