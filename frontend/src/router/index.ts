@@ -50,7 +50,7 @@ const routes: RouteRecordRaw[] = [
         path: 'parts/:id(\\d+)',
         name: 'PartsDetail',
         component: () => import('@/views/parts/PartDetail.vue'),
-        meta: { title: '零件详情', menuCode: 'parts_list', breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '零件一览', path: '/parts' }, { label: '详情' }] },
+        meta: { title: '零件详情', breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '零件一览', path: '/parts' }, { label: '详情' }] },
         props: true,
       },
       {
@@ -69,7 +69,7 @@ const routes: RouteRecordRaw[] = [
         path: 'assemblies/:id(\\d+)',
         name: 'AssemblyDetail',
         component: () => import('@/views/assemblies/AssemblyDetail.vue'),
-        meta: { title: '装配件详情', menuCode: 'assemblies_list', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览', path: '/assemblies' }, { label: '详情' }] },
+        meta: { title: '装配件详情', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览', path: '/assemblies' }, { label: '详情' }] },
         props: true,
       },
       {
