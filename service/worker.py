@@ -5,6 +5,7 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from model import TWorker
+from repository.work_type import WorkTypeRepository
 from repository.worker import WorkerRepository
 from schema.worker import (
     WorkerCreateRequest,
@@ -19,8 +20,28 @@ from utils.id_gen import new_id
 class WorkerService:
     """工人管理业务逻辑层。"""
 
-    def __init__(self, workers: WorkerRepository) -> None:
+    def __init__(
+        self,
+        workers: WorkerRepository,
+        work_types: WorkTypeRepository | None = None,
+    ) -> None:
         self.workers = workers
+        self.work_types = work_types
+
+    async def _resolve_work_type(self, work_type_id: int | None) -> int | None:
+        if work_type_id is None:
+            return None
+        if self.work_types is None:
+            # 若 service 未注入 work_types repo，假定调用方已在外层校验
+            return work_type_id
+        wt = await self.work_types.get_by_id(work_type_id)
+        if wt is None:
+            raise BizError(
+                code=ErrCode.BIZ_WORK_TYPE_NOT_FOUND,
+                message=f"work_type {work_type_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        return wt.id
 
     # ===== 查询 =====
     async def list_workers(self, query: WorkerListQuery) -> WorkerListOut:
@@ -90,12 +111,14 @@ class WorkerService:
                 message=f"badge_code {data.badge_code!r} already exists",
                 http_status=http_status.HTTP_409_CONFLICT,
             )
+        wt_id = await self._resolve_work_type(data.work_type_id)
         w = TWorker(
             id=new_id(),
             badge_code=data.badge_code,
             name=data.name,
             id_card_no=data.id_card_no,
             phone=data.phone,
+            work_type_id=wt_id,
             is_active=True,
         )
         await self.workers.create(w)
@@ -126,7 +149,11 @@ class WorkerService:
             w.id_card_no = data.id_card_no
         if data.phone is not None:
             w.phone = data.phone
+        if data.work_type_id is not None:
+            w.work_type_id = await self._resolve_work_type(data.work_type_id)
         await self.workers.update(w)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
+        await self.workers.session.refresh(w)
         return _worker_to_out(w)
 
     async def deactivate(self, worker_id: int) -> WorkerOut:
@@ -163,6 +190,7 @@ def _worker_to_out(w: TWorker) -> WorkerOut:
         name=w.name,
         id_card_no=w.id_card_no,
         phone=w.phone,
+        work_type_id=w.work_type_id,
         is_active=w.is_active,
         created_at=w.created_at,
         updated_at=w.updated_at,

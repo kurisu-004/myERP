@@ -74,19 +74,103 @@ _CUSTOMERS = [
 
 
 # =============================================================================
-# 工人数据：8 条（5 在职可用 + 2 在职空闲 + 1 停用）
+# 工人数据：20 条（覆盖 9 个工种，1 未分配 + 1 停用）
+# 工种分配见 _WORK_TYPE_SEEDS；
+# (badge_code, name, id_card_no, phone, is_active, work_type_code_or_None)
 # =============================================================================
 _WORKERS = [
-    # (badge_code, name, id_card_no, phone, is_active)
-    ("Z001", "张志强", "110101198501012131", "13800138001", True),
-    ("Z002", "王建国", "110101198803153217", "13800138002", True),
-    ("Z003", "李大伟", "110101199002204518", "13800138003", True),
-    ("Z004", "赵小敏", "110101199205156427", "13800138004", True),
-    ("Z005", "陈丽华", "110101199408102323", "13800138005", True),
-    ("Z006", "周小杰", "110101199612081218", "13800138006", True),
-    ("Z007", "黄文斌", "110101198705123910", "13800138007", False),  # 停用
-    ("Z008", "吴文军", "110101198912305216", "13800138008", True),
+    # ---------- 车床 (3人) ----------
+    ("Z001", "张志强", "110101198501012131", "13800138001", True,  "车床"),
+    ("Z009", "刘建国", "110101198801015432", "13800138009", True,  "车床"),
+    ("Z010", "陈明辉", "110101199003056789", "13800138010", True,  "车床"),
+    # ---------- 铣床 (2人) ----------
+    ("Z002", "王建国", "110101198803153217", "13800138002", True,  "铣床"),
+    ("Z011", "林永强", "110101199106151234", "13800138011", True,  "铣床"),
+    # ---------- 磨床 (1人) ----------
+    ("Z012", "郑国栋", "110101198903058765", "13800138012", True,  "磨床"),
+    # ---------- 线切割 (2人) ----------
+    ("Z006", "周小杰", "110101199612081218", "13800138006", True,  "线切割"),
+    ("Z013", "许志远", "110101198706154321", "13800138013", True,  "线切割"),
+    # ---------- CNC操机 (3人) ----------
+    ("Z003", "李大伟", "110101199002204518", "13800138003", True,  "CNC操机"),
+    ("Z014", "苏文博", "110101199205305678", "13800138014", True,  "CNC操机"),
+    ("Z015", "何俊杰", "110101199308109012", "13800138015", True,  "CNC操机"),
+    # ---------- CNC编程 (1人) ----------
+    ("Z016", "潘志明", "110101198905152345", "13800138016", True,  "CNC编程"),
+    # ---------- 品检 (3人) ----------
+    ("Z004", "赵小敏", "110101199205156427", "13800138004", True,  "品检"),
+    ("Z005", "陈丽华", "110101199408102323", "13800138005", True,  "品检"),
+    ("Z017", "梁美玲", "110101199506204321", "13800138017", True,  "品检"),
+    # ---------- 文员 (1人) ----------
+    ("Z018", "吴晓燕", "110101199707303210", "13800138018", True,  "文员"),
+    # ---------- 送货司机 (2人) ----------
+    ("Z008", "吴文军", "110101198912305216", "13800138008", True,  "送货司机"),
+    ("Z019", "冯国威", "110101198507189876", "13800138019", True,  "送货司机"),
+    # ---------- 未分配 / 停用 ----------
+    ("Z007", "黄文斌", "110101198705123910", "13800138007", False, None),  # 停用+未分配
+    ("Z020", "唐志强", "110101198807151234", "13800138020", True,  None),  # 在职但未分配
 ]
+
+
+# =============================================================================
+# 工种 seed（9 条）
+# =============================================================================
+_WORK_TYPE_SEEDS: list[tuple[str, str, int]] = [
+    # (code, name, sort_order)
+    ("车床",     "车床工",   10),
+    ("铣床",     "铣床工",   20),
+    ("磨床",     "磨床工",   30),
+    ("线切割",   "线切割工", 40),
+    ("CNC操机",  "CNC操机",  50),
+    ("CNC编程",  "CNC编程",  60),
+    ("品检",     "品检员",   70),
+    ("文员",     "文员",     80),
+    ("送货司机", "送货司机", 90),
+]
+
+
+# =============================================================================
+# 工序 seed（8 条）
+# =============================================================================
+_PROCESS_SEEDS: list[tuple[str, str, str, bool, int]] = [
+    # (code, name, category, is_inspection, sort_order)
+    ("车",     "车床加工", "INHOUSE",   False, 10),
+    ("铣",     "铣床加工", "INHOUSE",   False, 20),
+    ("磨",     "磨床加工", "INHOUSE",   False, 30),
+    ("线切割", "线切割",   "INHOUSE",   False, 40),
+    ("CNC",    "CNC加工",  "INHOUSE",   False, 50),
+    ("热处理", "热处理",   "OUTSOURCE", False, 60),
+    ("电镀",   "电镀",     "OUTSOURCE", False, 70),
+    ("阳极",   "阳极氧化", "OUTSOURCE", False, 80),
+]
+
+
+# =============================================================================
+# 工种↔工序 初始映射
+# key = work_type_code, value = list[process_code]
+# =============================================================================
+_WORK_TYPE_PROCESS_MAPPING: dict[str, list[str]] = {
+    "车床":     ["车"],
+    "铣床":     ["铣"],
+    "磨床":     ["磨"],
+    "线切割":   ["线切割"],
+    "CNC操机":  ["CNC"],
+    "CNC编程":  ["CNC"],
+    "品检":     ["车", "铣", "磨", "线切割", "CNC", "热处理", "电镀", "阳极"],
+    # 文员 / 送货司机 无映射 → 不在 dict 中
+}
+
+
+# =============================================================================
+# 零件 next_process 分配：idx % 5 → process code
+# =============================================================================
+_PROCESS_CODE_BY_MOD: dict[int, str] = {
+    0: "车",
+    1: "铣",
+    2: "磨",
+    3: "CNC",
+    4: "线切割",
+}
 
 
 # =============================================================================
@@ -328,7 +412,10 @@ def upgrade() -> None:
     op.execute("DELETE FROM t_assembly")
     op.execute("DELETE FROM t_user")
     op.execute("DELETE FROM t_shelf")
+    op.execute("DELETE FROM t_work_type_process")
     op.execute("DELETE FROM t_worker")
+    op.execute("DELETE FROM t_work_type")
+    op.execute("DELETE FROM t_process")
     op.execute("DELETE FROM t_customer")
     op.execute("DELETE FROM t_serial_counter")
 
@@ -362,11 +449,88 @@ def upgrade() -> None:
     ), customer_rows)
 
     # =========================================================================
-    # 3. 工人：8 条
+    # 3. 工种：9 条
+    # =========================================================================
+    wt_ids: dict[str, int] = {}
+    wt_rows = []
+    for code, name, sort_order in _WORK_TYPE_SEEDS:
+        wid = new_id()
+        wt_ids[code] = wid
+        wt_rows.append({
+            "id": wid, "code": code, "name": name, "sort_order": sort_order,
+            "description": None,
+            "created_at": now, "updated_at": now, "deleted_at": None,
+        })
+    op.bulk_insert(sa.table("t_work_type",
+        sa.column("id", sa.BigInteger),
+        sa.column("code", sa.String),
+        sa.column("name", sa.String),
+        sa.column("description", sa.String),
+        sa.column("sort_order", sa.Integer),
+        sa.column("created_at", sa.DateTime),
+        sa.column("updated_at", sa.DateTime),
+        sa.column("deleted_at", sa.DateTime),
+    ), wt_rows)
+
+    # =========================================================================
+    # 4. 工序：8 条
+    # =========================================================================
+    proc_ids: dict[str, int] = {}
+    proc_rows = []
+    for code, name, category, is_insp, sort_order in _PROCESS_SEEDS:
+        pid = new_id()
+        proc_ids[code] = pid
+        proc_rows.append({
+            "id": pid, "code": code, "name": name,
+            "category": category, "is_inspection": is_insp,
+            "sort_order": sort_order, "description": None,
+            "created_at": now, "updated_at": now, "deleted_at": None,
+        })
+    op.bulk_insert(sa.table("t_process",
+        sa.column("id", sa.BigInteger),
+        sa.column("code", sa.String),
+        sa.column("name", sa.String),
+        sa.column("category", sa.String),
+        sa.column("is_inspection", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        sa.column("description", sa.String),
+        sa.column("created_at", sa.DateTime),
+        sa.column("updated_at", sa.DateTime),
+        sa.column("deleted_at", sa.DateTime),
+    ), proc_rows)
+
+    # =========================================================================
+    # 5. 工种↔工序映射
+    # =========================================================================
+    wtp_rows: list[dict] = []
+    for wt_code, p_codes in _WORK_TYPE_PROCESS_MAPPING.items():
+        wt_id = wt_ids[wt_code]
+        for sort_idx, p_code in enumerate(p_codes):
+            p_id = proc_ids[p_code]
+            wtp_rows.append({
+                "id": new_id(),
+                "work_type_id": wt_id,
+                "process_id": p_id,
+                "sort_order": sort_idx,
+                "created_at": now, "updated_at": now, "deleted_at": None,
+            })
+    if wtp_rows:
+        op.bulk_insert(sa.table("t_work_type_process",
+            sa.column("id", sa.BigInteger),
+            sa.column("work_type_id", sa.BigInteger),
+            sa.column("process_id", sa.BigInteger),
+            sa.column("sort_order", sa.Integer),
+            sa.column("created_at", sa.DateTime),
+            sa.column("updated_at", sa.DateTime),
+            sa.column("deleted_at", sa.DateTime),
+        ), wtp_rows)
+
+    # =========================================================================
+    # 6. 工人：20 条（含 work_type_id）
     # =========================================================================
     worker_id_by_badge: dict[str, int] = {}
     worker_rows = []
-    for badge, name, id_card, phone, is_active in _WORKERS:
+    for badge, name, id_card, phone, is_active, wt_code in _WORKERS:
         wid = new_id()
         worker_id_by_badge[badge] = wid
         worker_rows.append({
@@ -374,6 +538,7 @@ def upgrade() -> None:
             "badge_code": badge, "name": name,
             "id_card_no": id_card, "phone": phone,
             "is_active": is_active,
+            "work_type_id": wt_ids.get(wt_code) if wt_code else None,
             "created_at": now, "updated_at": now, "deleted_at": None,
         })
     op.bulk_insert(sa.table("t_worker",
@@ -383,6 +548,7 @@ def upgrade() -> None:
         sa.column("id_card_no", sa.String),
         sa.column("phone", sa.String),
         sa.column("is_active", sa.Boolean),
+        sa.column("work_type_id", sa.BigInteger),
         sa.column("created_at", sa.DateTime),
         sa.column("updated_at", sa.DateTime),
         sa.column("deleted_at", sa.DateTime),
@@ -392,7 +558,7 @@ def upgrade() -> None:
     ]
 
     # =========================================================================
-    # 4. 装配体：10 条
+    # 7. 装配体：10 条
     # =========================================================================
     assembly_ids: list[int] = []
     assembly_rows = []
@@ -426,7 +592,7 @@ def upgrade() -> None:
     ), assembly_rows)
 
     # =========================================================================
-    # 5. 货架：3 条（必须在零件之前创建，以便零件引用 shelf.id）
+    # 8. 货架：3 条（必须在零件之前创建，以便零件引用 shelf.id）
     # =========================================================================
     bind = op.get_bind()
     shelf_ids: dict[str, int] = {}
@@ -444,11 +610,12 @@ def upgrade() -> None:
         )
 
     # =========================================================================
-    # 6. 零件：50 条
+    # 9. 零件：50 条（含 next_process_id）
     #    - IN_PROCESS 零件随机分配到工人或生产货架（固定种子可复现）
     #    - INSPECTION 零件全部放在品检货架 INSP-I1
     #    - serial_no 按一级客户前缀：法拉 F、路达 L；COMPLETED/CANCELLED 置 NULL
     #    - placed_at 对已下发过的状态设置为 request_date
+    #    - next_process_id 根据 part index 模 5 分配到 车/铣/磨/CNC/线切割
     # =========================================================================
     holder_map, holder_type_map = _assign_in_process_holders(
         _PARTS, active_worker_ids, shelf_ids,
@@ -479,6 +646,9 @@ def upgrade() -> None:
                       "DELIVERED", "REPAIRING", "COMPLETED"):
             placed_at = datetime.combine(req_date_obj, datetime.min.time())
 
+        # next_process_id：按零件 index 模 5 分配
+        p_code = _PROCESS_CODE_BY_MOD[i % 5]
+        next_pid = proc_ids[p_code]
         part_rows.append({
             "id": new_id(),
             "serial_no": serial_no,
@@ -494,6 +664,7 @@ def upgrade() -> None:
             "is_urgent": urgent,
             "current_holder_id": current_holder_id,
             "placed_at": placed_at,
+            "next_process_id": next_pid,
             "customer_id": cust_id,
             "assembly_id": assembly_ids[assy_idx] if assy_idx is not None else None,
             "created_at": now, "updated_at": now, "deleted_at": None,
@@ -515,6 +686,7 @@ def upgrade() -> None:
         sa.column("is_urgent", sa.Boolean),
         sa.column("current_holder_id", sa.BigInteger),
         sa.column("placed_at", sa.DateTime),
+        sa.column("next_process_id", sa.BigInteger),
         sa.column("customer_id", sa.BigInteger),
         sa.column("assembly_id", sa.BigInteger),
         sa.column("created_at", sa.DateTime),
@@ -523,7 +695,7 @@ def upgrade() -> None:
     ), part_rows)
 
     # =========================================================================
-    # 7. 更新 t_serial_counter counter 到种子用到的最大号
+    # 10. 更新 t_serial_counter counter 到种子用到的最大号
     # =========================================================================
     op.execute(
         f"UPDATE t_serial_counter SET counter = {f_counter}, updated_at = now() "
@@ -535,14 +707,19 @@ def upgrade() -> None:
     )
 
     # =========================================================================
-    # 8. 用户 / 角色 seed（admin + 3 shelf accounts + 角色关联）
+    # 11. 用户 / 角色 seed（admin + 3 shelf accounts + 角色关联）
     # =========================================================================
     _seed_users(shelf_ids)
 
     # =========================================================================
-    # 9. 菜单 / 角色菜单 seed
+    # 12. 菜单 / 角色菜单 seed
     # =========================================================================
     _seed_menus()
+
+    # =========================================================================
+    # 13. 设置菜单 seed（settings_root + 3 settings 子菜单 + MANAGER 关联）
+    # =========================================================================
+    _seed_settings_menus()
 
 
 # =============================================================================
@@ -695,6 +872,88 @@ def _seed_menus() -> None:
         )
 
 
+# =============================================================================
+# 子函数：settings 菜单 seed
+# =============================================================================
+def _seed_settings_menus() -> None:
+    """插入 settings_root + 3 个 settings 子菜单, MANAGER 角色关联。"""
+    bind = op.get_bind()
+
+    settings_root_id = new_id()
+    bind.execute(
+        sa.text(
+            """
+            INSERT INTO t_menu
+              (id, parent_id, code, title, path, icon, sort_order, is_active,
+               created_at, updated_at)
+            VALUES
+              (:id, NULL, 'settings_root', '设置', NULL, 'Setting', 50, true,
+               now(), now())
+            ON CONFLICT (code) WHERE deleted_at IS NULL DO NOTHING
+            """
+        ),
+        {"id": settings_root_id},
+    )
+
+    # 回查实际 id（ON CONFLICT 可能不写，第二次运行要拿到已有 id）
+    row = bind.execute(
+        sa.text(
+            "SELECT id FROM t_menu WHERE code='settings_root' AND deleted_at IS NULL"
+        )
+    ).fetchone()
+    if row:
+        settings_root_id = int(row[0])
+
+    sub_menus = [
+        ("work_types_list",          "工种管理",     "/settings/work-types",          "User",       10),
+        ("processes_list",           "工序管理",     "/settings/processes",           "Operation",  20),
+        ("work_type_processes_list", "工种-工序映射", "/settings/work-type-processes", "Connection", 30),
+    ]
+    for code, title, path, icon, sort_order in sub_menus:
+        sub_id = new_id()
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_menu
+                  (id, parent_id, code, title, path, icon, sort_order, is_active,
+                   created_at, updated_at)
+                VALUES
+                  (:id, :pid, :code, :title, :path, :icon, :sort_order, true,
+                   now(), now())
+                ON CONFLICT (code) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {
+                "id": sub_id, "pid": settings_root_id,
+                "code": code, "title": title, "path": path,
+                "icon": icon, "sort_order": sort_order,
+            },
+        )
+
+    # MANAGER 角色关联 settings 菜单
+    settings_codes = [
+        "settings_root", "work_types_list",
+        "processes_list", "work_type_processes_list",
+    ]
+    rows = bind.execute(
+        sa.text(
+            "SELECT id FROM t_menu WHERE code = ANY(:codes) AND deleted_at IS NULL"
+        ),
+        {"codes": settings_codes},
+    ).fetchall()
+    for (mid,) in rows:
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_role_menu (id, role, menu_id, created_at, updated_at)
+                VALUES (:id, 'MANAGER', :menu_id, now(), now())
+                ON CONFLICT (role, menu_id) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {"id": new_id(), "menu_id": mid},
+        )
+
+
 def downgrade() -> None:
     # 清掉所有种子数据（不删 schema）
     op.execute("DELETE FROM t_part_event")
@@ -705,6 +964,9 @@ def downgrade() -> None:
     op.execute("DELETE FROM t_assembly")
     op.execute("DELETE FROM t_user")
     op.execute("DELETE FROM t_shelf")
+    op.execute("DELETE FROM t_work_type_process")
     op.execute("DELETE FROM t_worker")
+    op.execute("DELETE FROM t_work_type")
+    op.execute("DELETE FROM t_process")
     op.execute("DELETE FROM t_customer")
     op.execute("DELETE FROM t_serial_counter")

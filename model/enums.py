@@ -137,3 +137,13 @@ class PartSortKey(str, enum.Enum):
 class SortDir(str, enum.Enum):
     ASC = "ASC"
     DESC = "DESC"
+
+
+class ProcessCategory(str, enum.Enum):
+    """工序类别。
+
+    DB 存 `varchar(16)`。INHOUSE = 自产（车间内加工）；
+    OUTSOURCE = 外协（外发给供应商 / 加工厂）。
+    """
+    INHOUSE = "INHOUSE"
+    OUTSOURCE = "OUTSOURCE"

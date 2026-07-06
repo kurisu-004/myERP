@@ -131,6 +131,49 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    # ===== 工种取件列表（PICK_UP 扫码台热点路径）=====
+    async def list_for_work_type(
+        self,
+        *,
+        shelf_id: int,
+        mapped_process_ids: list[int],
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """扫码台 PICK_UP：列出当前生产货架上、由某工种可领的零件。
+
+        过滤条件：
+        - status = 'IN_PROCESS'
+        - location = 'PRODUCTION_SHELF'
+        - current_holder_id = shelf_id（该零件当前就在指定货架上）
+        - next_process_id IS NOT NULL（必须有下一道工序）
+        - next_process_id IN mapped_process_ids（被该工种可领）
+
+        排序：is_urgent DESC（加急优先）, planned_delivery_date ASC（临期优先）,
+              id DESC（稳定排序）。
+
+        返回空 list 当 mapped_process_ids 为空时（让 service 层短路）。
+        """
+        if not mapped_process_ids:
+            return []
+        stmt = (
+            select(TPart)
+            .where(
+                TPart.status == "IN_PROCESS",
+                TPart.location == "PRODUCTION_SHELF",
+                TPart.current_holder_id == shelf_id,
+                TPart.next_process_id.in_(mapped_process_ids),
+            )
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 内部 =====
     def _build_filter_stmt(
         self,

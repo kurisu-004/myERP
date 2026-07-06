@@ -9,6 +9,7 @@ from .enums import (
     PartLocation,
     PartSortKey,
     PartStatus,
+    ProcessCategory,
     SCAN_EVENT_TYPES,
     ShelfZone,
     SortDir,
@@ -17,11 +18,14 @@ from .enums import (
 from .menu import TMenu, TRoleMenu
 from .part import TPart
 from .part_event import TPartEvent
+from .process import TProcess
 from .serial_counter import TSerialCounter
 from .shelf import TShelf
 from .user import TUser
 from .user_role import TUserRole
 from .worker import TWorker
+from .work_type import TWorkType
+from .work_type_process import TWorkTypeProcess
 
 __all__ = [
     "AuditMixin",
@@ -33,17 +37,21 @@ __all__ = [
     "TMenu",
     "TPart",
     "TPartEvent",
+    "TProcess",
     "TRoleMenu",
     "TSerialCounter",
     "TShelf",
     "TUser",
     "TUserRole",
     "TWorker",
+    "TWorkType",
+    "TWorkTypeProcess",
     "AssemblyStatus",
     "PartEventType",
     "PartLocation",
     "PartSortKey",
     "PartStatus",
+    "ProcessCategory",
     "SCAN_EVENT_TYPES",
     "ShelfZone",
     "SortDir",

@@ -133,6 +133,14 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="下一道工序" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.next_process_id && processNameById[row.next_process_id]" type="primary" size="small" effect="plain">
+              {{ processNameById[row.next_process_id] }}
+            </el-tag>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="装配" width="80" align="center">
           <template #default="{ row }">
             <el-tag
@@ -183,9 +191,9 @@
     </div>
 
     <!-- 下发对话框 -->
-    <el-dialog v-model="dispatchVisible" title="下发零件" width="400px" @closed="dispatchPartId = null">
+    <el-dialog v-model="dispatchVisible" title="下发零件" width="440px" @closed="dispatchPartId = null">
       <el-form label-width="80px">
-        <el-form-item label="目标货架">
+        <el-form-item label="目标货架" required>
           <el-select
             v-model="dispatchShelfId"
             placeholder="选择生产货架"
@@ -200,10 +208,25 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="下一道工序" required>
+          <el-select
+            v-model="dispatchNextProcessId"
+            placeholder="选择工序（必填）"
+            style="width: 100%"
+            filterable
+          >
+            <el-option
+              v-for="p in processes"
+              :key="p.id"
+              :label="`${p.code} / ${p.name}`"
+              :value="p.id"
+            />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dispatchVisible = false">取消</el-button>
-        <el-button type="primary" :loading="dispatchSubmitting" :disabled="!dispatchShelfId" @click="onDispatchConfirm">确认下发</el-button>
+        <el-button type="primary" :loading="dispatchSubmitting" :disabled="!dispatchShelfId || !dispatchNextProcessId" @click="onDispatchConfirm">确认下发</el-button>
       </template>
     </el-dialog>
   </div>
@@ -221,6 +244,8 @@ import {
 } from '@/api/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
+import { listProcesses } from '@/api/process'
+import type { Process } from '@/types/process'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
@@ -314,8 +339,17 @@ async function fetchList(): Promise<void> {
   }
 }
 
+// 工序名查找
+const processNameById = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const p of processes.value) map[p.id] = p.name
+  return map
+})
+
 onMounted(() => {
   void fetchList()
+  // 预拉取工序列表（用于下一道工序列显示）
+  listProcesses({ limit: 200 }).then(res => { processes.value = res.items }).catch(() => {})
 })
 
 // ============ 搜索 / 排序 / 分页 ============
@@ -348,29 +382,37 @@ const onPageSizeChange = (size: number): void => {
 // （实测 `Number("198362487928651776")` → "198362487928651780"，差 4）。
 // 后端 Pydantic v2 默认 lax 模式会从 JSON string 自动 coerce 到 int。
 const shelves = ref<Shelf[]>([])
+const processes = ref<Process[]>([])
 const dispatchVisible = ref(false)
 const dispatchShelfId = ref<string | null>(null)
+const dispatchNextProcessId = ref<string | null>(null)
 const dispatchPartId = ref<string | null>(null)
 const dispatchSubmitting = ref(false)
 
 async function onDispatch(row: PartItem): Promise<void> {
   dispatchPartId.value = row.id
   dispatchShelfId.value = null
-  // 拉取生产货架列表
+  dispatchNextProcessId.value = null
+  // 拉取生产货架列表 + 工序列表
   try {
-    const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
-    shelves.value = resp.items
+    const [shelfResp, procResp] = await Promise.all([
+      listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 }),
+      listProcesses({ limit: 200 }),
+    ])
+    shelves.value = shelfResp.items
+    processes.value = procResp.items
   } catch {
     shelves.value = []
+    processes.value = []
   }
   dispatchVisible.value = true
 }
 
 async function onDispatchConfirm(): Promise<void> {
-  if (!dispatchPartId.value || !dispatchShelfId.value) return
+  if (!dispatchPartId.value || !dispatchShelfId.value || !dispatchNextProcessId.value) return
   dispatchSubmitting.value = true
   try {
-    await placeOnShelf(dispatchPartId.value, dispatchShelfId.value)
+    await placeOnShelf(dispatchPartId.value, dispatchShelfId.value, dispatchNextProcessId.value)
     ElMessage.success('下发成功')
     dispatchVisible.value = false
     void fetchList()

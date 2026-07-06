@@ -95,7 +95,13 @@ onBeforeMount(() => {
 function selectAction(a: WorkAction): void {
   setAction(a)
   ElMessage.success(`已选择: ${ACTION_LABEL[a]}`)
-  void router.push(`/scan/parts?action=${a.toLowerCase().replace('_', '')}`)
+  // PICK_UP 走「按工种选件」新流程 → /scan/pick
+  // RETURN / INSPECT 沿用旧流程 → /scan/parts
+  if (a === 'PICK_UP') {
+    void router.push('/scan/pick')
+  } else {
+    void router.push(`/scan/parts?action=${a.toLowerCase().replace('_', '')}`)
+  }
 }
 
 function rescanBadge(): void {

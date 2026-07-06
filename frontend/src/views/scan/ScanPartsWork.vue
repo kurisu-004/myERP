@@ -248,6 +248,24 @@
         <el-button type="primary" @click="inspectorConfirm">确认送检</el-button>
       </template>
     </el-dialog>
+
+    <!-- 下一道工序选择对话框（RETURN 时）-->
+    <el-dialog v-model="showNextProcessDialog" title="选择下一道工序" width="420px" :close-on-click-modal="false">
+      <el-radio-group v-model="selectedNextProcessId" style="display: flex; flex-direction: column; gap: 8px">
+        <el-radio v-for="p in processes" :key="p.id" :value="p.id" border>
+          <span style="font-family: 'SF Mono', Menlo, Consolas, monospace; font-weight: 600">{{ p.code }}</span>
+          <span style="margin-left: 8px">{{ p.name }}</span>
+          <el-tag
+            :type="p.category === 'INHOUSE' ? 'primary' : 'warning'"
+            size="small" style="margin-left: 8px"
+          >{{ PROCESS_CATEGORY_LABEL[p.category] }}</el-tag>
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="showNextProcessDialog = false">取消</el-button>
+        <el-button type="primary" @click="confirmNextProcess">确认放回</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -273,6 +291,9 @@ import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useAuthSession } from '@/composables/useAuthSession'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
+import { listProcesses } from '@/api/process'
+import type { Process } from '@/types/process'
+import { PROCESS_CATEGORY_LABEL } from '@/types/process'
 
 type PageState = 'scanning' | 'submitting' | 'done'
 
@@ -290,6 +311,10 @@ const shelfId = ref<string>('')
 const showInspDialog = ref(false)
 const inspShelves = ref<Shelf[]>([])
 const targetInspectionShelfId = ref<string>()
+// RETURN 时的「下一道工序」选择
+const showNextProcessDialog = ref(false)
+const processes = ref<Process[]>([])
+const selectedNextProcessId = ref<string>()
 
 const actionLabel = computed(() => (action.value ? ACTION_LABEL[action.value] : ''))
 const actionTagType = computed(() => (action.value ? ACTION_TAG_TYPE[action.value] : 'info'))
@@ -332,12 +357,20 @@ async function onSubmit(): Promise<void> {
     return
   }
 
-  await doSubmit()
+  // RETURN 需要选下一道工序
+  if (action.value === 'RETURN') {
+    processes.value = (await listProcesses({ limit: 200 })).items
+    selectedNextProcessId.value = undefined
+    showNextProcessDialog.value = true
+    return
+  }
+
+  await doSubmit(undefined)
 }
 
-async function doSubmit(): Promise<void> {
+async function doSubmit(nextProcessId?: string | null): Promise<void> {
   state.value = 'submitting'
-  await submit(shelfId.value, worker.value!.badge_code, action.value!, targetInspectionShelfId.value)
+  await submit(shelfId.value, worker.value!.badge_code, action.value!, targetInspectionShelfId.value, nextProcessId)
   state.value = 'done'
 }
 
@@ -346,7 +379,13 @@ function backToAction(): void { void router.replace('/scan/action') }
 function inspectorConfirm(): void {
   if (!targetInspectionShelfId.value) { ElMessage.warning('请选择目标品检货架'); return }
   showInspDialog.value = false
-  void doSubmit()
+  void doSubmit(undefined)
+}
+function confirmNextProcess(): void {
+  if (!selectedNextProcessId.value) { ElMessage.warning('请选择下一道工序'); return }
+  const nextProcessId = selectedNextProcessId.value
+  showNextProcessDialog.value = false
+  void doSubmit(nextProcessId)
 }
 </script>
 

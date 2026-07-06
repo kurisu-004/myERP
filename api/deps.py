@@ -11,11 +11,14 @@ from repository import (
     MenuRepository,
     PartEventRepository,
     PartRepository,
+    ProcessRepository,
     SerialCounterRepository,
     ShelfRepository,
     UserRepository,
     UserRoleRepository,
     WorkerRepository,
+    WorkTypeProcessRepository,
+    WorkTypeRepository,
 )
 from service import (
     AssemblyService,
@@ -23,9 +26,12 @@ from service import (
     CustomerService,
     DrawingService,
     PartService,
+    ProcessService,
     ShelfService,
     UserService,
     WorkerService,
+    WorkTypeProcessService,
+    WorkTypeService,
 )
 
 
@@ -125,6 +131,9 @@ def get_part_service(
         events=PartEventRepository(session),
         serial_counters=serial_counters,
         shelves=ShelfRepository(session),
+        processes=ProcessRepository(session),
+        work_types=WorkTypeRepository(session),
+        work_type_process=WorkTypeProcessRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
     )
@@ -133,7 +142,69 @@ def get_part_service(
 def get_worker_service(
     session: AsyncSession = Depends(get_session),
 ) -> WorkerService:
-    return WorkerService(workers=WorkerRepository(session))
+    return WorkerService(
+        workers=WorkerRepository(session),
+        work_types=WorkTypeRepository(session),
+    )
+
+
+# ============================================================
+# 工种 / 工序 / 映射 DI
+# ============================================================
+def get_work_type_repo(
+    session: AsyncSession = Depends(get_session),
+) -> WorkTypeRepository:
+    return WorkTypeRepository(session)
+
+
+def get_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> ProcessRepository:
+    return ProcessRepository(session)
+
+
+def get_work_type_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> WorkTypeProcessRepository:
+    return WorkTypeProcessRepository(session)
+
+
+def get_work_type_service(
+    session: AsyncSession = Depends(get_session),
+    work_types: WorkTypeRepository = Depends(get_work_type_repo),
+    junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
+) -> WorkTypeService:
+    """注入 WorkTypeService；worker_repo 用于软删前引用校验。
+
+    直接构造 WorkerRepository（共享 session），避免 DI 循环依赖。
+    """
+    return WorkTypeService(
+        work_types=work_types,
+        worker_repo=WorkerRepository(session),
+        junction_repo=junction,
+    )
+
+
+def get_process_service(
+    processes: ProcessRepository = Depends(get_process_repo),
+    junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
+) -> ProcessService:
+    return ProcessService(
+        processes=processes,
+        junction_repo=junction,
+    )
+
+
+def get_work_type_process_service(
+    work_types: WorkTypeRepository = Depends(get_work_type_repo),
+    processes: ProcessRepository = Depends(get_process_repo),
+    junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
+) -> WorkTypeProcessService:
+    return WorkTypeProcessService(
+        work_types=work_types,
+        processes=processes,
+        junction=junction,
+    )
 
 
 def get_customer_service(

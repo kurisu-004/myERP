@@ -91,6 +91,7 @@ export function usePartsScanQueue() {
     badgeCode: string,
     action: WorkAction,
     targetInspectionShelfId?: string | null,
+    nextProcessId?: string | null,
   ): Promise<void> {
     if (parts.value.length === 0) return
     for (const entry of parts.value) {
@@ -99,7 +100,13 @@ export function usePartsScanQueue() {
         if (action === 'PICK_UP') {
           entry.part = await pickUpPart({ serial_no: entry.serialNo, shelf_id: shelfId, badge_code: badgeCode })
         } else if (action === 'RETURN') {
-          entry.part = await scanPart({ serial_no: entry.serialNo, event_type: 'RETURNED', shelf_id: shelfId, badge_code: badgeCode })
+          entry.part = await scanPart({
+            serial_no: entry.serialNo,
+            event_type: 'RETURNED',
+            shelf_id: shelfId,
+            badge_code: badgeCode,
+            next_process_id: nextProcessId ?? null,
+          })
         } else {
           entry.part = await scanPart({
             serial_no: entry.serialNo, event_type: 'INSPECTED',

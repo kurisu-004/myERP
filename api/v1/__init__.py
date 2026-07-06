@@ -1,6 +1,18 @@
 from fastapi import APIRouter
 
-from . import assembly, auth, customer, drawing, part, shelf, user, worker, ws
+from . import (
+    assembly,
+    auth,
+    customer,
+    drawing,
+    part,
+    process,
+    shelf,
+    user,
+    work_type,
+    worker,
+    ws,
+)
 
 api_router = APIRouter(prefix="/v1")
 api_router.include_router(auth.router)
@@ -20,3 +32,6 @@ api_router.include_router(assembly.file_router)
 api_router.include_router(drawing.child_file_router)
 # 文件级管理 /drawings/{file_id}/... —— MANAGER-only
 api_router.include_router(drawing.file_router)
+# 工种 / 工序 / 映射（MANAGER-only）
+api_router.include_router(work_type.router)
+api_router.include_router(process.router)

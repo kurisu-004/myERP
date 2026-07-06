@@ -197,11 +197,14 @@ async def _postgres_test_lifecycle():
 # 但仍按依赖顺序保持稳定）。
 _BUSINESS_TABLES = (
     "t_part_event",
+    "t_work_type_process",
     "t_drawing_file",
     "t_part",
     "t_assembly",
     "t_serial_counter",
     # 第二批：fixture / 字典类
+    "t_process",
+    "t_work_type",
     "t_worker",
     "t_shelf",
     "t_customer",

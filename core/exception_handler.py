@@ -1,3 +1,6 @@
+import logging
+import traceback
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -6,6 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.response import R
+
+_logger = logging.getLogger("exception_handler")
 
 
 def _json(code: ErrCode, message: str, http_status: int, data=None) -> JSONResponse:
@@ -34,6 +39,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(SQLAlchemyError)
     async def sqlalchemy_error_handler(_: Request, exc: SQLAlchemyError):
+        _logger.exception("SQLAlchemyError")
         return _json(
             ErrCode.DATABASE_ERROR,
             "database error",
@@ -42,6 +48,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(_: Request, exc: Exception):
+        _logger.exception("Unhandled exception")
         return _json(
             ErrCode.INTERNAL_ERROR,
             str(exc) or "internal server error",

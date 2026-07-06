@@ -85,6 +85,10 @@ class PartOut(BaseModel):
         default=None,
         description="当 holder 是工人时返回工人姓名；否则 null",
     )
+    next_process_id: IdStr = Field(
+        default=None,
+        description="下一道工序 id（NULL = 未设置）",
+    )
 
 
 class PartListOut(BaseModel):
@@ -157,15 +161,20 @@ class PartBatchCreateResult(BaseModel):
 # 报工流程 schema（货架 → IN_PROCESS / 工人 → IN_PROCESS）
 # ============================================================
 class PlaceOnShelfRequest(BaseModel):
-    """文员把 PENDING 零件放到生产货架：PENDING → IN_PROCESS。"""
+    """文员把 PENDING 零件放到生产货架：PENDING → IN_PROCESS。
+
+    `next_process_id` 必填 — 第一次下发时必须指定该零件的下一道工序，
+    之后工人在 RETURN 时可继续指定下一道。
+    """
 
     shelf_id: int = Field(description="目标生产货架 id")
+    next_process_id: int = Field(description="下一道工序 id（必填）")
 
-    @field_validator("shelf_id")
+    @field_validator("shelf_id", "next_process_id")
     @classmethod
     def _positive(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError("shelf_id 必须 > 0")
+            raise ValueError("must be > 0")
         return v
 
 
@@ -209,7 +218,9 @@ class PartScanRequest(BaseModel):
     event_type ∈ {RETURNED, INSPECTED}。
 
     - RETURNED：把当前由工人持有的零件放回货架；`shelf_id` 为目标货架。
+      `next_process_id` 必填，工人指定下一道工序。
     - INSPECTED：送品检；`shelf_id` 为当前操作货架，`target_inspection_shelf_id` 为目标品检货架。
+      `next_process_id` 忽略（送检后由品检环节决定）。
     """
 
     serial_no: str = Field(min_length=1, max_length=8)
@@ -221,6 +232,10 @@ class PartScanRequest(BaseModel):
     target_inspection_shelf_id: int | None = Field(
         default=None,
         description="仅 INSPECTED 需要；目标品检货架 id（必须 zone=INSPECTION）",
+    )
+    next_process_id: int | None = Field(
+        default=None,
+        description="仅 RETURNED 需要；工人指定的下一道工序 id",
     )
 
     @field_validator("serial_no", "badge_code")

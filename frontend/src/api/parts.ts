@@ -24,6 +24,8 @@ export interface PartItem {
   worker_name: string | null
   location: string | null
   placed_at: string | null
+  /** 下一道工序 id（NULL = 未设置） */
+  next_process_id: string | null
 }
 
 export interface PartListResult {
@@ -89,6 +91,8 @@ export interface PartScanPayload {
   shelf_id: string
   badge_code: string
   target_inspection_shelf_id?: string | null
+  /** 仅 RETURNED 需要；工人指定的下一道工序 id */
+  next_process_id?: string | null
 }
 
 export interface PartEvent {
@@ -152,11 +156,21 @@ export async function changePartStatus(
   return resp.data
 }
 
+export interface PlaceOnShelfPayload {
+  shelf_id: string
+  /** 下一道工序 id（必填） */
+  next_process_id: string
+}
+
 export async function placeOnShelf(
   id: number | string,
   shelfId: string,
+  nextProcessId: string,
 ): Promise<PartItem> {
-  const resp = await api.post<PartItem>(`/parts/${id}/place-on-shelf`, { shelf_id: shelfId })
+  const resp = await api.post<PartItem>(`/parts/${id}/place-on-shelf`, {
+    shelf_id: shelfId,
+    next_process_id: nextProcessId,
+  })
   return resp.data
 }
 
@@ -202,6 +216,21 @@ export async function cancelPart(id: string): Promise<PartItem> {
 export async function getPartBySerial(serialNo: string): Promise<PartItem> {
   const resp = await api.get<PartItem>(
     `/parts/by-serial/${encodeURIComponent(serialNo)}`,
+  )
+  return resp.data
+}
+
+/**
+ * 扫码台 PICK_UP 列表：列出指定工种在指定货架上可领的零件。
+ * 排序：加急优先 → 临期优先 → id 降序。
+ */
+export async function listPartsByWorkType(
+  workTypeId: string,
+  shelfId: string,
+): Promise<PartItem[]> {
+  const resp = await api.get<PartItem[]>(
+    `/parts/by-work-type/${encodeURIComponent(workTypeId)}`,
+    { params: { shelf_id: shelfId } },
   )
   return resp.data
 }

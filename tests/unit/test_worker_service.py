@@ -30,6 +30,9 @@ def mock_repo() -> WorkerRepository:
     repo.create = AsyncMock()
     repo.update = AsyncMock()
     repo.list_by_ids = AsyncMock()
+    # 模拟 session（WorkerService.update_worker 用 refresh 更新 updated_at）
+    repo.session = AsyncMock()
+    repo.session.refresh = AsyncMock()
     return repo
 
 

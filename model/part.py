@@ -137,6 +137,16 @@ class TPart(Base, AuditMixin):
         comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
     )
 
+    # —— 工序字段 ——
+    # 下一道工序：place_on_shelf 时必填；RETURNED 时由工人指定。
+    # 逻辑外键 → t_process.id；service 层校验存在性。
+    next_process_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+        comment="逻辑外键 → t_process.id；place_on_shelf / RETURNED 时更新",
+    )
+
     @property
     def sm(self) -> "PartStateMachine":
         """返回此零件的状态机实例。"""
@@ -146,6 +156,9 @@ class TPart(Base, AuditMixin):
     # —— 组合索引 ——
     # `ix_t_part_status_holder`：按状态 + holder 查询（Dashboard「按货架分组」）。
     # `ix_t_part_customer_status_delivery`：按客户 + 状态 + 交期查询。
+    # `ix_t_part_location_status_next_process`：扫码台 PICK_UP 列表热点过滤
+    #   (status='IN_PROCESS' AND location='PRODUCTION_SHELF' AND current_holder_id=shelf
+    #    AND next_process_id IN mapped_process_ids)
     __table_args__ = (
         Index(
             "ix_t_part_status_holder",
@@ -159,4 +172,8 @@ class TPart(Base, AuditMixin):
             "planned_delivery_date",
         ),
         Index("ix_t_part_assembly_id_status", "assembly_id", "status"),
+        Index(
+            "ix_t_part_location_status_next_process",
+            "location", "status", "next_process_id",
+        ),
     )

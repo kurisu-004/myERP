@@ -16,19 +16,22 @@ Create Date: 2026-07-02
 - t_part_event 是事件流（append-only），继承 EventTimestampMixin。
 - 软删约定：默认查询 `deleted_at IS NULL`；repository 已统一加。
 
-表清单（共 12 张）：
+表清单（共 15 张）：
   1. t_customer       — 客户邻接表
   2. t_part           — 零件订单（含全部列）
   3. t_worker         — 工人
-  4. t_part_event     — 零件事件流
-  5. t_serial_counter — 流水号计数器
-  6. t_assembly       — 装配体
-  7. t_drawing_file   — 图纸文件元数据
-  8. t_user           — 账号主表
-  9. t_user_role      — 账号↔角色
-  10. t_shelf         — 货架
-  11. t_menu          — 菜单（邻接表）
-  12. t_role_menu     — 角色↔菜单
+  4. t_work_type_process — 工种↔工序 N:M 映射（子表先建）
+  5. t_process        — 工序
+  6. t_work_type      — 工种
+  7. t_part_event     — 零件事件流
+  8. t_serial_counter — 流水号计数器
+  9. t_assembly       — 装配体
+  10. t_drawing_file   — 图纸文件元数据
+  11. t_user           — 账号主表
+  12. t_user_role      — 账号↔角色
+  13. t_shelf         — 货架
+  14. t_menu          — 菜单（邻接表）
+  15. t_role_menu     — 角色↔菜单
 """
 from typing import Sequence, Union
 
@@ -121,6 +124,11 @@ def upgrade() -> None:
             "placed_at", sa.DateTime(), nullable=True,
             comment="PENDING→IN_PROCESS 时置位",
         ),
+        # 下一道工序
+        sa.Column(
+            "next_process_id", sa.BigInteger(), nullable=True,
+            comment="逻辑外键 → t_process.id；place_on_shelf / RETURNED 时更新",
+        ),
         # 逻辑外键
         sa.Column("customer_id", sa.BigInteger, nullable=False),
         sa.Column(
@@ -183,6 +191,15 @@ def upgrade() -> None:
         "t_part",
         ["status", "current_holder_id"],
     )
+    # 扫码台 PICK_UP 列表热点索引
+    op.create_index(
+        "ix_t_part_location_status_next_process",
+        "t_part",
+        ["location", "status", "next_process_id"],
+    )
+    op.create_index(
+        "ix_t_part_next_process_id", "t_part", ["next_process_id"],
+    )
 
     # =================================================================
     # 3) t_worker
@@ -204,6 +221,10 @@ def upgrade() -> None:
             "is_active", sa.Boolean(), nullable=False,
             server_default=sa.text("true"),
             comment="是否在职",
+        ),
+        sa.Column(
+            "work_type_id", sa.BigInteger(), nullable=True,
+            comment="逻辑外键 → t_work_type.id；NULL = 未分配工种",
         ),
         # —— 审计字段 ——
         sa.Column(
@@ -234,9 +255,137 @@ def upgrade() -> None:
     )
     op.create_index("ix_t_worker_name", "t_worker", ["name"])
     op.create_index("ix_t_worker_deleted_at", "t_worker", ["deleted_at"])
+    op.create_index("ix_t_worker_work_type_id", "t_worker", ["work_type_id"])
 
     # =================================================================
-    # 4) t_part_event：订单全生命周期事件流（append-only，EventTimestampMixin）
+    # 4) t_work_type_process：工种 ↔ 工序 N:M（子表先建）
+    # =================================================================
+    op.create_table(
+        "t_work_type_process",
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("work_type_id", sa.BigInteger(), nullable=False,
+                  comment="逻辑外键 → t_work_type.id"),
+        sa.Column("process_id", sa.BigInteger(), nullable=False,
+                  comment="逻辑外键 → t_process.id"),
+        sa.Column(
+            "sort_order", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+            comment="工序在工种映射内的显示顺序",
+        ),
+        # —— 审计字段 ——
+        sa.Column("created_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint(
+            "work_type_id <> process_id",
+            name="ck_t_work_type_process_no_self_loop",
+        ),
+    )
+    op.create_index(
+        "uk_t_work_type_process",
+        "t_work_type_process",
+        ["work_type_id", "process_id"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index(
+        "ix_t_work_type_process_work_type", "t_work_type_process", ["work_type_id"],
+    )
+    op.create_index(
+        "ix_t_work_type_process_process", "t_work_type_process", ["process_id"],
+    )
+    op.create_index(
+        "ix_t_work_type_process_deleted_at", "t_work_type_process", ["deleted_at"],
+    )
+
+    # =================================================================
+    # 5) t_process：工序
+    # =================================================================
+    op.create_table(
+        "t_process",
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("code", sa.String(length=32), nullable=False,
+                  comment="工序代码（业务唯一键，不可变）"),
+        sa.Column("name", sa.String(length=50), nullable=False,
+                  comment="工序名称（前端显示）"),
+        sa.Column("category", sa.String(length=16), nullable=False,
+                  comment="INHOUSE 自产 / OUTSOURCE 外协"),
+        sa.Column(
+            "is_inspection", sa.Boolean(), nullable=False,
+            server_default=sa.text("false"),
+            comment="是否品检工序",
+        ),
+        sa.Column(
+            "sort_order", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+            comment="显示顺序",
+        ),
+        sa.Column("description", sa.String(length=200), nullable=True),
+        # —— 审计字段 ——
+        sa.Column("created_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint(
+            "category IN ('INHOUSE', 'OUTSOURCE')",
+            name="ck_t_process_category",
+        ),
+    )
+    op.create_index(
+        "uk_t_process_code",
+        "t_process",
+        ["code"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index("ix_t_process_code", "t_process", ["code"])
+    op.create_index("ix_t_process_category", "t_process", ["category"])
+    op.create_index("ix_t_process_deleted_at", "t_process", ["deleted_at"])
+
+    # =================================================================
+    # 6) t_work_type：工种
+    # =================================================================
+    op.create_table(
+        "t_work_type",
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("code", sa.String(length=32), nullable=False,
+                  comment="工种代码（业务唯一键，不可变）"),
+        sa.Column("name", sa.String(length=50), nullable=False,
+                  comment="工种名称（前端显示）"),
+        sa.Column("description", sa.String(length=200), nullable=True),
+        sa.Column(
+            "sort_order", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+            comment="显示顺序",
+        ),
+        # —— 审计字段 ——
+        sa.Column("created_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index(
+        "uk_t_work_type_code",
+        "t_work_type",
+        ["code"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index("ix_t_work_type_code", "t_work_type", ["code"])
+    op.create_index("ix_t_work_type_deleted_at", "t_work_type", ["deleted_at"])
+
+    # =================================================================
+    # 7) t_part_event：订单全生命周期事件流（append-only，EventTimestampMixin）
     # =================================================================
     op.create_table(
         "t_part_event",
@@ -260,7 +409,7 @@ def upgrade() -> None:
     op.create_index("ix_part_event_worker_id", "t_part_event", ["worker_id"])
 
     # =================================================================
-    # 5) t_serial_counter：流水号计数器
+    # 8) t_serial_counter：流水号计数器
     # =================================================================
     op.create_table(
         "t_serial_counter",
@@ -283,7 +432,7 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 6) t_assembly：4 态 PENDING/IN_PROCESS/COMPLETED/CANCELLED
+    # 9) t_assembly：4 态 PENDING/IN_PROCESS/COMPLETED/CANCELLED
     # =================================================================
     op.create_table(
         "t_assembly",
@@ -338,7 +487,7 @@ def upgrade() -> None:
     op.create_index("ix_t_assembly_deleted_at", "t_assembly", ["deleted_at"])
 
     # =================================================================
-    # 7) t_drawing_file：COS 上的图纸文件元数据
+    # 10) t_drawing_file：COS 上的图纸文件元数据
     # =================================================================
     op.create_table(
         "t_drawing_file",
@@ -405,7 +554,7 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 8) t_user：账号主表
+    # 11) t_user：账号主表
     # =================================================================
     op.create_table(
         "t_user",
@@ -442,7 +591,7 @@ def upgrade() -> None:
     op.create_index("ix_t_user_deleted_at", "t_user", ["deleted_at"])
 
     # =================================================================
-    # 9) t_user_role：账号 ↔ 角色多对多
+    # 12) t_user_role：账号 ↔ 角色多对多
     # =================================================================
     op.create_table(
         "t_user_role",
@@ -477,7 +626,7 @@ def upgrade() -> None:
     op.create_index("ix_t_user_role_deleted_at", "t_user_role", ["deleted_at"])
 
     # =================================================================
-    # 10) t_shelf：货架实体
+    # 13) t_shelf：货架实体
     # =================================================================
     op.create_table(
         "t_shelf",
@@ -514,7 +663,7 @@ def upgrade() -> None:
     op.create_index("ix_t_shelf_deleted_at", "t_shelf", ["deleted_at"])
 
     # =================================================================
-    # 11) t_menu：菜单主表（邻接表）
+    # 14) t_menu：菜单主表（邻接表）
     # =================================================================
     op.create_table(
         "t_menu",
@@ -560,7 +709,7 @@ def upgrade() -> None:
     op.create_index("ix_t_menu_deleted_at", "t_menu", ["deleted_at"])
 
     # =================================================================
-    # 12) t_role_menu：角色↔菜单 N:M
+    # 15) t_role_menu：角色↔菜单 N:M
     # =================================================================
     op.create_table(
         "t_role_menu",
@@ -642,10 +791,27 @@ def downgrade() -> None:
 
     op.drop_index("ix_t_worker_deleted_at", table_name="t_worker")
     op.drop_index("ix_t_worker_name", table_name="t_worker")
+    op.drop_index("ix_t_worker_work_type_id", table_name="t_worker")
     op.drop_index("uk_t_worker_id_card_no", table_name="t_worker")
     op.drop_index("uk_t_worker_badge_code", table_name="t_worker")
     op.drop_table("t_worker")
 
+    op.drop_index("ix_t_work_type_process_deleted_at", table_name="t_work_type_process")
+    op.drop_index("ix_t_work_type_process_process", table_name="t_work_type_process")
+    op.drop_index("ix_t_work_type_process_work_type", table_name="t_work_type_process")
+    op.drop_table("t_work_type_process")
+
+    op.drop_index("ix_t_process_deleted_at", table_name="t_process")
+    op.drop_index("ix_t_process_category", table_name="t_process")
+    op.drop_index("ix_t_process_code", table_name="t_process")
+    op.drop_table("t_process")
+
+    op.drop_index("ix_t_work_type_deleted_at", table_name="t_work_type")
+    op.drop_index("ix_t_work_type_code", table_name="t_work_type")
+    op.drop_table("t_work_type")
+
+    op.drop_index("ix_t_part_location_status_next_process", table_name="t_part")
+    op.drop_index("ix_t_part_next_process_id", table_name="t_part")
     op.drop_index("ix_t_part_status_holder", table_name="t_part")
     op.drop_index("ix_t_part_assembly_id_status", table_name="t_part")
     op.drop_index("ix_t_part_customer_status_delivery", table_name="t_part")

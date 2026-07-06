@@ -3,7 +3,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from schema._types import IdStrNonNull
+from schema._types import IdStr, IdStrNonNull
 
 # 18 位身份证（最后一位可为 X）
 ID_CARD_RE = re.compile(r"^\d{17}[\dXx]$")
@@ -45,6 +45,9 @@ class WorkerCreateRequest(BaseModel):
     phone: str | None = Field(
         default=None, max_length=20, description="手机号（可带国际区号）"
     )
+    work_type_id: int | None = Field(
+        default=None, description="工种 id（NULL = 暂未分配）",
+    )
 
     @field_validator("badge_code", "name")
     @classmethod
@@ -73,12 +76,19 @@ class WorkerCreateRequest(BaseModel):
 
 
 class WorkerUpdateRequest(BaseModel):
-    """更新工人字段；只传需要改的。"""
+    """更新工人字段；只传需要改的。
+
+    work_type_id 不传（None）则不动；显式传 0 视作无效；
+    调用方目前无"清空"语义，单独提供 UI 操作。
+    """
 
     name: str | None = Field(default=None, min_length=1, max_length=50)
     badge_code: str | None = Field(default=None, min_length=1, max_length=50)
     id_card_no: str | None = Field(default=None, max_length=18)
     phone: str | None = Field(default=None, max_length=20)
+    work_type_id: int | None = Field(
+        default=None, description="工种 id（NULL = 不动该字段）",
+    )
 
     @field_validator("name", "badge_code")
     @classmethod
@@ -116,6 +126,9 @@ class WorkerOut(BaseModel):
     name: str
     id_card_no: str | None = None
     phone: str | None = None
+    work_type_id: IdStr = Field(
+        default=None, description="工种 id（NULL = 未分配）",
+    )
     is_active: bool
     created_at: datetime
     updated_at: datetime

@@ -90,6 +90,24 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/shelves/ShelfList.vue'),
         meta: { title: '货架管理', icon: 'Platform', menuCode: 'shelves_list', breadcrumb: [{ label: '车间', path: '/shelves' }, { label: '货架管理' }] },
       },
+      {
+        path: 'settings/work-types',
+        name: 'WorkTypeList',
+        component: () => import('@/views/settings/WorkTypeList.vue'),
+        meta: { title: '工种管理', menuCode: 'work_types_list', breadcrumb: [{ label: '设置', path: '/settings/work-types' }, { label: '工种管理' }] },
+      },
+      {
+        path: 'settings/processes',
+        name: 'ProcessList',
+        component: () => import('@/views/settings/ProcessList.vue'),
+        meta: { title: '工序管理', menuCode: 'processes_list', breadcrumb: [{ label: '设置', path: '/settings/work-types' }, { label: '工序管理' }] },
+      },
+      {
+        path: 'settings/work-type-processes',
+        name: 'WorkTypeProcess',
+        component: () => import('@/views/settings/WorkTypeProcess.vue'),
+        meta: { title: '工种-工序映射', menuCode: 'work_type_processes_list', breadcrumb: [{ label: '设置', path: '/settings/work-types' }, { label: '工种-工序映射' }] },
+      },
     ],
   },
   // 工位扫码台
@@ -100,6 +118,7 @@ const routes: RouteRecordRaw[] = [
       { path: '', redirect: '/scan/badge' },
       { path: 'badge', name: 'ScanBadge', component: () => import('@/views/scan/ScanBadgeGate.vue'), meta: { title: '扫码台 · 工牌识别', menuCode: 'scan_badge' } },
       { path: 'action', name: 'ScanAction', component: () => import('@/views/scan/ScanActionPicker.vue'), meta: { title: '扫码台 · 操作选择', menuCode: 'scan_badge' } },
+      { path: 'pick', name: 'ScanPick', component: () => import('@/views/scan/ScanPickParts.vue'), meta: { title: '扫码台 · 选件领取', menuCode: 'scan_badge' } },
       { path: 'parts', name: 'ScanParts', component: () => import('@/views/scan/ScanPartsWork.vue'), meta: { title: '扫码台 · 扫码报工', menuCode: 'scan_badge' } },
     ],
   },

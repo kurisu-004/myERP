@@ -214,6 +214,32 @@ def mock_shelves() -> ShelfRepository:
 
 
 @pytest.fixture
+def mock_processes():
+    """模拟 ProcessRepository（用裸 MagicMock 避免依赖 ProcessRepository 的实现）。"""
+    from repository.process import ProcessRepository
+    repo = ProcessRepository.__new__(ProcessRepository)
+    repo.get_by_id = AsyncMock()
+    repo.list_by_ids = AsyncMock()
+    return repo
+
+
+@pytest.fixture
+def mock_work_types():
+    from repository.work_type import WorkTypeRepository
+    repo = WorkTypeRepository.__new__(WorkTypeRepository)
+    repo.get_by_id = AsyncMock()
+    return repo
+
+
+@pytest.fixture
+def mock_work_type_process():
+    from repository.work_type_process import WorkTypeProcessRepository
+    repo = WorkTypeProcessRepository.__new__(WorkTypeProcessRepository)
+    repo.list_process_ids_by_work_type = AsyncMock()
+    return repo
+
+
+@pytest.fixture
 def service(
     mock_parts: PartRepository,
     mock_customers: CustomerRepository,
@@ -221,6 +247,9 @@ def service(
     mock_events: PartEventRepository,
     mock_serial_counters: SerialCounterRepository,
     mock_shelves: ShelfRepository,
+    mock_processes,
+    mock_work_types,
+    mock_work_type_process,
 ) -> PartService:
     """PartService wired to mock repositories.
 
@@ -235,6 +264,9 @@ def service(
         events=mock_events,
         serial_counters=mock_serial_counters,
         shelves=mock_shelves,
+        processes=mock_processes,
+        work_types=mock_work_types,
+        work_type_process=mock_work_type_process,
         broadcaster=None,
         event_broadcaster=None,
     )
@@ -256,23 +288,35 @@ class TestPlaceOnShelf:
         mock_parts: PartRepository,
         mock_shelves: ShelfRepository,
         mock_events: PartEventRepository,
+        mock_processes,
     ) -> None:
         """PENDING part placed on an active PRODUCTION shelf succeeds."""
+        from model.process import TProcess
         part = _make_part()
         shelf = _make_shelf()
+        process = TProcess(
+            id=42, code="车", name="车床加工",
+            category="INHOUSE", is_inspection=False, sort_order=0,
+        )
+        process.created_at = datetime(2026, 1, 1)
+        process.updated_at = datetime(2026, 1, 1)
+        process.description = None
+        process.deleted_at = None
         mock_parts.get_by_id.return_value = part
         mock_shelves.get_by_id.return_value = shelf
+        mock_processes.get_by_id.return_value = process
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
 
         result = await service.place_on_shelf(
-            1001, PlaceOnShelfRequest(shelf_id=1)
+            1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42)
         )
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
         mock_shelves.get_by_id.assert_awaited_once_with(1)
+        mock_processes.get_by_id.assert_awaited_once_with(42)
         part.sm.place_on_shelf.assert_called_once_with(
-            shelf=shelf, event_repo=mock_events
+            shelf=shelf, process=process, event_repo=mock_events
         )
         mock_parts.update.assert_awaited_once_with(part)
         assert result is mock_out
@@ -286,7 +330,7 @@ class TestPlaceOnShelf:
         mock_parts.get_by_id.return_value = None
 
         with pytest.raises(BizError) as exc:
-            await service.place_on_shelf(999, PlaceOnShelfRequest(shelf_id=1))
+            await service.place_on_shelf(999, PlaceOnShelfRequest(shelf_id=1, next_process_id=42))
 
         assert exc.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
@@ -303,7 +347,7 @@ class TestPlaceOnShelf:
         mock_shelves.get_by_id.return_value = None
 
         with pytest.raises(BizError) as exc:
-            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=99))
+            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=99, next_process_id=42))
 
         assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
         assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
@@ -322,7 +366,7 @@ class TestPlaceOnShelf:
         )
 
         with pytest.raises(BizError) as exc:
-            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=1))
+            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42))
 
         assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
 
@@ -337,7 +381,7 @@ class TestPlaceOnShelf:
         mock_shelves.get_by_id.return_value = _make_shelf(is_active=False)
 
         with pytest.raises(BizError) as exc:
-            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=1))
+            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42))
 
         assert exc.value.code == ErrCode.BIZ_SHELF_IN_USE
         assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
@@ -355,7 +399,7 @@ class TestPlaceOnShelf:
         )
 
         with pytest.raises(BizError) as exc:
-            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=1))
+            await service.place_on_shelf(1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42))
 
         assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
         assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
@@ -550,11 +594,13 @@ class TestScanEvent:
     @staticmethod
     def _default_worker_part() -> TPart:
         """Part currently held by worker 1 (IN_PROCESS + WORKER)."""
-        return _make_part(
+        p = _make_part(
             status="IN_PROCESS",
             location="WORKER",
             current_holder_id=1,
         )
+        p.next_process_id = None  # MagicMock 默认不是 None,显式置空
+        return p
 
     @staticmethod
     def _prod_shelf() -> TShelf:
@@ -570,7 +616,9 @@ class TestScanEvent:
 
     @staticmethod
     def _worker() -> TWorker:
-        return _make_worker(worker_id=1, badge_code="W001")
+        w = _make_worker(worker_id=1, badge_code="W001")
+        w.work_type_id = None  # 显式置空,避免 MagicMock 默认值被 service 当作真实 id
+        return w
 
     # -- common error cases (shared by RETURNED and INSPECTED) -----------
 
@@ -672,14 +720,25 @@ class TestScanEvent:
         mock_shelves: ShelfRepository,
         mock_workers: WorkerRepository,
         mock_events: PartEventRepository,
+        mock_processes,
     ) -> None:
         """Worker returns part to a PRODUCTION shelf."""
+        from model.process import TProcess
         part = self._default_worker_part()
         shelf = self._prod_shelf()
         worker = self._worker()
+        process = TProcess(
+            id=99, code="铣", name="铣床加工",
+            category="INHOUSE", is_inspection=False, sort_order=0,
+        )
+        process.created_at = datetime(2026, 1, 1)
+        process.updated_at = datetime(2026, 1, 1)
+        process.description = None
+        process.deleted_at = None
         mock_shelves.get_by_id.return_value = shelf
         mock_workers.get_by_badge_code.return_value = worker
         mock_parts.get_by_serial.return_value = part
+        mock_processes.get_by_id.return_value = process
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
         data = PartScanRequest(
@@ -687,12 +746,15 @@ class TestScanEvent:
             event_type=PartEventType.RETURNED,
             shelf_id=1,
             badge_code="W001",
+            next_process_id=99,
         )
 
         result = await service.scan_event(data)
 
         part.sm.return_to_shelf.assert_called_once_with(
-            worker=worker, shelf=shelf, event_repo=mock_events
+            worker=worker, shelf=shelf, process=process,
+            prev_process_code=None, worker_work_type_code=None,
+            event_repo=mock_events,
         )
         mock_parts.update.assert_awaited_once_with(part)
         assert result is mock_out

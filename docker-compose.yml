@@ -74,6 +74,38 @@ services:
       - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud.key:/etc/nginx/ssl/hsh-erp.cloud.key:ro
     # frontend/nginx.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
 
+  nanobot:
+    build:
+      context: ../nanobot
+      dockerfile: Dockerfile
+    container_name: myerp-nanobot
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NANOBOT_LLM_API_KEY: ${NANOBOT_LLM_API_KEY}
+      NANOBOT_LLM_MODEL: ${NANOBOT_LLM_MODEL:-anthropic/claude-opus-4-5}
+      NANOBOT_LLM_PROVIDER: ${NANOBOT_LLM_PROVIDER:-auto}
+      NANOBOT_LLM_API_BASE: ${NANOBOT_LLM_API_BASE:-}
+      NANOBOT_QQ_ENABLED: ${NANOBOT_QQ_ENABLED:-false}
+      NANOBOT_QQ_APP_ID: ${NANOBOT_QQ_APP_ID:-}
+      NANOBOT_QQ_SECRET: ${NANOBOT_QQ_SECRET:-}
+      NANOBOT_WEIXIN_ENABLED: ${NANOBOT_WEIXIN_ENABLED:-false}
+      NANOBOT_WEIXIN_TOKEN: ${NANOBOT_WEIXIN_TOKEN:-}
+      NANOBOT_ERP_API_URL: http://backend:8000
+      NANOBOT_ERP_USERNAME: ${NANOBOT_ERP_USERNAME:-}
+      NANOBOT_ERP_PASSWORD: ${NANOBOT_ERP_PASSWORD:-}
+      NANOBOT_TIMEZONE: ${TZ:-Asia/Shanghai}
+      NANOBOT_BOT_NAME: ${NANOBOT_BOT_NAME:-小助手}
+    volumes:
+      - nanobot_data:/home/nanobot/.nanobot
+    command: ["gateway", "--foreground"]
+    # WebUI 端口暴露给宿主机（可选）；生产环境建议通过 frontend nginx 反代
+    # ports:
+    #   - "18790:18790"
+
 volumes:
   pgdata:
     name: myerp-pgdata
+  nanobot_data:
+    name: myerp-nanobot-data

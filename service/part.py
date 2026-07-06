@@ -21,13 +21,16 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.serial import code_for_parent
-from model import TCustomer, TPart, TPartEvent, TShelf, TWorker
+from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import PartEventType, PartStatus, ShelfZone
 from repository.customer import CustomerRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
+from repository.process import ProcessRepository
 from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
+from repository.work_type import WorkTypeRepository
+from repository.work_type_process import WorkTypeProcessRepository
 from repository.worker import WorkerRepository
 from schema.part import (
     PartBatchCreateItemFailure,
@@ -86,6 +89,9 @@ class PartService:
         events: PartEventRepository,
         serial_counters: SerialCounterRepository,
         shelves: ShelfRepository,
+        processes: ProcessRepository | None = None,
+        work_types: WorkTypeRepository | None = None,
+        work_type_process: WorkTypeProcessRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
     ) -> None:
@@ -95,6 +101,9 @@ class PartService:
         self.events = events
         self.serial_counters = serial_counters
         self.shelves = shelves
+        self.processes = processes
+        self.work_types = work_types
+        self.work_type_process = work_type_process
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
 
@@ -417,6 +426,7 @@ class PartService:
         """PENDING → IN_PROCESS：把零件放到生产货架。
 
         `shelf_id` 必须在 t_shelf 中存在 / is_active / zone=PRODUCTION。
+        `next_process_id` 必填，service 校验 process 存在后喂给状态机。
         """
         part = await self.parts.get_by_id(part_id)
         if part is None:
@@ -448,8 +458,20 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # state machine handles status/location/holder mutation + event creation
-        part.sm.place_on_shelf(shelf=shelf, event_repo=self.events)
+        # 校验 next_process_id 必填且存在
+        if data.next_process_id is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="place_on_shelf requires next_process_id",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        process = await self._get_process(data.next_process_id)
+
+        # state machine handles status/location/holder mutation + event creation;
+        # 状态机 on_enter_ON_SHELF 会同时把 next_process_id 设到 model 上。
+        part.sm.place_on_shelf(
+            shelf=shelf, process=process, event_repo=self.events,
+        )
         await self.parts.update(part)
         await self._broadcast()
         items = await self._to_out([part])
@@ -462,6 +484,23 @@ class PartService:
             ),
         )
         return items[0]
+
+    async def _get_process(self, process_id: int) -> TProcess:
+        """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""
+        if self.processes is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="processes repo not configured",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        p = await self.processes.get_by_id(process_id)
+        if p is None:
+            raise BizError(
+                code=ErrCode.BIZ_PROCESS_NOT_FOUND,
+                message=f"process {process_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        return p
 
     async def pick_up_by_scan(self, data: PartPickUpRequest) -> PartOut:
         """工人扫 serial_no 领取：状态仍是 IN_PROCESS；holder 由 shelf → worker。
@@ -609,8 +648,37 @@ class PartService:
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
+            # RETURNED 必填 next_process_id
+            if data.next_process_id is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="RETURNED requires next_process_id",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            new_process = await self._get_process(data.next_process_id)
+            # 解析 prev_process_code 与 worker_work_type_code 给状态机 note 用
+            prev_process_code: str | None = None
+            if self.processes is not None and part.next_process_id is not None:
+                prev = await self.processes.get_by_id(part.next_process_id)
+                if prev is not None:
+                    prev_process_code = prev.code
+            worker_work_type_code: str | None = None
+            if (
+                self.work_types is not None
+                and worker.work_type_id is not None
+            ):
+                wt = await self.work_types.get_by_id(worker.work_type_id)
+                if wt is not None:
+                    worker_work_type_code = wt.code
 
-            part.sm.return_to_shelf(worker=worker, shelf=shelf, event_repo=self.events)
+            part.sm.return_to_shelf(
+                worker=worker,
+                shelf=shelf,
+                process=new_process,
+                prev_process_code=prev_process_code,
+                worker_work_type_code=worker_work_type_code,
+                event_repo=self.events,
+            )
             await self.parts.update(part)
             await self._broadcast()
             items = await self._to_out([part])
@@ -683,6 +751,35 @@ class PartService:
             ),
             http_status=http_status.HTTP_400_BAD_REQUEST,
         )
+
+    # ============================================================
+    # 扫码台 PICK_UP 列表（按工种 + 货架过滤）
+    # ============================================================
+    async def list_pickable_parts(
+        self, work_type_id: int, shelf_id: int
+    ) -> list[PartOut]:
+        """列出当前生产货架上、由指定工种可领的零件。
+
+        短路：worker.work_type_id 未传 → []；
+              工种未映射任何工序 → []；
+              货架不存在 → []。
+
+        返回 [] 时 UI 提示「无可领件 / 工种映射为空 / 请联系管理员」。
+        """
+        if work_type_id is None:
+            return []
+        if self.work_type_process is None:
+            return []
+        process_ids = await self.work_type_process.list_process_ids_by_work_type(
+            work_type_id, include_deleted=False,
+        )
+        if not process_ids:
+            return []
+        rows = await self.parts.list_for_work_type(
+            shelf_id=shelf_id,
+            mapped_process_ids=process_ids,
+        )
+        return await self._to_out(rows)
 
     async def pass_inspection(self, part_id: int) -> PartOut:
         """INSPECTION -> READY_TO_SHIP：品检合格。"""
@@ -913,6 +1010,7 @@ class PartService:
                     placed_at=getattr(p, "placed_at", None),
                     location=p.location,
                     worker_name=worker_name,
+                    next_process_id=p.next_process_id,
                 )
             )
         return out

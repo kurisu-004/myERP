@@ -44,6 +44,14 @@
         <el-table-column type="index" label="#" width="50" />
         <el-table-column prop="badge_code" label="工牌码" width="160" />
         <el-table-column prop="name" label="姓名" min-width="120" />
+        <el-table-column label="工种" min-width="120">
+          <template #default="{ row }">
+            <el-tag v-if="(row as Worker).work_type_id" size="small" type="primary">
+              {{ workTypeNameById[(row as Worker).work_type_id!] || '...' }}
+            </el-tag>
+            <span v-else style="color: #c0c4cc">未分配</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="(row as Worker).is_active ? 'success' : 'info'" effect="light" size="small">
@@ -93,6 +101,16 @@
         <el-form-item label="姓名" required>
           <el-input v-model="form.name" placeholder="工人姓名" clearable />
         </el-form-item>
+        <el-form-item label="工种">
+          <el-select v-model="form.work_type_id" clearable placeholder="未分配" style="width: 100%">
+            <el-option
+              v-for="wt in workTypeOptions"
+              :key="wt.id"
+              :label="`${wt.code} / ${wt.name}`"
+              :value="wt.id"
+            />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -103,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import {
@@ -113,12 +131,22 @@ import {
   reactivateWorker,
   updateWorker,
 } from '@/api/worker'
+import { listWorkTypes } from '@/api/workType'
 import type { Worker } from '@/types/worker'
+import type { WorkType } from '@/types/workType'
 
 const loading = ref(false)
 const saving = ref(false)
 const rows = ref<Worker[]>([])
 const total = ref(0)
+
+const workTypes = ref<WorkType[]>([])
+const workTypeOptions = computed(() => workTypes.value)
+const workTypeNameById = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const wt of workTypes.value) map[wt.id] = wt.name
+  return map
+})
 
 const search = reactive<{ name_like: string; is_active: boolean | undefined }>({
   name_like: '',
@@ -127,9 +155,10 @@ const search = reactive<{ name_like: string; is_active: boolean | undefined }>({
 
 const dialogVisible = ref(false)
 const editing = ref<Worker | null>(null)
-const form = reactive<{ badge_code: string; name: string }>({
+const form = reactive<{ badge_code: string; name: string; work_type_id: string | null }>({
   badge_code: '',
   name: '',
+  work_type_id: null,
 })
 const formRef = ref<{ validate: () => Promise<boolean> } | null>(null)
 
@@ -162,12 +191,14 @@ function onNew(): void {
   editing.value = null
   form.badge_code = ''
   form.name = ''
+  form.work_type_id = null
   dialogVisible.value = true
 }
 function onEdit(row: Worker): void {
   editing.value = row
   form.badge_code = row.badge_code
   form.name = row.name
+  form.work_type_id = row.work_type_id ?? null
   dialogVisible.value = true
 }
 
@@ -182,12 +213,14 @@ async function onSave(): Promise<void> {
       await updateWorker(editing.value.id, {
         badge_code: form.badge_code.trim(),
         name: form.name.trim(),
+        work_type_id: form.work_type_id,
       })
       ElMessage.success('已保存')
     } else {
       await createWorker({
         badge_code: form.badge_code.trim(),
         name: form.name.trim(),
+        work_type_id: form.work_type_id,
       })
       ElMessage.success('已新增')
     }
@@ -205,6 +238,7 @@ function onDialogClosed(): void {
   editing.value = null
   form.badge_code = ''
   form.name = ''
+  form.work_type_id = null
 }
 
 async function onDeactivate(row: Worker): Promise<void> {
@@ -231,7 +265,15 @@ async function onReactivate(row: Worker): Promise<void> {
   }
 }
 
-onMounted(fetchList)
+onMounted(async () => {
+  await fetchList()
+  try {
+    const res = await listWorkTypes({ limit: 200 })
+    workTypes.value = res.items
+  } catch {
+    // 不阻塞主页面
+  }
+})
 </script>
 
 <style lang="scss" scoped>

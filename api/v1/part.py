@@ -298,3 +298,22 @@ async def get_part_by_serial(
         )
     items = await svc._to_out([part])
     return items[0]
+
+
+@router.get(
+    "/by-work-type/{work_type_id}",
+    response_model=list[PartOut],
+    summary="扫码台 PICK_UP 列表：当前货架上某工种可领的零件",
+    description=(
+        "按工种 id 列出生产货架上、下一道工序属于该工种映射的零件。"
+        "排序：加急优先 → 临期优先 → id 降序。"
+        "返回 [] 时前端提示「无可领件 / 工种未映射 / 未分配工种」。"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def list_pickable_parts_by_work_type(
+    work_type_id: int,
+    shelf_id: int = Query(..., description="当前操作的生产货架 id"),
+    svc: PartService = Depends(get_part_service),
+) -> list[PartOut]:
+    return await svc.list_pickable_parts(work_type_id, shelf_id)

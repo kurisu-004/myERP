@@ -46,3 +46,12 @@ class TWorker(Base, AuditMixin):
         server_default="true",
         comment="是否在职；停用后不能再扫码领取",
     )
+
+    # 工种：每个工人对应一个工种（NULL 表示暂未分配）。
+    # 逻辑外键 → t_work_type.id；service 层校验存在性。
+    work_type_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+        comment="逻辑外键 → t_work_type.id；NULL = 未分配工种",
+    )

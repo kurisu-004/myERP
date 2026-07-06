@@ -61,3 +61,15 @@ class ErrCode(IntEnum):
     BIZ_AUTH_INVALID = 40101            # 401  Bearer 无效或密码错
     BIZ_AUTH_TOKEN_EXPIRED = 40102      # 401  JWT 过期
     BIZ_AUTH_SHELF_MISMATCH = 40301     # 403  SHELF_ACCOUNT 账号操作的 shelf 与 JWT 中不一致
+
+    # ---- 工序（t_process）----
+    # 208xx：工序相关
+    BIZ_PROCESS_NOT_FOUND = 20801
+    BIZ_PROCESS_DUPLICATE_CODE = 20802
+    BIZ_PROCESS_IN_USE = 20803          # 仍有 part.next_process_id 或 mapping 引用时拒软删
+
+    # ---- 工种（t_work_type）----
+    # 209xx：工种相关
+    BIZ_WORK_TYPE_NOT_FOUND = 20901
+    BIZ_WORK_TYPE_DUPLICATE_CODE = 20902
+    BIZ_WORK_TYPE_IN_USE = 20903        # 仍有 worker.work_type_id 或 mapping 引用时拒软删
