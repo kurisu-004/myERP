@@ -188,6 +188,7 @@
       :owner-id="partId"
       :show-upload="true"
       :show-delete="true"
+      :show-print="true"
       @refresh="fetchFiles"
     />
 

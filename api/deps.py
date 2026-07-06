@@ -248,6 +248,20 @@ def get_drawing_service(
     )
 
 
+def get_part_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PartRepository:
+    """图纸打印 / 打印 service 共用的 PartRepository 工厂。"""
+    return PartRepository(session)
+
+
+def get_drawing_repository(
+    session: AsyncSession = Depends(get_session),
+) -> DrawingFileRepository:
+    """图纸打印 service 用的 DrawingFileRepository 工厂。"""
+    return DrawingFileRepository(session)
+
+
 def get_cnc_program_service(
     session: AsyncSession = Depends(get_session),
 ) -> CncProgramService:

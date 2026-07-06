@@ -24,18 +24,31 @@
             {{ files.length }} 个
           </el-tag>
         </span>
-        <el-upload
-          v-if="showUpload"
-          :show-file-list="false"
-          :auto-upload="false"
-          :on-change="onPick"
-          :accept="ACCEPT"
-        >
-          <el-button type="primary" plain :loading="uploading">
-            <el-icon><Upload /></el-icon>
-            <span>上传文件</span>
+        <div class="header-actions">
+          <!-- 打印按钮：仅零件可见，用于触发双面打印 PDF（图纸 + 反面条形码） -->
+          <el-button
+            v-if="showPrint"
+            type="success"
+            plain
+            :loading="printing"
+            @click="onPrint"
+          >
+            <el-icon><Printer /></el-icon>
+            <span>打印图纸（含条形码）</span>
           </el-button>
-        </el-upload>
+          <el-upload
+            v-if="showUpload"
+            :show-file-list="false"
+            :auto-upload="false"
+            :on-change="onPick"
+            :accept="ACCEPT"
+          >
+            <el-button type="primary" plain :loading="uploading">
+              <el-icon><Upload /></el-icon>
+              <span>上传文件</span>
+            </el-button>
+          </el-upload>
+        </div>
       </div>
     </template>
 
@@ -109,11 +122,18 @@
         </el-button>
       </div>
     </el-dialog>
+
+    <!-- 打印用隐藏 iframe（src 注入 PDF blob URL，触发浏览器打印） -->
+    <iframe
+      ref="printIframeRef"
+      style="position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; border: 0; opacity: 0; pointer-events: none;"
+      title="打印预览"
+    />
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Delete,
@@ -121,12 +141,14 @@ import {
   Download,
   Picture,
   Files,
+  Printer,
   Upload,
 } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
 import PdfViewer from './PdfViewer.vue'
 import { api } from '@/api/http'
 import { deleteFile, getDownloadUrl, uploadAssemblyFile, uploadPartFile } from '@/api/assembly'
+import { printPartDrawing } from '@/api/parts'
 import type { DrawingFileItem } from '@/types/file'
 
 interface Props {
@@ -137,11 +159,14 @@ interface Props {
   defaultPage?: number
   showUpload?: boolean
   showDelete?: boolean
+  /** 显示「打印图纸（含条形码）」按钮；仅对 ownerType='part' 生效 */
+  showPrint?: boolean
 }
 const props = withDefaults(defineProps<Props>(), {
   defaultPage: 1,
   showUpload: false,
   showDelete: false,
+  showPrint: false,
 })
 
 const emit = defineEmits<{
@@ -255,6 +280,55 @@ async function onDelete(f: DrawingFileItem): Promise<void> {
     ElMessage.error((e as Error).message ?? '删除失败')
   }
 }
+
+// ============================================================
+// 双面打印：拉后端生成的 PDF（图纸 + 反面右下角条形码）→ 触发浏览器打印
+// ============================================================
+const printing = ref(false)
+const printIframeRef = ref<HTMLIFrameElement | null>(null)
+let printBlobUrl = ''
+
+async function onPrint(): Promise<void> {
+  if (props.ownerType !== 'part') return
+  printing.value = true
+  try {
+    const blob = await printPartDrawing(props.ownerId)
+    // 清理上一次的 blob URL（避免内存泄漏）
+    if (printBlobUrl) URL.revokeObjectURL(printBlobUrl)
+    printBlobUrl = URL.createObjectURL(blob)
+
+    // 用隐藏 iframe 加载 PDF，触发打印对话框；
+    // 比 window.open 更好：不被弹窗拦截，且打印对话框自然出现。
+    const iframe = printIframeRef.value
+    if (!iframe) {
+      ElMessage.error('打印 iframe 未挂载，请刷新页面后重试')
+      return
+    }
+    iframe.src = printBlobUrl
+    // 等待 PDF 加载完成后调 print
+    iframe.onload = () => {
+      try {
+        iframe.contentWindow?.focus()
+        iframe.contentWindow?.print()
+      } catch {
+        // 某些浏览器 sandbox 限制 — fallback：开新窗口
+        const w = window.open(printBlobUrl, '_blank')
+        if (w) w.print()
+      }
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '生成打印 PDF 失败')
+  } finally {
+    // 留几秒给打印对话框弹出再清 loading
+    setTimeout(() => {
+      printing.value = false
+    }, 800)
+  }
+}
+
+onBeforeUnmount(() => {
+  if (printBlobUrl) URL.revokeObjectURL(printBlobUrl)
+})
 </script>
 
 <style lang="scss" scoped>

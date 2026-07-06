@@ -348,6 +348,22 @@ frontend/src/
    - 修复：拆 read_router（`GET /shelves`、`GET /shelves/{id}`，MANAGER + CLERK + CNC_PROGRAMMER）与 write_router（POST `/shelves`、`/{id}/update`、`/{id}/deactivate`，MANAGER-only）。`api/v1/__init__.py` 注册两个 router。货架是组织结构资源，写仍 MANAGER-only；读是业务前置数据，按 `[客户管理 / 工人一览]` 同款模式放开。
    - 端到端验证：CLERK / CNC_PROGRAMMER / MANAGER 三角色 GET `/shelves` 均 200；CLERK POST `/shelves` 仍 403。
 
+8. **2026-07-06 图纸双面打印（图纸 + 反面条形码）**
+   - 新增 `service/printing.py` + 后端端点 `GET /api/v1/parts/{id}/print-drawing`：根据零件的 master 图纸（`page_index IS NULL`，否则取任意最新一条）类型合成 A4 双页 PDF：
+     * 上传 PDF → `pypdf.PdfReader` 读原页 + `PdfWriter.add_page` 追加条码页
+     * 上传 PNG/JPG → `pillow` 居中按比例贴到 A4 第 1 页 + 第 2 页条码页
+     * 无图纸 / STEP/DWG/DXF（不可纸面渲染） → 第 1 页用 `pillow` 渲染「零件信息卡」占位（图号 / 名称 / 客户 / 流水号）
+     * 第 2 页通用：白底 A4 + 右下角 Code128 条形码（编码 `serial_no`，无则用占位 `NO-SERIAL`）+ 文字标签
+   - `pyproject.toml` 新增 `pypdf>=4.0` 依赖；`api/deps.py` 新增 `get_part_repository` / `get_drawing_repository`。
+   - 前端 `components/FileListCard.vue` 新增 `showPrint` prop + 头部「打印图纸（含条形码）」按钮（success green outline），点击：
+     * 调 `printPartDrawing(partId)` 拿 Blob
+     * 注入隐藏 iframe（1×1 像素不阻塞 UI）的 src
+     * iframe.onload → `iframe.contentWindow.print()` 触发浏览器打印对话框（不弹新窗、不被拦截）
+     * sandbox 失败时 fallback 到 `window.open`
+   - `PartDetail.vue` 给 `FileListCard` 传 `:show-print="true"`（装配体详情不显示）。
+   - 权限：MANAGER + CLERK（与创建/下发一致；CNC_PROGRAMMER / SHELF_ACCOUNT 无须打印）。
+   - 端到端验证：CLERK GET 200（103KB 两页 A4 PDF）；CNC GET 403；不存在 part → 404。`uv run pytest tests/unit` → 191 passed；`npm run build` 通过；用 `sips` 渲染 PDF 看到 page 1 信息卡 + page 2 右下角条形码。
+
 ---
 
 ## 10. 完整目录树

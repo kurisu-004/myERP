@@ -272,3 +272,17 @@ export async function listPartsByWorkType(
   )
   return resp.data
 }
+
+/**
+ * 生成零件的双面打印 PDF（图纸 + 反面右下角条形码）。
+ * 返回 Blob，content-type=application/pdf。
+ *
+ * 注：返回的是文件 blob，调用方需自行用 iframe / window 触发打印。
+ */
+export async function printPartDrawing(partId: string): Promise<Blob> {
+  const resp = await api.get<Blob>(
+    `/parts/${encodeURIComponent(partId)}/print-drawing`,
+    { responseType: 'blob' },
+  )
+  return resp.data
+}

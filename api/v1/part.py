@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, Query, status as http_status
+from fastapi import APIRouter, Depends, Query, Response, status as http_status
 
-from api.deps import get_part_service
+from api.deps import get_drawing_repository, get_part_repository, get_part_service
 from core.permission import (
     CurrentUser,
     require_auth,
@@ -9,6 +9,8 @@ from core.permission import (
     require_shelf_account_from_body,
 )
 from model.enums import UserRole
+from repository.drawing_file import DrawingFileRepository
+from repository.part import PartRepository
 from schema.part import (
     PartBatchCreateRequest,
     PartBatchCreateResult,
@@ -23,6 +25,7 @@ from schema.part import (
     PlaceOnShelfRequest,
 )
 from service import PartService
+from service.printing import build_part_print_pdf
 
 router = APIRouter(prefix="/parts", tags=["零件管理"])
 
@@ -391,3 +394,44 @@ async def list_pickable_parts_by_work_type(
     svc: PartService = Depends(get_part_service),
 ) -> list[PartOut]:
     return await svc.list_pickable_parts(work_type_id, shelf_id)
+
+# ============================================================
+# 双面打印 PDF（图纸 + 反面条形码）
+# ============================================================
+# 权限：CLERK + MANAGER（文员下发 + 管理员补打；扫码台/编程员不需要）。
+@router.get(
+    "/{part_id}/print-drawing",
+    summary="生成零件的双面打印 PDF（图纸 + 反面右下角条形码）",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/pdf": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
+    dependencies=_office_dep,
+)
+async def print_part_drawing(
+    part_id: int,
+    parts: PartRepository = Depends(get_part_repository),
+    drawings: DrawingFileRepository = Depends(get_drawing_repository),
+) -> Response:
+    pdf_bytes = await build_part_print_pdf(
+        part_id=part_id, parts=parts, drawings=drawings,
+    )
+    # 文件名建议：serial_no + drawing_no，便于纸面贴标查找
+    part = await parts.get_by_id(part_id)
+    serial = part.serial_no if part and part.serial_no else "no-serial"
+    drawing = part.drawing_no if part and part.drawing_no else "part"
+    fname = f"{serial}-{drawing}.pdf".replace("/", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{fname}"',
+            "Cache-Control": "no-store",
+        },
+    )
