@@ -51,6 +51,7 @@ model/*.py           # SQLAlchemy ORM
 | 客户 | `TCustomer` | `CustomerRepository` | `customer.py` | `api/v1/customer.py` | `schema/customer.py` |
 | 装配体 | `TAssembly` | `AssemblyRepository` | `assembly.py` | `api/v1/assembly.py` | `schema/assembly.py` |
 | 图纸文件 | `TDrawingFile` | `DrawingFileRepository` | `drawing.py` | `api/v1/drawing.py` | `schema/drawing.py` |
+| CNC 程序 | `TCncProgram` | `CncProgramRepository` | `cnc_program.py` | `api/v1/cnc_program.py` | `schema/cnc_program.py` |
 | 工人 | `TWorker` | `WorkerRepository` | `worker.py` | `api/v1/worker.py` | `schema/worker.py` |
 | 流水号 | `TSerialCounter` | `SerialCounterRepository` | — | — | — |
 | WebSocket | — | — | — | `api/v1/ws.py` | — |
@@ -116,7 +117,7 @@ id: IdStrNonNull                # 非空主键 → JSON: "123456..."
 
 ### 4. 状态机校验在 service 层
 
-`PartStatus`（8 个 DB 状态）和 `AssemblyStatus`（4 个状态）定义在 `model/enums.py`。状态流转规则由 `python-statemachine` (`StateChart`) 管理，详见 [第 9 节](#9-状态机约定)。
+`PartStatus`（9 个 DB 状态）和 `AssemblyStatus`（4 个状态）定义在 `model/enums.py`。状态流转规则由 `python-statemachine` (`StateChart`) 管理，详见 [第 9 节](#9-状态机约定)。
 
 旧的手写 `PART_TRANSITIONS` / `ASSEMBLY_TRANSITIONS` frozenset 和 `_assert_transition()` 已移除，迁移到 `statemachines/` 下的状态机类。
 
@@ -164,17 +165,21 @@ Part 和 Assembly 的状态转换由 `python-statemachine` (`StateChart`) 管理
 
 **集成方式**: ORM 模型通过 `sm` property 创建状态机实例，自动从 `model.status` + `model.location` 恢复当前状态。
 
-**Part 状态（扁平 9 态）**:
+**Part 状态（扁平 10 态）**:
 ```
 PENDING → ON_SHELF ⇄ WITH_WORKER → INSPECTION → READY_TO_SHIP → DELIVERED → COMPLETED
-                                      ↓
-                                   REPAIRING → ON_SHELF
-                                      ↑
-              INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
+   │            ↓
+   ├──→ PROGRAMMING → ON_SHELF  （CNC 编程：发送至编程 → 编程员下发到生产货架）
+   │
+   ↓
+REPAIRING → ON_SHELF
+   ↑
+INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
 任意非终态 → CANCELLED
 ```
 
 - ON_SHELF / WITH_WORKER 映射到 DB `status="IN_PROCESS"`，通过 `location` 字段（`PRODUCTION_SHELF` / `WORKER`）区分。
+- PROGRAMMING 映射到 DB `status="PROGRAMMING"` + `location="OFFICE"`（编程员持有，**不**占货架）。
 - 终态: COMPLETED、CANCELLED。
 
 **Assembly 状态（4 态）**: `PENDING → IN_PROCESS → COMPLETED`，可从 PENDING/IN_PROCESS → CANCELLED。
@@ -210,6 +215,7 @@ frontend/src/
 | 路径 | 名称 | 说明 |
 |------|------|------|
 | `/dashboard` | Dashboard | 首页仪表盘 |
+| `/cnc/pending` | PendingProgrammingList | 待编程一览（CNC 编程员） |
 | `/parts` | PartsList | 零件一览 |
 | `/parts/new` | PartsNew | 批量新建零件 |
 | `/parts/:id` | PartsDetail | 零件详情 |
@@ -253,6 +259,7 @@ frontend/src/
 当前迁移：
 - `000000000001_init_schema.py` — 初始 schema（所有表的 DDL）
 - `000000000002_init_seed.py` — 初始种子数据
+- `000000000003_cnc_programming.py` — 新增 `t_cnc_program` 表 + seed 待编程一览菜单 + CLERK / CNC_PROGRAMMER 账号
 
 ## 已知问题 / 现状注意
 
@@ -260,6 +267,8 @@ frontend/src/
 
 2. **`docs/db-design-part-customer.md` 的审计字段描述已过时**：该文档第 6 点说审计字段由 `Base` 统一声明，实际已改为 `AuditMixin`（见约定第 2 条）。以本文件和 `model/audit.py` 为准。
 
-3. **`created_by` / `updated_by` 全为 NULL**：当前无鉴权中间件，所有操作人字段留空，预留后续使用。
+3. **`created_by` / `updated_by` 全为 NULL**：鉴权已就绪（`t_user` / `t_user_role` / JWT / `core.permission`，`UserRole` 含 `MANAGER` / `SHELF_ACCOUNT` / `CLERK` / `INSPECTOR` / `CNC_PROGRAMMER`），但写操作人字段尚未接到 service 层的 `created_by` / `updated_by`，预留后续按 `CurrentUser.id` 自动填。
 
-4. **`UnitOfWork` 待补**：当前各 service 直接使用 repository，尚未实现统一的 UnitOfWork 模式（但 repository 层已具备独立的 `soft_delete` / `create` / `update` 等原子操作）。
+4. **CNC 编程环节（2026-07-06 接入）**：见 [第 9 节](#9-状态机约定) 的 10 态描述。零件可经「PENDING → PROGRAMMING → ON_SHELF」走到生产；编程员在 `/cnc/pending` 拉单、下载图纸、上传 G 代码（落 `t_cnc_program` 表，COS key 前缀 `drawings/cnc/part/{part_id}/...`），最后调用 `POST /parts/{id}/release-from-programming` 下发。G 代码与图纸走两套独立文件表 + 独立白名单（`cos_allowed_types` 现含 `nc,tap,cnc,mpf,ngc`）。
+
+5. **`UnitOfWork` 待补**：当前各 service 直接使用 repository，尚未实现统一的 UnitOfWork 模式（但 repository 层已具备独立的 `soft_delete` / `create` / `update` 等原子操作）。
