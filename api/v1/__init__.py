@@ -19,7 +19,9 @@ from . import (
 api_router = APIRouter(prefix="/v1")
 api_router.include_router(auth.router)
 api_router.include_router(user.router)
-api_router.include_router(shelf.router)
+# 货架：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER-only）两个并列 router
+api_router.include_router(shelf.read_router)
+api_router.include_router(shelf.write_router)
 # 客户管理：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER+CLERK）两个并列 router
 api_router.include_router(customer.read_router)
 api_router.include_router(customer.write_router)

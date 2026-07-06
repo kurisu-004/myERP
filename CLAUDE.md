@@ -343,6 +343,11 @@ frontend/src/
    - 约定已写入本文件「约定 3 · 雪花 ID 入参必须用 `str` 类型」一节；后续新增 snowflake ID 入参字段都按此模式。
    - 端到端验证：以字符串 `"199852260920918016"` 作 `applicant_id` POST `/parts`，返回 200，零件成功创建并关联申请人姓名。
 
+   **`/shelves` 权限放开给 CLERK / CNC_PROGRAMMER（仅读）**
+   - 用户反馈文员下发订单时选货架对话框报 `GET /shelves?zone=PRODUCTION&...` 403。根因：`api/v1/shelf.py` 之前是 router 级 MANAGER-only，而 `PartsList.vue:432` / `PartDetail.vue:737` / `ScanPartsWork.vue:354` 等多处业务页面（文员、编程员都要用）都依赖该端点。
+   - 修复：拆 read_router（`GET /shelves`、`GET /shelves/{id}`，MANAGER + CLERK + CNC_PROGRAMMER）与 write_router（POST `/shelves`、`/{id}/update`、`/{id}/deactivate`，MANAGER-only）。`api/v1/__init__.py` 注册两个 router。货架是组织结构资源，写仍 MANAGER-only；读是业务前置数据，按 `[客户管理 / 工人一览]` 同款模式放开。
+   - 端到端验证：CLERK / CNC_PROGRAMMER / MANAGER 三角色 GET `/shelves` 均 200；CLERK POST `/shelves` 仍 403。
+
 ---
 
 ## 10. 完整目录树
