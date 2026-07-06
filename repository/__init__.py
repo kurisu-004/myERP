@@ -1,3 +1,4 @@
+from .applicant import ApplicantRepository
 from .assembly import AssemblyRepository
 from .cnc_program import CncProgramRepository
 from .customer import CustomerRepository
@@ -14,6 +15,7 @@ from .work_type import WorkTypeRepository
 from .work_type_process import WorkTypeProcessRepository
 
 __all__ = [
+    "ApplicantRepository",
     "AssemblyRepository",
     "CncProgramRepository",
     "CustomerRepository",

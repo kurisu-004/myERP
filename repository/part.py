@@ -174,6 +174,29 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    # ===== 申请人引用计数（软删前 BIZ_APPLICANT_IN_USE 校验）=====
+    async def count_by_applicant_name_in_customers(
+        self,
+        applicant_name: str,
+        customer_ids: list[int],
+        *,
+        include_deleted: bool = False,
+    ) -> int:
+        """统计未软删零件中 `applicant_name` 等于指定值、`customer_id` 在
+        传入的客户 id 集合内的记录数。`customer_ids` 应包含一级客户及其所有
+        二级子节点 id（由 ApplicantService.soft_delete_applicant 拼好后传入）。
+        """
+        if not customer_ids:
+            return 0
+        stmt = select(func.count(TPart.id)).where(
+            TPart.applicant_name == applicant_name,
+            TPart.customer_id.in_(customer_ids),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
+
     # ===== 内部 =====
     def _build_filter_stmt(
         self,

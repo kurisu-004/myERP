@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from . import (
+    applicant,
     assembly,
     auth,
     cnc_program,
@@ -19,7 +20,10 @@ api_router = APIRouter(prefix="/v1")
 api_router.include_router(auth.router)
 api_router.include_router(user.router)
 api_router.include_router(shelf.router)
-api_router.include_router(customer.router)
+# 客户管理：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER+CLERK）两个并列 router
+api_router.include_router(customer.read_router)
+api_router.include_router(customer.write_router)
+api_router.include_router(applicant.router)
 api_router.include_router(worker.router)
 api_router.include_router(part.router)
 api_router.include_router(ws.router)

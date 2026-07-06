@@ -53,6 +53,12 @@ export interface PartCreatePayload {
   name: string
   drawing_no: string
   applicant_name?: string
+  /**
+   * 申请人表 id（雪花 ID 字符串）。
+   * 必须是字符串：雪花 ID 19 位 > JS Number.MAX_SAFE_INTEGER（2^53-1），
+   * 用 number 类型会在 JSON 序列化时丢精度，后端拿不到原值。
+   */
+  applicant_id?: string | null
   quantity?: number
   unit_price?: number
   total_price?: number | null

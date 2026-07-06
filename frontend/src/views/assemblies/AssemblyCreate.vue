@@ -68,16 +68,32 @@
                 placeholder="选择一级 / 二级客户"
                 style="width: 100%"
                 clearable
+                @change="onCustomerChange"
               />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="申请人">
-              <el-input
-                v-model="form.applicant_name"
-                placeholder="例如：林雪强（可空）"
+              <el-select
+                v-model="form.applicant_id"
+                filterable
+                remote
+                :remote-method="onApplicantSearch"
+                :loading="applicantLoading"
+                :disabled="!form.customer_id"
+                placeholder="选择或输入申请人姓名（不在表中则提交时自动新增）"
+                style="width: 100%"
                 clearable
-              />
+                @change="onApplicantSelect"
+                @blur="onApplicantInputBlur"
+              >
+                <el-option
+                  v-for="a in applicantCandidates"
+                  :key="a.id"
+                  :label="a.name"
+                  :value="a.id"
+                />
+              </el-select>
             </el-form-item>
           </el-col>
         </el-row>
@@ -250,6 +266,8 @@ import {
 import { Check, Document, Plus, Upload } from '@element-plus/icons-vue'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createAssembly } from '@/api/assembly'
+import { createApplicant, searchApplicants } from '@/api/applicant'
+import type { Applicant } from '@/types/applicant'
 import type { AssemblyChildPayload } from '@/types/assembly'
 
 const router = useRouter()
@@ -274,15 +292,105 @@ onMounted(async () => {
   }
 })
 
+/** cascader 选中的客户 id → 所属一级客户 id。 */
+function resolveRootCustomerId(pickedId: number | string | null): number | null {
+  if (pickedId === null || pickedId === undefined || pickedId === '') return null
+  const picked = customers.value.find((c) => c.id === String(pickedId))
+  if (!picked) return null
+  if (picked.parent_id === null) return Number(picked.id)
+  return Number(picked.parent_id)
+}
+
+// ============ 申请人候选 + 防抖远程搜索 ============
+const applicantCandidates = ref<Applicant[]>([])
+const applicantLoading = ref(false)
+const rootCustomerId = ref<number | null>(null)
+let applicantSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+async function refetchApplicants(namePrefix: string, limit = 50): Promise<void> {
+  if (rootCustomerId.value === null) {
+    applicantCandidates.value = []
+    return
+  }
+  applicantLoading.value = true
+  try {
+    applicantCandidates.value = await searchApplicants({
+      customer_id: String(rootCustomerId.value),
+      name_prefix: namePrefix,
+      limit,
+    })
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '申请人列表加载失败')
+  } finally {
+    applicantLoading.value = false
+  }
+}
+
+async function onCustomerChange(pickedId: unknown): Promise<void> {
+  const raw = Array.isArray(pickedId) ? pickedId[pickedId.length - 1] : pickedId
+  const idStr = raw === null || raw === undefined ? '' : String(raw)
+  form.applicant_id = null
+  form.applicant_name = ''
+  if (!idStr) {
+    rootCustomerId.value = null
+    applicantCandidates.value = []
+    return
+  }
+  rootCustomerId.value = resolveRootCustomerId(idStr)
+  await refetchApplicants('', 50)
+}
+
+function onApplicantSearch(query: string): void {
+  if (applicantSearchTimer) clearTimeout(applicantSearchTimer)
+  applicantSearchTimer = setTimeout(() => {
+    void refetchApplicants(query, 20)
+  }, 300)
+}
+
+function onApplicantSelect(value: string | null): void {
+  if (value === null) {
+    form.applicant_name = ''
+    return
+  }
+  const matched = applicantCandidates.value.find((a) => a.id === value)
+  form.applicant_name = matched?.name ?? ''
+}
+
+function onApplicantInputBlur(event: FocusEvent): void {
+  const target = event.target as HTMLInputElement | null
+  const typed = (target?.value ?? '').trim()
+  if (!typed) return
+  if (form.applicant_id !== null) {
+    const matched = applicantCandidates.value.find((a) => a.id === form.applicant_id)
+    if (matched && matched.name === typed) {
+      form.applicant_name = matched.name
+      return
+    }
+  }
+  form.applicant_id = null
+  form.applicant_name = typed
+}
+
 // ============ 表单状态 ============
 interface FormState {
   drawing_no: string
   name: string
   applicant_name: string
+  // applicant_id 用字符串承载雪花 ID（避免 JS Number 精度丢失）；
+  // 见 CLAUDE.md「雪花 ID 溢出」一节。
+  applicant_id: string | null
   customer_id: number | null
   request_date: string
   planned_delivery_date: string
   is_urgent: boolean
+}
+
+function todayIso(): string {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
 }
 
 const formRef = ref<FormInstance>()
@@ -290,8 +398,9 @@ const form = reactive<FormState>({
   drawing_no: '',
   name: '',
   applicant_name: '',
+  applicant_id: null,
   customer_id: null,
-  request_date: '',
+  request_date: todayIso(),
   planned_delivery_date: '',
   is_urgent: false,
 })
@@ -423,10 +532,23 @@ async function onSubmit(): Promise<void> {
   submitting.value = true
   loading.value = true
   try {
+    // 若申请人未选现有但有姓名，按一级客户自动新增。
+    let resolvedApplicantId: string | null = form.applicant_id
+    if (resolvedApplicantId === null && form.applicant_name.trim() && form.customer_id !== null) {
+      const rootId = resolveRootCustomerId(form.customer_id)
+      if (rootId !== null) {
+        const created = await createApplicant({
+          name: form.applicant_name.trim(),
+          customer_id: String(rootId),
+        })
+        resolvedApplicantId = created.id
+      }
+    }
     const payload = {
       drawing_no: form.drawing_no.trim(),
       name: form.name.trim(),
       applicant_name: form.applicant_name.trim() || null,
+      applicant_id: resolvedApplicantId,
       customer_id: Number(form.customer_id),
       request_date: form.request_date,
       planned_delivery_date: form.planned_delivery_date,

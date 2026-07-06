@@ -91,6 +91,28 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '货架管理', icon: 'Platform', menuCode: 'shelves_list', breadcrumb: [{ label: '车间', path: '/shelves' }, { label: '货架管理' }] },
       },
       {
+        path: 'customers',
+        name: 'CustomerList',
+        component: () => import('@/views/customers/CustomerList.vue'),
+        meta: {
+          title: '客户一览',
+          icon: 'Connection',
+          menuCode: 'customers_list',
+          breadcrumb: [{ label: '客户管理', path: '/customers' }, { label: '客户一览' }],
+        },
+      },
+      {
+        path: 'applicants',
+        name: 'ApplicantList',
+        component: () => import('@/views/applicants/ApplicantList.vue'),
+        meta: {
+          title: '申请人一览',
+          icon: 'User',
+          menuCode: 'applicants_list',
+          breadcrumb: [{ label: '客户管理', path: '/applicants' }, { label: '申请人一览' }],
+        },
+      },
+      {
         path: 'settings/work-types',
         name: 'WorkTypeList',
         component: () => import('@/views/settings/WorkTypeList.vue'),

@@ -57,6 +57,11 @@ export interface AssemblyCreatePayload {
   name: string
   drawing_no: string
   applicant_name?: string | null
+  /**
+   * 申请人表 id（雪花 ID 字符串）。必须是字符串：
+   * 同 parts.ts 的 PartCreatePayload.applicant_id，详见 CLAUDE.md「雪花 ID 溢出」一节。
+   */
+  applicant_id?: string | null
   customer_id: number
   request_date: string
   planned_delivery_date: string

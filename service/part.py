@@ -23,6 +23,7 @@ from core.exception import BizError
 from core.serial import code_for_parent
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import PartEventType, PartStatus, ShelfZone
+from repository.applicant import ApplicantRepository
 from repository.customer import CustomerRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
@@ -92,6 +93,7 @@ class PartService:
         processes: ProcessRepository | None = None,
         work_types: WorkTypeRepository | None = None,
         work_type_process: WorkTypeProcessRepository | None = None,
+        applicants: ApplicantRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
     ) -> None:
@@ -104,6 +106,7 @@ class PartService:
         self.processes = processes
         self.work_types = work_types
         self.work_type_process = work_type_process
+        self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
 
@@ -273,9 +276,11 @@ class PartService:
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
             parent_name = parent.name
+            root_customer_id = parent.id
         else:
             # 一级客户自身 → 直接用其名称取序列号代码
             parent_name = cust.name
+            root_customer_id = cust.id
         code = code_for_parent(parent_name)
         if code is None:
             raise BizError(
@@ -283,6 +288,42 @@ class PartService:
                 message=f"未配置客户「{parent_name}」的序列号代码",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
+        # 解析 applicant_id → applicant_name（按姓名快照写入 t_part）
+        # 注：applicant_id 在 schema 是 str（雪花 ID 字符串，避免 JS Number 精度丢失），
+        # 这里转回 int 再去 repository 查询。
+        applicant_name = data.applicant_name
+        if data.applicant_id is not None:
+            if self.applicants is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="server missing applicant repository",
+                    http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            try:
+                applicant_id_int = int(data.applicant_id)
+            except (TypeError, ValueError) as e:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=f"applicant_id 必须是数字字符串：{data.applicant_id!r}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                ) from e
+            applicant = await self.applicants.get_by_id(applicant_id_int)
+            if applicant is None:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                    message=f"applicant {data.applicant_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if applicant.customer_id != root_customer_id:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_BAD_CUSTOMER,
+                    message=(
+                        f"applicant {data.applicant_id} 不属于本零件的一级客户 "
+                        f"{root_customer_id}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            applicant_name = applicant.name
         serial_no = await self.serial_counters.acquire_serial(code)
         total_price = data.total_price
         if total_price is None:
@@ -293,7 +334,7 @@ class PartService:
             serial_no=serial_no,
             name=data.name,
             drawing_no=data.drawing_no,
-            applicant_name=data.applicant_name,
+            applicant_name=applicant_name,
             quantity=data.quantity,
             unit_price=data.unit_price,
             total_price=total_price,

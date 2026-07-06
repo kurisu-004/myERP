@@ -108,6 +108,13 @@ class PartCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     drawing_no: str = Field(min_length=1, max_length=100)
     applicant_name: str = Field(default="(未知)", max_length=50)
+    applicant_id: str | None = Field(
+        default=None,
+        description=(
+            "申请人表 id（雪花 ID 字符串）。必须是字符串，因为 JS Number "
+            "在 19 位雪花 ID 上会丢失精度。非空时按姓名快照写入 t_part。"
+        ),
+    )
     quantity: int = Field(default=1, ge=1)
     unit_price: Decimal = Field(default=Decimal("0"), ge=0)
     total_price: Decimal | None = Field(default=None, ge=0)

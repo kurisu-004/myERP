@@ -12,7 +12,42 @@ export interface Customer {
   parent_name: string | null
 }
 
+export interface CustomerCreatePayload {
+  name: string
+  /** null = 一级客户；非空 = 挂在某个一级客户下的二级客户。 */
+  parent_id: string | null
+}
+
+export interface CustomerUpdatePayload {
+  name?: string
+  parent_id?: string | null
+}
+
 export async function listCustomers(): Promise<Customer[]> {
   const resp = await api.get<Customer[]>('/customers')
   return resp.data
+}
+
+export async function getCustomer(id: string): Promise<Customer> {
+  const resp = await api.get<Customer>(`/customers/${id}`)
+  return resp.data
+}
+
+export async function createCustomer(
+  payload: CustomerCreatePayload,
+): Promise<Customer> {
+  const resp = await api.post<Customer>('/customers', payload)
+  return resp.data
+}
+
+export async function updateCustomer(
+  id: string,
+  payload: CustomerUpdatePayload,
+): Promise<Customer> {
+  const resp = await api.post<Customer>(`/customers/${id}/update`, payload)
+  return resp.data
+}
+
+export async function softDeleteCustomer(id: string): Promise<void> {
+  await api.post(`/customers/${id}/soft-delete`)
 }

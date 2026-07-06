@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
 from repository import (
+    ApplicantRepository,
     AssemblyRepository,
     CncProgramRepository,
     CustomerRepository,
@@ -22,6 +23,7 @@ from repository import (
     WorkTypeRepository,
 )
 from service import (
+    ApplicantService,
     AssemblyService,
     AuthService,
     CncProgramService,
@@ -136,6 +138,7 @@ def get_part_service(
         processes=ProcessRepository(session),
         work_types=WorkTypeRepository(session),
         work_type_process=WorkTypeProcessRepository(session),
+        applicants=ApplicantRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
     )
@@ -212,7 +215,27 @@ def get_work_type_process_service(
 def get_customer_service(
     session: AsyncSession = Depends(get_session),
 ) -> CustomerService:
-    return CustomerService(customers=CustomerRepository(session))
+    return CustomerService(
+        customers=CustomerRepository(session),
+        parts=PartRepository(session),
+        assemblies=AssemblyRepository(session),
+    )
+
+
+def get_applicant_repo(
+    session: AsyncSession = Depends(get_session),
+) -> ApplicantRepository:
+    return ApplicantRepository(session)
+
+
+def get_applicant_service(
+    session: AsyncSession = Depends(get_session),
+) -> ApplicantService:
+    return ApplicantService(
+        applicants=ApplicantRepository(session),
+        customers=CustomerRepository(session),
+        parts=PartRepository(session),
+    )
 
 
 def get_drawing_service(
@@ -278,5 +301,6 @@ def get_assembly_service(
         events=events_repo,
         part_service=part_service,
         drawings=drawings,
+        applicants=ApplicantRepository(session),
         event_broadcaster=_event_broadcaster,
     )

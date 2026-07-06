@@ -1,3 +1,4 @@
+from .applicant import TApplicant
 from .assembly import TAssembly
 from .audit import AuditMixin, EventTimestampMixin
 from .base import Base
@@ -32,6 +33,7 @@ __all__ = [
     "AuditMixin",
     "Base",
     "EventTimestampMixin",
+    "TApplicant",
     "TAssembly",
     "TCustomer",
     "TDrawingFile",

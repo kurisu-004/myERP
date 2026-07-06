@@ -1,3 +1,4 @@
+from .applicant import ApplicantService
 from .assembly import AssemblyService
 from .auth import AuthService
 from .cnc_program import CncProgramService
@@ -14,6 +15,7 @@ from .work_type import WorkTypeService
 from .work_type_process import WorkTypeProcessService
 
 __all__ = [
+    "ApplicantService",
     "AssemblyService",
     "AuthService",
     "CncProgramService",

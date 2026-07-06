@@ -73,3 +73,14 @@ class ErrCode(IntEnum):
     BIZ_WORK_TYPE_NOT_FOUND = 20901
     BIZ_WORK_TYPE_DUPLICATE_CODE = 20902
     BIZ_WORK_TYPE_IN_USE = 20903        # 仍有 worker.work_type_id 或 mapping 引用时拒软删
+
+    # ---- 客户（t_customer）----
+    # 20109 补到 201xx 段（客户相关），与 BIZ_CUSTOMER_NOT_FOUND 同段。
+    BIZ_CUSTOMER_IN_USE = 20109         # 还有 active 子节点 / 被 part 或 assembly 引用 → 拒软删
+
+    # ---- 申请人（t_applicant）----
+    # 210xx：申请人相关
+    BIZ_APPLICANT_NOT_FOUND = 21001
+    BIZ_APPLICANT_DUPLICATE_NAME = 21002   # 同一一级客户下重名（DB partial unique 兜底）
+    BIZ_APPLICANT_BAD_CUSTOMER = 21003     # customer 不存在或不是一级
+    BIZ_APPLICANT_IN_USE = 21004           # 被未软删 part.applicant_name 引用 → 拒软删

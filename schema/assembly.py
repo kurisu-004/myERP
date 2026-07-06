@@ -90,6 +90,12 @@ class AssemblyCreateRequest(BaseModel):
     name: str = Field(..., max_length=200)
     drawing_no: str = Field(..., min_length=1, max_length=100)
     applicant_name: str | None = Field(default=None, max_length=50)
+    applicant_id: str | None = Field(
+        default=None,
+        description=(
+            "申请人表 id（雪花 ID 字符串）。必须是字符串，详见 PartCreateRequest 同名字段。"
+        ),
+    )
     customer_id: int = Field(description="二级叶子客户 id")
     request_date: date
     planned_delivery_date: date

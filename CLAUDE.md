@@ -105,7 +105,7 @@ class TPartEvent(Base, EventTimestampMixin):
 
 **JSON 序列化**（防止 JS 精度丢失）：
 - `schema/_types.py` 定义 `IdStr`（可空）和 `IdStrNonNull`（非空）两个类型。
-- 所有 Pydantic schema 的 ID 字段统一使用这两个类型，确保 JSON 响应中 ID 都是字符串。
+- 所有 Pydantic schema 的 **响应** ID 字段统一使用这两个类型，确保 JSON 响应中 ID 都是字符串。
 - **仅影响序列化**（`when_used="json"`），Python 内部仍是 `int`，DB 列保持 `BigInteger` 不动。
 - service 层 / repository 层接收时用 `int`，不受影响。
 
@@ -114,6 +114,53 @@ class TPartEvent(Base, EventTimestampMixin):
 assembly_id: IdStr = None       # 可空外键 → JSON: "123456..." 或 null
 id: IdStrNonNull                # 非空主键 → JSON: "123456..."
 ```
+
+**⚠️ 雪花 ID 入参必须用 `str` 类型（请求 body 端）**
+
+`IdStr` / `IdStrNonNull` 只解决 **出参** 的精度问题。**入参**（请求 body）字段如果直接用 `int`，前端把字符串 ID 用 `Number()` 转数字时，19 位雪花 ID 会因为 `JS Number.MAX_SAFE_INTEGER`（≈9.007×10¹⁵）而丢精度，后端 `int()` 拿到一个错误值，查询不到原行（典型报错：`applicant X not found`）。
+
+约束：
+- **request body** 中所有雪花 ID 字段类型必须是 `str`（前端 TypeScript 也是 `string`），service 层收到后再 `int(data.field)` 转换后查 repository。
+- **path parameter**（如 `/parts/{id}`、`/applicants/{id}`）由 HTTP URL 字符串直接传给 FastAPI，无 JS 中转，可用 `int`（FastAPI 会做 `int(url_path_segment)`）。
+- **query parameter** 同理，用 `Query`/`Path` 解析，无 JS 中转，可用 `int`（但本项目几乎所有 snowflake ID 都不走 query）。
+- `t_customer.id` 是 `BigSerial`，绝对值始终在安全整数范围内，**可以**用 `int` 入参（如 `PartCreateRequest.customer_id`）。
+- 凡是新增的「snowflake ID 入参」字段，参考 `PartCreateRequest.applicant_id: str | None` 的写法。
+
+```python
+# ✅ 正确（snowflake ID 入参用 str）
+class PartCreateRequest(BaseModel):
+    applicant_id: str | None = Field(default=None, description="雪花 ID 字符串")
+
+# ❌ 错误（int 会丢精度）
+class PartCreateRequest(BaseModel):
+    applicant_id: int | None = None  # JS Number(199849051720515600) != 199849051720515600
+```
+
+```ts
+// ✅ 前端：applicant_id 用 string，与后端 schema 一致
+const payload: PartCreatePayload = {
+  applicant_id: s.applicantId,   // 不要 Number(s.applicantId)！
+  ...
+}
+
+// ❌ 错误：Number() 会丢精度
+applicant_id: Number(s.applicantId)  // 19 位雪花 → 科学计数法
+```
+
+**service 层转换模式**（失败时抛 `BIZ_INVALID_VALUE`）：
+
+```python
+try:
+    applicant_id_int = int(data.applicant_id)
+except (TypeError, ValueError) as e:
+    raise BizError(
+        code=ErrCode.BIZ_INVALID_VALUE,
+        message=f"applicant_id 必须是数字字符串：{data.applicant_id!r}",
+        http_status=http_status.HTTP_400_BAD_REQUEST,
+    ) from e
+```
+
+适用范围：**任何新增的雪花 ID 入参**字段（本项目已知在用的有 `PartCreateRequest.applicant_id`、`AssemblyCreateRequest.applicant_id`）。后续若新增 snowflake FK 入参，按此约定。
 
 ### 4. 状态机校验在 service 层
 
@@ -279,6 +326,22 @@ frontend/src/
    - `frontend/src/views/parts/PartBatchNew.vue` 把 `StagedEntry` / `FormState` 的 `customerId` 改为 `string | null`（与 `Customer.id` 是雪花 ID 字符串一致），提交时再 `Number(s.customerId)` 转 int；`findCustomerLabel` 入参 / `onAddConfirm` 的 `=== undefined` 检查同步修正。
 
 6. **`UnitOfWork` 待补**：当前各 service 直接使用 repository，尚未实现统一的 UnitOfWork 模式（但 repository 层已具备独立的 `soft_delete` / `create` / `update` 等原子操作）。
+
+7. **2026-07-06 客户管理 + 申请人表 + 雪花 ID 溢出修复（统一记录于此）**：
+
+   **新增功能**
+   - 新增「客户管理」一级菜单 + 「客户一览」「申请人一览」两个二级菜单（`alembic/versions/000000000005_customer_management.py`）。新增 `t_applicant` 表（雪花 ID + partial unique `(name, customer_id) WHERE deleted_at IS NULL`），与 `t_customer` 多对一。MANAGER + CLERK 都可读写。
+   - `CustomerService` 扩展 CRUD（`get_customer / create_customer / update_customer / soft_delete_customer`），一级客户若有二级子节点或被 part/assembly 引用 → 拒软删。`CustomerRepository.create/update/soft_delete` 同步新增。
+   - `ApplicantService`（新建）：CRUD + `get_or_create` + `search_for_customer`（前序查询，给零件/装配体对话框自动补全用）。申请人只能挂一级客户（service 层校验 `parent_id IS NULL`）；软删前用 `PartRepository.count_by_applicant_name_in_customers` 校验是否被未软删零件引用。
+   - 5 个新错误码：`BIZ_APPLICANT_NOT_FOUND / DUPLICATE_NAME / BAD_CUSTOMER / IN_USE`、`BIZ_CUSTOMER_IN_USE`（20109）。
+   - 新建 `frontend/src/views/customers/CustomerList.vue`（el-tree 树形展示，hover 显示 +子客户/编辑/删除按钮）；`frontend/src/views/applicants/ApplicantList.vue`（筛选 + 表格 + 新增/编辑）。
+   - `PartBatchNew.vue` + `AssemblyCreate.vue` 改造：客户移到申请人之前；申请人改为 `el-select filterable remote`（联动一级客户下拉，前序查询）；移除「单价」「总价」「实际送货」；请购日期预填今天；提交时自动新增不存在的申请人。
+
+   **雪花 ID 溢出修复（关键）**
+   - 用户反馈新建零件报 `applicant 199849051720515600 not found` —— 19 位雪花 ID 超过 JS `Number.MAX_SAFE_INTEGER`（≈9.007×10¹⁵），前端把 `applicant_id` 用 `Number()` 转数字后丢精度，后端拿到错误值。
+   - 修复：`schema/part.py::PartCreateRequest.applicant_id` 与 `schema/assembly.py::AssemblyCreateRequest.applicant_id` 由 `int | None` 改为 `str | None`；service 层 `int(data.applicant_id)` 转换后查 repository（失败抛 `BIZ_INVALID_VALUE`）。前端 `PartCreatePayload.applicant_id` 与 `AssemblyCreatePayload.applicant_id` 同步改为 `string | null`；`PartBatchNew.vue::onSubmit` 移除 `Number(s.applicantId)`，直接传字符串。
+   - 约定已写入本文件「约定 3 · 雪花 ID 入参必须用 `str` 类型」一节；后续新增 snowflake ID 入参字段都按此模式。
+   - 端到端验证：以字符串 `"199852260920918016"` 作 `applicant_id` POST `/parts`，返回 200，零件成功创建并关联申请人姓名。
 
 ---
 

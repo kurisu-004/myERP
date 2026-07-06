@@ -70,8 +70,8 @@
         <el-table-column prop="drawingNo" label="图号" width="130" />
         <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
         <el-table-column prop="quantity" label="数量" width="70" align="right" />
-        <el-table-column prop="unitPrice" label="单价" width="90" align="right">
-          <template #default="{ row }">{{ row.unitPrice.toFixed(2) }}</template>
+        <el-table-column label="申请人" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.applicantName || '—' }}</template>
         </el-table-column>
         <el-table-column label="客户" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">{{ row.customerLabel || '—' }}</template>
@@ -137,11 +137,6 @@
 
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="申请人" prop="applicantName">
-              <el-input v-model="form.applicantName" placeholder="例如：林雪强" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="客户" prop="customerId">
               <el-cascader
                 v-model="form.customerId"
@@ -150,43 +145,51 @@
                 placeholder="选择一级 / 二级客户"
                 style="width: 100%"
                 clearable
+                @change="onCustomerChange"
               />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="申请人" prop="applicantName">
+              <el-select
+                v-model="form.applicantId"
+                filterable
+                remote
+                :remote-method="onApplicantSearch"
+                :loading="applicantLoading"
+                :disabled="!form.customerId"
+                placeholder="选择或输入申请人姓名（不在表中则提交时自动新增）"
+                style="width: 100%"
+                clearable
+                @change="onApplicantSelect"
+                @blur="onApplicantInputBlur"
+              >
+                <el-option
+                  v-for="a in applicantCandidates"
+                  :key="a.id"
+                  :label="a.name"
+                  :value="a.id"
+                />
+              </el-select>
             </el-form-item>
           </el-col>
         </el-row>
 
         <el-row :gutter="16">
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="数量" prop="quantity">
               <el-input-number v-model="form.quantity" :min="1" :step="1" controls-position="right" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
-            <el-form-item label="单价(¥)" prop="unitPrice">
-              <el-input-number
-                v-model="form.unitPrice"
-                :min="0"
-                :precision="2"
-                :step="0.1"
-                controls-position="right"
-                style="width: 100%"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="加急">
               <el-switch v-model="form.isUrgent" />
             </el-form-item>
           </el-col>
         </el-row>
 
-        <el-form-item label="总价(¥)">
-          <span class="amount">¥ {{ totalPrice.toFixed(2) }}</span>
-          <span class="hint-inline">= 数量 × 单价（自动计算）</span>
-        </el-form-item>
-
         <el-row :gutter="16">
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="请购日期" prop="requestDate">
               <el-date-picker
                 v-model="form.requestDate"
@@ -197,24 +200,13 @@
               />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="计划交期" prop="plannedDeliveryDate">
               <el-date-picker
                 v-model="form.plannedDeliveryDate"
                 type="date"
                 value-format="YYYY-MM-DD"
                 placeholder="请选择"
-                style="width: 100%"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="实际送货">
-              <el-date-picker
-                v-model="form.actualDeliveryDate"
-                type="date"
-                value-format="YYYY-MM-DD"
-                placeholder="可空"
                 style="width: 100%"
               />
             </el-form-item>
@@ -265,21 +257,15 @@
       <el-descriptions v-if="previewing" :column="2" border>
         <el-descriptions-item label="图号">{{ previewing.drawingNo }}</el-descriptions-item>
         <el-descriptions-item label="名称">{{ previewing.name }}</el-descriptions-item>
-        <el-descriptions-item label="申请人">{{ previewing.applicantName }}</el-descriptions-item>
+        <el-descriptions-item label="申请人">{{ previewing.applicantName || '—' }}</el-descriptions-item>
         <el-descriptions-item label="客户">{{ previewing.customerLabel || '—' }}</el-descriptions-item>
         <el-descriptions-item label="数量">{{ previewing.quantity }}</el-descriptions-item>
         <el-descriptions-item label="加急">
           <el-tag v-if="previewing.isUrgent" type="danger" size="small" effect="dark">加急</el-tag>
           <span v-else class="muted">否</span>
         </el-descriptions-item>
-        <el-descriptions-item label="单价">¥ {{ previewing.unitPrice.toFixed(2) }}</el-descriptions-item>
-        <el-descriptions-item label="总价">¥ {{ previewing.totalPrice.toFixed(2) }}</el-descriptions-item>
         <el-descriptions-item label="请购日期">{{ previewing.requestDate }}</el-descriptions-item>
         <el-descriptions-item label="计划交期">{{ previewing.plannedDeliveryDate }}</el-descriptions-item>
-        <el-descriptions-item label="实际送货" :span="2">
-          <span v-if="previewing.actualDeliveryDate">{{ previewing.actualDeliveryDate }}</span>
-          <span v-else class="muted">—</span>
-        </el-descriptions-item>
         <el-descriptions-item label="图纸" :span="2">
           <el-image
             v-if="previewing.drawingUrl && isImageFile(previewing.drawingName)"
@@ -317,6 +303,8 @@ import {
 import { DocumentAdd, Picture, Plus, Upload } from '@element-plus/icons-vue'
 import { batchCreateParts, type PartCreatePayload } from '@/api/parts'
 import { listCustomers, type Customer } from '@/api/customer'
+import { createApplicant, searchApplicants } from '@/api/applicant'
+import type { Applicant } from '@/types/applicant'
 
 const router = useRouter()
 
@@ -333,6 +321,15 @@ const customerTree = computed(() => {
   }))
 })
 
+/** 把 cascader 选中的客户 id（可能是叶子）解析到所属的一级客户 id。 */
+function resolveRootCustomerId(pickedId: string): number | null {
+  if (!pickedId) return null
+  const picked = customers.value.find((c) => c.id === pickedId)
+  if (!picked) return null
+  if (picked.parent_id === null) return Number(picked.id)
+  return Number(picked.parent_id)
+}
+
 async function loadCustomers(): Promise<void> {
   try {
     customers.value = await listCustomers()
@@ -345,24 +342,99 @@ onMounted(() => {
   void loadCustomers()
 })
 
+// ============ 申请人候选 + 防抖远程搜索 ============
+const applicantCandidates = ref<Applicant[]>([])
+const applicantLoading = ref(false)
+const rootCustomerId = ref<number | null>(null)
+let applicantSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+async function refetchApplicants(namePrefix: string, limit = 50): Promise<void> {
+  if (rootCustomerId.value === null) {
+    applicantCandidates.value = []
+    return
+  }
+  applicantLoading.value = true
+  try {
+    applicantCandidates.value = await searchApplicants({
+      customer_id: String(rootCustomerId.value),
+      name_prefix: namePrefix,
+      limit,
+    })
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '申请人列表加载失败')
+  } finally {
+    applicantLoading.value = false
+  }
+}
+
+async function onCustomerChange(pickedId: unknown): Promise<void> {
+  // cascader emitPath:false → string id；但 Element Plus 类型声明是 CascaderValue
+  const raw = Array.isArray(pickedId) ? pickedId[pickedId.length - 1] : pickedId
+  const idStr = raw === null || raw === undefined ? '' : String(raw)
+  form.applicantId = null
+  form.applicantName = ''
+  if (!idStr) {
+    rootCustomerId.value = null
+    applicantCandidates.value = []
+    return
+  }
+  rootCustomerId.value = resolveRootCustomerId(idStr)
+  // 立即拉一次空串候选，方便用户直接下拉选
+  await refetchApplicants('', 50)
+}
+
+function onApplicantSearch(query: string): void {
+  // 用户输入时实时拉取；300ms 防抖
+  if (applicantSearchTimer) clearTimeout(applicantSearchTimer)
+  applicantSearchTimer = setTimeout(() => {
+    void refetchApplicants(query, 20)
+  }, 300)
+}
+
+function onApplicantSelect(value: string | null): void {
+  if (value === null) {
+    form.applicantName = ''
+    return
+  }
+  const matched = applicantCandidates.value.find((a) => a.id === value)
+  form.applicantName = matched?.name ?? ''
+}
+
+/** 用户清空下拉 / 输入新字符串后失焦 → 暂时把字符串记到 applicantName。 */
+function onApplicantInputBlur(event: FocusEvent): void {
+  // el-select 在 remote 模式下用户输入的字符串不会自动落到 v-model；
+  // 我们把 input 元素当前的字符串记下，供 onSubmit 用来自动新增。
+  const target = event.target as HTMLInputElement | null
+  const typed = (target?.value ?? '').trim()
+  if (!typed) return
+  if (form.applicantId) {
+    const matched = applicantCandidates.value.find((a) => a.id === form.applicantId)
+    if (matched && matched.name === typed) {
+      form.applicantName = matched.name
+      return
+    }
+  }
+  // 输入了一个新名字（不在候选里）→ 记录为待新增
+  form.applicantId = null
+  form.applicantName = typed
+}
+
 // ============ 待新增列表 ============
 interface StagedEntry {
   uid: string
   drawingNo: string
   name: string
   applicantName: string
+  applicantId: string | null
   customerId: string | null
   customerLabel: string
   quantity: number
-  unitPrice: number
   isUrgent: boolean
   requestDate: string
   plannedDeliveryDate: string
-  actualDeliveryDate: string
   drawingFile: File | null
   drawingName: string | null
   drawingUrl: string | null
-  totalPrice: number
 }
 
 const staged = ref<StagedEntry[]>([])
@@ -388,13 +460,12 @@ interface FormState {
   drawingNo: string
   name: string
   applicantName: string
+  applicantId: string | null
   customerId: string | null
   quantity: number
-  unitPrice: number
   isUrgent: boolean
   requestDate: string
   plannedDeliveryDate: string
-  actualDeliveryDate: string
   drawingFile: File | null
   drawingName: string | null
   drawingUrl: string | null
@@ -405,17 +476,25 @@ const addDialogVisible = ref(false)
 const dialogSubmitting = ref(false)
 const editingUid = ref<string | null>(null)
 
+/** 把「今天」格式化成 YYYY-MM-DD 字符串。 */
+function todayIso(): string {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
 const initialForm = (): FormState => ({
   drawingNo: '',
   name: '',
   applicantName: '',
+  applicantId: null,
   customerId: null,
   quantity: 1,
-  unitPrice: 0,
   isUrgent: false,
-  requestDate: '',
+  requestDate: todayIso(),
   plannedDeliveryDate: '',
-  actualDeliveryDate: '',
   drawingFile: null,
   drawingName: null,
   drawingUrl: null,
@@ -423,16 +502,9 @@ const initialForm = (): FormState => ({
 
 const form = reactive<FormState>(initialForm())
 
-const totalPrice = computed<number>(() => {
-  const q = Number(form.quantity) || 0
-  const p = Number(form.unitPrice) || 0
-  return q * p
-})
-
 const rules: FormRules = {
   drawingNo: [{ required: true, message: '请输入图号', trigger: 'blur' }],
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
-  applicantName: [{ required: true, message: '请输入申请人', trigger: 'blur' }],
   customerId: [
     {
       required: true,
@@ -453,7 +525,6 @@ const rules: FormRules = {
     },
   ],
   quantity: [{ required: true, message: '请输入数量', trigger: 'blur' }],
-  unitPrice: [{ required: true, message: '请输入单价', trigger: 'blur' }],
   requestDate: [{ required: true, message: '请选择请购日期', trigger: 'change' }],
   plannedDeliveryDate: [{ required: true, message: '请选择计划交期', trigger: 'change' }],
 }
@@ -461,6 +532,8 @@ const rules: FormRules = {
 function openAddDialog(): void {
   editingUid.value = null
   Object.assign(form, initialForm())
+  applicantCandidates.value = []
+  rootCustomerId.value = null
   addDialogVisible.value = true
 }
 
@@ -511,25 +584,29 @@ async function onAddConfirm(): Promise<void> {
     ElMessage.error('请选择客户')
     return
   }
+  // 申请人必填：要么选了已有 applicantId，要么输了字符串（自动新增）
+  const applicantName = form.applicantName.trim()
+  if (!applicantName) {
+    ElMessage.error('请选择或输入申请人')
+    return
+  }
   dialogSubmitting.value = true
   try {
     const entry: StagedEntry = {
       uid: editingUid.value ?? makeUid(),
       drawingNo: form.drawingNo.trim(),
       name: form.name.trim(),
-      applicantName: form.applicantName.trim(),
+      applicantName,
+      applicantId: form.applicantId,
       customerId: rawId,
       customerLabel: findCustomerLabel(rawId),
       quantity: form.quantity,
-      unitPrice: form.unitPrice,
       isUrgent: form.isUrgent,
       requestDate: form.requestDate,
       plannedDeliveryDate: form.plannedDeliveryDate,
-      actualDeliveryDate: form.actualDeliveryDate,
       drawingFile: form.drawingFile,
       drawingName: form.drawingName,
       drawingUrl: form.drawingUrl,
-      totalPrice: totalPrice.value,
     }
 
     if (editingUid.value) {
@@ -582,13 +659,12 @@ function onEditFromPreview(): void {
     drawingNo: target.drawingNo,
     name: target.name,
     applicantName: target.applicantName,
+    applicantId: target.applicantId,
     customerId: target.customerId,
     quantity: target.quantity,
-    unitPrice: target.unitPrice,
     isUrgent: target.isUrgent,
     requestDate: target.requestDate,
     plannedDeliveryDate: target.plannedDeliveryDate,
-    actualDeliveryDate: target.actualDeliveryDate,
     drawingFile: target.drawingFile,
     drawingName: target.drawingName,
     drawingUrl: target.drawingUrl,
@@ -599,6 +675,11 @@ function onEditFromPreview(): void {
   target.drawingUrl = null
   target.drawingFile = null
   target.drawingName = null
+  // 同步刷新 rootCustomerId 与申请人候选（让下拉带回原选项）
+  if (target.customerId) {
+    rootCustomerId.value = resolveRootCustomerId(target.customerId)
+    void refetchApplicants('', 50)
+  }
 }
 
 function onRemoveRow(uid: string): void {
@@ -645,16 +726,30 @@ async function onSubmit(): Promise<void> {
   }
   submitting.value = true
   try {
+    // 1) 先为每条 entry 处理 applicant_id：未选现有申请人的 → 按客户解析一级
+    //    后调 createApplicant 自动新增。
+    for (const s of staged.value) {
+      if (s.applicantId) continue
+      if (!s.applicantName.trim() || !s.customerId) continue
+      const rootId = resolveRootCustomerId(s.customerId)
+      if (rootId === null) continue
+      const created = await createApplicant({
+        name: s.applicantName.trim(),
+        customer_id: String(rootId),
+      })
+      s.applicantId = created.id
+    }
+
+    // 2) 构造批量 payload
     const items: PartCreatePayload[] = staged.value.map((s) => ({
       name: s.name,
       drawing_no: s.drawingNo,
       applicant_name: s.applicantName,
+      // applicant_id 雪花 ID 19 位 → 必须用字符串，避免 JS Number 精度丢失
+      applicant_id: s.applicantId,
       quantity: s.quantity,
-      unit_price: s.unitPrice,
-      total_price: s.totalPrice,
       request_date: s.requestDate,
       planned_delivery_date: s.plannedDeliveryDate,
-      actual_delivery_date: s.actualDeliveryDate || null,
       is_urgent: s.isUrgent,
       customer_id: Number(s.customerId!),
     }))

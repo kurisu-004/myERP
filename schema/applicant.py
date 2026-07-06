@@ -1,0 +1,70 @@
+"""申请人 (Applicant) Pydantic schema。"""
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from schema._types import IdStrNonNull
+
+
+class ApplicantOut(BaseModel):
+    """单条申请人展示用出参。
+
+    `customer_name` 由 service 层补（一级客户的 name），便于前端直接显示。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStrNonNull
+    name: str
+    customer_id: IdStrNonNull
+    customer_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicantCreateRequest(BaseModel):
+    """新增申请人。`customer_id` 必须指向一级客户（service 层校验）。"""
+
+    name: str = Field(min_length=1, max_length=50)
+    customer_id: int = Field(description="一级客户 id（必须 parent_id IS NULL）")
+
+    @field_validator("name")
+    @classmethod
+    def strip(cls, v: str) -> str:
+        return v.strip()
+
+
+class ApplicantUpdateRequest(BaseModel):
+    """更新申请人字段（全部可选，只更新传入的非 None 字段）。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=50)
+    customer_id: int | None = Field(default=None, description="一级客户 id")
+
+    @field_validator("name")
+    @classmethod
+    def strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None
+
+
+class ApplicantListQuery(BaseModel):
+    """申请人列表查询参数。"""
+
+    customer_id: int | None = Field(default=None, description="所属一级客户 id")
+    name_like: str | None = Field(default=None, description="姓名模糊匹配")
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class ApplicantListOut(BaseModel):
+    items: list[ApplicantOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ApplicantSearchQuery(BaseModel):
+    """申请人前序查询参数（零件/装配体对话框自动补全用）。"""
+
+    customer_id: int = Field(..., description="一级客户 id")
+    name_prefix: str | None = Field(default=None, max_length=50)
+    limit: int = Field(default=20, ge=1, le=100)

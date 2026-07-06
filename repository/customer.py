@@ -10,6 +10,22 @@ class CustomerRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    # ===== 写入 =====
+    async def create(self, customer: TCustomer) -> TCustomer:
+        self.session.add(customer)
+        await self.session.flush()
+        return customer
+
+    async def update(self, customer: TCustomer) -> TCustomer:
+        await self.session.flush()
+        return customer
+
+    async def soft_delete(self, customer: TCustomer) -> TCustomer:
+        from datetime import datetime
+        customer.deleted_at = datetime.utcnow()
+        await self.session.flush()
+        return customer
+
     # ===== 单条 =====
     async def get_by_id(
         self, customer_id: int, *, include_deleted: bool = False

@@ -28,6 +28,7 @@ from core.exception import BizError
 from model import TAssembly, TDrawingFile, TPart, TPartEvent
 from model.enums import PartEventType
 from repository import (
+    ApplicantRepository,
     AssemblyRepository,
     CustomerRepository,
     DrawingFileRepository,
@@ -80,6 +81,7 @@ class AssemblyService:
         events: PartEventRepository,
         part_service: PartService,
         drawings: DrawingService,
+        applicants: ApplicantRepository | None = None,
         event_broadcaster: EventBroadcaster | None = None,
     ) -> None:
         self.assemblies = assemblies
@@ -90,6 +92,7 @@ class AssemblyService:
         self.events = events
         self.part_service = part_service
         self.drawings = drawings
+        self.applicants = applicants
         self.event_broadcaster = event_broadcaster
 
     # ============================================================
@@ -131,11 +134,54 @@ class AssemblyService:
             )
 
         # 1. 写 t_assembly（先拿到 id，后面所有 COS key / 外键都依赖它）
+        # 解析 applicant_id → applicant_name（顶层装配体的申请人）
+        # 注：applicant_id 在 schema 是 str（雪花 ID 字符串），转回 int 再查。
+        resolved_applicant_name = data.applicant_name
+        if data.applicant_id is not None:
+            if self.applicants is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="server missing applicant repository",
+                    http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            # 一级客户需要 customer_id 是根才能拿到（叶子装配体的叶子客户）
+            # 通过装配体的 customer_id 解析到 root
+            if cust.parent_id is None:
+                root_customer_id = cust.id
+            else:
+                # cust.parent_id 必定存在（二级）；上面已校验叶子节点存在
+                root_customer_id = cust.parent_id
+            try:
+                applicant_id_int = int(data.applicant_id)
+            except (TypeError, ValueError) as e:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_BAD_CUSTOMER,
+                    message=f"applicant_id 必须是数字字符串：{data.applicant_id!r}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                ) from e
+            applicant = await self.applicants.get_by_id(applicant_id_int)
+            if applicant is None:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                    message=f"applicant {data.applicant_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if applicant.customer_id != root_customer_id:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_BAD_CUSTOMER,
+                    message=(
+                        f"applicant {data.applicant_id} 不属于本装配体的一级客户 "
+                        f"{root_customer_id}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            resolved_applicant_name = applicant.name
+
         assembly = TAssembly(
             id=new_id(),
             drawing_no=data.drawing_no,
             name=data.name,
-            applicant_name=data.applicant_name,
+            applicant_name=resolved_applicant_name,
             customer_id=data.customer_id,
             request_date=data.request_date,
             planned_delivery_date=data.planned_delivery_date,
@@ -209,9 +255,11 @@ class AssemblyService:
                     serial_no=serial_no,
                     name=child.name,
                     drawing_no=child.drawing_no,
-                    applicant_name=child.applicant_name
-                    or data.applicant_name
-                    or "(未知)",
+                    applicant_name=(
+                        child.applicant_name
+                        or resolved_applicant_name
+                        or "(未知)"
+                    ),
                     quantity=child.quantity,
                     unit_price=child.unit_price,
                     total_price=child_total,

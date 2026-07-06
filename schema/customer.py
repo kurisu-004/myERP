@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schema._types import IdStr, IdStrNonNull
 
@@ -24,3 +24,35 @@ class CustomerOut(BaseModel):
     name: str
     parent_id: IdStr = None
     parent_name: str | None = None
+
+
+class CustomerCreateRequest(BaseModel):
+    """新增客户。
+
+    - `parent_id` 留空 → 一级客户（根）。
+    - `parent_id` 非空 → 必须指向一个一级客户（service 层校验）。
+    """
+
+    name: str = Field(min_length=1, max_length=100)
+    parent_id: int | None = Field(
+        default=None, description="父客户 id；NULL = 一级客户",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def strip(cls, v: str) -> str:
+        return v.strip()
+
+
+class CustomerUpdateRequest(BaseModel):
+    """更新客户字段（全部可选，只更新传入的非 None 字段）。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_id: int | None = Field(
+        default=None, description="父客户 id；NULL = 一级客户；显式传 None 表示去父",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None
