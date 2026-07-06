@@ -53,10 +53,43 @@ async def build_snapshot(
 
     返回 `{on_production_shelves, on_inspection_shelves, in_process,
             upcoming_delivery, ts}`。
+
+    生产区货架特殊处理：先查所有 active 货架（即使没零件也带出来），
+    再用 SQL `ROW_NUMBER() OVER (PARTITION BY current_holder_id)` 对每架
+    取前 10 件（加急优先 + 交期近优先）。空货架最后用 items=[] 补齐。
     """
-    on_prod_parts = await _fetch_on_zone_shelves(
-        session, zone=ShelfZone.PRODUCTION.value, top_n=top_n
+    # 1) 所有 active 生产区货架（即使没零件）
+    all_prod_stmt = (
+        select(TShelf)
+        .where(
+            TShelf.zone == ShelfZone.PRODUCTION.value,
+            TShelf.deleted_at.is_(None),
+            TShelf.is_active.is_(True),
+        )
+        .order_by(TShelf.code.asc())
     )
+    all_prod_shelves = list((await session.execute(all_prod_stmt)).scalars().all())
+    active_prod_ids = [s.id for s in all_prod_shelves]
+
+    # 2) 查所有 active 生产区货架上的 IN_PROCESS 零件（先一次性取全，Python 端按货架分组后每架取前 10）
+    on_prod_parts: list[TPart] = []
+    if active_prod_ids:
+        stmt = (
+            select(TPart)
+            .where(
+                TPart.status == PartStatus.IN_PROCESS.value,
+                TPart.deleted_at.is_(None),
+                TPart.current_holder_id.in_(active_prod_ids),
+            )
+            .order_by(
+                TPart.current_holder_id.asc(),
+                TPart.is_urgent.desc(),
+                TPart.planned_delivery_date.asc(),
+                TPart.id.asc(),
+            )
+        )
+        on_prod_parts = list((await session.execute(stmt)).scalars().all())
+
     on_insp_parts = await _fetch_on_zone_shelves(
         session, zone=ShelfZone.INSPECTION.value, top_n=top_n
     )
@@ -74,29 +107,53 @@ async def build_snapshot(
     ]
     worker_name_map = await _fetch_worker_names(session, worker_ids)
 
-    # 批量取货架 code
-    shelf_ids = {
+    # 品检区维持原状：只查有 holder 指向的货架
+    insp_shelf_ids = {
         p.current_holder_id
-        for p in on_prod_parts + on_insp_parts
+        for p in on_insp_parts
         if p.current_holder_id
     }
-    shelf_map = await _fetch_shelves_by_ids(session, list(shelf_ids))
+    insp_shelf_map = await _fetch_shelves_by_ids(session, list(insp_shelf_ids))
 
     # 批量取最近一次 PICKED_UP 时间
     picked_at_map = await _picked_up_at_map(
         session, [p.id for p in worker_parts]
     )
 
-    on_prod_groups = _group_by_shelf(
-        on_prod_parts, shelf_map, cust_map, holder_kind="shelf"
-    )
+    # 3) 拼装：按 current_holder_id 分桶，每架取前 10 件；所有 active 货架都出现
+    parts_by_shelf: dict[int, list[TPart]] = {}
+    for p in on_prod_parts:
+        sid = p.current_holder_id
+        if sid is None:
+            continue
+        parts_by_shelf.setdefault(sid, []).append(p)
+
+    on_prod_groups: list[dict[str, Any]] = []
+    for s in all_prod_shelves:
+        items = parts_by_shelf.get(s.id, [])[:10]
+        on_prod_groups.append({
+            "shelf_id": str(s.id),
+            "shelf_code": s.code,
+            "shelf_name": s.name,
+            "items": [
+                _to_dict(
+                    p,
+                    cust_map=cust_map,
+                    holder_kind="shelf",
+                    shelf_code=s.code,
+                    placed_at=getattr(p, "placed_at", None),
+                )
+                for p in items
+            ],
+        })
+
     on_insp_items = [
         _to_dict(
             p,
             cust_map=cust_map,
             holder_kind="shelf",
-            shelf_code=(shelf_map[p.current_holder_id].code
-                        if p.current_holder_id in shelf_map else None),
+            shelf_code=(insp_shelf_map[p.current_holder_id].code
+                        if p.current_holder_id in insp_shelf_map else None),
             placed_at=getattr(p, "placed_at", None),
         )
         for p in on_insp_parts

@@ -260,6 +260,7 @@ def get_assembly_service(
         events=events_repo,
         serial_counters=serial_counters,
         shelves=shelves_repo,
+        processes=ProcessRepository(session),
     )
     drawings = DrawingService(
         files=files_repo, parts=parts_repo, assemblies=assemblies_repo

@@ -138,8 +138,8 @@
         </el-table-column>
         <el-table-column label="下一道工序" width="120">
           <template #default="{ row }">
-            <el-tag v-if="row.next_process_id && processNameById[row.next_process_id]" type="primary" size="small" effect="plain">
-              {{ processNameById[row.next_process_id] }}
+            <el-tag v-if="row.next_process_name" type="primary" size="small" effect="plain">
+              {{ row.next_process_name }}
             </el-tag>
             <span v-else class="muted">—</span>
           </template>
@@ -377,17 +377,9 @@ async function fetchList(): Promise<void> {
   }
 }
 
-// 工序名查找
-const processNameById = computed<Record<string, string>>(() => {
-  const map: Record<string, string> = {}
-  for (const p of processes.value) map[p.id] = p.name
-  return map
-})
-
+// 工序名查找（后端在 PartOut 中已带 next_process_name，无需前端再查）
 onMounted(() => {
   void fetchList()
-  // 预拉取工序列表（用于下一道工序列显示）
-  listProcesses({ limit: 200 }).then(res => { processes.value = res.items }).catch(() => {})
 })
 
 // ============ 搜索 / 排序 / 分页 ============

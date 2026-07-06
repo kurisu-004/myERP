@@ -351,7 +351,7 @@ interface StagedEntry {
   drawingNo: string
   name: string
   applicantName: string
-  customerId: number | null
+  customerId: string | null
   customerLabel: string
   quantity: number
   unitPrice: number
@@ -388,7 +388,7 @@ interface FormState {
   drawingNo: string
   name: string
   applicantName: string
-  customerId: number | null
+  customerId: string | null
   quantity: number
   unitPrice: number
   isUrgent: boolean
@@ -486,9 +486,9 @@ function onDrawingRemove(): void {
   form.drawingUrl = null
 }
 
-function findCustomerLabel(id: number | null): string {
+function findCustomerLabel(id: string | null): string {
   if (id === null) return ''
-  const c = customers.value.find((x) => Number(x.id) === id)
+  const c = customers.value.find((x) => x.id === id)
   if (!c) return ''
   return c.parent_name ? `${c.parent_name} / ${c.name}` : c.name
 }
@@ -502,7 +502,7 @@ async function onAddConfirm(): Promise<void> {
   }
   // cascader value → customerId（Customer.id 为 string，emitPath:false 返回 string）
   const rawId = form.customerId
-  if (rawId === null || rawId === undefined || rawId === '') {
+  if (rawId === null || rawId === '') {
     ElMessage.error('请选择客户')
     return
   }
@@ -518,8 +518,8 @@ async function onAddConfirm(): Promise<void> {
       drawingNo: form.drawingNo.trim(),
       name: form.name.trim(),
       applicantName: form.applicantName.trim(),
-      customerId,
-      customerLabel: findCustomerLabel(customerId),
+      customerId: rawId,
+      customerLabel: findCustomerLabel(rawId),
       quantity: form.quantity,
       unitPrice: form.unitPrice,
       isUrgent: form.isUrgent,
@@ -656,7 +656,7 @@ async function onSubmit(): Promise<void> {
       planned_delivery_date: s.plannedDeliveryDate,
       actual_delivery_date: s.actualDeliveryDate || null,
       is_urgent: s.isUrgent,
-      customer_id: s.customerId!,
+      customer_id: Number(s.customerId!),
     }))
     const res = await batchCreateParts(items)
     if (res.failed.length > 0) {

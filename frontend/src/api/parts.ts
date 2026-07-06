@@ -26,6 +26,8 @@ export interface PartItem {
   placed_at: string | null
   /** 下一道工序 id（NULL = 未设置） */
   next_process_id: string | null
+  /** 下一道工序名称（NULL = 未设置；由后端在 list/get 响应中带出） */
+  next_process_name: string | null
 }
 
 export interface PartListResult {

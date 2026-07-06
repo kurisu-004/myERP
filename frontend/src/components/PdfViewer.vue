@@ -125,7 +125,7 @@ async function render() {
   canvas.style.height = `${viewport.height / (window.devicePixelRatio || 1)}px`
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-  renderTask = p.render({ canvasContext: ctx, viewport })
+  renderTask = p.render({ canvas: canvas, canvasContext: ctx, viewport })
   await renderTask.promise.catch(() => {
     /* cancelled */
   })
@@ -186,7 +186,7 @@ onBeforeUnmount(() => {
     }
   }
   if (pdfDoc) {
-    void pdfDoc.destroy()
+    void pdfDoc.cleanup()
   }
 })
 </script>

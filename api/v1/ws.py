@@ -18,11 +18,11 @@ from datetime import datetime
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status as http_status
 
 from core.database import SessionLocal
-from core.dashboard import build_snapshot_with_workers
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.security import decode_access_token
 from model import TUser
+from service.dashboard import build_snapshot_with_workers
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)

@@ -1022,6 +1022,17 @@ class PartService:
             workers = await self.workers.list_by_ids(worker_ids)
             worker_map = {w.id: w.name for w in workers}
 
+        # 批查下一道工序名称（避免前端为「下一道工序列」再发一次 /processes 请求）
+        process_ids = {
+            int(p.next_process_id)
+            for p in rows
+            if p.next_process_id
+        }
+        process_map: dict[int, str] = {}
+        if process_ids and self.processes is not None:
+            procs = await self.processes.list_by_ids(list(process_ids))
+            process_map = {pr.id: pr.name for pr in procs}
+
         out: list[PartOut] = []
         for p in rows:
             cust = cust_map.get(p.customer_id)
@@ -1076,6 +1087,9 @@ class PartService:
                     location=p.location,
                     worker_name=worker_name,
                     next_process_id=p.next_process_id,
+                    next_process_name=process_map.get(int(p.next_process_id))
+                    if p.next_process_id
+                    else None,
                 )
             )
         return out

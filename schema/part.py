@@ -89,6 +89,10 @@ class PartOut(BaseModel):
         default=None,
         description="下一道工序 id（NULL = 未设置）",
     )
+    next_process_name: str | None = Field(
+        default=None,
+        description="下一道工序名称（NULL = 未设置；避免前端再查 processes 表）",
+    )
 
 
 class PartListOut(BaseModel):
