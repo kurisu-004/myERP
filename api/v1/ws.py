@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from core.database import SessionLocal
 from core.error_code import ErrCode
@@ -112,9 +112,28 @@ async def ws_dashboard(
 ) -> None:
     user_id = await _resolve_user_from_ws(ws, token)
     if user_id is None:
-        # 接受后立即关闭，避免泄露任何数据
-        await ws.accept()
-        await ws.close(code=status.http.WS_1008_POLICY_VIOLATION)
+        # 拒绝无效 token 的连接。
+        #
+        # 直接发送 ``websocket.close`` 帧（ASGI spec 允许在握手前 close），
+        # 不走 "先 accept 再 close"——后者在客户端中途断开时会让 uvicorn
+        # 在 ``asgi_send`` 里抛 ``ClientDisconnected``（OSError 子类）。
+        # Starlette 在 ``WebSocket.send()`` 的 CONNECTED 分支把 OSError
+        # 转成 ``WebSocketDisconnect(code=1006)`` 重抛，在 CONNECTING
+        # 分支则直接冒泡；这两种异常都会逃出本 handler，被 uvicorn
+        # ``run_asgi`` 当 ``BaseException`` 记成 "Exception in ASGI
+        # application"。前端 token 过期后 dashboard.ts 的自动重连每
+        # 跑一次就在后端刷一行 ERROR——这里统一吃掉。
+        try:
+            # 直接发送 ``websocket.close``——ASGI spec 允许在 accept 前
+            # 拒绝连接，uvicorn 的 ``asgi_send`` 会回 HTTP 403 关闭握
+            # 手。这样比"先 accept 再 close"少一次回环，也避开
+            # accept→close 期间对端断开会触发的 OSError / WebSocketDisconnect。
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            # 客户端已经在我们之前断开（ASGI 层 ``ClientDisconnected``
+            # 是 ``OSError`` 子类）；uvicorn 会按 HTTP 403 / RST 正常
+            # 收尾，不应继续往上抛。
+            pass
         logger.info("ws dashboard rejected: missing/invalid token")
         return
     await manager.connect(ws)
