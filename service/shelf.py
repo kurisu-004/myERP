@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TPart
 from model.enums import PartStatus, ShelfZone
 from model.shelf import TShelf
@@ -30,9 +31,12 @@ class ShelfService:
         self,
         shelves: ShelfRepository,
         user_roles: UserRoleRepository,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.shelves = shelves
         self.user_roles = user_roles
+        self._user_id: int | None = current_user.id if current_user else None
 
     async def list_shelves(self, query: ShelfListQuery) -> ShelfListOut:
         rows = await self.shelves.list_with_filters(
@@ -100,6 +104,8 @@ class ShelfService:
             location=(data.location or "").strip() or None,
             is_active=True,
         )
+        s.created_by = self._user_id
+        s.updated_by = self._user_id
         await self.shelves.create(s)
         return await self._to_out(s, 0)
 
@@ -119,6 +125,7 @@ class ShelfService:
             s.location = data.location.strip() or None
         if data.is_active is not None:
             s.is_active = data.is_active
+        s.updated_by = self._user_id
         await self.shelves.update(s)
         account_count_map = await self._account_count_map([s.id])
         return await self._to_out(s, account_count_map.get(s.id, 0))
@@ -154,6 +161,7 @@ class ShelfService:
                 message=f"shelf {s.code!r} still holds active parts; cannot soft-delete",
                 http_status=http_status.HTTP_409_CONFLICT,
             )
+        s.updated_by = self._user_id
         await self.shelves.soft_delete(s)
         account_count_map = await self._account_count_map([s.id])
         return await self._to_out(s, account_count_map.get(s.id, 0), include_deleted=True)

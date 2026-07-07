@@ -20,6 +20,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from core.serial import code_for_parent
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import PartEventType, PartStatus, ShelfZone
@@ -47,6 +48,7 @@ from schema.part import (
     PartUpdateRequest,
     PlaceOnShelfRequest,
 )
+from service._id_parse import parse_snowflake_id
 from utils.id_gen import new_id
 
 Broadcaster = Callable[[], Awaitable[None]]
@@ -96,6 +98,8 @@ class PartService:
         applicants: ApplicantRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.parts = parts
         self.customers = customers
@@ -109,13 +113,16 @@ class PartService:
         self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
     # 查询
     # ============================================================
     async def list_parts(self, query: PartListQuery) -> PartListOut:
-        if query.customer_id is not None:
-            cust = await self.customers.get_by_id(query.customer_id)
+        # customer_id 入参是雪花 ID 字符串，转 int。
+        customer_id_int = parse_snowflake_id(query.customer_id, field_name="customer_id") if query.customer_id else None
+        if customer_id_int is not None:
+            cust = await self.customers.get_by_id(customer_id_int)
             if cust is None:
                 raise BizError(
                     code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
@@ -123,7 +130,7 @@ class PartService:
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
         rows = await self.parts.list_with_filters(
-            customer_id=query.customer_id,
+            customer_id=customer_id_int,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
@@ -133,7 +140,7 @@ class PartService:
             offset=query.offset,
         )
         total = await self.parts.count_with_filters(
-            customer_id=query.customer_id,
+            customer_id=customer_id_int,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
@@ -259,7 +266,15 @@ class PartService:
     # 写操作
     # ============================================================
     async def create_part(self, data: PartCreateRequest) -> PartOut:
-        cust = await self.customers.get_by_id(data.customer_id)
+        # customer_id 入参是雪花 ID 字符串（CLAUDE.md §3），转回 int。
+        customer_id_int = parse_snowflake_id(data.customer_id, field_name="customer_id")
+        if customer_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {data.customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        cust = await self.customers.get_by_id(customer_id_int)
         if cust is None:
             raise BizError(
                 code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
@@ -299,14 +314,15 @@ class PartService:
                     message="server missing applicant repository",
                     http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
-            try:
-                applicant_id_int = int(data.applicant_id)
-            except (TypeError, ValueError) as e:
+            applicant_id_int = parse_snowflake_id(
+                data.applicant_id, field_name="applicant_id",
+            )
+            if applicant_id_int is None:
                 raise BizError(
-                    code=ErrCode.BIZ_INVALID_VALUE,
-                    message=f"applicant_id 必须是数字字符串：{data.applicant_id!r}",
-                    http_status=http_status.HTTP_400_BAD_REQUEST,
-                ) from e
+                    code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                    message=f"applicant {data.applicant_id!r} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
             applicant = await self.applicants.get_by_id(applicant_id_int)
             if applicant is None:
                 raise BizError(
@@ -329,6 +345,8 @@ class PartService:
         if total_price is None:
             total_price = data.unit_price * data.quantity
 
+        # data.customer_id 是雪花 ID 字符串，TPart.customer_id 是 BigInteger → int
+        assert customer_id_int is not None  # 前段已校验
         part = TPart(
             id=new_id(),
             serial_no=serial_no,
@@ -343,9 +361,11 @@ class PartService:
             actual_delivery_date=data.actual_delivery_date,
             status=PartStatus.PENDING.value,
             is_urgent=data.is_urgent,
-            customer_id=data.customer_id,
+            customer_id=customer_id_int,
         )
         part.location = "OFFICE"
+        part.created_by = self._user_id
+        part.updated_by = self._user_id
         await self.parts.create(part)
         await self._write_event(
             part=part,
@@ -380,9 +400,16 @@ class PartService:
 
         failed: list[PartBatchCreateItemFailure] = []
         for idx, item in enumerate(payload.items):
-            cust = await get_customer(item.customer_id)
+            # item.customer_id 是雪花 ID 字符串，转 int
+            item_cid = parse_snowflake_id(item.customer_id, field_name="customer_id")
+            if item_cid is None:
+                failed.append(PartBatchCreateItemFailure(
+                    index=idx, message=f"customer {item.customer_id!r} not found",
+                ))
+                continue
+            cust = await get_customer(item_cid)
             if cust is None:
-                failed.append(PartBatchCreateItemFailure(index=idx, message=f"customer {item.customer_id} not found"))
+                failed.append(PartBatchCreateItemFailure(index=idx, message=f"customer {item.customer_id!r} not found"))
                 continue
             if cust.parent_id is not None:
                 parent = await get_parent(cust.parent_id)
@@ -436,14 +463,22 @@ class PartService:
         if data.is_urgent is not None:
             part.is_urgent = data.is_urgent
         if data.customer_id is not None:
-            cust = await self.customers.get_by_id(data.customer_id)
+            new_cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
+            if new_cid is None:
+                raise BizError(
+                    code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                    message=f"customer {data.customer_id!r} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            cust = await self.customers.get_by_id(new_cid)
             if cust is None:
                 raise BizError(
                     code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
                     message=f"customer {data.customer_id} not found",
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
-            part.customer_id = data.customer_id
+            part.customer_id = new_cid
+        part.updated_by = self._user_id
         await self.parts.update(part)
         items = await self._to_out([part])
         return items[0]
@@ -456,6 +491,7 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        part.updated_by = self._user_id
         await self.parts.soft_delete(part)
         await self._broadcast()  # `deleted_at` 让该零件从 dashboard 快照消失
 
@@ -480,6 +516,7 @@ class PartService:
         part.sm.place_on_shelf(
             shelf=shelf, process=process, event_repo=self.events,
         )
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         items = await self._to_out([part])
@@ -501,6 +538,7 @@ class PartService:
         """
         part = await self._get_part_or_404(part_id)
         part.sm.send_to_programming(event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         items = await self._to_out([part])
@@ -528,6 +566,7 @@ class PartService:
         part.sm.release_from_programming(
             shelf=shelf, process=process, event_repo=self.events,
         )
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         items = await self._to_out([part])
@@ -675,6 +714,7 @@ class PartService:
 
         # state machine handles holder switch + event creation
         part.sm.pick_up(worker=worker, shelf=shelf, event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         items = await self._to_out([part])
@@ -786,6 +826,7 @@ class PartService:
                 worker_work_type_code=worker_work_type_code,
                 event_repo=self.events,
             )
+            part.updated_by = self._user_id
             await self.parts.update(part)
             await self._broadcast()
             items = await self._to_out([part])
@@ -837,6 +878,7 @@ class PartService:
                 )
 
             part.sm.inspect(worker=worker, target_shelf=target, event_repo=self.events)
+            part.updated_by = self._user_id
             await self.parts.update(part)
             await self._broadcast()
             items = await self._to_out([part])
@@ -898,6 +940,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         part.sm.pass_inspection(event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -914,6 +957,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         part.sm.deliver(event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -930,6 +974,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         part.sm.complete(event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -946,6 +991,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         part.sm.start_repair(event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -981,6 +1027,7 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         part.sm.complete_repair(shelf=shelf, event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -997,6 +1044,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         part.sm.cancel(event_repo=self.events)
+        part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -1029,6 +1077,7 @@ class PartService:
             p.status not in ("PENDING", "CANCELLED") for p in non_cancelled
         ):
             assembly.sm.start_production()
+            assembly.updated_by = self._user_id
             await session.flush()
 
         # IN_PROCESS -> COMPLETED: all non-cancelled children are COMPLETED
@@ -1036,6 +1085,7 @@ class PartService:
             p.status == "COMPLETED" for p in non_cancelled
         ):
             assembly.sm.complete()
+            assembly.updated_by = self._user_id
             await session.flush()
 
     # ============================================================

@@ -3,6 +3,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TProcess
 from model.enums import ProcessCategory
 from repository.process import ProcessRepository
@@ -24,11 +25,14 @@ class ProcessService:
         processes: ProcessRepository,
         junction_repo=None,
         part_repo=None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.processes = processes
         # 可选：用于软删前的引用校验
         self.junction_repo = junction_repo
         self.part_repo = part_repo
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ===== 查询 =====
     async def list_processes(self, query: ProcessListQuery) -> ProcessListOut:
@@ -75,6 +79,8 @@ class ProcessService:
             sort_order=data.sort_order,
             description=data.description,
         )
+        p.created_by = self._user_id
+        p.updated_by = self._user_id
         await self.processes.create(p)
         return _process_to_out(p)
 
@@ -98,6 +104,7 @@ class ProcessService:
             p.sort_order = data.sort_order
         if data.description is not None:
             p.description = data.description
+        p.updated_by = self._user_id
         await self.processes.update(p)
         return _process_to_out(p)
 
@@ -110,6 +117,7 @@ class ProcessService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         await self._assert_not_in_use(process_id)
+        p.updated_by = self._user_id
         await self.processes.soft_delete(p)
 
     async def _assert_not_in_use(self, process_id: int) -> None:

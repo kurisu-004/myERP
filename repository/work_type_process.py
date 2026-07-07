@@ -6,7 +6,7 @@
 """
 from datetime import datetime
 
-from sqlalchemy import delete as sa_delete, select, update
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model import TWorkTypeProcess
@@ -78,18 +78,19 @@ class WorkTypeProcessRepository:
 
     # ===== 集合替换（Manager 维护映射用）=====
     async def delete_by_work_type(self, work_type_id: int) -> None:
-        """把某工种的全部映射置为软删。"""
-        now = datetime.utcnow()
-        stmt = (
-            update(TWorkTypeProcess)
-            .where(
-                TWorkTypeProcess.work_type_id == work_type_id,
-                TWorkTypeProcess.deleted_at.is_(None),
-            )
-            .values(deleted_at=now)
+        """把某工种的全部映射置为软删。
+
+        改为 ORM 循环：service 层先 `row.updated_by = self._user_id`
+        再调用本方法，让 audit 字段与 deleted_at 同步写入。数据量小
+        （单工种映射行数通常 < 20），事务原子性仍由 `session.flush()`
+        在外层保证。
+        """
+        rows = await self.list_by_work_type(
+            work_type_id, include_deleted=False,
         )
-        await self.session.execute(stmt)
-        await self.session.flush()
+        for row in rows:
+            row.deleted_at = datetime.utcnow()
+            await self.session.flush()
 
     async def hard_delete_by_work_type(self, work_type_id: int) -> None:
         """物理删除（仅 migration 清理用，service 不调用）。"""

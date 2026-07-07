@@ -11,6 +11,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from core.security import hash_password
 from model import TShelf, TUser, TUserRole
 from model.enums import ShelfZone, UserRole
@@ -33,10 +34,13 @@ class UserService:
         users: UserRepository,
         user_roles: UserRoleRepository,
         shelves: ShelfRepository,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.users = users
         self.user_roles = user_roles
         self.shelves = shelves
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
     # 列表
@@ -87,6 +91,8 @@ class UserService:
             phone=(data.phone or "").strip() or None,
             is_active=True,
         )
+        u.created_by = self._user_id
+        u.updated_by = self._user_id
         await self.users.create(u)
         return await self._to_out(u)
 
@@ -108,6 +114,7 @@ class UserService:
             u.password_hash = hash_password(data.password)
         if data.is_active is not None:
             u.is_active = data.is_active
+        u.updated_by = self._user_id
         await self.users.update(u)
         return await self._to_out(u)
 
@@ -119,6 +126,7 @@ class UserService:
                 message=f"user {user_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        u.updated_by = self._user_id
         await self.users.soft_delete(u)
         return await self._to_out(u, include_deleted=True)
 
@@ -214,6 +222,7 @@ class UserService:
                 message=f"role {role_id} not found for user {user_id}",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        # TUserRole 不继承 AuditMixin，不写 created_by/updated_by。
         await self.user_roles.soft_delete(r)
 
     # ============================================================

@@ -4,6 +4,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
+from core.permission import CurrentUser, get_current_user
 from repository import (
     ApplicantRepository,
     AssemblyRepository,
@@ -85,9 +86,11 @@ def get_auth_service(
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
     shelves: ShelfRepository = Depends(get_shelf_repo),
     menus: MenuRepository = Depends(get_menu_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> AuthService:
     return AuthService(
-        users=users, user_roles=user_roles, shelves=shelves, menus=menus
+        users=users, user_roles=user_roles, shelves=shelves, menus=menus,
+        current_user=user,
     )
 
 
@@ -95,20 +98,27 @@ def get_user_service(
     users: UserRepository = Depends(get_user_repo),
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
     shelves: ShelfRepository = Depends(get_shelf_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> UserService:
-    return UserService(users=users, user_roles=user_roles, shelves=shelves)
+    return UserService(
+        users=users, user_roles=user_roles, shelves=shelves, current_user=user,
+    )
 
 
 def get_shelf_service(
     shelves: ShelfRepository = Depends(get_shelf_repo),
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ShelfService:
-    return ShelfService(shelves=shelves, user_roles=user_roles)
+    return ShelfService(
+        shelves=shelves, user_roles=user_roles, current_user=user,
+    )
 
 
 def get_part_service(
     session: AsyncSession = Depends(get_session),
     serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PartService:
     """注入 PartService，并把 dashboard 广播器作为闭包传入。
 
@@ -141,15 +151,18 @@ def get_part_service(
         applicants=ApplicantRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
+        current_user=user,
     )
 
 
 def get_worker_service(
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WorkerService:
     return WorkerService(
         workers=WorkerRepository(session),
         work_types=WorkTypeRepository(session),
+        current_user=user,
     )
 
 
@@ -178,6 +191,7 @@ def get_work_type_service(
     session: AsyncSession = Depends(get_session),
     work_types: WorkTypeRepository = Depends(get_work_type_repo),
     junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WorkTypeService:
     """注入 WorkTypeService；worker_repo 用于软删前引用校验。
 
@@ -187,16 +201,19 @@ def get_work_type_service(
         work_types=work_types,
         worker_repo=WorkerRepository(session),
         junction_repo=junction,
+        current_user=user,
     )
 
 
 def get_process_service(
     processes: ProcessRepository = Depends(get_process_repo),
     junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ProcessService:
     return ProcessService(
         processes=processes,
         junction_repo=junction,
+        current_user=user,
     )
 
 
@@ -204,21 +221,25 @@ def get_work_type_process_service(
     work_types: WorkTypeRepository = Depends(get_work_type_repo),
     processes: ProcessRepository = Depends(get_process_repo),
     junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WorkTypeProcessService:
     return WorkTypeProcessService(
         work_types=work_types,
         processes=processes,
         junction=junction,
+        current_user=user,
     )
 
 
 def get_customer_service(
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> CustomerService:
     return CustomerService(
         customers=CustomerRepository(session),
         parts=PartRepository(session),
         assemblies=AssemblyRepository(session),
+        current_user=user,
     )
 
 
@@ -230,21 +251,25 @@ def get_applicant_repo(
 
 def get_applicant_service(
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ApplicantService:
     return ApplicantService(
         applicants=ApplicantRepository(session),
         customers=CustomerRepository(session),
         parts=PartRepository(session),
+        current_user=user,
     )
 
 
 def get_drawing_service(
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DrawingService:
     return DrawingService(
         files=DrawingFileRepository(session),
         parts=PartRepository(session),
         assemblies=AssemblyRepository(session),
+        current_user=user,
     )
 
 
@@ -264,16 +289,19 @@ def get_drawing_repository(
 
 def get_cnc_program_service(
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> CncProgramService:
     return CncProgramService(
         programs=CncProgramRepository(session),
         parts=PartRepository(session),
+        current_user=user,
     )
 
 
 def get_assembly_service(
     session: AsyncSession = Depends(get_session),
     serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
+    user: CurrentUser = Depends(get_current_user),
 ) -> AssemblyService:
     """注入 AssemblyService。
 
@@ -298,9 +326,11 @@ def get_assembly_service(
         serial_counters=serial_counters,
         shelves=shelves_repo,
         processes=ProcessRepository(session),
+        current_user=user,
     )
     drawings = DrawingService(
-        files=files_repo, parts=parts_repo, assemblies=assemblies_repo
+        files=files_repo, parts=parts_repo, assemblies=assemblies_repo,
+        current_user=user,
     )
 
     async def _broadcaster() -> None:
@@ -323,4 +353,5 @@ def get_assembly_service(
         applicants=ApplicantRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
+        current_user=user,
     )

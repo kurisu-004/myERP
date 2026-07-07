@@ -9,6 +9,9 @@
 - `soft_delete_applicant` 校验是否被零件的 `applicant_name` 字段引用；
   `PartRepository.count_by_applicant_name_in_customers` 提供计数（含该一级
   客户下所有二级子节点的 customer_id）。
+
+所有 customer_id / applicant_id 入参都是雪花 ID 字符串（CLAUDE.md §3），
+service 层用 `parse_snowflake_id` 转回 int 再走 repository。
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TApplicant
 from repository.applicant import ApplicantRepository
 from repository.customer import CustomerRepository
@@ -28,6 +32,7 @@ from schema.applicant import (
     ApplicantOut,
     ApplicantUpdateRequest,
 )
+from service._id_parse import parse_snowflake_id
 from utils.id_gen import new_id
 
 
@@ -37,21 +42,25 @@ class ApplicantService:
         applicants: ApplicantRepository,
         customers: CustomerRepository,
         parts: PartRepository | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.applicants = applicants
         self.customers = customers
         self.parts = parts  # 用于软删前引用校验
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ===== 查询 =====
     async def list_applicants(self, query: ApplicantListQuery) -> ApplicantListOut:
+        cid_int = parse_snowflake_id(query.customer_id, field_name="customer_id")
         rows = await self.applicants.list_with_filters(
-            customer_id=query.customer_id,
+            customer_id=cid_int,
             name_like=query.name_like,
             limit=query.limit,
             offset=query.offset,
         )
         total = await self.applicants.count_with_filters(
-            customer_id=query.customer_id,
+            customer_id=cid_int,
             name_like=query.name_like,
         )
         # 预加载客户名（仅一级，减小 SQL）
@@ -60,8 +69,15 @@ class ApplicantService:
             items=items, total=total, limit=query.limit, offset=query.offset,
         )
 
-    async def get_applicant(self, applicant_id: int) -> ApplicantOut:
-        a = await self.applicants.get_by_id(applicant_id)
+    async def get_applicant(self, applicant_id: str) -> ApplicantOut:
+        aid = parse_snowflake_id(applicant_id, field_name="applicant_id")
+        if aid is None:
+            raise BizError(
+                code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                message=f"applicant {applicant_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        a = await self.applicants.get_by_id(aid)
         if a is None:
             raise BizError(
                 code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
@@ -72,23 +88,40 @@ class ApplicantService:
         return items[0]
 
     async def search_for_customer(
-        self, customer_id: int, name_prefix: str | None, limit: int = 20,
+        self, customer_id: str, name_prefix: str | None, limit: int = 20,
     ) -> list[ApplicantOut]:
-        """零件对话框下拉用：限定一级客户范围内前序查询。"""
+        """零件对话框下拉用：限定一级客户范围内前序查询。
+
+        `customer_id` 是雪花 ID 字符串（前端透传，无 JS 精度截断）。
+        """
+        cid = parse_snowflake_id(customer_id, field_name="customer_id")
+        if cid is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
         # 校验一级客户存在
-        await self._assert_root_customer(customer_id)
+        await self._assert_root_customer(cid)
         rows = await self.applicants.search_by_name_prefix(
-            name_prefix=name_prefix or "", customer_id=customer_id, limit=limit,
+            name_prefix=name_prefix or "", customer_id=cid, limit=limit,
         )
         return await self._to_outs(rows)
 
     # ===== 写 =====
     async def create_applicant(self, data: ApplicantCreateRequest) -> ApplicantOut:
         name = data.name.strip()
-        await self._assert_root_customer(data.customer_id)
+        cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
+        if cid is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {data.customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        await self._assert_root_customer(cid)
         # 已存在直接报冲突
         existing = await self.applicants.find_by_name_and_customer(
-            name=name, customer_id=data.customer_id,
+            name=name, customer_id=cid,
         )
         if existing is not None:
             raise BizError(
@@ -99,16 +132,25 @@ class ApplicantService:
                 http_status=http_status.HTTP_409_CONFLICT,
             )
         a = TApplicant(
-            id=new_id(), name=name, customer_id=data.customer_id,
+            id=new_id(), name=name, customer_id=cid,
         )
+        a.created_by = self._user_id
+        a.updated_by = self._user_id
         await self.applicants.create(a)
         items = await self._to_outs([a])
         return items[0]
 
     async def update_applicant(
-        self, applicant_id: int, data: ApplicantUpdateRequest,
+        self, applicant_id: str, data: ApplicantUpdateRequest,
     ) -> ApplicantOut:
-        a = await self.applicants.get_by_id(applicant_id)
+        aid = parse_snowflake_id(applicant_id, field_name="applicant_id")
+        if aid is None:
+            raise BizError(
+                code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                message=f"applicant {applicant_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        a = await self.applicants.get_by_id(aid)
         if a is None:
             raise BizError(
                 code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
@@ -118,10 +160,18 @@ class ApplicantService:
         if data.name is not None:
             a.name = data.name.strip()
         if data.customer_id is not None:
-            await self._assert_root_customer(data.customer_id)
-            a.customer_id = data.customer_id
+            new_cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
+            if new_cid is None:
+                raise BizError(
+                    code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                    message=f"customer {data.customer_id!r} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            await self._assert_root_customer(new_cid)
+            a.customer_id = new_cid
         # 若改了 name 或 customer_id，DB 唯一索引可能冲突 → flush 兜底
         try:
+            a.updated_by = self._user_id
             await self.applicants.update(a)
         except IntegrityError as e:
             raise BizError(
@@ -132,8 +182,15 @@ class ApplicantService:
         items = await self._to_outs([a])
         return items[0]
 
-    async def soft_delete_applicant(self, applicant_id: int) -> None:
-        a = await self.applicants.get_by_id(applicant_id)
+    async def soft_delete_applicant(self, applicant_id: str) -> None:
+        aid = parse_snowflake_id(applicant_id, field_name="applicant_id")
+        if aid is None:
+            raise BizError(
+                code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                message=f"applicant {applicant_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        a = await self.applicants.get_by_id(aid)
         if a is None:
             raise BizError(
                 code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
@@ -143,6 +200,7 @@ class ApplicantService:
         # 引用检查：该一级客户（含其下二级客户）下是否有未软删零件
         # 用此申请人姓名。
         await self._assert_not_in_use(a.name, a.customer_id)
+        a.updated_by = self._user_id
         await self.applicants.soft_delete(a)
 
     # ===== 给 PartService / AssemblyService 调用的幂等入口 =====
@@ -152,6 +210,9 @@ class ApplicantService:
         """在指定一级客户下找到该姓名的申请人，找不到则创建。
 
         校验 customer_id 是一级客户；遇 race（IntegrityError）回查一次。
+
+        注：这里 customer_id 入参是 int（已被 PartService / AssemblyService
+        在更外层 int() 转过），不需要再 parse_snowflake_id。
         """
         cleaned = name.strip()
         if not cleaned:
@@ -170,6 +231,8 @@ class ApplicantService:
         a = TApplicant(
             id=new_id(), name=cleaned, customer_id=customer_id,
         )
+        a.created_by = self._user_id
+        a.updated_by = self._user_id
         try:
             await self.applicants.create(a)
         except IntegrityError:

@@ -19,6 +19,7 @@ from core import cos as cos_mod
 from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TDrawingFile
 from repository.assembly import AssemblyRepository
 from repository.drawing_file import DrawingFileRepository
@@ -106,10 +107,13 @@ class DrawingService:
         files: DrawingFileRepository,
         parts: PartRepository | None = None,
         assemblies: AssemblyRepository | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.files = files
         self.parts = parts or PartRepository(files.session)
         self.assemblies = assemblies or AssemblyRepository(files.session)
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ===== 上传 =====
     async def upload_to_assembly(
@@ -161,6 +165,8 @@ class DrawingService:
             page_index=page_index,
             upload_status="READY",
         )
+        file_row.created_by = self._user_id
+        file_row.updated_by = self._user_id
         await self.files.create(file_row)
         return await self._to_out(file_row)
 
@@ -209,6 +215,7 @@ class DrawingService:
         old_keys: list[str] = []
         for old in existing:
             if old.deleted_at is None:
+                old.updated_by = self._user_id
                 await self.files.soft_delete(old)
                 old_keys.append(old.object_key)
 
@@ -236,6 +243,8 @@ class DrawingService:
             page_index=page_index,
             upload_status="READY",
         )
+        file_row.created_by = self._user_id
+        file_row.updated_by = self._user_id
         await self.files.create(file_row)
 
         # 上传成功后才发起旧 COS 清理（避免新建失败时旧文件也被清掉）
@@ -309,6 +318,7 @@ class DrawingService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         key = f.object_key
+        f.updated_by = self._user_id
         await self.files.soft_delete(f)
         # fire-and-forget：COS 删除失败不影响主业务，由后台 GC 重试
         asyncio.create_task(self._safe_delete_cos(key))

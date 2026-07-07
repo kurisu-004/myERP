@@ -8,6 +8,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TProcess, TWorkTypeProcess
 from repository.process import ProcessRepository
 from repository.work_type import WorkTypeRepository
@@ -29,10 +30,13 @@ class WorkTypeProcessService:
         work_types: WorkTypeRepository,
         processes: ProcessRepository,
         junction: WorkTypeProcessRepository,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.work_types = work_types
         self.processes = processes
         self.junction = junction
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ===== 查询 =====
     async def list_for_work_type(self, work_type_id: int) -> WorkTypeWithProcessesOut:
@@ -112,7 +116,12 @@ class WorkTypeProcessService:
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
 
-        # 软删现有映射
+        # 软删现有映射（先给每行赋 updated_by，让 audit 字段一并写入）
+        existing = await self.junction.list_by_work_type(
+            work_type_id, include_deleted=False,
+        )
+        for row in existing:
+            row.updated_by = self._user_id
         await self.junction.delete_by_work_type(work_type_id)
 
         # 批量插入新映射
@@ -125,6 +134,8 @@ class WorkTypeProcessService:
                 sort_order=idx,
             ))
         for row in new_rows:
+            row.created_by = self._user_id
+            row.updated_by = self._user_id
             await self.junction.create(row)
 
         return await self.list_for_work_type(work_type_id)

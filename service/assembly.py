@@ -25,6 +25,7 @@ from fastapi import status as http_status
 from core import cos as cos_mod
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TAssembly, TDrawingFile, TPart, TPartEvent
 from model.enums import PartEventType
 from repository import (
@@ -46,6 +47,7 @@ from schema.assembly import (
 )
 from service.drawing import DrawingService, _guess_content_type, _normalize_ext
 from service.part import PartService
+from service._id_parse import parse_snowflake_id
 from utils.id_gen import new_id
 
 _logger = logging.getLogger(__name__)
@@ -85,6 +87,8 @@ class AssemblyService:
         applicants: ApplicantRepository | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         broadcaster: Broadcaster | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.assemblies = assemblies
         self.parts = parts
@@ -97,6 +101,7 @@ class AssemblyService:
         self.applicants = applicants
         self.event_broadcaster = event_broadcaster
         self.broadcaster = broadcaster
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
     # 写操作：create
@@ -128,7 +133,14 @@ class AssemblyService:
             )
 
         # 校验客户是叶子节点
-        cust = await self.customers.get_by_id(data.customer_id)
+        cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
+        if cid is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                message=f"customer {data.customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        cust = await self.customers.get_by_id(cid)
         if cust is None:
             raise BizError(
                 code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
@@ -192,6 +204,8 @@ class AssemblyService:
             is_urgent=data.is_urgent,
             status="PENDING",
         )
+        assembly.created_by = self._user_id
+        assembly.updated_by = self._user_id
         await self.assemblies.create(assembly)
 
         # 2. 上传装配件主 PDF 到 COS + 写 t_drawing_file（装配件挂总图）
@@ -222,6 +236,8 @@ class AssemblyService:
             page_index=None,
             upload_status="READY",
         )
+        master_file.created_by = self._user_id
+        master_file.updated_by = self._user_id
         await self.files.create(master_file)
 
         # 3. 写每个子零件：t_part + t_drawing_file (page_index) + t_part_event
@@ -274,6 +290,8 @@ class AssemblyService:
                     customer_id=data.customer_id,
                     assembly_id=assembly.id,
                 )
+                tpart.created_by = self._user_id
+                tpart.updated_by = self._user_id
                 await self.parts.create(tpart)
                 child_parts.append(tpart)
 
@@ -292,6 +310,8 @@ class AssemblyService:
                     page_index=child.page_index,
                     upload_status="READY",
                 )
+                ref_file.created_by = self._user_id
+                ref_file.updated_by = self._user_id
                 await self.files.create(ref_file)
                 child_files.append(ref_file)
 
@@ -342,8 +362,10 @@ class AssemblyService:
     # 查询
     # ============================================================
     async def list_assemblies(self, q: AssemblyListQuery) -> AssemblyListOut:
+        # q.customer_id 是雪花 ID 字符串，转 int 后传给 repository。
+        cid_int = parse_snowflake_id(q.customer_id, field_name="customer_id") if q.customer_id else None
         rows = await self.assemblies.list_with_filters(
-            customer_id=q.customer_id,
+            customer_id=cid_int,
             status=_parse_status(q.status),
             is_urgent=q.is_urgent,
             drawing_no_like=q.drawing_no_like,
@@ -352,7 +374,7 @@ class AssemblyService:
             offset=q.offset,
         )
         total = await self.assemblies.count_with_filters(
-            customer_id=q.customer_id,
+            customer_id=cid_int,
             status=_parse_status(q.status),
             is_urgent=q.is_urgent,
             drawing_no_like=q.drawing_no_like,
@@ -432,10 +454,12 @@ class AssemblyService:
         for child in children:
             if child.status not in ("COMPLETED", "CANCELLED"):
                 child.sm.cancel(event_repo=self.events)
+                child.updated_by = self._user_id
                 await self.parts.session.flush()
 
         # 取消装配体自身
         asm.sm.cancel()
+        asm.updated_by = self._user_id
         await self.assemblies.session.flush()
 
         # dashboard 卡片立刻消失 + 通知横幅（不走 PartService.cancel,
@@ -471,6 +495,13 @@ class AssemblyService:
         files_for_asm = await self.files.list_by_assembly(assembly_id)
         all_files = {f.id: f for f in files_for_children + files_for_asm}
         keys_to_cleanup = [f.object_key for f in all_files.values()]
+
+        # 级联赋值 updated_by（按 flush 顺序：files → children → asm）
+        for f in all_files.values():
+            f.updated_by = self._user_id
+        for c in children:
+            c.updated_by = self._user_id
+        asm.updated_by = self._user_id
 
         if all_files:
             await self.files.soft_delete_many(list(all_files.values()))

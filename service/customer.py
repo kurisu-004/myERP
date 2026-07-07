@@ -6,6 +6,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TCustomer
 from repository.assembly import AssemblyRepository
 from repository.customer import CustomerRepository
@@ -15,6 +16,7 @@ from schema.customer import (
     CustomerOut,
     CustomerUpdateRequest,
 )
+from service._id_parse import parse_snowflake_id
 from utils.id_gen import new_id
 
 
@@ -24,10 +26,13 @@ class CustomerService:
         customers: CustomerRepository,
         parts: PartRepository | None = None,
         assemblies: AssemblyRepository | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.customers = customers
         self.parts = parts  # 用于软删前的引用校验
         self.assemblies = assemblies
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
     # 查询
@@ -54,8 +59,16 @@ class CustomerService:
             for c in rows
         ]
 
-    async def get_customer(self, customer_id: int) -> CustomerOut:
-        cust = await self.customers.get_by_id(customer_id)
+    async def get_customer(self, customer_id: str) -> CustomerOut:
+        # customer_id 入参是雪花 ID 字符串（CLAUDE.md §3），转回 int。
+        cid = parse_snowflake_id(customer_id, field_name="customer_id")
+        if cid is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        cust = await self.customers.get_by_id(cid)
         if cust is None:
             raise BizError(
                 code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
@@ -78,14 +91,17 @@ class CustomerService:
     # ============================================================
     async def create_customer(self, data: CustomerCreateRequest) -> CustomerOut:
         name = data.name.strip()
-        parent_id = data.parent_id
-        if parent_id is not None:
-            await self._assert_root_parent(parent_id)
-        # 名字 + 父客户维度不强制唯一（与 DB 设计一致），但同一父客户下不
-        # 允许重名（实际项目少见，由前端保证；此处只校验存在性）。
+        parent_id_str = data.parent_id
+        parent_id: int | None = None
+        if parent_id_str:
+            parent_id = parse_snowflake_id(parent_id_str, field_name="parent_id")
+            if parent_id is not None:
+                await self._assert_root_parent(parent_id)
         cust = TCustomer(
             id=new_id(), name=name, parent_id=parent_id,
         )
+        cust.created_by = self._user_id
+        cust.updated_by = self._user_id
         await self.customers.create(cust)
         parent_name = None
         if parent_id is not None:
@@ -97,9 +113,16 @@ class CustomerService:
         )
 
     async def update_customer(
-        self, customer_id: int, data: CustomerUpdateRequest,
+        self, customer_id: str, data: CustomerUpdateRequest,
     ) -> CustomerOut:
-        cust = await self.customers.get_by_id(customer_id)
+        cid = parse_snowflake_id(customer_id, field_name="customer_id")
+        if cid is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        cust = await self.customers.get_by_id(cid)
         if cust is None:
             raise BizError(
                 code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
@@ -109,22 +132,33 @@ class CustomerService:
         if data.name is not None:
             cust.name = data.name.strip()
         if data.parent_id is not None:
-            # 防自环
-            if data.parent_id == cust.id:
-                raise BizError(
-                    code=ErrCode.BIZ_INVALID_VALUE,
-                    message="parent_id 不能等于自身 id",
-                    http_status=http_status.HTTP_400_BAD_REQUEST,
-                )
-            # 若原是 root，新 parent 必须存在且为 root
-            await self._assert_root_parent(data.parent_id)
-            # 若原是非 root，project 约定是 2 级；把二级升为另一根也允许。
-            cust.parent_id = data.parent_id
+            new_parent_id = parse_snowflake_id(data.parent_id, field_name="parent_id")
+            if new_parent_id is None:
+                cust.parent_id = None
+            else:
+                # 防自环
+                if new_parent_id == cust.id:
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message="parent_id 不能等于自身 id",
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                # 若原是 root，新 parent 必须存在且为 root
+                await self._assert_root_parent(new_parent_id)
+                cust.parent_id = new_parent_id
+        cust.updated_by = self._user_id
         await self.customers.update(cust)
         return await self.get_customer(customer_id)
 
-    async def soft_delete_customer(self, customer_id: int) -> None:
-        cust = await self.customers.get_by_id(customer_id)
+    async def soft_delete_customer(self, customer_id: str) -> None:
+        cid = parse_snowflake_id(customer_id, field_name="customer_id")
+        if cid is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {customer_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        cust = await self.customers.get_by_id(cid)
         if cust is None:
             raise BizError(
                 code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
@@ -133,7 +167,7 @@ class CustomerService:
             )
         # 一级客户：若仍有未软删子 → 拒
         if cust.parent_id is None:
-            children = await self.customers.list_children(customer_id)
+            children = await self.customers.list_children(cid)
             if children:
                 raise BizError(
                     code=ErrCode.BIZ_CUSTOMER_IN_USE,
@@ -146,7 +180,7 @@ class CustomerService:
         # 任何客户：若被未软删零件 / 装配体引用 → 拒
         if self.parts is not None:
             ref_count = await self.parts.count_with_filters(
-                customer_id=customer_id, include_deleted=False,
+                customer_id=cid, include_deleted=False,
             )
             if ref_count > 0:
                 raise BizError(
@@ -158,7 +192,7 @@ class CustomerService:
                 )
         if self.assemblies is not None:
             asm_count = await self.assemblies.count_with_filters(
-                customer_id=customer_id, include_deleted=False,
+                customer_id=cid, include_deleted=False,
             )
             if asm_count > 0:
                 raise BizError(
@@ -168,6 +202,7 @@ class CustomerService:
                     ),
                     http_status=http_status.HTTP_409_CONFLICT,
                 )
+        cust.updated_by = self._user_id
         await self.customers.soft_delete(cust)
 
     # ===== 内部 =====

@@ -3,6 +3,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TWorkType
 from repository.work_type import WorkTypeRepository
 from schema.work_type import (
@@ -23,11 +24,14 @@ class WorkTypeService:
         work_types: WorkTypeRepository,
         worker_repo=None,
         junction_repo=None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.work_types = work_types
         # 注入可选：用于软删前的引用校验（BIZ_WORK_TYPE_IN_USE）
         self.worker_repo = worker_repo
         self.junction_repo = junction_repo
+        self._user_id: int | None = current_user.id if current_user else None
 
     # ===== 查询 =====
     async def list_work_types(self, query: WorkTypeListQuery) -> WorkTypeListOut:
@@ -70,6 +74,8 @@ class WorkTypeService:
             description=data.description,
             sort_order=data.sort_order,
         )
+        wt.created_by = self._user_id
+        wt.updated_by = self._user_id
         await self.work_types.create(wt)
         return _work_type_to_out(wt)
 
@@ -89,6 +95,7 @@ class WorkTypeService:
             wt.description = data.description
         if data.sort_order is not None:
             wt.sort_order = data.sort_order
+        wt.updated_by = self._user_id
         await self.work_types.update(wt)
         return _work_type_to_out(wt)
 
@@ -102,6 +109,7 @@ class WorkTypeService:
             )
         # 校验引用：worker / junction
         await self._assert_not_in_use(work_type_id)
+        wt.updated_by = self._user_id
         await self.work_types.soft_delete(wt)
 
     async def _assert_not_in_use(self, work_type_id: int) -> None:

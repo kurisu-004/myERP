@@ -4,6 +4,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TWorker
 from repository.work_type import WorkTypeRepository
 from repository.worker import WorkerRepository
@@ -24,9 +25,12 @@ class WorkerService:
         self,
         workers: WorkerRepository,
         work_types: WorkTypeRepository | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.workers = workers
         self.work_types = work_types
+        self._user_id: int | None = current_user.id if current_user else None
 
     async def _resolve_work_type(self, work_type_id: int | None) -> int | None:
         if work_type_id is None:
@@ -121,6 +125,8 @@ class WorkerService:
             work_type_id=wt_id,
             is_active=True,
         )
+        w.created_by = self._user_id
+        w.updated_by = self._user_id
         await self.workers.create(w)
         return _worker_to_out(w)
 
@@ -151,6 +157,7 @@ class WorkerService:
             w.phone = data.phone
         if data.work_type_id is not None:
             w.work_type_id = await self._resolve_work_type(data.work_type_id)
+        w.updated_by = self._user_id
         await self.workers.update(w)
         # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
         await self.workers.session.refresh(w)
@@ -166,6 +173,7 @@ class WorkerService:
             )
         w.is_active = False
         w.deleted_at = datetime.utcnow()
+        w.updated_by = self._user_id
         await self.workers.update(w)
         return _worker_to_out(w)
 
@@ -179,6 +187,7 @@ class WorkerService:
             )
         w.is_active = True
         w.deleted_at = None
+        w.updated_by = self._user_id
         await self.workers.update(w)
         return _worker_to_out(w)
 

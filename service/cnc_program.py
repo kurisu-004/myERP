@@ -20,6 +20,7 @@ from core import cos as cos_mod
 from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.permission import CurrentUser
 from model import TCncProgram
 from repository.cnc_program import CncProgramRepository
 from repository.part import PartRepository
@@ -39,9 +40,12 @@ class CncProgramService:
         self,
         programs: CncProgramRepository,
         parts: PartRepository | None = None,
+        *,
+        current_user: CurrentUser | None = None,
     ) -> None:
         self.programs = programs
         self.parts = parts or PartRepository(programs.session)
+        self._user_id: int | None = current_user.id if current_user else None
 
     async def upload_to_part(
         self,
@@ -84,6 +88,8 @@ class CncProgramService:
             content_type=ct,
             upload_status="READY",
         )
+        file_row.created_by = self._user_id
+        file_row.updated_by = self._user_id
         await self.programs.create(file_row)
         return await self._to_out(file_row)
 
@@ -110,6 +116,7 @@ class CncProgramService:
     async def delete_file(self, file_id: int) -> None:
         f = await self._get_or_404(file_id)
         key = f.object_key
+        f.updated_by = self._user_id
         await self.programs.soft_delete(f)
         asyncio.create_task(self._safe_delete_cos(key))
 
