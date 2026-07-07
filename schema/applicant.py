@@ -1,4 +1,8 @@
-"""申请人 (Applicant) Pydantic schema。"""
+"""申请人 (Applicant) Pydantic schema。
+
+所有 customer_id 字段均为雪花 ID 字符串（19 位），与 CLAUDE.md §3
+「雪花 ID 入参必须用 str 类型」一致。service 层 int() 转回。
+"""
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -26,7 +30,7 @@ class ApplicantCreateRequest(BaseModel):
     """新增申请人。`customer_id` 必须指向一级客户（service 层校验）。"""
 
     name: str = Field(min_length=1, max_length=50)
-    customer_id: int = Field(description="一级客户 id（必须 parent_id IS NULL）")
+    customer_id: str = Field(description="一级客户 id（雪花 ID 字符串，必须 parent_id IS NULL）")
 
     @field_validator("name")
     @classmethod
@@ -38,7 +42,7 @@ class ApplicantUpdateRequest(BaseModel):
     """更新申请人字段（全部可选，只更新传入的非 None 字段）。"""
 
     name: str | None = Field(default=None, min_length=1, max_length=50)
-    customer_id: int | None = Field(default=None, description="一级客户 id")
+    customer_id: str | None = Field(default=None, description="一级客户 id（雪花 ID 字符串）")
 
     @field_validator("name")
     @classmethod
@@ -49,7 +53,7 @@ class ApplicantUpdateRequest(BaseModel):
 class ApplicantListQuery(BaseModel):
     """申请人列表查询参数。"""
 
-    customer_id: int | None = Field(default=None, description="所属一级客户 id")
+    customer_id: str | None = Field(default=None, description="所属一级客户 id（雪花 ID 字符串）")
     name_like: str | None = Field(default=None, description="姓名模糊匹配")
     limit: int = Field(default=100, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
@@ -65,6 +69,6 @@ class ApplicantListOut(BaseModel):
 class ApplicantSearchQuery(BaseModel):
     """申请人前序查询参数（零件/装配体对话框自动补全用）。"""
 
-    customer_id: int = Field(..., description="一级客户 id")
+    customer_id: str = Field(..., description="一级客户 id（雪花 ID 字符串）")
     name_prefix: str | None = Field(default=None, max_length=50)
     limit: int = Field(default=20, ge=1, le=100)

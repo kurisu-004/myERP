@@ -54,20 +54,18 @@
         @row-click="onRowPreview"
       >
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column label="图纸" width="80" align="center">
+        <el-table-column label="图号" width="130">
           <template #default="{ row }">
-            <el-image
-              v-if="row.drawingUrl"
-              :src="row.drawingUrl"
-              fit="cover"
-              :preview-src-list="[row.drawingUrl]"
-              :preview-teleported="true"
-              style="width: 40px; height: 40px; border-radius: 4px; cursor: pointer"
-            />
-            <el-icon v-else :size="24" color="#c0c4cc"><Picture /></el-icon>
+            <el-button
+              v-if="(row as StagedEntry).drawingUrl"
+              link type="primary" size="small"
+              @click.stop="openDrawingPreview(row as StagedEntry)"
+            >
+              {{ row.drawingNo }}
+            </el-button>
+            <span v-else class="mono">{{ row.drawingNo }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="drawingNo" label="图号" width="130" />
         <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
         <el-table-column prop="quantity" label="数量" width="70" align="right" />
         <el-table-column label="申请人" min-width="120" show-overflow-tooltip>
@@ -154,8 +152,6 @@
               <el-select
                 v-model="form.applicantId"
                 filterable
-                remote
-                :remote-method="onApplicantSearch"
                 :loading="applicantLoading"
                 :disabled="!form.customerId"
                 placeholder="选择或输入申请人姓名（不在表中则提交时自动新增）"
@@ -219,7 +215,8 @@
             :show-file-list="false"
             :on-change="onDrawingChange"
             :on-remove="onDrawingRemoveUpload"
-            accept="image/*,.pdf,.dwg,.dxf"
+            :before-upload="beforeDrawingUpload"
+            accept=".pdf"
           >
             <el-button>
               <el-icon><Upload /></el-icon>
@@ -231,16 +228,7 @@
             <span class="drawing-name">{{ form.drawingName }}</span>
             <el-button link type="danger" size="small" @click="onDrawingRemove">移除</el-button>
           </div>
-          <div v-if="form.drawingUrl && isImageFile(form.drawingName)" class="drawing-preview">
-            <el-image
-              :src="form.drawingUrl"
-              :preview-src-list="[form.drawingUrl]"
-              :preview-teleported="true"
-              fit="contain"
-              style="max-width: 240px; max-height: 180px; border: 1px solid var(--border-color); border-radius: 4px"
-            />
-          </div>
-          <p class="form-hint">支持图片 / PDF / DWG；当前仅做浏览器侧预览，后端 batch 接口未传文件。</p>
+          <p class="form-hint">仅支持 PDF；提交时自动随表图号列点击预览（待新增一览 → 点图号）。</p>
         </el-form-item>
       </el-form>
 
@@ -250,6 +238,23 @@
           {{ editingUid ? '保存到列表' : '加入列表' }}
         </el-button>
       </template>
+    </el-dialog>
+
+    <!-- 图纸 PDF 预览 Dialog -->
+    <el-dialog
+      v-model="drawingPreviewVisible"
+      :title="`图纸预览 — ${drawingPreviewRow?.drawingNo ?? ''}`"
+      width="80%"
+      top="5vh"
+      destroy-on-close
+      @closed="onDrawingPreviewClosed"
+    >
+      <PdfViewer
+        v-if="drawingPreviewRow?.drawingUrl"
+        :url="drawingPreviewRow.drawingUrl"
+        :page="1"
+        :initial-scale="1.4"
+      />
     </el-dialog>
 
     <!-- 预览 Dialog（只读） -->
@@ -267,18 +272,12 @@
         <el-descriptions-item label="请购日期">{{ previewing.requestDate }}</el-descriptions-item>
         <el-descriptions-item label="计划交期">{{ previewing.plannedDeliveryDate }}</el-descriptions-item>
         <el-descriptions-item label="图纸" :span="2">
-          <el-image
-            v-if="previewing.drawingUrl && isImageFile(previewing.drawingName)"
-            :src="previewing.drawingUrl"
-            :preview-src-list="[previewing.drawingUrl]"
-            :preview-teleported="true"
-            fit="contain"
-            style="max-width: 100%; max-height: 360px"
+          <PdfViewer
+            v-if="previewing.drawingUrl"
+            :url="previewing.drawingUrl"
+            :page="1"
+            :initial-scale="1.0"
           />
-          <div v-else-if="previewing.drawingName" class="drawing-info">
-            <el-icon><Picture /></el-icon>
-            <span class="drawing-name">{{ previewing.drawingName }}</span>
-          </div>
           <span v-else class="muted">未上传</span>
         </el-descriptions-item>
       </el-descriptions>
@@ -301,10 +300,11 @@ import {
   type UploadFile,
 } from 'element-plus'
 import { DocumentAdd, Picture, Plus, Upload } from '@element-plus/icons-vue'
+import PdfViewer from '@/components/PdfViewer.vue'
 import { batchCreateParts, type PartCreatePayload } from '@/api/parts'
 import { listCustomers, type Customer } from '@/api/customer'
-import { createApplicant, searchApplicants } from '@/api/applicant'
-import type { Applicant } from '@/types/applicant'
+import { createApplicant } from '@/api/applicant'
+import { useApplicantSearch } from '@/composables/useApplicantSearch'
 
 const router = useRouter()
 
@@ -321,13 +321,15 @@ const customerTree = computed(() => {
   }))
 })
 
-/** 把 cascader 选中的客户 id（可能是叶子）解析到所属的一级客户 id。 */
-function resolveRootCustomerId(pickedId: string): number | null {
-  if (!pickedId) return null
+/** 把 cascader 选中的客户 id（可能是叶子）解析到所属的一级客户 id。
+ * 入参 / 出参都是雪花 ID 字符串（CLAUDE.md §3）。
+ */
+function resolveRootCustomerId(pickedId: string | null): string | null {
+  if (pickedId === null || pickedId === undefined || pickedId === '') return null
   const picked = customers.value.find((c) => c.id === pickedId)
   if (!picked) return null
-  if (picked.parent_id === null) return Number(picked.id)
-  return Number(picked.parent_id)
+  if (picked.parent_id === null) return picked.id
+  return picked.parent_id
 }
 
 async function loadCustomers(): Promise<void> {
@@ -342,30 +344,12 @@ onMounted(() => {
   void loadCustomers()
 })
 
-// ============ 申请人候选 + 防抖远程搜索 ============
-const applicantCandidates = ref<Applicant[]>([])
-const applicantLoading = ref(false)
-const rootCustomerId = ref<number | null>(null)
-let applicantSearchTimer: ReturnType<typeof setTimeout> | null = null
-
-async function refetchApplicants(namePrefix: string, limit = 50): Promise<void> {
-  if (rootCustomerId.value === null) {
-    applicantCandidates.value = []
-    return
-  }
-  applicantLoading.value = true
-  try {
-    applicantCandidates.value = await searchApplicants({
-      customer_id: String(rootCustomerId.value),
-      name_prefix: namePrefix,
-      limit,
-    })
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '申请人列表加载失败')
-  } finally {
-    applicantLoading.value = false
-  }
-}
+// ============ 申请人候选（composable：只在客户切换时拉一次） ============
+const {
+  applicants: applicantCandidates,
+  loading: applicantLoading,
+  loadForCustomer: loadApplicantsForCustomer,
+} = useApplicantSearch({ resolveRootCustomerId })
 
 async function onCustomerChange(pickedId: unknown): Promise<void> {
   // cascader emitPath:false → string id；但 Element Plus 类型声明是 CascaderValue
@@ -373,22 +357,7 @@ async function onCustomerChange(pickedId: unknown): Promise<void> {
   const idStr = raw === null || raw === undefined ? '' : String(raw)
   form.applicantId = null
   form.applicantName = ''
-  if (!idStr) {
-    rootCustomerId.value = null
-    applicantCandidates.value = []
-    return
-  }
-  rootCustomerId.value = resolveRootCustomerId(idStr)
-  // 立即拉一次空串候选，方便用户直接下拉选
-  await refetchApplicants('', 50)
-}
-
-function onApplicantSearch(query: string): void {
-  // 用户输入时实时拉取；300ms 防抖
-  if (applicantSearchTimer) clearTimeout(applicantSearchTimer)
-  applicantSearchTimer = setTimeout(() => {
-    void refetchApplicants(query, 20)
-  }, 300)
+  await loadApplicantsForCustomer(idStr || null)
 }
 
 function onApplicantSelect(value: string | null): void {
@@ -450,9 +419,15 @@ function revokeEntryUrls(entry: StagedEntry): void {
   }
 }
 
-function isImageFile(name: string | null | undefined): boolean {
-  if (!name) return false
-  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)
+function beforeDrawingUpload(rawFile: File & { name?: string }): boolean {
+  // 仅接受 PDF（2026-07-07 起与服务端 drawing.py upload_to_part 同步）。
+  // el-upload 的 before-upload 返回 false 会阻止 on-change 触发；
+  // 返回 true 走 on-change（兜底再校验一次）。
+  if (!rawFile?.name?.toLowerCase().endsWith('.pdf')) {
+    ElMessage.error('图纸必须是 .pdf 后缀')
+    return false
+  }
+  return true
 }
 
 // ============ Dialog 表单 ============
@@ -475,6 +450,17 @@ const formRef = ref<FormInstance>()
 const addDialogVisible = ref(false)
 const dialogSubmitting = ref(false)
 const editingUid = ref<string | null>(null)
+
+/** PDF 弹窗预览（图号列点击触发） */
+const drawingPreviewVisible = ref(false)
+const drawingPreviewRow = ref<StagedEntry | null>(null)
+function openDrawingPreview(row: StagedEntry): void {
+  drawingPreviewRow.value = row
+  drawingPreviewVisible.value = true
+}
+function onDrawingPreviewClosed(): void {
+  drawingPreviewRow.value = null
+}
 
 /** 把「今天」格式化成 YYYY-MM-DD 字符串。 */
 function todayIso(): string {
@@ -532,8 +518,8 @@ const rules: FormRules = {
 function openAddDialog(): void {
   editingUid.value = null
   Object.assign(form, initialForm())
-  applicantCandidates.value = []
-  rootCustomerId.value = null
+  // 申请人候选由 onCustomerChange 在客户变更时刷新；openAddDialog
+  // 调 initialForm() 把 customerId 置空，所以这里无需再清缓存。
   addDialogVisible.value = true
 }
 
@@ -579,8 +565,9 @@ async function onAddConfirm(): Promise<void> {
     ElMessage.error('请选择客户')
     return
   }
-  const customerId = Number(rawId)
-  if (!Number.isFinite(customerId)) {
+  // customerId 是雪花 ID 字符串（CLAUDE.md §3），不再转 Number。
+  // 校验非空：cascader emitPath:false 返 string id，空串说明未选。
+  if (!rawId) {
     ElMessage.error('请选择客户')
     return
   }
@@ -677,8 +664,7 @@ function onEditFromPreview(): void {
   target.drawingName = null
   // 同步刷新 rootCustomerId 与申请人候选（让下拉带回原选项）
   if (target.customerId) {
-    rootCustomerId.value = resolveRootCustomerId(target.customerId)
-    void refetchApplicants('', 50)
+    void loadApplicantsForCustomer(target.customerId)
   }
 }
 
@@ -751,7 +737,8 @@ async function onSubmit(): Promise<void> {
       request_date: s.requestDate,
       planned_delivery_date: s.plannedDeliveryDate,
       is_urgent: s.isUrgent,
-      customer_id: Number(s.customerId!),
+      // customer_id 雪花 ID 字符串（CLAUDE.md §3）
+      customer_id: s.customerId!,
     }))
     const res = await batchCreateParts(items)
     if (res.failed.length > 0) {

@@ -220,7 +220,7 @@ class TestListParts:
         # _to_out dependencies
         mock_customers.list_by_ids.return_value = [cust]
 
-        query = PartListQuery(customer_id=10)
+        query = PartListQuery(customer_id='10')
 
         # ── act ──────────────────────────────────────────────────
         result = await service.list_parts(query)
@@ -285,7 +285,7 @@ class TestListParts:
         """customer provided but not found → BizError(BIZ_CUSTOMER_NOT_FOUND, 404)."""
         # ── arrange ──────────────────────────────────────────────
         mock_customers.get_by_id.return_value = None
-        query = PartListQuery(customer_id=999)
+        query = PartListQuery(customer_id='999')
 
         # ── act / assert ─────────────────────────────────────────
         with pytest.raises(BizError) as exc_info:
@@ -470,8 +470,7 @@ class TestCreatePart:
             total_price=Decimal("300"),
             request_date=date(2025, 1, 1),
             planned_delivery_date=date(2025, 2, 1),
-            is_urgent=False,
-            customer_id=10,
+            is_urgent=False, customer_id='10',
         )
 
         # ── act ──────────────────────────────────────────────────
@@ -541,8 +540,7 @@ class TestCreatePart:
             unit_price=Decimal("50"),
             total_price=Decimal("50"),
             request_date=date(2025, 3, 1),
-            planned_delivery_date=date(2025, 4, 1),
-            customer_id=20,
+            planned_delivery_date=date(2025, 4, 1), customer_id='20',
         )
 
         # ── act ──────────────────────────────────────────────────
@@ -576,8 +574,7 @@ class TestCreatePart:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=999,
+            planned_delivery_date=date(2025, 2, 1), customer_id='999',
         )
 
         # ── act / assert ─────────────────────────────────────────
@@ -604,8 +601,7 @@ class TestCreatePart:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=20,
+            planned_delivery_date=date(2025, 2, 1), customer_id='20',
         )
 
         # ── act / assert ─────────────────────────────────────────
@@ -632,8 +628,7 @@ class TestCreatePart:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=10,
+            planned_delivery_date=date(2025, 2, 1), customer_id='10',
         )
 
         # ── act ──────────────────────────────────────────────────
@@ -668,8 +663,7 @@ class TestCreatePart:
             unit_price=Decimal("200"),
             total_price=None,  # auto-calculate
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=10,
+            planned_delivery_date=date(2025, 2, 1), customer_id='10',
         )
 
         # ── act ──────────────────────────────────────────────────
@@ -712,8 +706,7 @@ class TestCreatePartsBatch:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=10,
+            planned_delivery_date=date(2025, 2, 1), customer_id='10',
         )
         item1 = PartCreateRequest(
             name="Part B",
@@ -721,8 +714,7 @@ class TestCreatePartsBatch:
             quantity=2,
             unit_price=Decimal("20"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=10,
+            planned_delivery_date=date(2025, 2, 1), customer_id='10',
         )
         payload = PartBatchCreateRequest(items=[item0, item1])
 
@@ -745,7 +737,8 @@ class TestCreatePartsBatch:
     ) -> None:
         """Some items fail validation → returns failed list; good items are NOT created."""
         # ── arrange ──────────────────────────────────────────────
-        # Item 0 uses customer_id=999 (not found); item 1 uses customer_id=10 (exists)
+        # Item 0 uses customer_id='999' (雪花 ID 字符串；customer 999 已软删前不存在)；
+        # item 1 uses customer_id='10'（一级客户）
         cust = _make_customer(id=10, name="FirstLevel")
         mock_customers.get_by_id.side_effect = [None, cust]
 
@@ -755,8 +748,7 @@ class TestCreatePartsBatch:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=999,
+            planned_delivery_date=date(2025, 2, 1), customer_id='999',
         )
         item1 = PartCreateRequest(
             name="Good Part",
@@ -764,8 +756,7 @@ class TestCreatePartsBatch:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=10,
+            planned_delivery_date=date(2025, 2, 1), customer_id='10',
         )
         payload = PartBatchCreateRequest(items=[item0, item1])
 
@@ -777,7 +768,7 @@ class TestCreatePartsBatch:
         assert result.created == []
         assert len(result.failed) == 1
         assert result.failed[0].index == 0
-        assert "customer 999" in result.failed[0].message
+        assert "customer '999'" in result.failed[0].message
 
         # No parts or events should be created since validation failed
         mock_parts.create.assert_not_called()
@@ -799,8 +790,7 @@ class TestCreatePartsBatch:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=999,
+            planned_delivery_date=date(2025, 2, 1), customer_id='999',
         )
         item1 = PartCreateRequest(
             name="Bad B",
@@ -808,8 +798,7 @@ class TestCreatePartsBatch:
             quantity=1,
             unit_price=Decimal("10"),
             request_date=date(2025, 1, 1),
-            planned_delivery_date=date(2025, 2, 1),
-            customer_id=888,
+            planned_delivery_date=date(2025, 2, 1), customer_id='888',
         )
         payload = PartBatchCreateRequest(items=[item0, item1])
 
@@ -820,9 +809,9 @@ class TestCreatePartsBatch:
         assert result.created == []
         assert len(result.failed) == 2
         assert result.failed[0].index == 0
-        assert "customer 999" in result.failed[0].message
+        assert "customer '999'" in result.failed[0].message
         assert result.failed[1].index == 1
-        assert "customer 888" in result.failed[1].message
+        assert "customer '888'" in result.failed[1].message
 
         mock_parts.create.assert_not_called()
 
@@ -907,7 +896,7 @@ class TestUpdatePart:
 
         mock_customers.get_by_id.return_value = None  # new customer doesn't exist
 
-        data = PartUpdateRequest(customer_id=99)
+        data = PartUpdateRequest(customer_id='99')
 
         # ── act / assert ─────────────────────────────────────────
         with pytest.raises(BizError) as exc_info:
@@ -1072,8 +1061,7 @@ class TestToOut:
         mock_workers.list_by_ids.return_value = [worker]
 
         part = _make_part(
-            id=100,
-            customer_id=10,
+            id=100, customer_id='10',
             location="WORKER",
             current_holder_id=501,
             status=PartStatus.IN_PROCESS.value,
@@ -1108,8 +1096,7 @@ class TestToOut:
         mock_shelves.list_by_ids.return_value = [shelf]
 
         part = _make_part(
-            id=100,
-            customer_id=10,
+            id=100, customer_id='10',
             location="PRODUCTION_SHELF",
             current_holder_id=301,
             status=PartStatus.IN_PROCESS.value,

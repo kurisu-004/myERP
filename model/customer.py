@@ -3,6 +3,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from model.audit import AuditMixin
 from model.base import Base
+from utils.id_gen import new_id
 
 
 class TCustomer(Base, AuditMixin):
@@ -24,15 +25,21 @@ class TCustomer(Base, AuditMixin):
     - 因为 DB 层无外键，自引用的 `parent` / `children` 关系如果用 ORM 表达
       会引入 join 推断复杂性。本类只保留 `parts`（跨表 1:N），parent/children
       通过 repository 显式查询（如 `WHERE id = :parent_id` 或递归 CTE）。
+
+    2026-07-07 起：id 改雪花 ID（default=new_id），与其它业务表一致；
+    原 BigSerial 序列已 DROP（迁移 000000000006）。所有 customer_id 入参
+    在 schema 层统一为 str（CLAUDE.md §3「雪花 ID 入参必须用 str 类型」），
+    service 层 parse_snowflake_id 转回 int。
     """
 
     __tablename__ = "t_customer"
 
     id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
+        BigInteger, primary_key=True, default=new_id,
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     # 逻辑外键 -> t_customer.id（无 DB 约束）。取值校验在 service 层完成。
+    # 雪花 ID 入参在 schema 层是 str；DB 列保持 BigInteger，service 转换。
     parent_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, index=True
     )

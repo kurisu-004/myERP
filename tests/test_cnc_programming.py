@@ -47,7 +47,7 @@ async def test_send_to_programming_writes_event(clean_db):
     await session.execute(_sql_text("TRUNCATE TABLE t_part_event RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_shelf RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_process RESTART IDENTITY"))
-    await session.execute(_sql_text("TRUNCATE TABLE t_customer RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_customer"))
     await session.commit()
 
     customer = await _make_customer(session, "测试客户")
@@ -99,7 +99,7 @@ async def test_release_from_programming_writes_cnc_released(clean_db):
     await session.execute(_sql_text("TRUNCATE TABLE t_part_event RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_shelf RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_process RESTART IDENTITY"))
-    await session.execute(_sql_text("TRUNCATE TABLE t_customer RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_customer"))
     await session.commit()
 
     customer = await _make_customer(session, "测试客户")
@@ -166,7 +166,7 @@ async def test_programming_can_be_cancelled(clean_db):
 
     session = clean_db
     await session.execute(_sql_text("TRUNCATE TABLE t_part_event RESTART IDENTITY"))
-    await session.execute(_sql_text("TRUNCATE TABLE t_customer RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_customer"))
     await session.commit()
 
     customer = await _make_customer(session, "测试客户")

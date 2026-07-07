@@ -37,7 +37,7 @@ async def test_part_state_transitions_emit_event_rows(clean_db):
     await session.execute(_sql_text("TRUNCATE TABLE t_part_event RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_worker RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_shelf RESTART IDENTITY"))
-    await session.execute(_sql_text("TRUNCATE TABLE t_customer RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_customer"))
     await session.commit()
 
     customer = await _make_customer(session, "测试客户")

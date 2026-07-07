@@ -27,7 +27,7 @@ _role_dep = [
     dependencies=_role_dep,
 )
 async def list_applicants(
-    customer_id: int | None = Query(default=None, description="所属一级客户 id"),
+    customer_id: str | None = Query(default=None, description="所属一级客户 id（雪花 ID 字符串）"),
     name_like: str | None = Query(default=None, description="姓名模糊匹配"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -48,7 +48,7 @@ async def list_applicants(
     dependencies=_role_dep,
 )
 async def search_applicants(
-    customer_id: int = Query(..., description="一级客户 id"),
+    customer_id: str = Query(..., description="一级客户 id（雪花 ID 字符串）"),
     name_prefix: str | None = Query(default=None, max_length=50),
     limit: int = Query(default=20, ge=1, le=100),
     svc: ApplicantService = Depends(get_applicant_service),
@@ -79,7 +79,7 @@ async def create_applicant(
     dependencies=_role_dep,
 )
 async def get_applicant(
-    applicant_id: int,
+    applicant_id: str,
     svc: ApplicantService = Depends(get_applicant_service),
 ) -> ApplicantOut:
     return await svc.get_applicant(applicant_id)
@@ -92,7 +92,7 @@ async def get_applicant(
     dependencies=_role_dep,
 )
 async def update_applicant(
-    applicant_id: int,
+    applicant_id: str,
     payload: ApplicantUpdateRequest,
     svc: ApplicantService = Depends(get_applicant_service),
 ) -> ApplicantOut:
@@ -105,7 +105,7 @@ async def update_applicant(
     dependencies=_role_dep,
 )
 async def soft_delete_applicant(
-    applicant_id: int,
+    applicant_id: str,
     svc: ApplicantService = Depends(get_applicant_service),
 ) -> dict:
     await svc.soft_delete_applicant(applicant_id)

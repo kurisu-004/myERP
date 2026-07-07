@@ -52,7 +52,7 @@ async def list_customers(
     summary="客户详情",
 )
 async def get_customer(
-    customer_id: int,
+    customer_id: str,
     svc: CustomerService = Depends(get_customer_service),
 ) -> CustomerOut:
     return await svc.get_customer(customer_id)
@@ -89,7 +89,7 @@ async def create_customer(
     summary="更新客户字段",
 )
 async def update_customer(
-    customer_id: int,
+    customer_id: str,
     payload: CustomerUpdateRequest,
     svc: CustomerService = Depends(get_customer_service),
 ) -> CustomerOut:
@@ -101,7 +101,7 @@ async def update_customer(
     summary="软删客户（有子节点或被引用时拒绝）",
 )
 async def soft_delete_customer(
-    customer_id: int,
+    customer_id: str,
     svc: CustomerService = Depends(get_customer_service),
 ) -> dict:
     await svc.soft_delete_customer(customer_id)

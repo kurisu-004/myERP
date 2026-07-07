@@ -41,7 +41,7 @@ class AssemblyOut(BaseModel):
 class AssemblyListQuery(BaseModel):
     """装配体列表查询参数。"""
 
-    customer_id: int | None = Field(default=None, description="客户 id")
+    customer_id: str | None = Field(default=None, description="客户 id（雪花 ID 字符串）")
     status: str | None = Field(default=None, description="PENDING / IN_PROCESS / COMPLETED / CANCELLED")
     is_urgent: bool | None = Field(default=None, description="是否加急")
     drawing_no_like: str | None = Field(default=None, description="图号模糊匹配")
@@ -96,7 +96,7 @@ class AssemblyCreateRequest(BaseModel):
             "申请人表 id（雪花 ID 字符串）。必须是字符串，详见 PartCreateRequest 同名字段。"
         ),
     )
-    customer_id: int = Field(description="二级叶子客户 id")
+    customer_id: str = Field(description="二级叶子客户 id（雪花 ID 字符串）")
     request_date: date
     planned_delivery_date: date
     is_urgent: bool = False

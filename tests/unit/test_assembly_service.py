@@ -589,7 +589,7 @@ class TestCreateAssemblyErrors:
         return AssemblyCreateRequest(
             name="Test Asm",
             drawing_no="DWG-001",
-            customer_id=1,
+            customer_id="1",
             request_date=date(2026, 7, 1),
             planned_delivery_date=date(2026, 8, 1),
             children=[

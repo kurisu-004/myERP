@@ -36,7 +36,7 @@ router = APIRouter(
     summary="分页查询装配体列表",
 )
 async def list_assemblies(
-    customer_id: int | None = Query(default=None),
+    customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
     status: str | None = Query(default=None),
     is_urgent: bool | None = Query(default=None),
     drawing_no_like: str | None = Query(default=None),
@@ -130,7 +130,7 @@ child_router = APIRouter(
     summary="从任意子零件反查所属装配件（装配件自身/兄弟/文件）",
 )
 async def get_assembly_for_child(
-    part_id: int,
+    part_id: str,
     svc: AssemblyService = Depends(get_assembly_service),
 ) -> AssemblyDetail:
     return await svc.get_assembly_for_child(part_id)

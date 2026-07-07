@@ -77,8 +77,6 @@
               <el-select
                 v-model="form.applicant_id"
                 filterable
-                remote
-                :remote-method="onApplicantSearch"
                 :loading="applicantLoading"
                 :disabled="!form.customer_id"
                 placeholder="选择或输入申请人姓名（不在表中则提交时自动新增）"
@@ -266,8 +264,8 @@ import {
 import { Check, Document, Plus, Upload } from '@element-plus/icons-vue'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createAssembly } from '@/api/assembly'
-import { createApplicant, searchApplicants } from '@/api/applicant'
-import type { Applicant } from '@/types/applicant'
+import { createApplicant } from '@/api/applicant'
+import { useApplicantSearch } from '@/composables/useApplicantSearch'
 import type { AssemblyChildPayload } from '@/types/assembly'
 
 const router = useRouter()
@@ -292,59 +290,28 @@ onMounted(async () => {
   }
 })
 
-/** cascader 选中的客户 id → 所属一级客户 id。 */
-function resolveRootCustomerId(pickedId: number | string | null): number | null {
+/** cascader 选中的客户 id（雪花 ID 字符串）→ 所属一级客户 id（同雪花 ID 字符串）。 */
+function resolveRootCustomerId(pickedId: string | null): string | null {
   if (pickedId === null || pickedId === undefined || pickedId === '') return null
   const picked = customers.value.find((c) => c.id === String(pickedId))
   if (!picked) return null
-  if (picked.parent_id === null) return Number(picked.id)
-  return Number(picked.parent_id)
+  if (picked.parent_id === null) return picked.id
+  return picked.parent_id
 }
 
-// ============ 申请人候选 + 防抖远程搜索 ============
-const applicantCandidates = ref<Applicant[]>([])
-const applicantLoading = ref(false)
-const rootCustomerId = ref<number | null>(null)
-let applicantSearchTimer: ReturnType<typeof setTimeout> | null = null
-
-async function refetchApplicants(namePrefix: string, limit = 50): Promise<void> {
-  if (rootCustomerId.value === null) {
-    applicantCandidates.value = []
-    return
-  }
-  applicantLoading.value = true
-  try {
-    applicantCandidates.value = await searchApplicants({
-      customer_id: String(rootCustomerId.value),
-      name_prefix: namePrefix,
-      limit,
-    })
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '申请人列表加载失败')
-  } finally {
-    applicantLoading.value = false
-  }
-}
+// ============ 申请人候选（composable：只在客户切换时拉一次） ============
+const {
+  applicants: applicantCandidates,
+  loading: applicantLoading,
+  loadForCustomer: loadApplicantsForCustomer,
+} = useApplicantSearch({ resolveRootCustomerId })
 
 async function onCustomerChange(pickedId: unknown): Promise<void> {
   const raw = Array.isArray(pickedId) ? pickedId[pickedId.length - 1] : pickedId
   const idStr = raw === null || raw === undefined ? '' : String(raw)
   form.applicant_id = null
   form.applicant_name = ''
-  if (!idStr) {
-    rootCustomerId.value = null
-    applicantCandidates.value = []
-    return
-  }
-  rootCustomerId.value = resolveRootCustomerId(idStr)
-  await refetchApplicants('', 50)
-}
-
-function onApplicantSearch(query: string): void {
-  if (applicantSearchTimer) clearTimeout(applicantSearchTimer)
-  applicantSearchTimer = setTimeout(() => {
-    void refetchApplicants(query, 20)
-  }, 300)
+  await loadApplicantsForCustomer(idStr || null)
 }
 
 function onApplicantSelect(value: string | null): void {
@@ -379,7 +346,8 @@ interface FormState {
   // applicant_id 用字符串承载雪花 ID（避免 JS Number 精度丢失）；
   // 见 CLAUDE.md「雪花 ID 溢出」一节。
   applicant_id: string | null
-  customer_id: number | null
+  // customer_id 雪花 ID 字符串（CLAUDE.md §3）
+  customer_id: string | null
   request_date: string
   planned_delivery_date: string
   is_urgent: boolean
@@ -549,7 +517,8 @@ async function onSubmit(): Promise<void> {
       name: form.name.trim(),
       applicant_name: form.applicant_name.trim() || null,
       applicant_id: resolvedApplicantId,
-      customer_id: Number(form.customer_id),
+      // customer_id 雪花 ID 字符串（CLAUDE.md §3）—— 直接传字符串
+      customer_id: form.customer_id!,
       request_date: form.request_date,
       planned_delivery_date: form.planned_delivery_date,
       is_urgent: form.is_urgent,

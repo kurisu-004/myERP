@@ -99,8 +99,11 @@ class TPartEvent(Base, EventTimestampMixin):
 ### 3. ID 生成与 JSON 序列化
 
 **DB 层**：
-- `t_part` 等业务表：雪花 ID，列定义为 `Mapped[int] = mapped_column(BigInteger, primary_key=True, default=new_id)`。
-- `t_customer`：自增 `autoincrement=True`（`BigInteger`）。
+- 所有业务表（含 `t_customer`）2026-07-07 起统一雪花 ID：列定义为
+  `Mapped[int] = mapped_column(BigInteger, primary_key=True, default=new_id)`。
+  历史：`t_customer` 原 BigSerial 1-20，迁移 `000000000006_customer_snowflake_id`
+  已重写所有 id + parent_id + FK 引用并 DROP sequence。`t_customer_id_seq`
+  不再存在，seed 与测试 `TRUNCATE` 不再带 `RESTART IDENTITY`。
 - 雪花参数从 `.env` 读：`SNOWFLAKE_INSTANCE` / `SNOWFLAKE_SEQ` / `SNOWFLAKE_EPOCH`。
 
 **JSON 序列化**（防止 JS 精度丢失）：
@@ -121,10 +124,10 @@ id: IdStrNonNull                # 非空主键 → JSON: "123456..."
 
 约束：
 - **request body** 中所有雪花 ID 字段类型必须是 `str`（前端 TypeScript 也是 `string`），service 层收到后再 `int(data.field)` 转换后查 repository。
-- **path parameter**（如 `/parts/{id}`、`/applicants/{id}`）由 HTTP URL 字符串直接传给 FastAPI，无 JS 中转，可用 `int`（FastAPI 会做 `int(url_path_segment)`）。
-- **query parameter** 同理，用 `Query`/`Path` 解析，无 JS 中转，可用 `int`（但本项目几乎所有 snowflake ID 都不走 query）。
-- `t_customer.id` 是 `BigSerial`，绝对值始终在安全整数范围内，**可以**用 `int` 入参（如 `PartCreateRequest.customer_id`）。
-- 凡是新增的「snowflake ID 入参」字段，参考 `PartCreateRequest.applicant_id: str | None` 的写法。
+- **path parameter**（如 `/parts/{id}`、`/applicants/{id}`）由 HTTP URL 字符串直接传给 FastAPI，无 JS 中转，可用 `str`（为统一、与 body 保持一致，本项目所有 snowflake ID path 已统一为 str）。
+- **query parameter** 同理（`customer_id` 等已统一为 str 入参）。
+- 凡是新增的「snowflake ID 入参」字段，参考 `PartCreateRequest.applicant_id: str | None` 与 `PartCreateRequest.customer_id: str` 的写法。
+- service 层统一用 `parse_snowflake_id(value, field_name=...)`（`service/_id_parse.py`）做 str→int 转换；转换失败抛 `BIZ_INVALID_VALUE` 400。
 
 ```python
 # ✅ 正确（snowflake ID 入参用 str）

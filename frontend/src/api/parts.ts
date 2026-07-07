@@ -37,9 +37,9 @@ export interface PartListResult {
   offset: number
 }
 
-/** 入参侧 customer_id 仍按数字（数据库 BigInteger），由前端在调用前 Number() 转。 */
+/** 雪花 ID 字符串（CLAUDE.md §3 — 19 位 > JS Number.MAX_SAFE_INTEGER） */
 export interface ListPartsParams {
-  customer_id?: number
+  customer_id?: string
   statuses?: OrderStatus[]
   is_urgent?: boolean
   keyword?: string
@@ -66,7 +66,8 @@ export interface PartCreatePayload {
   planned_delivery_date: string
   actual_delivery_date?: string | null
   is_urgent?: boolean
-  customer_id: number
+  /** 雪花 ID 字符串（CLAUDE.md §3） */
+  customer_id: string
 }
 
 export interface PartStatusChangePayload {
@@ -84,7 +85,8 @@ export interface PartUpdatePayload {
   planned_delivery_date?: string
   actual_delivery_date?: string | null
   is_urgent?: boolean
-  customer_id?: number
+  /** 雪花 ID 字符串（CLAUDE.md §3） */
+  customer_id?: string
 }
 
 export interface PartPickUpPayload {

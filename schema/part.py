@@ -11,7 +11,7 @@ from schema._types import IdStr, IdStrNonNull
 class PartListQuery(BaseModel):
     """零件列表查询参数（同时作为 URL Query 参数）。"""
 
-    customer_id: int | None = Field(default=None, description="客户 id")
+    customer_id: str | None = Field(default=None, description="客户 id（雪花 ID 字符串）")
     statuses: list[PartStatus] | None = Field(
         default=None, description="订单状态多选（空=全部）"
     )
@@ -122,7 +122,7 @@ class PartCreateRequest(BaseModel):
     planned_delivery_date: date
     actual_delivery_date: date | None = None
     is_urgent: bool = False
-    customer_id: int = Field(description="二级叶子客户 id")
+    customer_id: str = Field(description="二级叶子客户 id（雪花 ID 字符串）")
 
     @field_validator("name", "drawing_no", "applicant_name")
     @classmethod
@@ -202,7 +202,7 @@ class PartUpdateRequest(BaseModel):
     planned_delivery_date: date | None = None
     actual_delivery_date: date | None = None
     is_urgent: bool | None = None
-    customer_id: int | None = Field(default=None, description="客户 id")
+    customer_id: str | None = Field(default=None, description="客户 id（雪花 ID 字符串）")
 
 
 class PartPickUpRequest(BaseModel):

@@ -24,7 +24,8 @@ export interface AssemblyItem {
 }
 
 export interface AssemblyListQuery {
-  customer_id?: number
+  /** 雪花 ID 字符串（CLAUDE.md §3 — 19 位 > JS Number.MAX_SAFE_INTEGER） */
+  customer_id?: string
   status?: string
   is_urgent?: boolean
   drawing_no_like?: string
@@ -62,7 +63,8 @@ export interface AssemblyCreatePayload {
    * 同 parts.ts 的 PartCreatePayload.applicant_id，详见 CLAUDE.md「雪花 ID 溢出」一节。
    */
   applicant_id?: string | null
-  customer_id: number
+  /** 雪花 ID 字符串（CLAUDE.md §3） */
+  customer_id: string
   request_date: string
   planned_delivery_date: string
   is_urgent?: boolean

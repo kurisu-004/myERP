@@ -217,9 +217,10 @@ _BUSINESS_TABLES = (
 
 async def _truncate_all(session: AsyncSession) -> None:
     for table in _BUSINESS_TABLES:
-        await session.execute(
-            text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE')
-        )
+        # t_customer 已改为雪花 ID（t_customer_id_seq 已 DROP），
+        # 不能用 RESTART IDENTITY；其余 BigSerial 表保持原样。
+        suffix = "" if table == "t_customer" else " RESTART IDENTITY CASCADE"
+        await session.execute(text(f'TRUNCATE TABLE "{table}"{suffix}'))
     # 复位流水号计数器；alembic 迁移可能没 seed，单独 ensure 一次。
     await session.execute(text("SELECT 1 FROM t_serial_counter LIMIT 0"))  # 探测表存在
     await session.execute(text(

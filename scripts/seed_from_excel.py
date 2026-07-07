@@ -253,15 +253,12 @@ async def seed() -> None:
 
     async with SessionLocal() as session:
         async with session.begin():
-            # 1. 清空旧数据（仅限 t_customer / t_part，方便重复跑）
+            # 1. 清空旧数据（仅限 t_customer / t_part，方便重复跑）。
+            #    t_customer 2026-07-07 起改雪花 ID（t_customer_id_seq 已 DROP），
+            #    不能再 RESTART 序列。
             await session.execute(TPart.__table__.delete())
             await session.execute(TCustomer.__table__.delete())
-            # 重置自增序列（PostgreSQL）
-            await session.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER SEQUENCE t_customer_id_seq RESTART WITH 1"
-                )
-            )
+            # 无 ALTER SEQUENCE 步骤（雪花 ID 不可重置；删除时连同 ID 一起删）
 
             # 2. 插入一级
             name_to_id: dict[str, int] = {}

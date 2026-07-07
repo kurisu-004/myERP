@@ -56,7 +56,7 @@ _read_lots_dep = [
     dependencies=_read_lots_dep,
 )
 async def list_parts(
-    customer_id: int | None = Query(default=None, description="客户 id"),
+    customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
     statuses: list[str] | None = Query(default=None, description="订单状态多选"),
     is_urgent: bool | None = Query(default=None, description="是否加急"),
     keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
@@ -130,7 +130,7 @@ async def update_part(
     dependencies=_read_lots_dep,
 )
 async def list_pending_programming_parts(
-    customer_id: int | None = Query(default=None, description="客户 id"),
+    customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
     keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
