@@ -19,7 +19,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
-from core.permission import CurrentUser
+
 from core.security import create_access_token, verify_password
 from model.enums import ShelfZone, UserRole
 from model.user_role import TUserRole
@@ -37,14 +37,11 @@ class AuthService:
         user_roles: UserRoleRepository,
         shelves: ShelfRepository,
         menus: MenuRepository,
-        *,
-        current_user: CurrentUser | None = None,
     ) -> None:
         self.users = users
         self.user_roles = user_roles
         self.shelves = shelves
         self.menus = menus
-        self._user_id: int | None = current_user.id if current_user else None
 
     async def login(self, data: LoginRequest) -> LoginResponse:
         # username 保持原大小写，存库时存 lower（UserService.create_user 做）；
