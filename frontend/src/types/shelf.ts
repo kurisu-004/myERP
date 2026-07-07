@@ -16,3 +16,22 @@ export interface ShelfListResult {
   limit: number
   offset: number
 }
+
+export interface ShelfProcessLink {
+  process_id: string
+  process_code: string
+  process_name: string
+  sort_order: number
+}
+
+export interface ShelfWithProcesses {
+  id: string
+  code: string
+  name: string
+  zone: string
+  processes: ShelfProcessLink[]
+}
+
+export interface SetShelfProcessesPayload {
+  process_ids: string[]
+}

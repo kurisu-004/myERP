@@ -9,6 +9,7 @@ from .part_event import PartEventRepository
 from .process import ProcessRepository
 from .serial_counter import SerialCounterRepository
 from .shelf import ShelfRepository
+from .shelf_process import ShelfProcessRepository
 from .user import UserRepository, UserRoleRepository
 from .worker import WorkerRepository
 from .work_type import WorkTypeRepository
@@ -26,6 +27,7 @@ __all__ = [
     "ProcessRepository",
     "SerialCounterRepository",
     "ShelfRepository",
+    "ShelfProcessRepository",
     "UserRepository",
     "UserRoleRepository",
     "WorkerRepository",

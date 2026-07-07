@@ -12,7 +12,7 @@
 """
 from fastapi import APIRouter, Depends, Query, status as http_status
 
-from api.deps import get_shelf_service
+from api.deps import get_shelf_process_service, get_shelf_service
 from core.permission import require_role, require_roles
 from model.enums import ShelfZone, UserRole
 from schema.shelf import (
@@ -22,7 +22,9 @@ from schema.shelf import (
     ShelfOut,
     ShelfUpdateRequest,
 )
+from schema.shelf_process import SetShelfProcessRequest, ShelfWithProcessesOut
 from service.shelf import ShelfService
+from service.shelf_process import ShelfProcessService
 
 # ============================================================
 # 读路由：MANAGER + CLERK + CNC_PROGRAMMER
@@ -57,6 +59,18 @@ async def get_shelf(
     svc: ShelfService = Depends(get_shelf_service),
 ) -> ShelfOut:
     return await svc.get_shelf(shelf_id)
+
+
+@read_router.get(
+    "/{shelf_id}/processes",
+    response_model=ShelfWithProcessesOut,
+    summary="货架当前映射的工序列表",
+)
+async def list_shelf_processes(
+    shelf_id: int,
+    svc: ShelfProcessService = Depends(get_shelf_process_service),
+) -> ShelfWithProcessesOut:
+    return await svc.list_for_shelf(shelf_id)
 
 
 # ============================================================
@@ -105,3 +119,16 @@ async def deactivate_shelf(
     svc: ShelfService = Depends(get_shelf_service),
 ) -> ShelfOut:
     return await svc.soft_delete_shelf(shelf_id)
+
+
+@write_router.post(
+    "/{shelf_id}/processes",
+    response_model=ShelfWithProcessesOut,
+    summary="整体替换货架的工序映射",
+)
+async def set_shelf_processes(
+    shelf_id: int,
+    payload: SetShelfProcessRequest,
+    svc: ShelfProcessService = Depends(get_shelf_process_service),
+) -> ShelfWithProcessesOut:
+    return await svc.set_for_shelf(shelf_id, payload)

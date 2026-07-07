@@ -289,7 +289,7 @@ import { ACTION_LABEL, ACTION_TAG_TYPE, useScanSession } from '@/composables/use
 import { usePartsScanQueue } from '@/composables/usePartsScanQueue'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useAuthSession } from '@/composables/useAuthSession'
-import { listShelves } from '@/api/shelves'
+import { getShelfProcesses, listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
@@ -357,9 +357,21 @@ async function onSubmit(): Promise<void> {
     return
   }
 
-  // RETURN 需要选下一道工序
+  // RETURN 需要选下一道工序（仅显示当前货架关联的工序）
   if (action.value === 'RETURN') {
-    processes.value = (await listProcesses({ limit: 200 })).items
+    try {
+      const sp = await getShelfProcesses(shelfId.value)
+      const processIds = sp.processes.map((p) => p.process_id)
+      const allProcs = (await listProcesses({ limit: 200 })).items
+      processes.value = allProcs.filter((p) => processIds.includes(String(p.id)))
+      if (processes.value.length === 0) {
+        ElMessage.warning('当前货架未配置可执行的工序，请联系管理员')
+        return
+      }
+    } catch {
+      // fallback：映射不存在时降级到全部工序（向后兼容）
+      processes.value = (await listProcesses({ limit: 200 })).items
+    }
     selectedNextProcessId.value = undefined
     showNextProcessDialog.value = true
     return

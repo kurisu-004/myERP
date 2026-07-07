@@ -1,7 +1,12 @@
 // 货架 API（走 @/api/http 统一 axios 客户端）。
 
 import { api } from '@/api/http'
-import type { Shelf, ShelfListResult } from '@/types/shelf'
+import type {
+  Shelf,
+  ShelfListResult,
+  ShelfWithProcesses,
+  SetShelfProcessesPayload,
+} from '@/types/shelf'
 
 export interface ListShelvesParams {
   zone?: string
@@ -56,5 +61,23 @@ export async function updateShelf(
 
 export async function deactivateShelf(id: string): Promise<Shelf> {
   const resp = await api.post<Shelf>(`/shelves/${id}/deactivate`)
+  return resp.data
+}
+
+export async function getShelfProcesses(
+  id: string,
+): Promise<ShelfWithProcesses> {
+  const resp = await api.get<ShelfWithProcesses>(`/shelves/${id}/processes`)
+  return resp.data
+}
+
+export async function setShelfProcesses(
+  id: string,
+  payload: SetShelfProcessesPayload,
+): Promise<ShelfWithProcesses> {
+  const resp = await api.post<ShelfWithProcesses>(
+    `/shelves/${id}/processes`,
+    payload,
+  )
   return resp.data
 }

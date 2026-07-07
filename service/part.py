@@ -31,6 +31,7 @@ from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
+from repository.shelf_process import ShelfProcessRepository
 from repository.work_type import WorkTypeRepository
 from repository.work_type_process import WorkTypeProcessRepository
 from repository.worker import WorkerRepository
@@ -96,6 +97,7 @@ class PartService:
         work_types: WorkTypeRepository | None = None,
         work_type_process: WorkTypeProcessRepository | None = None,
         applicants: ApplicantRepository | None = None,
+        shelf_process_repo: ShelfProcessRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
@@ -111,6 +113,7 @@ class PartService:
         self.work_types = work_types
         self.work_type_process = work_type_process
         self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
+        self.shelf_process_repo = shelf_process_repo  # 可选：用于放回时校验工序属于货架
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
         self._user_id: int | None = current_user.id if current_user else None
@@ -803,6 +806,20 @@ class PartService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
             new_process = await self._get_process(data.next_process_id)
+            # 校验 next_process_id 属于当前货架的已分配工序（防御性校验）
+            if self.shelf_process_repo is not None:
+                allowed_ids = await self.shelf_process_repo.list_process_ids_by_shelf(
+                    shelf.id
+                )
+                if allowed_ids and data.next_process_id not in allowed_ids:
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message=(
+                            f"process {data.next_process_id} is not assigned to "
+                            f"shelf {shelf.code!r}"
+                        ),
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
             # 解析 prev_process_code 与 worker_work_type_code 给状态机 note 用
             prev_process_code: str | None = None
             if self.processes is not None and part.next_process_id is not None:

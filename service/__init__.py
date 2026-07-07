@@ -9,6 +9,7 @@ from .menu import build_menu_tree
 from .part import PartService
 from .process import ProcessService
 from .shelf import ShelfService
+from .shelf_process import ShelfProcessService
 from .user import UserService
 from .worker import WorkerService
 from .work_type import WorkTypeService
@@ -23,6 +24,7 @@ __all__ = [
     "DrawingService",
     "PartService",
     "ProcessService",
+    "ShelfProcessService",
     "ShelfService",
     "UserService",
     "WorkerService",

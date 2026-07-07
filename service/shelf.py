@@ -127,6 +127,7 @@ class ShelfService:
             s.is_active = data.is_active
         s.updated_by = self._user_id
         await self.shelves.update(s)
+        await self._refresh(s)
         account_count_map = await self._account_count_map([s.id])
         return await self._to_out(s, account_count_map.get(s.id, 0))
 
@@ -163,12 +164,23 @@ class ShelfService:
             )
         s.updated_by = self._user_id
         await self.shelves.soft_delete(s)
+        await self._refresh(s)
         account_count_map = await self._account_count_map([s.id])
         return await self._to_out(s, account_count_map.get(s.id, 0), include_deleted=True)
 
     # ============================================================
     # 内部
     # ============================================================
+    async def _refresh(self, s: TShelf) -> None:
+        """刷新 ORM 对象，防止 _account_count_map 开新 session 导致过期。
+
+        测试环境 mock 不含 session，用 getattr 做兼容。
+        """
+        session = getattr(self.shelves, 'session', None)
+        if session is not None:
+            await session.refresh(s)
+
+
     async def _account_count_map(self, shelf_ids: list[int]) -> dict[int, int]:
         if not shelf_ids:
             return {}

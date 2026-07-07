@@ -35,6 +35,25 @@
           </el-select>
         </el-form-item>
         <el-form-item label="位置" prop="location"><el-input v-model="shelfForm.location" placeholder="可选的自由文本" /></el-form-item>
+        <el-form-item label="工序">
+          <el-select
+            v-model="selectedProcessIds"
+            multiple filterable
+            placeholder="选择该货架可执行的工序（可多选）"
+            style="width:100%"
+          >
+            <el-option
+              v-for="p in allProcesses"
+              :key="p.id"
+              :label="`${p.code} — ${p.name}`"
+              :value="p.id"
+            >
+              <span style="font-weight:600">{{ p.code }}</span>
+              <span style="margin-left:4px">{{ p.name }}</span>
+              <el-tag :type="p.category === 'INHOUSE' ? 'primary' : 'warning'" size="small" style="margin-left:6px">{{ PROCESS_CATEGORY_LABEL[p.category] }}</el-tag>
+            </el-option>
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showCreate = false">取消</el-button>
@@ -47,14 +66,19 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listShelves, createShelf, updateShelf, deactivateShelf } from '@/api/shelves'
+import { listShelves, createShelf, updateShelf, deactivateShelf, getShelfProcesses, setShelfProcesses } from '@/api/shelves'
+import { listProcesses } from '@/api/process'
 import type { Shelf } from '@/types/shelf'
+import type { Process } from '@/types/process'
+import { PROCESS_CATEGORY_LABEL } from '@/types/process'
 
 const items = ref<Shelf[]>([])
 const loading = ref(false)
 
 const showCreate = ref(false)
 const saving = ref(false)
+const allProcesses = ref<Process[]>([])
+const selectedProcessIds = ref<string[]>([])
 const editingShelf = ref<Shelf | null>(null)
 const shelfFormRef = ref()
 const shelfForm = reactive({ code: '', name: '', zone: 'PRODUCTION' as string, location: '' })
@@ -70,19 +94,23 @@ async function fetchData() {
   finally { loading.value = false }
 }
 
-function resetForm() { shelfForm.code = ''; shelfForm.name = ''; shelfForm.zone = 'PRODUCTION'; shelfForm.location = ''; editingShelf.value = null }
-function editShelf(s: any) { const sh = s as Shelf; editingShelf.value = sh; shelfForm.code = sh.code; shelfForm.name = sh.name; shelfForm.zone = sh.zone; shelfForm.location = sh.location ?? ''; showCreate.value = true }
+function resetForm() { shelfForm.code = ''; shelfForm.name = ''; shelfForm.zone = 'PRODUCTION'; shelfForm.location = ''; selectedProcessIds.value = []; editingShelf.value = null }
+async function editShelf(s: any) { const sh = s as Shelf; editingShelf.value = sh; shelfForm.code = sh.code; shelfForm.name = sh.name; shelfForm.zone = sh.zone; shelfForm.location = sh.location ?? ''; showCreate.value = true; try { const sp = await getShelfProcesses(String(sh.id)); selectedProcessIds.value = sp.processes.map((p) => p.process_id) } catch { selectedProcessIds.value = [] } }
 
 async function saveShelf() {
   const valid = await shelfFormRef.value?.validate().catch(() => false)
   if (!valid) return
   saving.value = true
   try {
+    let shelfId: string
     if (editingShelf.value) {
       await updateShelf(String(editingShelf.value.id), { name: shelfForm.name, location: shelfForm.location || undefined })
+      shelfId = String(editingShelf.value.id)
     } else {
-      await createShelf({ code: shelfForm.code, name: shelfForm.name, zone: shelfForm.zone, location: shelfForm.location || undefined })
+      const created = await createShelf({ code: shelfForm.code, name: shelfForm.name, zone: shelfForm.zone, location: shelfForm.location || undefined })
+      shelfId = String(created.id)
     }
+    await setShelfProcesses(shelfId, { process_ids: selectedProcessIds.value })
     showCreate.value = false
     await fetchData()
     ElMessage.success('已保存')
@@ -92,7 +120,10 @@ async function saveShelf() {
 
 async function doDeactivate(id: string) { await deactivateShelf(id); await fetchData(); ElMessage.success('已停用') }
 
-onMounted(fetchData)
+onMounted(async () => {
+  await fetchData()
+  try { const res = await listProcesses({ limit: 200 }); allProcesses.value = res.items } catch { /* ignore */ }
+})
 </script>
 
 <style lang="scss" scoped>

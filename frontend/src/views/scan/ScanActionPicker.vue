@@ -31,8 +31,10 @@
 
     <div class="content">
       <h2 class="state-title">请选择报工操作</h2>
-      <div class="action-grid">
+      <div v-if="shelfLoading" style="text-align:center;padding:40px 0;color:#909399">加载货架信息...</div>
+      <div v-else class="action-grid" :class="{ 'action-grid--two': shelfZone === 'PRODUCTION' }">
         <el-button
+          v-if="shelfZone === 'PRODUCTION'"
           type="primary"
           size="large"
           class="action-btn"
@@ -43,6 +45,7 @@
           <span class="action-desc">扫码领取，开始加工</span>
         </el-button>
         <el-button
+          v-if="shelfZone === 'PRODUCTION'"
           type="warning"
           size="large"
           class="action-btn"
@@ -53,6 +56,7 @@
           <span class="action-desc">加工完一道工序放回待加工区</span>
         </el-button>
         <el-button
+          v-if="shelfZone === 'INSPECTION'"
           type="success"
           size="large"
           class="action-btn"
@@ -68,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeMount } from 'vue'
+import { onBeforeMount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -84,12 +88,29 @@ import {
   useScanSession,
   type WorkAction,
 } from '@/composables/useScanSession'
+import { useAuthSession } from '@/composables/useAuthSession'
+import { listShelves } from '@/api/shelves'
+import type { Shelf } from '@/types/shelf'
 
 const router = useRouter()
 const { worker, setAction, reset, requireWorker } = useScanSession()
+const { activeShelfId } = useAuthSession()
 
-onBeforeMount(() => {
+const shelfZone = ref<string | null>(null) // 'PRODUCTION' | 'INSPECTION' | null
+const shelfLoading = ref(true)
+
+onBeforeMount(async () => {
   if (!requireWorker(router)) return
+  // 获取当前货架区域，决定可用操作
+  const sid = activeShelfId()
+  if (sid) {
+    try {
+      const items = (await listShelves({ limit: 200 })).items
+      const shelf = items.find((s: Shelf) => String(s.id) === sid)
+      shelfZone.value = shelf?.zone ?? null
+    } catch { shelfZone.value = null }
+  }
+  shelfLoading.value = false
 })
 
 function selectAction(a: WorkAction): void {
@@ -210,6 +231,10 @@ function goHome(): void {
   font-weight: 400;
   opacity: 0.85;
   margin-top: 4px;
+}
+
+.action-grid--two {
+  grid-template-columns: repeat(2, 1fr);
 }
 
 @media (max-width: 768px) {

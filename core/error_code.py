@@ -47,6 +47,8 @@ class ErrCode(IntEnum):
     BIZ_SHELF_NOT_FOUND = 20501
     BIZ_SHELF_DUPLICATE_CODE = 20502
     BIZ_SHELF_IN_USE = 20503            # 还有 IN_PROCESS/INSPECTION 零件 → 拒软删
+    BIZ_SHELF_PROCESS_SHELF_NOT_FOUND = 20504  # 货架不存在
+    BIZ_SHELF_PROCESS_PROCESS_NOT_FOUND = 20505  # 工序不存在
 
     # ---- 账号（t_user / t_user_role）----
     # 206xx：账号相关

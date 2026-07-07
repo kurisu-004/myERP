@@ -23,6 +23,7 @@ from .part_event import TPartEvent
 from .process import TProcess
 from .serial_counter import TSerialCounter
 from .shelf import TShelf
+from .shelf_process import TShelfProcess
 from .user import TUser
 from .user_role import TUserRole
 from .worker import TWorker
@@ -45,6 +46,7 @@ __all__ = [
     "TRoleMenu",
     "TSerialCounter",
     "TShelf",
+    "TShelfProcess",
     "TUser",
     "TUserRole",
     "TWorker",

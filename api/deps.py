@@ -16,6 +16,7 @@ from repository import (
     PartRepository,
     ProcessRepository,
     SerialCounterRepository,
+    ShelfProcessRepository,
     ShelfRepository,
     UserRepository,
     UserRoleRepository,
@@ -32,6 +33,7 @@ from service import (
     DrawingService,
     PartService,
     ProcessService,
+    ShelfProcessService,
     ShelfService,
     UserService,
     WorkerService,
@@ -86,11 +88,9 @@ def get_auth_service(
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
     shelves: ShelfRepository = Depends(get_shelf_repo),
     menus: MenuRepository = Depends(get_menu_repo),
-    user: CurrentUser = Depends(get_current_user),
 ) -> AuthService:
     return AuthService(
         users=users, user_roles=user_roles, shelves=shelves, menus=menus,
-        current_user=user,
     )
 
 
@@ -149,6 +149,7 @@ def get_part_service(
         work_types=WorkTypeRepository(session),
         work_type_process=WorkTypeProcessRepository(session),
         applicants=ApplicantRepository(session),
+        shelf_process_repo=ShelfProcessRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,
@@ -185,6 +186,24 @@ def get_work_type_process_repo(
     session: AsyncSession = Depends(get_session),
 ) -> WorkTypeProcessRepository:
     return WorkTypeProcessRepository(session)
+
+
+def get_shelf_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> ShelfProcessRepository:
+    return ShelfProcessRepository(session)
+
+
+def get_shelf_process_service(
+    shelves: ShelfRepository = Depends(get_shelf_repo),
+    processes: ProcessRepository = Depends(get_process_repo),
+    junction: ShelfProcessRepository = Depends(get_shelf_process_repo),
+    user: CurrentUser = Depends(get_current_user),
+) -> ShelfProcessService:
+    return ShelfProcessService(
+        shelves=shelves, processes=processes, junction=junction,
+        current_user=user,
+    )
 
 
 def get_work_type_service(
@@ -326,6 +345,7 @@ def get_assembly_service(
         serial_counters=serial_counters,
         shelves=shelves_repo,
         processes=ProcessRepository(session),
+        shelf_process_repo=ShelfProcessRepository(session),
         current_user=user,
     )
     drawings = DrawingService(
