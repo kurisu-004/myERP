@@ -90,29 +90,27 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
 
 
 def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
-    """渲染第 2 页（反面）：白底 A4 + 右下角条形码 + 醒目序列号。
+    """渲染第 2 页（反面）：白底 A4 + 右下角条形码 + 序列号文字。
 
-    序列号同时：
-    - 在条码下方作为扫描标签（小号）
-    - 在条码上方以醒目大字号 + 灰色底色块显示（方便人工目视对单）
+    极简版（2026-07-07 迭代）：去掉「序列号」灰色 pill 与橙色边框方框，
+    只保留大字号 serial_no + Code128 条形码 + 条码下方小号扫描标签。
+    条码宽度按页面短边的 49.5% 自适应（原 55%，缩小 10%）。
     """
     page_w, page_h = _a4_px(orientation)
     page = Image.new("RGB", (page_w, page_h), "white")
     draw = ImageDraw.Draw(page)
 
     # 字号随朝向微调：横向时页面更宽，字号更大
-    big_label_size = 80 if orientation == "landscape" else 64
     big_value_size = 120 if orientation == "landscape" else 96
     small_tag_size = 36
 
-    big_label_font = _load_cn_font(size=big_label_size)
     big_value_font = _load_cn_font(size=big_value_size)
     small_tag_font = _load_cn_font(size=small_tag_size)
 
     # === 右下角固定角落 ===
-    # 条形码宽度按页面短边自适应：横向短边=595pt→~900px；纵向短边=595pt→~700px
+    # 条形码宽度按页面短边自适应（原 55%，本轮 ×0.9 → 49.5%）
     short_side_pt = min(*A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT)
-    barcode_w_px = int(short_side_pt * PX_PER_PT * 0.55)  # 横 ~760px / 纵 ~570px
+    barcode_w_px = int(short_side_pt * PX_PER_PT * 0.495)  # 横 ~686px / 纵 ~513px
     barcode_w_px = max(barcode_w_px, 400)
 
     bc_img = _render_barcode_pil(serial_no)
@@ -123,59 +121,38 @@ def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
 
     corner_margin_r_px = int(60 * PX_PER_PT)
     corner_margin_b_px = int(60 * PX_PER_PT)
-    paste_x = page_w - corner_margin_r_px - barcode_w_px
-    paste_y = page_h - corner_margin_b_px - bc_resized.height
 
-    # 估算整个右下角块总高度（醒目序列号 + 条码 + 小标签 + 间距）
-    big_label_gap = 28
+    # 倒推：从下到上排（大字 → 条码 → 小标签），整块底边对齐右下角
+    value_to_bc_gap = 22
     bc_to_tag_gap = 14
-    tag_gap_to_block = 22
-    # 倒推 paste_y 让整块底部对齐
+    # 大字占的纵向高度（实际字形 bbox + 一点 padding）
+    bbox = draw.textbbox((0, 0), serial_no, font=big_value_font)
+    value_h = bbox[3] - bbox[1]
     block_total_h = (
-        big_label_size + big_label_gap
-        + big_value_size + tag_gap_to_block
+        value_h + value_to_bc_gap
         + bc_resized.height + bc_to_tag_gap
         + small_tag_size
     )
-    block_top_y = page_h - corner_margin_b_px - block_total_h
-    # 在整块里绘制
+    block_bottom_y = page_h - corner_margin_b_px
+    block_top_y = block_bottom_y - block_total_h
     cur_y = block_top_y
-    # 1) 灰色标签「序列号 / Serial No.」
-    label_text = "序列号"
-    bbox = draw.textbbox((0, 0), label_text, font=big_label_font)
-    lw = bbox[2] - bbox[0]
-    draw.rectangle(
-        [paste_x, cur_y, paste_x + lw + 32, cur_y + big_label_size + 8],
-        fill="#f0f0f0",
-    )
-    draw.text(
-        (paste_x + 16, cur_y + 4), label_text, fill="#333", font=big_label_font,
-    )
-    cur_y += big_label_size + big_label_gap
-    # 2) 醒目大字号序列号
+
+    # 1) 序列号大字号（裸文本，无边框 / 无底色块）
+    # 居中于条码列宽内
     bbox = draw.textbbox((0, 0), serial_no, font=big_value_font)
     vw = bbox[2] - bbox[0]
-    vh = bbox[3] - bbox[1]
-    # 浅灰底色块 + 黑字
-    draw.rectangle(
-        [
-            paste_x,
-            cur_y - 6,
-            paste_x + max(vw + 32, barcode_w_px),
-            cur_y + vh + 12,
-        ],
-        fill="#fffbe6",
-        outline="#e6a23c",
-        width=3,
-    )
-    draw.text(
-        (paste_x + 16, cur_y), serial_no, fill="#000", font=big_value_font,
-    )
-    cur_y += vh + tag_gap_to_block
-    # 3) 条形码本体
+    text_x = corner_margin_r_px + barcode_w_px - vw  # 右对齐到条码右边缘
+    # 用 page_w - corner_margin_r_px - vw 等价：右贴条码右缘
+    text_x = page_w - corner_margin_r_px - vw
+    draw.text((text_x, cur_y), serial_no, fill="#000", font=big_value_font)
+    cur_y += value_h + value_to_bc_gap
+
+    # 2) 条形码本体（右对齐）
+    paste_x = page_w - corner_margin_r_px - barcode_w_px
     page.paste(bc_resized, (paste_x, cur_y))
     cur_y += bc_resized.height + bc_to_tag_gap
-    # 4) 扫描标签（条码下方）
+
+    # 3) 条码下方小号扫描标签（与条码同宽居中）
     bbox = draw.textbbox((0, 0), serial_no, font=small_tag_font)
     tw = bbox[2] - bbox[0]
     draw.text(
