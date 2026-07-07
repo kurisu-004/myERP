@@ -1,9 +1,8 @@
 """WebSocket：大屏数据实时推送。
 
-- /ws/dashboard：连接成功立即推一次快照（ready_queue + in_process）；
-  由 lifespan 启动的后台任务每 5 秒再推一次。
+- /ws/dashboard：连接成功立即推一次快照（ready_queue + in_process）。
 - 业务侧（service 层）状态变更成功后调用 `broadcast_dashboard_snapshot`
-  触发立即推送，不等 5 秒周期。
+  触发立即推送；通知横幅走 `broadcast_dashboard_event`。
 
 权限：连接时必须带有效 JWT（`?token=...` 或 `Authorization: Bearer ...`），
 任意已登录用户（MANAGER / SHELF_ACCOUNT）可订阅。
@@ -28,8 +27,6 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-PUSH_INTERVAL_SEC = 5.0
 
 
 async def _resolve_user_from_ws(ws: WebSocket, token: str | None) -> int | None:
@@ -155,14 +152,6 @@ async def ws_dashboard(
         logger.exception("ws dashboard error")
     finally:
         manager.disconnect(ws)
-
-
-async def dashboard_push_loop() -> None:
-    while True:
-        await asyncio.sleep(PUSH_INTERVAL_SEC)
-        if not manager.active:
-            continue
-        await _build_and_broadcast()
 
 
 async def broadcast_dashboard_snapshot() -> None:

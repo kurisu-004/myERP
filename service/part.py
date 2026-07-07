@@ -457,6 +457,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         await self.parts.soft_delete(part)
+        await self._broadcast()  # `deleted_at` 让该零件从 dashboard 快照消失
 
     # ============================================================
     # 新报工流程（货架 + 工人 + 品检）

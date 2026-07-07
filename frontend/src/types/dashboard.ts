@@ -48,17 +48,27 @@ export interface DashboardSnapshot {
 // 业务事件消息（横幅通知消费）
 // ============================================================
 
-export type DashboardEventType = 'PICKED_UP' | 'RELEASED' | 'PLACED_ON_SHELF' | 'RETURNED' | 'INSPECTED'
+export type DashboardEventType =
+  | 'PICKED_UP'
+  | 'RELEASED'
+  | 'PLACED_ON_SHELF'
+  | 'RETURNED'
+  | 'INSPECTED'
+  | 'ASSEMBLY_CANCELLED'
+  | 'ASSEMBLY_DELETED'
 
 export interface DashboardEventPayload {
-  serial_no: string | null
-  drawing_no: string
-  name: string
-  customer_path: string | null
-  is_urgent: boolean
-  planned_delivery_date: string | null
+  // 零件事件携带的字段（ASSEMBLY_* 不带这些）
+  serial_no?: string | null
+  drawing_no?: string | null
+  name?: string | null
+  customer_path?: string | null
+  is_urgent?: boolean | null
+  planned_delivery_date?: string | null
   worker_name?: string | null
   shelf_code?: string | null
+  // 装配体事件携带的字段
+  assembly_id?: string | null
 }
 
 export interface DashboardEvent {

@@ -52,6 +52,7 @@ _logger = logging.getLogger(__name__)
 
 
 # 事件广播回调签名（与 PartService.event_broadcaster 一致）。
+Broadcaster = Callable[[], Awaitable[None]]
 EventBroadcaster = Callable[[str, dict], Awaitable[None]]
 
 
@@ -83,6 +84,7 @@ class AssemblyService:
         drawings: DrawingService,
         applicants: ApplicantRepository | None = None,
         event_broadcaster: EventBroadcaster | None = None,
+        broadcaster: Broadcaster | None = None,
     ) -> None:
         self.assemblies = assemblies
         self.parts = parts
@@ -94,6 +96,7 @@ class AssemblyService:
         self.drawings = drawings
         self.applicants = applicants
         self.event_broadcaster = event_broadcaster
+        self.broadcaster = broadcaster
 
     # ============================================================
     # 写操作：create
@@ -435,6 +438,18 @@ class AssemblyService:
         asm.sm.cancel()
         await self.assemblies.session.flush()
 
+        # dashboard 卡片立刻消失 + 通知横幅（不走 PartService.cancel,
+        # 所以必须自己推）
+        await self._broadcast()
+        await self._broadcast_event(
+            "ASSEMBLY_CANCELLED",
+            {
+                "assembly_id": asm.id,
+                "drawing_no": asm.drawing_no,
+                "name": asm.name,
+            },
+        )
+
         return await self._build_detail(asm)
 
     # ============================================================
@@ -464,6 +479,17 @@ class AssemblyService:
         await self.assemblies.soft_delete(asm)
 
         await self.drawings.delete_files_silently(keys_to_cleanup)
+
+        # dashboard 卡片 + asm 立刻消失 + 通知横幅
+        await self._broadcast()
+        await self._broadcast_event(
+            "ASSEMBLY_DELETED",
+            {
+                "assembly_id": asm.id,
+                "drawing_no": asm.drawing_no,
+                "name": asm.name,
+            },
+        )
 
     # ============================================================
     # 内部
@@ -560,3 +586,16 @@ class AssemblyService:
             await self.event_broadcaster(event_type, payload)
         except Exception:  # noqa: BLE001
             _logger.exception("assembly event broadcast failed: %s", event_type)
+
+    async def _broadcast(self) -> None:
+        """触发整张 dashboard snapshot 重推（与 PartService._broadcast 一致）。
+
+        装配体的 cancel / soft_delete 走级联路径，不经过 PartService 状态机
+        入口，所以它们自己负责推送：子件从 snapshot 移除需要这次刷新。
+        """
+        if self.broadcaster is None:
+            return
+        try:
+            await self.broadcaster()
+        except Exception:  # noqa: BLE001
+            _logger.exception("assembly snapshot broadcast failed")

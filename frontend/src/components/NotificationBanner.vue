@@ -71,11 +71,11 @@ function push(ev: DashboardEvent): void {
   const item: BannerItem = {
     key,
     event_type: ev.event_type,
-    drawing_no: ev.data.drawing_no,
-    name: ev.data.name,
-    customer_path: ev.data.customer_path,
-    is_urgent: ev.data.is_urgent,
-    planned_delivery_date: ev.data.planned_delivery_date,
+    drawing_no: ev.data.drawing_no ?? '',
+    name: ev.data.name ?? '',
+    customer_path: ev.data.customer_path ?? null,
+    is_urgent: ev.data.is_urgent ?? false,
+    planned_delivery_date: ev.data.planned_delivery_date ?? null,
     worker_name: ev.data.worker_name ?? null,
     shelf_code: ev.data.shelf_code ?? null,
   }
@@ -92,6 +92,12 @@ function titleFor(item: BannerItem): string {
   if (item.event_type === 'PLACED_ON_SHELF') {
     const shelf = item.shelf_code || '未知货架'
     return `${subject} 已放置到 ${shelf} 等待加工`
+  }
+  if (item.event_type === 'ASSEMBLY_CANCELLED') {
+    return `装配体 ${item.drawing_no || ''} 已取消`
+  }
+  if (item.event_type === 'ASSEMBLY_DELETED') {
+    return `装配体 ${item.drawing_no || ''} 已删除`
   }
   // RELEASED (legacy)
   return `${subject} 已进入货架等待加工`

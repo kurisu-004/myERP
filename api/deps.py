@@ -280,7 +280,7 @@ def get_assembly_service(
     共享同一 session/事务：构造 PartService / DrawingService 时复用 session，
     装配体创建时的所有 DB 写入都在一个事务里，任一失败整体回滚。
     """
-    from api.v1.ws import broadcast_dashboard_event
+    from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
     parts_repo = PartRepository(session)
     files_repo = DrawingFileRepository(session)
@@ -303,6 +303,11 @@ def get_assembly_service(
         files=files_repo, parts=parts_repo, assemblies=assemblies_repo
     )
 
+    async def _broadcaster() -> None:
+        # 装配体级联取消 / 软删会让 dashboard 卡片消失，
+        # 走与 PartService 同样的整张 snapshot 重推路径。
+        await broadcast_dashboard_snapshot()
+
     async def _event_broadcaster(event_type: str, payload: dict) -> None:
         await broadcast_dashboard_event(event_type, payload)
 
@@ -316,5 +321,6 @@ def get_assembly_service(
         part_service=part_service,
         drawings=drawings,
         applicants=ApplicantRepository(session),
+        broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
     )
