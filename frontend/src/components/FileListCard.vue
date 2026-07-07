@@ -45,7 +45,7 @@
           >
             <el-button type="primary" plain :loading="uploading">
               <el-icon><Upload /></el-icon>
-              <span>上传文件</span>
+              <span>{{ files.length > 0 ? '替换图纸' : '上传图纸' }}</span>
             </el-button>
           </el-upload>
         </div>
@@ -175,7 +175,7 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
-const ACCEPT = '.pdf,.step,.stp,.dwg,.dxf'
+const ACCEPT = '.pdf'
 const uploading = ref(false)
 const previewVisible = ref(false)
 const previewFile = ref<DrawingFileItem | null>(null)

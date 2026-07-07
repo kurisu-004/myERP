@@ -375,6 +375,12 @@ frontend/src/
    - **sips 仅作开发验证工具**：项目所有 PDF 生成链路（pillow / python-barcode / pypdf）都是跨平台纯 Python，部署到 Linux Docker / 云服务器 **零影响**；仅在 macOS 上 dev 阶段用 `sips` 把 PDF 渲染成 PNG 用来肉眼检查版面。
    - 端到端验证：3 种场景都生成 842×595 pt（landscape）双页 PDF — ①上传 PDF 图纸（mediabox=842×595）→ 沿用 landscape ②上传 STEP → fallback 到横向信息卡 ③无图纸 → 默认横向信息卡 + 反面条码。`sips` 渲染可见 page 1 = 上传的横向技术图纸，page 2 = 右下角「序列号」灰色标签 + 黄色边框超大 `L2014` + Code128 条形码 + 小号 `L2014` 扫描标签。`uv run pytest tests/unit` → 195 passed；`npm run build` 通过。
 
+10. **2026-07-07 零件图纸单文件 + 覆盖 + 仅 PDF**
+    - 后端 `service/drawing.py::upload_to_part`：扩展名校验由「白名单」改成硬编码 `== "pdf"`；上传前 `list_by_part(part_id)` 拿到旧图纸，逐个 `soft_delete` 并收集 `object_key`，**先删后建**在同一事务里完成（保证一致性）；新建成功后才 `asyncio.create_task(_safe_delete_cos(old_key))` 异步清 COS 旧对象。
+    - 装配体的图纸不受此限制（沿用多文件语义；装配件是图文档归档）。
+    - 前端 `components/FileListCard.vue`：`ACCEPT = '.pdf'`（之前接受 `.pdf,.step,.stp,.dwg,.dxf`）；上传按钮文案按 `files.length` 切换「上传图纸」/「替换图纸」明示语义。删除按钮仍保留（用户可手动归零）。
+    - 端到端验证：连传两次 PDF → `t_drawing_file` 第 2 次只剩 1 行（id 新的），第 1 行 `deleted_at` 已设；`.step` 上传 → 400 拒绝。`uv run pytest tests/unit` → 195 passed；`npm run build` 通过。
+
 ---
 
 ## 10. 完整目录树

@@ -173,6 +173,15 @@ class DrawingService:
         content_type: str | None,
         page_index: int | None = None,
     ) -> DrawingFileOut:
+        """零件上传图纸。
+
+        限制（2026-07-07 起）：
+        - 文件格式仅接受 PDF（不再支持 STEP/DWG/DXF/PNG/JPG 等）。
+        - 每个零件最多存在 1 个图纸文件：新上传会软删旧的 t_drawing_file
+          行，并 fire-and-forget 异步清理旧 COS 对象；旧 row 在事务内完成
+          软删，新 row 在同一事务里 create，保证「先删后建」一致。
+        - 装配体的图纸不受此限制（沿用多文件语义；装配体本身是图文档归档）。
+        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -181,8 +190,27 @@ class DrawingService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         _check_size(len(data))
-        ext = _check_allowed(original_filename)
+        ext = _normalize_ext(original_filename)
+        if ext != "pdf":
+            raise BizError(
+                code=ErrCode.BIZ_DRAWING_FILE_BAD_TYPE,
+                message=(
+                    f"零件图纸仅支持 PDF，当前为 '.{ext or '(无)'}'"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
         ct = _guess_content_type(original_filename, content_type)
+
+        # 单文件覆盖语义：列出当前 part 的所有未软删图纸，逐个软删并
+        # 收集 COS key 用于后续 fire-and-forget 清理。注意：这里 DB 操作
+        # 在调用方 session/事务里同步执行；COS 删除走异步，保证事务
+        # 回滚时不会留下新对象。
+        existing = await self.files.list_by_part(part_id)
+        old_keys: list[str] = []
+        for old in existing:
+            if old.deleted_at is None:
+                await self.files.soft_delete(old)
+                old_keys.append(old.object_key)
 
         file_id = new_id()
         key = _make_key_for_part(part_id, file_id, ext)
@@ -209,6 +237,14 @@ class DrawingService:
             upload_status="READY",
         )
         await self.files.create(file_row)
+
+        # 上传成功后才发起旧 COS 清理（避免新建失败时旧文件也被清掉）
+        for old_key in old_keys:
+            asyncio.create_task(
+                self._safe_delete_cos(old_key),
+                name=f"cos-cleanup-{old_key}",
+            )
+
         return await self._to_out(file_row)
 
     # ===== 列表 + 即时签名 =====
