@@ -252,7 +252,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ElMessage,
@@ -336,6 +336,11 @@ function onApplicantInputBlur(event: FocusEvent): void {
   }
   form.applicant_id = null
   form.applicant_name = typed
+  // el-select 会在 blur 后清空 filter 输入 → 还原 DOM 值让用户看见
+  nextTick(() => {
+    const el = event.target as HTMLInputElement | null
+    if (el) el.value = typed
+  })
 }
 
 // ============ 表单状态 ============

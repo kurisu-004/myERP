@@ -50,7 +50,7 @@ async def list_applicants(
 async def search_applicants(
     customer_id: str = Query(..., description="一级客户 id（雪花 ID 字符串）"),
     name_prefix: str | None = Query(default=None, max_length=50),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=200),
     svc: ApplicantService = Depends(get_applicant_service),
 ) -> list[ApplicantOut]:
     return await svc.search_for_customer(

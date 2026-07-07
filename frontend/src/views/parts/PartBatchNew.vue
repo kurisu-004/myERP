@@ -290,7 +290,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ElMessage,
@@ -386,6 +386,11 @@ function onApplicantInputBlur(event: FocusEvent): void {
   // 输入了一个新名字（不在候选里）→ 记录为待新增
   form.applicantId = null
   form.applicantName = typed
+  // el-select 会在 blur 后清空 filter 输入 → 还原 DOM 值让用户看见
+  nextTick(() => {
+    const el = event.target as HTMLInputElement | null
+    if (el) el.value = typed
+  })
 }
 
 // ============ 待新增列表 ============
