@@ -342,6 +342,11 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
 }
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .card-title {
   font-size: 16px;
   font-weight: 600;

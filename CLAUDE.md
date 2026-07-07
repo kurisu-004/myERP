@@ -364,6 +364,17 @@ frontend/src/
    - 权限：MANAGER + CLERK（与创建/下发一致；CNC_PROGRAMMER / SHELF_ACCOUNT 无须打印）。
    - 端到端验证：CLERK GET 200（103KB 两页 A4 PDF）；CNC GET 403；不存在 part → 404。`uv run pytest tests/unit` → 191 passed；`npm run build` 通过；用 `sips` 渲染 PDF 看到 page 1 信息卡 + page 2 右下角条形码。
 
+9. **2026-07-07 打印布局 / 朝向 / 序列号醒目 迭代**
+   - **打印按钮与上传按钮并排**：`FileListCard.vue` 头部增加 `.header-actions` flex 容器（gap 8px），两个按钮天然左右并排。
+   - **PDF 朝向与图纸同步**：图纸常用横向 A4，所以条码页 / 信息卡页必须跟着图纸的 `mediabox.width > height` 判断 `landscape/portrait`，避免双面打印翻转后上下颠倒。`service/printing.py::_detect_pdf_orientation`（PDF 走 mediabox）与 `_detect_image_orientation`（图片走 PIL 宽高比），默认 landscape。无图纸 fallback 也用 landscape。同一 part 的所有页强制同朝向。
+   - **序列号醒目显示**：第 2 页右下角的整块由 4 部分组成（自上而下）：
+     1. 「序列号」灰色 pill 标签（landscape 80px / portrait 64px）
+     2. **大字号序列号**（landscape 120px / portrait 96px）+ 米黄底 + 橙色边框 + 黑字，方便人工目视对单
+     3. Code128 条形码本体（按页面短边 55% 自适应）
+     4. 条码下方小号标签（与 3 等宽居中）
+   - **sips 仅作开发验证工具**：项目所有 PDF 生成链路（pillow / python-barcode / pypdf）都是跨平台纯 Python，部署到 Linux Docker / 云服务器 **零影响**；仅在 macOS 上 dev 阶段用 `sips` 把 PDF 渲染成 PNG 用来肉眼检查版面。
+   - 端到端验证：3 种场景都生成 842×595 pt（landscape）双页 PDF — ①上传 PDF 图纸（mediabox=842×595）→ 沿用 landscape ②上传 STEP → fallback 到横向信息卡 ③无图纸 → 默认横向信息卡 + 反面条码。`sips` 渲染可见 page 1 = 上传的横向技术图纸，page 2 = 右下角「序列号」灰色标签 + 黄色边框超大 `L2014` + Code128 条形码 + 小号 `L2014` 扫描标签。`uv run pytest tests/unit` → 195 passed；`npm run build` 通过。
+
 ---
 
 ## 10. 完整目录树
