@@ -181,19 +181,18 @@
                 <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
                   选一级客户自动级联其下二级客户
                 </div>
-                <el-cascader
+                <el-tree-select
                   v-model="customerDraft"
-                  :options="customerTree"
-                  :props="{
-                    value: 'id',
-                    label: 'name',
-                    children: 'children',
-                    checkStrictly: true,
-                    emitPath: false,
-                  }"
-                  placeholder="选择客户"
-                  style="width: 100%"
+                  :data="customerTree"
+                  node-key="id"
+                  :props="{ label: 'name', children: 'children' }"
+                  check-strictly
                   clearable
+                  filterable
+                  placeholder="选择客户"
+                  :teleported="false"
+                  style="width: 100%"
+                  @clear="customerDraft = null"
                 />
                 <div class="filter-actions">
                   <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
