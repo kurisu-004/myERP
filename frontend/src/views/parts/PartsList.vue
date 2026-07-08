@@ -332,6 +332,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import {
@@ -357,6 +358,7 @@ import { useCustomerTree } from '@/composables/useCustomerTree'
 const { hasRole } = useAuthSession()
 const isCncProgrammer = hasRole('CNC_PROGRAMMER')
 const { tree: customerTree } = useCustomerTree()
+const route = useRoute()
 
 interface SearchState {
   keyword: string
@@ -534,6 +536,11 @@ function onReset(): void {
 }
 
 onMounted(() => {
+  // 从 URL ?status=PENDING 等注入筛选（与批量新建后跳转保持一致）
+  const q = route.query.status
+  if (typeof q === 'string' && q in ORDER_STATUS_LABEL) {
+    search.statuses = [q as OrderStatus]
+  }
   void fetchList()
 })
 

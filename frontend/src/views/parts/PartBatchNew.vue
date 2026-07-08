@@ -752,7 +752,8 @@ async function onSubmit(): Promise<void> {
     staged.value.forEach(revokeEntryUrls)
     staged.value = []
     ElMessage.success(`成功新建 ${res.created.length} 条零件`)
-    router.push('/parts')
+    // 跳到零件一览并筛选「待生产」，便于核对刚添加的零件
+    router.push({ path: '/parts', query: { status: 'PENDING' } })
   } catch (e) {
     ElMessage.error((e as Error).message ?? '提交失败')
   } finally {
