@@ -1,7 +1,7 @@
 """cnc_menu_revoke: 编程员入口合并到零件一览
 
-Revision ID: 000000000004
-Revises: 000000000003
+Revision ID: 000000000008
+Revises: 000000000007
 Create Date: 2026-07-06
 
 说明：
@@ -16,8 +16,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "000000000004"
-down_revision: Union[str, None] = "000000000003"
+revision: str = "000000000008"
+down_revision: Union[str, None] = "000000000007"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1,8 +1,8 @@
 """init_seed: load all seed data — serial counters, customers, workers, assemblies,
 parts, users, shelves, menus
 
-Revision ID: 000000000002
-Revises: 000000000001
+Revision ID: 000000000006
+Revises: 000000000005
 Create Date: 2026-07-02
 
 说明：
@@ -37,8 +37,8 @@ from alembic import op
 
 from utils.id_gen import new_id
 
-revision: str = "000000000002"
-down_revision: Union[str, None] = "000000000001"
+revision: str = "000000000006"
+down_revision: Union[str, None] = "000000000005"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1,7 +1,7 @@
 """customer_snowflake_id: t_customer 主键从 BigSerial 改为雪花 ID
 
-Revision ID: 000000000006
-Revises: 000000000005
+Revision ID: 000000000010
+Revises: 000000000009
 Create Date: 2026-07-07
 
 说明：
@@ -24,8 +24,8 @@ from alembic import op
 
 from utils.id_gen import new_id
 
-revision: str = "000000000006"
-down_revision: Union[str, None] = "000000000005"
+revision: str = "000000000010"
+down_revision: Union[str, None] = "000000000009"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

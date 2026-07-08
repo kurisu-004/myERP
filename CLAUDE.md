@@ -1036,3 +1036,79 @@ ON_SHELF 和 WITH_WORKER 共享 DB status="IN_PROCESS"，通过 location 列区�
 4. 上传 COS（core/cos.py：upload_object，asyncio.to_thread）
 5. 写 DB 元数据（t_drawing_file / t_cnc_program，upload_status=READY）
 6. 失败→异步清理 COS 孤儿对象（fire-and-forget）
+
+---
+
+## 15. Alembic 迁移三层目录（schema / dev_data / prod_data）
+
+`alembic/versions/` 拆为 3 个子目录，每类文件一个职责；`alembic.ini` 已配 `version_locations` + `recursive_version_locations = true`，env.py 无需改。
+
+| 目录 | 内容 | 谁会用 |
+|------|------|--------|
+| `schema/`     | 纯 DDL（CREATE TABLE / INDEX / CONSTRAINT / ALTER COLUMN） | dev + prod 都需要 |
+| `dev_data/`   | dev 期种子（20 假工人 W001-W020 / 50 假零件 / 10 假装配 / 20 假客户 / 6 dev users / shelf_process 映射 / customer snowflake 重写） | dev 库（`alembic upgrade head`） |
+| `prod_data/`  | 真实员工生产种子（19 工人 + 4 用户 + 9 工种 + 20 菜单 + role_menu） | dev + prod 都需要 |
+
+### 15.1 完整 revision 链（线性，12 步，单 head = 000000000012）
+
+```
+schema/001 init_schema             → base
+schema/002 cnc_program_table       → 001  (t_cnc_program DDL)
+schema/003 applicant_table         → 002  (t_applicant DDL)
+schema/004 shelf_process_table     → 003  (t_shelf_process DDL)
+schema/005 assembly_serial_no      → 004  (t_assembly.serial_no)
+
+dev_data/006 dev_seed              → 005  (init seed: work_types/processes/customers/shelves/parts/assemblies/20 假工人/12 base 菜单/4 settings 菜单/admin+proda1+prodb1+inspi1)
+dev_data/007 dev_cnc_seed          → 006  (+1 pending_programming 菜单 + clerk/cncprog 用户)
+dev_data/008 dev_cnc_menu_revoke   → 007  (CNC_PROGRAMMER 改看 parts_list)
+dev_data/009 dev_customer_seed     → 008  (+3 customer 菜单 + MANAGER+CLERK role_menu)
+dev_data/010 dev_customer_snowflake→ 009  (t_customer BigSerial→snowflake，dev seed 历史数据迁移)
+dev_data/011 dev_shelf_process_seed→ 010  (每架 PRODUCTION 货架自动映射全部 INHOUSE 工序)
+
+prod_data/012 prod_seed            → 011  (9 工种幂等 / 19 工人 / 4 用户 / 4 user_role / 20 菜单 / 30 role_menu)
+```
+
+`alembic history --rev-range =000000000001:000000000012` 验证。`alembic heads` 应只返回 1 行（`000000000012`）。
+
+### 15.2 升级命令模板
+
+| 场景 | 命令 | 结果 |
+|------|------|------|
+| **dev 库冷启** | `uv run alembic upgrade head` | 12 步线性跑全：t_user=10, t_worker=39, t_menu=20, t_role_menu=36 + 50 假零件 / 10 假装配 / 20 假客户 / 3 dev 货架 |
+| **prod 库冷启（推荐）** | `uv run alembic upgrade 000000000005` 后 `uv run alembic stamp 000000000011` 后 `uv run alembic upgrade 000000000012` | 6 步真跑（schema 5 + prod 1）+ stamp 跳过 dev_data：t_user=4, t_worker=19, t_menu=20, t_role_menu=30（MANAGER×20+CLERK×6+CNC×4），**0 假数据** |
+| **老库升级**（已有 8 个旧迁移 001-008） | `uv run alembic stamp 000000000012` | 一次性 stamp 跳过；新链只走差异部分；旧 dev 假数据保留（schema 已对齐），prod 数据需另写导入 |
+
+dev_data 链依赖 schema 末端 005（而不是 base）——这是为了让 dev_seed 的 `DELETE FROM` 顶部清理在已建表的库上跑；prod_seed 在 dev_data 末端 011 之后跑，让 `ON CONFLICT` 兜底合并 dev + prod 的 role_menu/menu/user（dev users / 6 dev users 与 prod 4 users 共存）。
+
+### 15.3 prod_data 迁移内容（`alembic/versions/prod_data/000000000012_prod_seed.py`）
+
+数据来源：`docs/26洪升宏在职人员统计表.xlsx`（19 名在职员工）。
+
+**阶段 1：9 工种**（与 dev_seed 同步，ON CONFLICT 幂等）
+```
+车床 / 铣床 / 磨床 / 线切割 / CNC操机 / CNC编程 / 品检 / 文员 / 送货司机
+```
+
+**阶段 2：19 工人**（badge_code = 电话，与 user.username 逻辑同源）
+Excel「备注」列 → 9 工种 code 映射：
+- 线割 → 线切割 / 磨床 → 磨床 / 铣床 → 铣床 / NC → CNC操机 / 编程 → CNC编程
+- 车床 → 车床 / 品鉴 → 品检 / 文员 → 文员 / 送货师傅 → 送货司机
+
+**阶段 3：4 用户**（username = 电话，password = `changeme`，bcrypt rounds=12 与 `core.security.hash_password` 默认一致）
+| username | full_name | role | 备注 |
+|----------|-----------|------|------|
+| 15060779955 | 系统管理员 | MANAGER | 不在 19 人里；admin 是虚拟账号，无 worker 记录 |
+| 13359114794 | 陈燕 | CLERK | 同时是工人（badge_code=13359114794, 工种=文员） |
+| 15105972335 | 翁美月 | CLERK | 同时是工人（工种=文员） |
+| 18064554025 | 童敏华 | CNC_PROGRAMMER | 同时是工人（工种=CNC编程） |
+
+**阶段 4：4 user_role**（无 scope；scope_type/scope_id = NULL）
+
+**阶段 5：20 菜单 + 30 role_menu**（ON CONFLICT 幂等）
+- 菜单集：12 base + 4 settings + 1 cnc + 3 customer = 20（与 dev 链全集合一致）
+- MANAGER → 全部 20
+- CLERK → home, order_group, parts_list, parts_new, assemblies_list, assemblies_new（6）
+- CNC_PROGRAMMER → home, parts_list, floor_group, scan_badge（4，与 dev 链 008 revoke 后一致）
+
+**down_revision = `000000000011`**（dev_data 末端），保证 prod_seed 在 dev_seed 的 `DELETE FROM` 之后跑，ON CONFLICT 把 prod 数据追加到 dev 数据之上。
+

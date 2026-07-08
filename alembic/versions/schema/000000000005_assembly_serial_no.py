@@ -1,7 +1,7 @@
 """assembly_serial_no: 给 t_assembly 增加 serial_no 列
 
-Revision ID: 000000000008
-Revises: 000000000007
+Revision ID: 000000000005
+Revises: 000000000004
 Create Date: 2026-07-08
 
 说明：
@@ -19,8 +19,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "000000000008"
-down_revision: Union[str, None] = "000000000007"
+revision: str = "000000000005"
+down_revision: Union[str, None] = "000000000004"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

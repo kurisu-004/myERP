@@ -1,19 +1,18 @@
-"""cnc_programming: 新增 CNC 编程环节
+"""dev_cnc_seed: 装配/接线 CLERK + CNC_PROGRAMMER 角色菜单与账号
 
-Revision ID: 000000000003
-Revises: 000000000002
+Revision ID: 000000000007
+Revises: 000000000006
 Create Date: 2026-07-06
 
-说明：
-- 新增 t_cnc_program 表（CNC 程序 / G 代码文件元数据）
-  * `part_id` 普通列 + 普通索引（DB 层无物理外键，遵守项目约定 1）。
-  * `file_type` 用大写扩展名（NC / TAP / CNC / MPF / NGC），与 t_drawing_file 一致。
-- 装配/接线 CLERK + CNC_PROGRAMMER 角色所需的菜单 + 角色关联。
-  * 1 admin MANAGER + 3 SHELF_ACCOUNT 账号（已在 000000000002 写入，本迁移不动）。
-  * 新增 1 CLERK 账号 + 1 CNC_PROGRAMMER 账号（口令同 `changeme`，dev only）。
-- 不修改 t_part / t_user_role / t_role_menu 既有行；只追加。
+说明（dev_data 类别种子，与生产隔离）：
+- 新增 1 个菜单：待编程一览（pending_programming），icon=Cpu，sort_order=25。
+- CLERK 角色可见：home + order_group + parts_list + parts_new + assemblies_list + assemblies_new。
+- CNC_PROGRAMMER 角色可见：home + pending_programming + floor_group + scan_badge。
+  （后续 000000000008_dev_cnc_menu_revoke 会把 pending_programming 换成 parts_list。）
+- seed 账号：1 CLERK (`clerk`) + 1 CNC_PROGRAMMER (`cncprog`)，密码 `changeme`（bcrypt rounds=4，dev only）。
+- DDL 部分（t_cnc_program 表）已拆到 `schema/000000000002_cnc_program_table.py`。
 """
-import random
+import bcrypt as _bc
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -21,8 +20,8 @@ from alembic import op
 
 from utils.id_gen import new_id
 
-revision: str = "000000000003"
-down_revision: Union[str, None] = "000000000002"
+revision: str = "000000000007"
+down_revision: Union[str, None] = "000000000006"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -31,39 +30,6 @@ depends_on: Union[str, Sequence[str], None] = None
 # upgrade
 # =============================================================================
 def upgrade() -> None:
-    bind = op.get_bind()
-
-    # -------------------------------------------------------------------------
-    # 1. t_cnc_program DDL
-    # -------------------------------------------------------------------------
-    op.create_table(
-        "t_cnc_program",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("part_id", sa.BigInteger(), nullable=False),
-        sa.Column("file_type", sa.String(length=20), nullable=False,
-                  comment="G 代码扩展名大写（NC / TAP / CNC / MPF / NGC）"),
-        sa.Column("object_key", sa.String(length=500), nullable=False,
-                  comment="COS 对象 key"),
-        sa.Column("original_filename", sa.String(length=255), nullable=False),
-        sa.Column("file_size", sa.BigInteger(), nullable=False),
-        sa.Column("content_type", sa.String(length=100), nullable=False),
-        sa.Column("upload_status", sa.String(length=20), nullable=False,
-                  server_default="READY",
-                  comment="PENDING / READY / FAILED"),
-        # AuditMixin
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("created_by", sa.BigInteger(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_by", sa.BigInteger(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-    )
-    op.create_index("ix_t_cnc_program_part", "t_cnc_program", ["part_id"])
-    op.create_index("ix_t_cnc_program_part_type", "t_cnc_program", ["part_id", "file_type"])
-    op.create_index("ix_t_cnc_program_created_at", "t_cnc_program", ["created_at"])
-
-    # -------------------------------------------------------------------------
-    # 2. 菜单 / 角色菜单：待编程一览 + CLERK / CNC_PROGRAMMER 可见的菜单
-    # -------------------------------------------------------------------------
     _seed_cnc_menus_and_role_assignments()
 
 
@@ -139,8 +105,6 @@ def _seed_cnc_menus_and_role_assignments() -> None:
     # -------------------------------------------------------------------------
     # 3. seed 账号：1 CLERK + 1 CNC_PROGRAMMER
     # -------------------------------------------------------------------------
-    import bcrypt as _bc
-
     changeme_hash = _bc.hashpw(b"changeme", _bc.gensalt(rounds=4)).decode("utf-8")
 
     seed_users = [
@@ -202,7 +166,3 @@ def downgrade() -> None:
         "DELETE FROM t_menu WHERE code = 'pending_programming' "
         "AND deleted_at IS NULL"
     )
-    op.drop_index("ix_t_cnc_program_part_type", table_name="t_cnc_program")
-    op.drop_index("ix_t_cnc_program_part", table_name="t_cnc_program")
-    op.drop_index("ix_t_cnc_program_created_at", table_name="t_cnc_program")
-    op.drop_table("t_cnc_program")
