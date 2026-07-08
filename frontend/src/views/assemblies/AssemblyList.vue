@@ -1,101 +1,135 @@
 <!--
   AssemblyList.vue
 
-  /assemblies — 装配件列表（与 /parts 并列）。
+  /assemblies — 装配件列表，与 /parts 一览同款风格：
+  - 顶部：搜索 + Reset + 共 N 条
+  - 列头内嵌 popover：状态（多选 + 仅加急）、客户（cascader）
+  - 序列号/图号/名称/计划交期 均可点表头排序
+  - 加急行红底 #fde2e2
+  - 无 # index 列；无删除按钮（移到详情页）
 
-  表格列：总图图号 / 名称 / 客户 / 子零件数 / 计划交期 / 加急 / 状态 / 操作。
-  支持按客户、状态、加急、图号、名称过滤 + 分页。
+  操作列：详情（任意已登录）+ 取消（CLERK+，跳详情页点确认）
 -->
 <template>
   <div class="assembly-list">
     <el-card shadow="never" class="filter-card">
-      <el-form inline :model="filter" @submit.prevent="onSearch">
-        <el-form-item label="客户">
-          <el-cascader
-            v-model="filter.customer_id"
-            :options="customerTree"
-            :props="{
-              value: 'id',
-              label: 'name',
-              children: 'children',
-              checkStrictly: true,
-              emitPath: false,
-            }"
-            placeholder="全部"
-            clearable
-            style="width: 220px"
-          />
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-select
-            v-model="filter.status"
-            placeholder="全部"
-            clearable
-            style="width: 140px"
-          >
-            <el-option label="PENDING" value="PENDING" />
-            <el-option label="COMPLETED" value="COMPLETED" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="加急">
-          <el-select
-            v-model="filter.is_urgent"
-            placeholder="全部"
-            clearable
-            style="width: 100px"
-          >
-            <el-option label="加急" :value="true" />
-            <el-option label="非加急" :value="false" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="图号">
-          <el-input v-model="filter.drawing_no_like" placeholder="模糊匹配" clearable />
-        </el-form-item>
-        <el-form-item label="名称">
-          <el-input v-model="filter.name_like" placeholder="模糊匹配" clearable />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="onSearch">
+      <div class="filter-row">
+        <el-input
+          v-model="search.keyword"
+          placeholder="图号 / 名称（模糊搜索）"
+          clearable
+          style="width: 260px"
+          @keyup.enter="onSearch"
+          @clear="onSearch"
+        >
+          <template #prefix>
             <el-icon><Search /></el-icon>
-            <span>查询</span>
-          </el-button>
-          <el-button @click="onReset">
-            <el-icon><RefreshLeft /></el-icon>
-            <span>重置</span>
-          </el-button>
-        </el-form-item>
-      </el-form>
+          </template>
+        </el-input>
+
+        <el-button @click="onReset">
+          <el-icon><RefreshLeft /></el-icon>
+          <span>重置</span>
+        </el-button>
+
+        <el-button type="primary" @click="$router.push('/assemblies/new')">
+          <el-icon><Plus /></el-icon>
+          <span>新建装配件</span>
+        </el-button>
+
+        <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
+      </div>
     </el-card>
 
-    <el-card shadow="never" class="table-card" v-loading="loading">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">装配件列表</span>
-          <div class="card-actions">
-            <el-button type="primary" @click="$router.push('/assemblies/new')">
-              <el-icon><Plus /></el-icon>
-              <span>新建装配件</span>
-            </el-button>
-          </div>
-        </div>
-      </template>
-
+    <div class="sheet-wrapper" v-loading="loading">
       <el-table
         :data="items"
         border
         stripe
         size="small"
+        :default-sort="defaultSort"
         :row-class-name="rowClassName"
-        @row-click="onRowClick"
+        @sort-change="onSortChange"
       >
-        <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="drawing_no" label="总图图号" width="160" show-overflow-tooltip />
-        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
+        <el-table-column
+          prop="serial_no"
+          label="序列号"
+          width="110"
+          fixed="left"
+          sortable="custom"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          prop="drawing_no"
+          label="总图图号"
+          width="160"
+          sortable="custom"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="name"
+          label="名称"
+          min-width="180"
+          sortable="custom"
+          show-overflow-tooltip
+        />
         <el-table-column label="客户" min-width="200" show-overflow-tooltip>
+          <template #header>
+            <span class="header-cell">
+              <span>客户</span>
+              <el-popover
+                :width="280"
+                placement="bottom-start"
+                trigger="click"
+                :show-arrow="false"
+                v-model:visible="customerPopoverVisible"
+                @show="syncCustomerDraft"
+              >
+                <template #reference>
+                  <el-icon
+                    class="filter-icon"
+                    :class="{ active: customerFilterActive }"
+                  >
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                  选一级客户自动级联其下二级客户
+                </div>
+                <el-cascader
+                  v-model="customerDraft"
+                  :options="customerTree"
+                  :props="{
+                    value: 'id',
+                    label: 'name',
+                    children: 'children',
+                    checkStrictly: true,
+                    emitPath: false,
+                  }"
+                  placeholder="选择客户"
+                  style="width: 100%"
+                  clearable
+                />
+                <div class="filter-actions">
+                  <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="confirmCustomerFilter"
+                  >确定</el-button>
+                </div>
+              </el-popover>
+            </span>
+          </template>
           <template #default="{ row }">
             {{ row.customer_path || '—' }}
           </template>
         </el-table-column>
+
         <el-table-column label="子零件" width="80" align="center">
           <template #default="{ row }">
             <el-tag type="info" size="small" effect="plain">
@@ -103,103 +137,257 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="planned_delivery_date" label="计划交期" width="120" />
-        <el-table-column label="加急" width="70" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.is_urgent" type="danger" size="small" effect="dark">加急</el-tag>
-            <span v-else class="muted">—</span>
+        <el-table-column
+          prop="planned_delivery_date"
+          label="计划交期"
+          width="120"
+          sortable="custom"
+        />
+
+        <el-table-column
+          label="状态"
+          width="140"
+          align="center"
+        >
+          <template #header>
+            <span class="header-cell">
+              <span>状态</span>
+              <el-popover
+                :width="200"
+                placement="bottom-start"
+                trigger="click"
+                :show-arrow="false"
+                v-model:visible="statusPopoverVisible"
+                @show="syncStatusDraft"
+              >
+                <template #reference>
+                  <el-icon
+                    class="filter-icon"
+                    :class="{ active: statusFilterActive }"
+                  >
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                  多选状态 + 「仅加急」叠加加急过滤
+                </div>
+                <el-checkbox-group v-model="statusDraft">
+                  <el-checkbox
+                    v-for="opt in assemblyStatusOptions"
+                    :key="opt.value"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                </el-checkbox-group>
+                <el-checkbox
+                  v-model="statusUrgentDraft"
+                  label="仅加急"
+                  style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-color-lighter)"
+                />
+                <div class="filter-actions">
+                  <el-button size="small" link @click="resetStatusDraft">重置</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="confirmStatusFilter"
+                  >确定</el-button>
+                </div>
+              </el-popover>
+            </span>
           </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="statusTag(row.status)" size="small">
+            <el-tag :type="statusTagType(row.status)" effect="plain" size="small">
               {{ row.status }}
             </el-tag>
           </template>
         </el-table-column>
+
         <el-table-column label="操作" width="160" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click.stop="$router.push(`/assemblies/${row.id}`)">
-              查看
-            </el-button>
-            <el-button link type="danger" size="small" @click.stop="onDelete(row as AssemblyItem)">
-              删除
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click.stop="$router.push(`/assemblies/${row.id}`)"
+            >
+              详情
             </el-button>
           </template>
         </el-table-column>
-      </el-table>
 
+        <template #empty>
+          <el-empty description="暂无符合条件的装配件" />
+        </template>
+      </el-table>
+    </div>
+
+    <div class="pagination">
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
         :total="total"
         :page-sizes="[10, 20, 50, 100]"
-        layout="sizes, prev, pager, next, jumper, total"
+        layout="total, sizes, prev, pager, next, jumper"
         background
-        style="margin-top: 12px; justify-content: flex-end"
+        size="small"
         @current-change="fetchData"
         @size-change="onSizeChange"
       />
-    </el-card>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import {
   ElMessage,
-  ElMessageBox,
 } from 'element-plus'
-import { Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
-import { listAssemblies, softDeleteAssembly } from '@/api/assembly'
-import { listCustomers, type Customer } from '@/api/customer'
-import type { AssemblyItem, AssemblyListQuery } from '@/types/assembly'
+import { Filter, Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { listAssemblies } from '@/api/assembly'
+import type {
+  AssemblyListItem,
+  AssemblyListQuery,
+  AssemblySortKey,
+  SortDir,
+} from '@/types/assembly'
+import { useCustomerTree } from '@/composables/useCustomerTree'
 
-const router = useRouter()
+const { tree: customerTree } = useCustomerTree()
 
-// ============ 客户级联（仅过滤用） ============
-const customers = ref<Customer[]>([])
-const customerTree = computed(() => {
-  const roots = customers.value.filter((c) => c.parent_id === null)
-  return roots.map((r) => ({
-    id: r.id,
-    name: r.name,
-    children: customers.value
-      .filter((c) => c.parent_id === r.id)
-      .map((c) => ({ id: c.id, name: c.name })),
-  }))
-})
+// ============ 搜索条件 ============
+interface SearchState {
+  keyword: string
+  statuses: string[]
+  isUrgent: boolean | null
+  customerId: string
+}
+function initialSearch(): SearchState {
+  return { keyword: '', statuses: [], isUrgent: null, customerId: '' }
+}
+const search = reactive<SearchState>(initialSearch())
 
-// ============ 过滤 + 分页 ============
-const filter = reactive<AssemblyListQuery>({})
-const items = ref<AssemblyItem[]>([])
+const assemblyStatusOptions = [
+  { value: 'PENDING', label: 'PENDING' },
+  { value: 'IN_PROCESS', label: 'IN_PROCESS' },
+  { value: 'COMPLETED', label: 'COMPLETED' },
+  { value: 'CANCELLED', label: 'CANCELLED' },
+]
+
+const statusFilterActive = computed(
+  () => search.statuses.length > 0 || search.isUrgent === true,
+)
+const customerFilterActive = computed(() => search.customerId !== '')
+
+// ============ 状态列头 popover（draft + 确定/重置） ============
+// 加急是独立的 boolean checkbox（不再用 marker 混入状态数组），彻底避免
+// 不合法值污染传到后端的 statuses 字段。
+const statusPopoverVisible = ref(false)
+const statusDraft = ref<string[]>([])
+const statusUrgentDraft = ref(false)
+
+function syncStatusDraft(): void {
+  statusDraft.value = [...search.statuses]
+  statusUrgentDraft.value = search.isUrgent === true
+}
+
+function resetStatusDraft(): void {
+  statusDraft.value = []
+  statusUrgentDraft.value = false
+  search.statuses = []
+  search.isUrgent = null
+  statusPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmStatusFilter(): void {
+  search.statuses = [...statusDraft.value]
+  search.isUrgent = statusUrgentDraft.value ? true : null
+  statusPopoverVisible.value = false
+  onSearch()
+}
+
+// ============ 客户列头 popover（draft + 确定/重置） ============
+const customerPopoverVisible = ref(false)
+const customerDraft = ref<string | null>(null)
+
+function syncCustomerDraft(): void {
+  customerDraft.value = search.customerId || null
+}
+
+function resetCustomerDraft(): void {
+  customerDraft.value = null
+  search.customerId = ''
+  customerPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmCustomerFilter(): void {
+  search.customerId = customerDraft.value ?? ''
+  customerPopoverVisible.value = false
+  onSearch()
+}
+
+// ============ 表格 / 排序 / 分页 ============
+const items = ref<AssemblyListItem[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
+const sortBy = ref<AssemblySortKey>('PLANNED_DELIVERY_DATE')
+const sortDir = ref<SortDir>('ASC')
 
-function statusTag(s: string): 'success' | 'info' | 'warning' | 'danger' {
-  if (s === 'COMPLETED') return 'success'
-  return 'info'
+const SORT_PROP_MAP: Record<string, AssemblySortKey> = {
+  serial_no: 'SERIAL_NO',
+  drawing_no: 'DRAWING_NO',
+  name: 'NAME',
+  planned_delivery_date: 'PLANNED_DELIVERY_DATE',
+}
+type SortOrder = 'ascending' | 'descending'
+const defaultSort = computed<{ prop: string; order: SortOrder }>(() => ({
+  prop: 'planned_delivery_date',
+  order: sortDir.value === 'ASC' ? 'ascending' : 'descending',
+}))
+
+function rowClassName({ row }: { row: AssemblyListItem }): string {
+  return row.is_urgent ? 'row-urgent' : ''
 }
 
-function rowClassName({ row }: { row: AssemblyItem }): string {
-  return row.is_urgent ? 'row-urgent' : ''
+function statusTagType(s: string): 'success' | 'info' | 'warning' | 'danger' {
+  if (s === 'COMPLETED') return 'success'
+  if (s === 'CANCELLED') return 'info'
+  return 'warning'
 }
 
 async function fetchData(): Promise<void> {
   loading.value = true
   try {
-    const res = await listAssemblies({
-      ...filter,
+    // 后端 schema: status 单值（不支持多选），所以多选时为空表示不过滤；
+    // 仅加急只走 is_urgent 路径，不带 status。
+    const base: AssemblyListQuery = {
+      sort_by: sortBy.value,
+      sort_dir: sortDir.value,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
-    })
+    }
+    if (search.customerId) base.customer_id = search.customerId
+    if (search.isUrgent !== null) base.is_urgent = search.isUrgent
+    const trimmed = search.keyword.trim()
+    if (trimmed) {
+      base.drawing_no_like = trimmed
+      base.name_like = trimmed
+    }
+    // status 单值（多选展示但只透传第一个）
+    if (search.statuses.length === 1) {
+      base.status = search.statuses[0]
+    }
+    // statuses.length === 0 或 > 1：不传 status（不过滤）
+    const res = await listAssemblies(base)
     items.value = res.items
     total.value = res.total
   } catch (e) {
-    ElMessage.error((e as Error).message ?? '加载装配件列表失败')
+    const msg = (e as Error).message || JSON.stringify(e)
+    ElMessage.error(msg || '加载装配件列表失败')
+    console.error('[AssemblyList] fetchData failed:', e)
   } finally {
     loading.value = false
   }
@@ -211,7 +399,9 @@ function onSearch(): void {
 }
 
 function onReset(): void {
-  Object.assign(filter, {})
+  Object.assign(search, initialSearch())
+  sortBy.value = 'PLANNED_DELIVERY_DATE'
+  sortDir.value = 'ASC'
   page.value = 1
   void fetchData()
 }
@@ -222,36 +412,20 @@ function onSizeChange(s: number): void {
   void fetchData()
 }
 
-function onRowClick(row: AssemblyItem): void {
-  router.push(`/assemblies/${row.id}`)
+function onSortChange({
+  prop,
+  order,
+}: {
+  prop: string | null
+  order: 'ascending' | 'descending' | null
+}): void {
+  if (!prop || !order) return
+  sortBy.value = SORT_PROP_MAP[prop] ?? 'PLANNED_DELIVERY_DATE'
+  sortDir.value = order === 'ascending' ? 'ASC' : 'DESC'
+  void fetchData()
 }
 
-async function onDelete(row: AssemblyItem): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      `确认软删除装配件「${row.name}」？将级联软删 ${row.child_count} 个子零件 + 全部关联文件。`,
-      '删除装配件',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  try {
-    await softDeleteAssembly(row.id)
-    ElMessage.success('已删除')
-    if (items.value.length === 1 && page.value > 1) page.value--
-    void fetchData()
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '删除失败')
-  }
-}
-
-onMounted(async () => {
-  try {
-    customers.value = await listCustomers()
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '客户列表加载失败')
-  }
+onMounted(() => {
   void fetchData()
 })
 </script>
@@ -262,29 +436,76 @@ onMounted(async () => {
   flex-direction: column;
   gap: 12px;
 }
+
 .filter-card {
   :deep(.el-card__body) {
-    padding: 16px 20px;
+    padding: 12px 16px;
   }
 }
-.table-card {
-  :deep(.el-card__body) {
-    padding: 16px 20px;
-  }
-}
-.card-header {
+
+.filter-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
 }
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
+
+.total-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-left: auto;
 }
+
+.sheet-wrapper {
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px;
+  overflow-x: auto;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 0 4px;
+}
+
 .muted {
   color: var(--text-secondary);
 }
-:deep(.row-urgent) {
-  background-color: #fdf6ec !important;
+
+.header-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  justify-content: center;
+}
+
+.filter-icon {
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  &.active {
+    color: var(--primary-color);
+  }
+}
+
+.filter-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border-color-lighter);
+  padding-top: 8px;
+}
+
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 </style>

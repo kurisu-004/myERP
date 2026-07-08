@@ -26,7 +26,25 @@
               <el-icon><Back /></el-icon>
               <span>返回列表</span>
             </el-button>
-            <el-button type="danger" plain @click="onDelete">
+            <!-- 取消（CLERK+）：PENDING/IN_PROCESS 可触发 -->
+            <el-button
+              v-if="canCancel"
+              type="warning"
+              plain
+              :disabled="!detail.assembly.serial_no"
+              @click="openConfirmDialog('cancel')"
+            >
+              <el-icon><CircleClose /></el-icon>
+              <span>取消装配件</span>
+            </el-button>
+            <!-- 删除（MANAGER-only）：不论状态都可触发 -->
+            <el-button
+              v-if="canDelete"
+              type="danger"
+              plain
+              :disabled="!detail.assembly.serial_no"
+              @click="openConfirmDialog('delete')"
+            >
               <el-icon><Delete /></el-icon>
               <span>删除装配件</span>
             </el-button>
@@ -35,6 +53,10 @@
       </template>
 
       <el-descriptions :column="3" border>
+        <el-descriptions-item label="序列号">
+          <span v-if="detail.assembly.serial_no" class="mono">{{ detail.assembly.serial_no }}</span>
+          <el-tag v-else size="small" type="info" effect="plain">暂无（旧数据）</el-tag>
+        </el-descriptions-item>
         <el-descriptions-item label="总图图号">
           <span class="mono">{{ detail.assembly.drawing_no }}</span>
         </el-descriptions-item>
@@ -147,33 +169,82 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- 取消 / 删除 共用确认对话框 -->
+    <el-dialog
+      v-model="confirmVisible"
+      :title="confirmAction === 'cancel' ? '取消装配件' : '删除装配件'"
+      width="480px"
+      :close-on-click-modal="false"
+    >
+      <p class="confirm-hint">
+        {{
+          confirmAction === 'cancel'
+            ? `确认取消装配件「${detail?.assembly.name ?? ''}」？将级联取消 ${detail?.assembly.child_count ?? 0} 个非终态子件。`
+            : `确认删除装配件「${detail?.assembly.name ?? ''}」？将级联软删 ${detail?.assembly.child_count ?? 0} 个子零件 + 全部关联文件。`
+        }}
+      </p>
+      <el-form label-width="96px" style="margin-top: 16px">
+        <el-form-item label="序列号">
+          <el-input
+            v-model="confirmSerial"
+            :placeholder="`请输入装配件序列号：${detail?.assembly.serial_no ?? ''}`"
+            clearable
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="confirmVisible = false">取消</el-button>
+        <el-button
+          :type="confirmAction === 'cancel' ? 'warning' : 'danger'"
+          :loading="confirmSubmitting"
+          :disabled="!confirmSerial.trim()"
+          @click="onConfirmSubmit"
+        >
+          {{ confirmAction === 'cancel' ? '确认取消' : '确认删除' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Back, Delete } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { Back, CircleClose, Delete } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
-import { getAssembly, softDeleteAssembly } from '@/api/assembly'
+import {
+  cancelAssembly,
+  getAssembly,
+  softDeleteAssembly,
+} from '@/api/assembly'
 import type { AssemblyDetail } from '@/types/assembly'
 import type { OrderStatus } from '@/types/parts'
+import { useAuthSession } from '@/composables/useAuthSession'
 
 const route = useRoute()
 const router = useRouter()
+const { hasRole } = useAuthSession()
+
+// 权限：取消 = CLERK+；删除 = MANAGER-only。
+const canCancel = computed(
+  () => hasRole('CLERK') || hasRole('MANAGER'),
+)
+const canDelete = computed(() => hasRole('MANAGER'))
 
 const detail = ref<AssemblyDetail | null>(null)
 const loading = ref(false)
 
-// id 是后端 IdStr 序列化的字符串，雪花 ID 完整保留；不再 Number() 转回去
 const assemblyId = computed<string>(() => {
   const raw = route.params.id
   return String(Array.isArray(raw) ? raw[0] : raw ?? '')
 })
 
-function statusTag(s: string): 'success' | 'info' {
-  return s === 'COMPLETED' ? 'success' : 'info'
+function statusTag(s: string): 'success' | 'info' | 'warning' {
+  if (s === 'COMPLETED') return 'success'
+  if (s === 'CANCELLED') return 'info'
+  return 'warning'
 }
 
 function partStatusTag(s: OrderStatus): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
@@ -218,24 +289,46 @@ async function fetchData(): Promise<void> {
   }
 }
 
-async function onDelete(): Promise<void> {
+// ===== 取消 / 删除 确认对话框（共用，confirmAction 区分） =====
+const confirmVisible = ref(false)
+const confirmAction = ref<'cancel' | 'delete'>('cancel')
+const confirmSerial = ref('')
+const confirmSubmitting = ref(false)
+
+function openConfirmDialog(action: 'cancel' | 'delete'): void {
+  confirmAction.value = action
+  confirmSerial.value = ''
+  confirmVisible.value = true
+}
+
+async function onConfirmSubmit(): Promise<void> {
   if (!detail.value) return
   const a = detail.value.assembly
-  try {
-    await ElMessageBox.confirm(
-      `确认删除装配件「${a.name}」？将级联软删 ${a.child_count} 个子零件 + 全部关联文件。`,
-      '删除装配件',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch {
+  if (!a.serial_no) {
+    ElMessage.warning('该装配体暂无序列号，无法执行此操作')
+    confirmVisible.value = false
     return
   }
+  if (confirmSerial.value.trim() !== a.serial_no) {
+    ElMessage.error('序列号不匹配')
+    return
+  }
+  confirmSubmitting.value = true
   try {
-    await softDeleteAssembly(a.id)
-    ElMessage.success('已删除')
-    router.push('/assemblies')
+    if (confirmAction.value === 'cancel') {
+      const updated = await cancelAssembly(a.id)
+      ElMessage.success('已取消装配件')
+      detail.value = updated
+    } else {
+      await softDeleteAssembly(a.id)
+      ElMessage.success('已删除')
+      router.push('/assemblies')
+    }
+    confirmVisible.value = false
   } catch (e) {
-    ElMessage.error((e as Error).message ?? '删除失败')
+    ElMessage.error((e as Error).message ?? '操作失败')
+  } finally {
+    confirmSubmitting.value = false
   }
 }
 
@@ -278,7 +371,10 @@ onMounted(fetchData)
 .muted {
   color: var(--text-secondary);
 }
-:deep(.row-urgent) {
-  background-color: #fdf6ec !important;
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 </style>

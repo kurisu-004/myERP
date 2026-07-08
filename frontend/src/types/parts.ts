@@ -42,8 +42,30 @@ export type PartSortKey =
   | 'PLANNED_DELIVERY_DATE'
   | 'REQUEST_DATE'
   | 'CREATED_AT'
+  | 'SERIAL_NO'
+  | 'DRAWING_NO'
+  | 'NAME'
 
 export type SortDir = 'ASC' | 'DESC'
+
+/** 列表展示用窄出参（与 PartItem 不同，无 holder/next_process/assembly_id）。 */
+export interface PartListItem {
+  id: string
+  serial_no: string | null
+  name: string
+  drawing_no: string
+  quantity: number
+  planned_delivery_date: string
+  actual_delivery_date: string | null
+  is_urgent: boolean
+  status: OrderStatus
+  customer_name: string | null
+  parent_customer_name: string | null
+  customer_path: string | null
+  location: string | null
+  shelf_code: string | null
+  worker_name: string | null
+}
 
 /** 后端 PartEventType 枚举 */
 export type PartEventType =

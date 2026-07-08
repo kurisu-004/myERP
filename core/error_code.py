@@ -34,6 +34,7 @@ class ErrCode(IntEnum):
     # 203xx：装配体相关
     BIZ_ASSEMBLY_NOT_FOUND = 20301
     BIZ_ASSEMBLY_BAD_CUSTOMER = 20302  # 客户节点不允许（一级集团 / 不存在）
+    BIZ_ASSEMBLY_TOO_MANY_CHILDREN = 20303  # 子件 > 99，序列号 {serial}-{i:02d} 派生失败
 
     # ---- 图纸文件（t_drawing_file + COS）----
     # 204xx：图纸文件相关

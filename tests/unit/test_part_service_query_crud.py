@@ -140,6 +140,7 @@ def mock_customers() -> AsyncMock:
     mock = AsyncMock()
     mock.get_by_id = AsyncMock()
     mock.list_by_ids = AsyncMock()
+    mock.list_children = AsyncMock(return_value=[])
     return mock
 
 
@@ -202,22 +203,22 @@ def service(
 class TestListParts:
     """Tests for PartService.list_parts."""
 
-    async def test_customer_id_provided_and_exists(
+    async def test_customer_id_provided_leaf(
         self,
         service: PartService,
         mock_parts: AsyncMock,
         mock_customers: AsyncMock,
     ) -> None:
-        """customer_id provided and exists → validates customer, calls list/count, returns PartListOut."""
+        """Leaf customer_id provided → resolves parent_id != null → no cascade list_children call."""
         # ── arrange ──────────────────────────────────────────────
-        cust = _make_customer(id=10, name="ChildCorp")
+        cust = _make_customer(id=10, name="ChildCorp", parent_id=99)
         mock_customers.get_by_id.return_value = cust
 
         part = _make_part(id=1, customer_id=10)
         mock_parts.list_with_filters.return_value = [part]
         mock_parts.count_with_filters.return_value = 5
 
-        # _to_out dependencies
+        # _to_list_out dependencies
         mock_customers.list_by_ids.return_value = [cust]
 
         query = PartListQuery(customer_id='10')
@@ -227,8 +228,9 @@ class TestListParts:
 
         # ── assert ───────────────────────────────────────────────
         mock_customers.get_by_id.assert_awaited_once_with(10)
+        mock_customers.list_children.assert_not_awaited()
         mock_parts.list_with_filters.assert_awaited_once_with(
-            customer_id=10,
+            customer_ids_in=[10],
             statuses=None,
             is_urgent=None,
             keyword=None,
@@ -238,7 +240,7 @@ class TestListParts:
             offset=0,
         )
         mock_parts.count_with_filters.assert_awaited_once_with(
-            customer_id=10,
+            customer_ids_in=[10],
             statuses=None,
             is_urgent=None,
             keyword=None,
@@ -249,13 +251,53 @@ class TestListParts:
         assert result.limit == 50
         assert result.offset == 0
 
+    async def test_customer_id_root_cascades_to_children(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """Root customer (parent_id is None) → expands to [self + children]."""
+        # ── arrange ──────────────────────────────────────────────
+        root = _make_customer(id=10, name="RootCorp", parent_id=None)
+        mock_customers.get_by_id.return_value = root
+        children = [
+            _make_customer(id=20, name="Kid1", parent_id=10),
+            _make_customer(id=21, name="Kid2", parent_id=10),
+        ]
+        mock_customers.list_children.return_value = children
+        mock_customers.list_by_ids.return_value = [root, *children]
+
+        part = _make_part(id=1, customer_id=20)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        query = PartListQuery(customer_id='10')
+
+        # ── act ──────────────────────────────────────────────────
+        await service.list_parts(query)
+
+        # ── assert ───────────────────────────────────────────────
+        mock_customers.get_by_id.assert_awaited_once_with(10)
+        mock_customers.list_children.assert_awaited_once_with(10)
+        mock_parts.list_with_filters.assert_awaited_once_with(
+            customer_ids_in=[10, 20, 21],
+            statuses=None,
+            is_urgent=None,
+            keyword=None,
+            sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
+            sort_dir=SortDir.ASC,
+            limit=50,
+            offset=0,
+        )
+
     async def test_customer_id_none(
         self,
         service: PartService,
         mock_parts: AsyncMock,
         mock_customers: AsyncMock,
     ) -> None:
-        """customer_id is None → skips customer lookup."""
+        """customer_id is None → skips customer lookup, customer_ids_in stays None."""
         # ── arrange ──────────────────────────────────────────────
         part = _make_part(id=2, customer_id=10)
         mock_parts.list_with_filters.return_value = [part]
@@ -271,7 +313,17 @@ class TestListParts:
 
         # ── assert ───────────────────────────────────────────────
         mock_customers.get_by_id.assert_not_awaited()
-        mock_parts.list_with_filters.assert_awaited_once()
+        mock_customers.list_children.assert_not_awaited()
+        mock_parts.list_with_filters.assert_awaited_once_with(
+            customer_ids_in=None,
+            statuses=None,
+            is_urgent=None,
+            keyword=None,
+            sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
+            sort_dir=SortDir.ASC,
+            limit=50,
+            offset=0,
+        )
         mock_parts.count_with_filters.assert_awaited_once()
         assert isinstance(result, PartListOut)
         assert len(result.items) == 1
@@ -296,6 +348,69 @@ class TestListParts:
         mock_parts.count_with_filters.assert_not_awaited()
         assert exc_info.value.code == ErrCode.BIZ_CUSTOMER_NOT_FOUND
         assert exc_info.value.http_status == 404
+
+    async def test_sort_by_serial_no(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """sort_by=SERIAL_NO is forwarded to repository."""
+        # ── arrange ──────────────────────────────────────────────
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(
+            sort_by=PartSortKey.SERIAL_NO, sort_dir=SortDir.ASC
+        )
+
+        # ── act ──────────────────────────────────────────────────
+        await service.list_parts(query)
+
+        # ── assert ───────────────────────────────────────────────
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["sort_by"] == PartSortKey.SERIAL_NO
+        assert call_kwargs["sort_dir"] == SortDir.ASC
+
+    async def test_sort_by_drawing_no_desc(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """sort_by=DRAWING_NO with DESC ordering works."""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(
+            sort_by=PartSortKey.DRAWING_NO, sort_dir=SortDir.DESC
+        )
+
+        await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["sort_by"] == PartSortKey.DRAWING_NO
+        assert call_kwargs["sort_dir"] == SortDir.DESC
+
+    async def test_sort_by_name_asc(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """sort_by=NAME is forwarded."""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(sort_by=PartSortKey.NAME)
+
+        await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["sort_by"] == PartSortKey.NAME
 
 
 # ======================================================================

@@ -41,6 +41,7 @@ from schema.assembly import (
     AssemblyCreateRequest,
     AssemblyCreateResult,
     AssemblyDetail,
+    AssemblyListItem,
     AssemblyListOut,
     AssemblyListQuery,
     AssemblyOut,
@@ -261,17 +262,33 @@ class AssemblyService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
 
-            for child in data.children:
+            # 子件数量上限 = 99：装配体分配一个真实流水号；
+            # 子件派生为 f"{serial}-{i:02d}"，i ∈ [1..99]，最长 8 字符。
+            if len(data.children) > 99:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                    message=(
+                        f"子件数量 {len(data.children)} > 99，"
+                        f"序列号 '{assembly.serial_no}-{{i:02d}}' 派生失败"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            # 一次性 acquire 装配体顶级流水号
+            assembly_serial = await self.serial_counters.acquire_serial(code)
+            assembly.serial_no = assembly_serial
+            await self.assemblies.session.flush()
+            # 子件派生：f"{assembly_serial}-{i:02d}"，i 从 1 开始两位零填充
+            for i, child in enumerate(data.children, start=1):
                 child_id = new_id()
                 child_total = (
                     child.total_price
                     if child.total_price is not None
                     else child.unit_price * child.quantity
                 )
-                serial_no = await self.serial_counters.acquire_serial(code)
+                child_serial = f"{assembly_serial}-{i:02d}"
                 tpart = TPart(
                     id=child_id,
-                    serial_no=serial_no,
+                    serial_no=child_serial,
                     name=child.name,
                     drawing_no=child.drawing_no,
                     applicant_name=(
@@ -360,21 +377,37 @@ class AssemblyService:
 
     # ============================================================
     # 查询
-    # ============================================================
     async def list_assemblies(self, q: AssemblyListQuery) -> AssemblyListOut:
         # q.customer_id 是雪花 ID 字符串，转 int 后传给 repository。
         cid_int = parse_snowflake_id(q.customer_id, field_name="customer_id") if q.customer_id else None
+        # 客户筛选级联：L1 自动包含 L2 子客户
+        customer_ids_in: list[int] | None = None
+        if cid_int is not None:
+            cust = await self.customers.get_by_id(cid_int)
+            if cust is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
+                    message=f"customer {q.customer_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if cust.parent_id is None:
+                children = await self.customers.list_children(cid_int)
+                customer_ids_in = [cid_int] + [c.id for c in children]
+            else:
+                customer_ids_in = [cid_int]
         rows = await self.assemblies.list_with_filters(
-            customer_id=cid_int,
+            customer_ids_in=customer_ids_in,
             status=_parse_status(q.status),
             is_urgent=q.is_urgent,
             drawing_no_like=q.drawing_no_like,
             name_like=q.name_like,
+            sort_by=q.sort_by,
+            sort_dir=q.sort_dir.value,
             limit=q.limit,
             offset=q.offset,
         )
         total = await self.assemblies.count_with_filters(
-            customer_id=cid_int,
+            customer_ids_in=customer_ids_in,
             status=_parse_status(q.status),
             is_urgent=q.is_urgent,
             drawing_no_like=q.drawing_no_like,
@@ -383,10 +416,12 @@ class AssemblyService:
         child_counts = await self._count_children_for(rows)
         cust_map = await self._load_cust_map([a.customer_id for a in rows])
 
-        items: list[AssemblyOut] = []
+        items: list[AssemblyListItem] = []
         for a in rows:
             items.append(
-                self._assembly_to_out_obj(a, child_counts.get(a.id, 0), cust_map)
+                self._assembly_to_list_out_obj(
+                    a, child_counts.get(a.id, 0), cust_map
+                )
             )
         return AssemblyListOut(
             items=items, total=total, limit=q.limit, offset=q.offset
@@ -440,6 +475,10 @@ class AssemblyService:
         - Assembly: PENDING/IN_PROCESS → CANCELLED
         - 每个非终态子 Part → CANCELLED
         - 终态（COMPLETED, CANCELLED）的子件不处理
+
+        终态后释放装配体自身的流水号（serial_no = None），与 Part 的
+        on_enter_CANCELLED 行为一致；partial unique 索引的
+        `WHERE serial_no IS NOT NULL` 让该号重入池中。
         """
         asm = await self.assemblies.get_by_id(assembly_id)
         if asm is None:
@@ -460,6 +499,8 @@ class AssemblyService:
         # 取消装配体自身
         asm.sm.cancel()
         asm.updated_by = self._user_id
+        # 释放装配体级流水号（NULL 即让 partial unique 索引腾位置）
+        asm.serial_no = None
         await self.assemblies.session.flush()
 
         # dashboard 卡片立刻消失 + 通知横幅（不走 PartService.cancel,
@@ -502,6 +543,9 @@ class AssemblyService:
         for c in children:
             c.updated_by = self._user_id
         asm.updated_by = self._user_id
+        # 软删前先释放装配体流水号，让 partial unique 索引腾位置
+        # （deleted_at IS NULL WHERE serial_no IS NOT NULL）
+        asm.serial_no = None
 
         if all_files:
             await self.files.soft_delete_many(list(all_files.values()))
@@ -559,6 +603,47 @@ class AssemblyService:
             path = parent_name
         return AssemblyOut(
             id=asm.id,
+            serial_no=asm.serial_no,
+            drawing_no=asm.drawing_no,
+            name=asm.name,
+            applicant_name=asm.applicant_name,
+            customer_id=asm.customer_id,
+            customer_name=customer_name,
+            parent_customer_name=parent_name,
+            customer_path=path,
+            request_date=asm.request_date,
+            planned_delivery_date=asm.planned_delivery_date,
+            actual_delivery_date=asm.actual_delivery_date,
+            is_urgent=asm.is_urgent,
+            status=asm.status,
+            child_count=child_count,
+            created_at=asm.created_at,
+            updated_at=asm.updated_at,
+        )
+
+    @staticmethod
+    def _assembly_to_list_out_obj(
+        asm: TAssembly,
+        child_count: int,
+        cust_map: dict,
+    ) -> AssemblyListItem:
+        """列表端点用：复用 _assembly_to_out_obj 的 cust_map 路径，返回
+        AssemblyListItem（与 AssemblyOut 字段一致 + serial_no）。
+        """
+        cust = cust_map.get(asm.customer_id)
+        parent = cust_map.get(cust.parent_id) if cust and cust.parent_id else None
+        customer_name = cust.name if cust else None
+        parent_name = parent.name if parent else None
+        path: str | None = None
+        if parent_name and customer_name:
+            path = f"{parent_name} / {customer_name}"
+        elif customer_name:
+            path = customer_name
+        elif parent_name:
+            path = parent_name
+        return AssemblyListItem(
+            id=asm.id,
+            serial_no=asm.serial_no,
             drawing_no=asm.drawing_no,
             name=asm.name,
             applicant_name=asm.applicant_name,

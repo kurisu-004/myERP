@@ -2,9 +2,24 @@
 //
 // 与后端 schema/assembly.py 对齐的 TypeScript 类型。
 
+import type { PartListItem } from '@/types/parts'
+import type { DrawingFileItem } from './file'
+
+export type AssemblySortKey =
+  | 'PLANNED_DELIVERY_DATE'
+  | 'REQUEST_DATE'
+  | 'CREATED_AT'
+  | 'SERIAL_NO'
+  | 'DRAWING_NO'
+  | 'NAME'
+
+export type SortDir = 'ASC' | 'DESC'
+
 /** 装配件（与后端 TAssembly 对齐） */
 export interface AssemblyItem {
   id: string
+  /** 装配件流水号；老装配件为 null */
+  serial_no: string | null
   drawing_no: string
   name: string
   applicant_name: string | null
@@ -16,12 +31,15 @@ export interface AssemblyItem {
   planned_delivery_date: string
   actual_delivery_date: string | null
   is_urgent: boolean
-  /** PENDING / COMPLETED */
+  /** PENDING / IN_PROCESS / COMPLETED / CANCELLED */
   status: string
   child_count: number
   created_at: string
   updated_at: string
 }
+
+/** 列表窄出参（与 AssemblyItem 字段一致 + serial_no）。 */
+export type AssemblyListItem = AssemblyItem
 
 export interface AssemblyListQuery {
   /** 雪花 ID 字符串（CLAUDE.md §3 — 19 位 > JS Number.MAX_SAFE_INTEGER） */
@@ -30,12 +48,14 @@ export interface AssemblyListQuery {
   is_urgent?: boolean
   drawing_no_like?: string
   name_like?: string
+  sort_by?: AssemblySortKey
+  sort_dir?: SortDir
   limit?: number
   offset?: number
 }
 
 export interface AssemblyListResult {
-  items: AssemblyItem[]
+  items: AssemblyListItem[]
   total: number
   limit: number
   offset: number
@@ -71,19 +91,16 @@ export interface AssemblyCreatePayload {
   children: AssemblyChildPayload[]
 }
 
-import type { PartItem } from '@/api/parts'
-import type { DrawingFileItem } from './file'
-
-/** 创建结果 */
+/** 创建结果（创建响应需要完整数据；子件用 PartListItem 即可，详情页用窄版） */
 export interface AssemblyCreateResult {
   assembly: AssemblyItem
-  children: PartItem[]
+  children: PartListItem[]
   files: DrawingFileItem[]
 }
 
 /** 装配件详情：自身 + 子件 + 文件 */
 export interface AssemblyDetail {
   assembly: AssemblyItem
-  children: PartItem[]
+  children: PartListItem[]
   files: DrawingFileItem[]
 }

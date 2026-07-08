@@ -49,6 +49,7 @@ class PartRepository:
         self,
         *,
         customer_id: int | None = None,
+        customer_ids_in: list[int] | None = None,
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
         keyword: str | None = None,
@@ -60,6 +61,7 @@ class PartRepository:
     ) -> list[TPart]:
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
+            customer_ids_in=customer_ids_in,
             statuses=statuses,
             is_urgent=is_urgent,
             keyword=keyword,
@@ -69,6 +71,9 @@ class PartRepository:
             PartSortKey.PLANNED_DELIVERY_DATE: TPart.planned_delivery_date,
             PartSortKey.REQUEST_DATE: TPart.request_date,
             PartSortKey.CREATED_AT: TPart.created_at,
+            PartSortKey.SERIAL_NO: TPart.serial_no,
+            PartSortKey.DRAWING_NO: TPart.drawing_no,
+            PartSortKey.NAME: TPart.name,
         }[sort_by]
         if sort_dir == SortDir.ASC:
             stmt = stmt.order_by(sort_col.asc(), TPart.id.desc())
@@ -82,6 +87,7 @@ class PartRepository:
         self,
         *,
         customer_id: int | None = None,
+        customer_ids_in: list[int] | None = None,
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
         keyword: str | None = None,
@@ -89,6 +95,7 @@ class PartRepository:
     ) -> int:
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
+            customer_ids_in=customer_ids_in,
             statuses=statuses,
             is_urgent=is_urgent,
             keyword=keyword,
@@ -202,6 +209,7 @@ class PartRepository:
         self,
         *,
         customer_id: int | None,
+        customer_ids_in: list[int] | None,
         statuses: list[PartStatus] | None,
         is_urgent: bool | None,
         keyword: str | None,
@@ -210,7 +218,11 @@ class PartRepository:
         stmt = select(TPart)
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
-        if customer_id is not None:
+        # 客户筛选二选一：customer_ids_in 优先（级联：L1 含其下 L2）。
+        # 调用方有且只能传其中一个。
+        if customer_ids_in is not None:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        elif customer_id is not None:
             stmt = stmt.where(TPart.customer_id == customer_id)
         if statuses:
             stmt = stmt.where(

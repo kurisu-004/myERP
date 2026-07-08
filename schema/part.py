@@ -95,8 +95,53 @@ class PartOut(BaseModel):
     )
 
 
+class PartListItem(BaseModel):
+    """零件列表展示用窄出参（仅前端一览所需字段）。
+
+    与 PartOut 的差异：
+    - 不含 `assembly_id` / `current_holder_id` / `current_holder_kind`：
+      一览不再显示装配链接、多态 holder；
+    - 不含 `placed_at` / `next_process_id` / `next_process_name`：
+      一览不再显示「下一道工序」/「首次放上架时间」。
+
+    详情 / 创建 / 编辑响应仍用 PartOut；本 schema 仅服务于 list 端点。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStrNonNull
+    serial_no: str | None = Field(
+        default=None, description="序列号（每客户独立循环，COMPLETED/CANCELLED 时释放）"
+    )
+    name: str
+    drawing_no: str
+    quantity: int
+    planned_delivery_date: date
+    actual_delivery_date: date | None = None
+    is_urgent: bool
+    status: PartStatus
+    customer_name: str | None = Field(
+        default=None, description="客户名（二级节点）"
+    )
+    parent_customer_name: str | None = Field(
+        default=None, description="上级客户名（一级节点）"
+    )
+    customer_path: str | None = Field(
+        default=None, description="客户完整路径"
+    )
+    location: str | None = Field(
+        default=None, description="OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF"
+    )
+    shelf_code: str | None = Field(
+        default=None, description="holder 为货架时的 code"
+    )
+    worker_name: str | None = Field(
+        default=None, description="holder 为工人时的姓名"
+    )
+
+
 class PartListOut(BaseModel):
-    items: list[PartOut]
+    items: list[PartListItem]
     total: int = Field(description="总条数")
     limit: int
     offset: int

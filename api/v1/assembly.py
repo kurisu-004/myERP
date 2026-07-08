@@ -41,10 +41,18 @@ async def list_assemblies(
     is_urgent: bool | None = Query(default=None),
     drawing_no_like: str | None = Query(default=None),
     name_like: str | None = Query(default=None),
+    sort_by: str = Query(
+        default="PLANNED_DELIVERY_DATE",
+        description="排序字段：PLANNED_DELIVERY_DATE / REQUEST_DATE / CREATED_AT / SERIAL_NO / DRAWING_NO / NAME",
+    ),
+    sort_dir: str = Query(default="ASC", description="排序方向：ASC / DESC"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     svc: AssemblyService = Depends(get_assembly_service),
 ) -> AssemblyListOut:
+    from repository.assembly import AssemblySortKey
+    from model.enums import SortDir
+
     return await svc.list_assemblies(
         AssemblyListQuery(
             customer_id=customer_id,
@@ -52,6 +60,8 @@ async def list_assemblies(
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
             name_like=name_like,
+            sort_by=AssemblySortKey(sort_by),
+            sort_dir=SortDir(sort_dir),
             limit=limit,
             offset=offset,
         )
@@ -90,7 +100,8 @@ async def get_assembly(
 
 @router.post(
     "/{assembly_id}/soft-delete",
-    summary="级联软删装配件 + 子件 + 文件（COS 文件异步清理）",
+    summary="级联软删装配件 + 子件 + 文件（COS 文件异步清理，MANAGER-only）",
+    dependencies=[Depends(require_role(UserRole.MANAGER))],
 )
 async def soft_delete_assembly(
     assembly_id: int,

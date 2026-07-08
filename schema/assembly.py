@@ -6,9 +6,11 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from repository.assembly import AssemblySortKey
 from schema._types import IdStr, IdStrNonNull
 from schema.drawing import DrawingFileOut
 from schema.part import PartOut
+from model.enums import SortDir
 
 
 class AssemblyOut(BaseModel):
@@ -17,6 +19,9 @@ class AssemblyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: IdStrNonNull
+    serial_no: str | None = Field(
+        default=None, description="装配件流水号；旧装配件为 NULL"
+    )
     drawing_no: str = Field(description="总图图号（如 E42FX1020107101）")
     name: str = Field(description="装配体名称（如 精研挡料座）")
     applicant_name: str | None = None
@@ -38,6 +43,33 @@ class AssemblyOut(BaseModel):
     updated_at: datetime
 
 
+class AssemblyListItem(BaseModel):
+    """装配件列表展示用窄出参，与 AssemblyOut 字段一致（已含 serial_no）。
+
+    详情 / 创建响应仍用 AssemblyOut；本 schema 仅服务于 list 端点。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStrNonNull
+    serial_no: str | None = None
+    drawing_no: str
+    name: str
+    applicant_name: str | None = None
+    customer_id: IdStrNonNull
+    customer_name: str | None = None
+    parent_customer_name: str | None = None
+    customer_path: str | None = None
+    request_date: date
+    planned_delivery_date: date
+    actual_delivery_date: date | None = None
+    is_urgent: bool
+    status: str
+    child_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class AssemblyListQuery(BaseModel):
     """装配体列表查询参数。"""
 
@@ -46,12 +78,16 @@ class AssemblyListQuery(BaseModel):
     is_urgent: bool | None = Field(default=None, description="是否加急")
     drawing_no_like: str | None = Field(default=None, description="图号模糊匹配")
     name_like: str | None = Field(default=None, description="名称模糊匹配")
+    sort_by: AssemblySortKey = Field(
+        default=AssemblySortKey.PLANNED_DELIVERY_DATE, description="排序字段"
+    )
+    sort_dir: SortDir = Field(default=SortDir.ASC, description="排序方向")
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
 
 
 class AssemblyListOut(BaseModel):
-    items: list[AssemblyOut]
+    items: list[AssemblyListItem]
     total: int
     limit: int
     offset: int

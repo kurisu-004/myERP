@@ -86,6 +86,15 @@ class TAssembly(Base, AuditMixin):
         index=True,
         comment="PENDING（默认）/ IN_PROCESS / COMPLETED / CANCELLED",
     )
+    # 装配体级别序列号（与 t_part.serial_no 同 String(8)）。
+    # 老装配件此字段为 NULL；service 层 cancel / soft_delete 跳过 NULL。
+    # 子件派生规则：f"{serial_no}-{i:02d}"，i ∈ [1..99]，例 L1067-01 .. L1067-99。
+    serial_no: Mapped[str | None] = mapped_column(
+        String(8),
+        nullable=True,
+        index=True,
+        comment="装配体序列号；子件序列号 = '{serial_no}-{i:02d}' 派生",
+    )
 
     @property
     def sm(self) -> "AssemblyStateMachine":

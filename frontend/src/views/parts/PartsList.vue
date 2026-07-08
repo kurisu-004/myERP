@@ -3,11 +3,11 @@
 
   零件一览表。
 
-  - 进入页面自动查询「生产中 + 返修中」零件
-  - 状态 / 加急使用 checkbox 多选，勾选后即时查询
-  - 图号 + 名称共用一个搜索框，前缀匹配
-  - 新增「所在位置」列：货架显示 code，工人显示姓名
-  - 实际送货时间不在列表展示（详情页可见）
+  - 顶部：图号/名称搜索框 + Reset 按钮 + 共 N 条
+  - 所有筛选（状态、加急、客户）下沉到 el-table-column 表头内的 popover
+  - 序列号/图号/名称/计划交期 均可点表头排序；默认按计划交期升序
+  - is_urgent=true 的行整行红底 #fde2e2（dashboard 同款）
+  - 下一道工序 / 装配 列已移除（信息放到详情页）
 -->
 <template>
   <div class="parts-list">
@@ -26,49 +26,10 @@
           </template>
         </el-input>
 
-        <el-popover placement="bottom-start" :width="200" trigger="click">
-          <template #reference>
-            <el-button :type="statusTags.length > 0 ? 'primary' : ''" plain>
-              状态<el-tag
-                v-if="statusTags.length > 0"
-                size="small"
-                round
-                effect="dark"
-                style="margin-left:6px"
-              >{{ statusTags.length }}</el-tag>
-            </el-button>
-          </template>
-          <el-checkbox-group v-model="search.statuses" @change="onSearch">
-            <div v-for="opt in statusOptions" :key="opt.value" style="margin-bottom:6px">
-              <el-checkbox :value="opt.value" :label="opt.label" />
-            </div>
-          </el-checkbox-group>
-        </el-popover>
-
-        <el-popover placement="bottom-start" :width="140" trigger="click">
-          <template #reference>
-            <el-button :type="search.isUrgent !== null ? 'primary' : ''" plain>
-              加急<el-tag
-                v-if="search.isUrgent !== null"
-                size="small"
-                round
-                effect="dark"
-                style="margin-left:6px"
-              >1</el-tag>
-            </el-button>
-          </template>
-          <el-checkbox-group
-            :model-value="urgentCheckboxModel"
-            @update:model-value="onUrgentChange"
-          >
-            <div style="margin-bottom:6px">
-              <el-checkbox value="urgent" label="加急" />
-            </div>
-            <div style="margin-bottom:6px">
-              <el-checkbox value="normal" label="非加急" />
-            </div>
-          </el-checkbox-group>
-        </el-popover>
+        <el-button @click="onReset">
+          <el-icon><RefreshLeft /></el-icon>
+          <span>重置</span>
+        </el-button>
 
         <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
           编程员视图：默认查看「编程中」零件
@@ -85,81 +46,188 @@
         border
         style="width: 100%"
         size="small"
-        :default-sort="{ prop: 'planned_delivery_date', order: sortDir === 'ASC' ? 'ascending' : 'descending' }"
+        :default-sort="defaultSort"
+        :row-class-name="rowClassName"
         @sort-change="onSortChange"
         :empty-text="emptyText"
       >
-        <el-table-column prop="serial_no" label="序列号" width="110" fixed="left" show-overflow-tooltip>
+        <el-table-column
+          prop="serial_no"
+          label="序列号"
+          width="110"
+          fixed="left"
+          sortable="custom"
+          show-overflow-tooltip
+        >
           <template #default="{ row }">
-            <span :class="{ 'muted': !row.serial_no }">{{ row.serial_no || '—' }}</span>
+            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="drawing_no" label="图号" width="130" fixed="left" show-overflow-tooltip />
-        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip>
+
+        <el-table-column
+          prop="drawing_no"
+          label="图号"
+          width="130"
+          fixed="left"
+          sortable="custom"
+          show-overflow-tooltip
+        />
+
+        <el-table-column
+          prop="name"
+          label="名称"
+          min-width="200"
+          sortable="custom"
+          show-overflow-tooltip
+        >
           <template #default="{ row }">
             <router-link :to="`/parts/${row.id}`" class="name-link">
               {{ row.name }}
             </router-link>
           </template>
         </el-table-column>
-        <el-table-column prop="quantity" label="数量" width="80" align="right" />
-        <el-table-column prop="planned_delivery_date" label="计划交期" width="120" sortable="custom" />
 
-        <el-table-column prop="is_urgent" label="加急" width="80" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.is_urgent" type="danger" effect="dark" size="small">加急</el-tag>
-            <span v-else class="muted">—</span>
+        <el-table-column prop="quantity" label="数量" width="80" align="right" />
+
+        <el-table-column
+          prop="planned_delivery_date"
+          label="计划交期"
+          width="120"
+          sortable="custom"
+        />
+
+        <el-table-column
+          label="状态"
+          width="140"
+          align="center"
+        >
+          <template #header>
+            <span class="header-cell">
+              <span>状态</span>
+              <el-popover
+                :width="220"
+                placement="bottom-start"
+                trigger="click"
+                :show-arrow="false"
+                v-model:visible="statusPopoverVisible"
+                @show="syncStatusDraft"
+              >
+                <template #reference>
+                  <el-icon
+                    class="filter-icon"
+                    :class="{ active: statusFilterActive }"
+                  >
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                  多选状态 + 「仅加急」叠加加急过滤
+                </div>
+                <el-checkbox-group v-model="statusDraft">
+                  <el-checkbox
+                    v-for="opt in statusOptions"
+                    :key="opt.value"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                </el-checkbox-group>
+                <el-checkbox
+                  v-model="statusUrgentDraft"
+                  label="仅加急"
+                  style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-color-lighter)"
+                />
+                <div class="filter-actions">
+                  <el-button size="small" link @click="resetStatusDraft">重置</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="confirmStatusFilter"
+                  >确定</el-button>
+                </div>
+              </el-popover>
+            </span>
           </template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="110" align="center">
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)" effect="plain" size="small">
+            <el-tag
+              :type="statusTagType(row.status)"
+              effect="plain"
+              size="small"
+            >
               {{ statusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip>
+
+        <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+          <template #header>
+            <span class="header-cell">
+              <span>客户</span>
+              <el-popover
+                :width="280"
+                placement="bottom-start"
+                trigger="click"
+                :show-arrow="false"
+                v-model:visible="customerPopoverVisible"
+                @show="syncCustomerDraft"
+              >
+                <template #reference>
+                  <el-icon
+                    class="filter-icon"
+                    :class="{ active: search.customerId !== '' }"
+                  >
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                  选一级客户自动级联其下二级客户
+                </div>
+                <el-cascader
+                  v-model="customerDraft"
+                  :options="customerTree"
+                  :props="{
+                    value: 'id',
+                    label: 'name',
+                    children: 'children',
+                    checkStrictly: true,
+                    emitPath: false,
+                  }"
+                  placeholder="选择客户"
+                  style="width: 100%"
+                  clearable
+                />
+                <div class="filter-actions">
+                  <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="confirmCustomerFilter"
+                  >确定</el-button>
+                </div>
+              </el-popover>
+            </span>
+          </template>
           <template #default="{ row }">
             <span v-if="row.customer_path">{{ row.customer_path }}</span>
             <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
+
         <el-table-column label="所在位置" width="150" show-overflow-tooltip>
           <template #default="{ row }">
-            <span v-if="row.current_holder_kind === 'shelf' && row.shelf_code">
+            <span v-if="row.location === 'PRODUCTION_SHELF' && row.shelf_code">
               货架 {{ row.shelf_code }}
             </span>
-            <span v-else-if="row.current_holder_kind === 'worker' && row.worker_name">
+            <span v-else-if="row.location === 'INSPECTION_SHELF' && row.shelf_code">
+              品检 {{ row.shelf_code }}
+            </span>
+            <span v-else-if="row.location === 'WORKER' && row.worker_name">
               {{ row.worker_name }}
             </span>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="下一道工序" width="120">
-          <template #default="{ row }">
-            <el-tag v-if="row.next_process_name" type="primary" size="small" effect="plain">
-              {{ row.next_process_name }}
-            </el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="装配" width="80" align="center">
-          <template #default="{ row }">
-            <el-tag
-              v-if="row.assembly_id != null"
-              type="primary"
-              size="small"
-              effect="plain"
-              class="assembly-link"
-              @click.stop="$router.push(`/parts/${row.id}/assembly`)"
-            >
-              <el-icon><Connection /></el-icon>
-              <span>装配件</span>
-            </el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
+
         <el-table-column label="操作" width="130" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
@@ -168,7 +236,7 @@
               link
               type="success"
               size="small"
-              @click="onDispatch(row as PartItem)"
+              @click="onDispatch(row as PartListItem)"
             >下发</el-button>
           </template>
         </el-table-column>
@@ -193,7 +261,7 @@
       />
     </div>
 
-    <!-- 下发对话框 -->
+    <!-- 下发对话框（沿用旧 PartsList 的下发流程） -->
     <el-dialog
       v-model="dispatchVisible"
       :title="dispatchMode === 'cnc' ? '发送至 CNC 编程' : '下发零件'"
@@ -266,14 +334,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, Connection } from '@element-plus/icons-vue'
+import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import {
   listParts,
   placeOnShelf,
   sendToProgramming,
   type ListPartsParams,
-  type PartItem,
 } from '@/api/parts'
+import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
@@ -282,55 +350,94 @@ import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
   type OrderStatus,
-  type PartSortKey,
-  type SortDir,
 } from '@/types/parts'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useCustomerTree } from '@/composables/useCustomerTree'
 
-// ============ 搜索条件 ============
-// CNC_PROGRAMMER 默认只看编程中；其他角色保持现状（生产中 + 返修中）。
+// ============ 角色 & 默认筛选 ============
 const { hasRole } = useAuthSession()
 const isCncProgrammer = hasRole('CNC_PROGRAMMER')
-const initialSearch = () => ({
-  keyword: '',
-  statuses: (isCncProgrammer
-    ? ['PROGRAMMING']
-    : ['IN_PROCESS', 'REPAIRING']) as OrderStatus[],
-  isUrgent: null as boolean | null,
-})
-const search = reactive(initialSearch())
+const { tree: customerTree } = useCustomerTree()
 
-const statusTags = computed(() => search.statuses)
-
-const urgentCheckboxModel = computed<string[]>(() => {
-  const out: string[] = []
-  if (search.isUrgent === true) out.push('urgent')
-  if (search.isUrgent === false) out.push('normal')
-  return out
-})
-
-function onUrgentChange(vals: unknown): void {
-  const arr: string[] = Array.isArray(vals) ? vals.map(String) : []
-  const hasUrgent = arr.includes('urgent')
-  const hasNormal = arr.includes('normal')
-  if (hasUrgent && hasNormal) {
-    search.isUrgent = null // 两者都选 = 不限
-  } else if (hasUrgent) {
-    search.isUrgent = true
-  } else if (hasNormal) {
-    search.isUrgent = false
-  } else {
-    search.isUrgent = null
-  }
-  onSearch()
+interface SearchState {
+  keyword: string
+  statuses: OrderStatus[]
+  isUrgent: boolean | null
+  customerId: string
 }
+function initialSearch(): SearchState {
+  return {
+    keyword: '',
+    statuses: isCncProgrammer
+      ? ['PROGRAMMING']
+      : ['IN_PROCESS', 'REPAIRING'],
+    isUrgent: null,
+    customerId: '',
+  }
+}
+const search = reactive<SearchState>(initialSearch())
 
 const statusOptions: { value: OrderStatus; label: string }[] = (
   Object.keys(ORDER_STATUS_LABEL) as OrderStatus[]
 ).map((v) => ({ value: v, label: ORDER_STATUS_LABEL[v] }))
 
-// ============ 表格数据 / 分页 / 排序 ============
-const items = ref<PartItem[]>([])
+const statusFilterActive = computed(
+  () => search.statuses.length > 0 || search.isUrgent === true,
+)
+const customerFilterActive = computed(() => search.customerId !== '')
+
+// ============ 状态列头 popover（draft + 确定/重置） ============
+// draft 完全用 OrderStatus 类型（用 string 存「仅加急」标记已删除）；
+// 加急选项是独立 checkbox，不再混入 status 多选。
+const statusPopoverVisible = ref(false)
+const statusDraft = ref<OrderStatus[]>([])
+const statusUrgentDraft = ref(false)
+
+function syncStatusDraft(): void {
+  statusDraft.value = [...search.statuses]
+  statusUrgentDraft.value = search.isUrgent === true
+}
+
+function resetStatusDraft(): void {
+  statusDraft.value = []
+  statusUrgentDraft.value = false
+  search.statuses = []
+  search.isUrgent = null
+  statusPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmStatusFilter(): void {
+  // 只装纯 OrderStatus 与 boolean，绝不混入 marker
+  search.statuses = [...statusDraft.value]
+  search.isUrgent = statusUrgentDraft.value ? true : null
+  statusPopoverVisible.value = false
+  onSearch()
+}
+
+// ============ 客户列头 popover（draft + 确定/重置） ============
+const customerPopoverVisible = ref(false)
+const customerDraft = ref<string | null>(null)
+
+function syncCustomerDraft(): void {
+  customerDraft.value = search.customerId || null
+}
+
+function resetCustomerDraft(): void {
+  customerDraft.value = null
+  search.customerId = ''
+  customerPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmCustomerFilter(): void {
+  search.customerId = customerDraft.value ?? ''
+  customerPopoverVisible.value = false
+  onSearch()
+}
+
+// ============ 表格 / 排序 ============
+const items = ref<PartListItem[]>([])
 const total = ref(0)
 const loading = ref(false)
 const errorMsg = ref<string | null>(null)
@@ -338,6 +445,19 @@ const page = ref(1)
 const pageSize = ref(20)
 const sortBy = ref<PartSortKey>('PLANNED_DELIVERY_DATE')
 const sortDir = ref<SortDir>('ASC')
+
+const SORT_PROP_MAP: Record<string, PartSortKey> = {
+  serial_no: 'SERIAL_NO',
+  drawing_no: 'DRAWING_NO',
+  name: 'NAME',
+  planned_delivery_date: 'PLANNED_DELIVERY_DATE',
+}
+
+type SortOrder = 'ascending' | 'descending'
+const defaultSort = computed<{ prop: string; order: SortOrder }>(() => ({
+  prop: 'planned_delivery_date',
+  order: sortDir.value === 'ASC' ? 'ascending' : 'descending',
+}))
 
 const emptyText = computed(() => errorMsg.value ?? '暂无符合条件的零件')
 
@@ -348,8 +468,13 @@ function statusTagType(s: OrderStatus): 'primary' | 'success' | 'warning' | 'inf
   return ORDER_STATUS_TAG_TYPE[s] ?? 'info'
 }
 
+function rowClassName({ row }: { row: PartListItem }): string {
+  return row.is_urgent ? 'row-urgent' : ''
+}
+
 function buildParams(): ListPartsParams {
   return {
+    customer_id: search.customerId || undefined,
     statuses: search.statuses.length > 0 ? search.statuses : undefined,
     is_urgent: search.isUrgent ?? undefined,
     keyword: search.keyword.trim() || undefined,
@@ -377,40 +502,43 @@ async function fetchList(): Promise<void> {
   }
 }
 
-// 工序名查找（后端在 PartOut 中已带 next_process_name，无需前端再查）
-onMounted(() => {
-  void fetchList()
-})
-
-// ============ 搜索 / 排序 / 分页 ============
 const onSearch = (): void => {
   page.value = 1
   void fetchList()
 }
-const onSortChange = ({
+
+function onSortChange({
   prop,
   order,
 }: {
   prop: string | null
   order: 'ascending' | 'descending' | null
-}): void => {
-  if (prop === 'planned_delivery_date') {
-    sortBy.value = 'PLANNED_DELIVERY_DATE'
-  }
-  if (order === 'ascending') sortDir.value = 'ASC'
-  else if (order === 'descending') sortDir.value = 'DESC'
+}): void {
+  if (!prop || !order) return
+  sortBy.value = SORT_PROP_MAP[prop] ?? 'PLANNED_DELIVERY_DATE'
+  sortDir.value = order === 'ascending' ? 'ASC' : 'DESC'
   void fetchList()
 }
-const onPageSizeChange = (size: number): void => {
+
+function onPageSizeChange(size: number): void {
   pageSize.value = size
   page.value = 1
   void fetchList()
 }
 
-// ============ 下发 ============
-// shelf_id 在前端保持字符串：雪花 ID 长度 > 2^53，`Number(s.id)` 会丢精度
-// （实测 `Number("198362487928651776")` → "198362487928651780"，差 4）。
-// 后端 Pydantic v2 默认 lax 模式会从 JSON string 自动 coerce 到 int。
+function onReset(): void {
+  Object.assign(search, initialSearch())
+  sortBy.value = 'PLANNED_DELIVERY_DATE'
+  sortDir.value = 'ASC'
+  page.value = 1
+  void fetchList()
+}
+
+onMounted(() => {
+  void fetchList()
+})
+
+// ============ 下发对话框 ============
 const shelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
 const dispatchVisible = ref(false)
@@ -418,15 +546,13 @@ const dispatchShelfId = ref<string | null>(null)
 const dispatchNextProcessId = ref<string | null>(null)
 const dispatchPartId = ref<string | null>(null)
 const dispatchSubmitting = ref(false)
-/** 下发方式：direct = 直接放到生产货架；cnc = 发送至 CNC 编程。 */
 const dispatchMode = ref<'direct' | 'cnc'>('direct')
 
-async function onDispatch(row: PartItem): Promise<void> {
+async function onDispatch(row: PartListItem): Promise<void> {
   dispatchPartId.value = row.id
   dispatchShelfId.value = null
   dispatchNextProcessId.value = null
   dispatchMode.value = 'direct'
-  // 拉取生产货架列表 + 工序列表
   try {
     const [shelfResp, procResp] = await Promise.all([
       listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 }),
@@ -521,21 +647,43 @@ async function onDispatchConfirm(): Promise<void> {
 .name-link {
   color: var(--primary-color);
   text-decoration: none;
-
   &:hover {
     text-decoration: underline;
   }
 }
 
-.assembly-link {
-  cursor: pointer;
-  user-select: none;
+.header-cell {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  &:hover {
-    background: var(--primary-color) !important;
-    color: #fff !important;
+  gap: 4px;
+  width: 100%;
+  justify-content: center;
+}
+
+.filter-icon {
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  &.active {
+    color: var(--primary-color);
   }
+}
+
+.filter-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border-color-lighter);
+  padding-top: 8px;
+}
+
+// 加急行：dashboard 同款红底 #fde2e2（与默认 .el-table 浅灰底可叠加）
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 </style>

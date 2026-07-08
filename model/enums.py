@@ -138,6 +138,9 @@ class PartSortKey(str, enum.Enum):
     PLANNED_DELIVERY_DATE = "PLANNED_DELIVERY_DATE"
     REQUEST_DATE = "REQUEST_DATE"
     CREATED_AT = "CREATED_AT"
+    SERIAL_NO = "SERIAL_NO"
+    DRAWING_NO = "DRAWING_NO"
+    NAME = "NAME"
 
 
 class SortDir(str, enum.Enum):

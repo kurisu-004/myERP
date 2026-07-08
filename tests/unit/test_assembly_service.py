@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -47,6 +47,7 @@ def make_assembly(**kwargs):
     """Create a MagicMock TAssembly with standard defaults."""
     defaults = dict(
         id=1001,
+        serial_no=None,
         drawing_no="DWG-001",
         name="Test Assembly",
         applicant_name="Applicant",
@@ -661,3 +662,216 @@ class TestParseStatus:
             _parse_status("INVALID_STATUS")
         assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
         assert exc.value.http_status == 400
+
+
+# ============================================================
+# 装配体流水号（serial_no）分配 / 派生 / 释放
+# ============================================================
+
+
+class TestAssemblySerialAllocation:
+    """create_assembly uses ONE acquire_serial call → derives children as f"{serial}-{i:02d}"."""
+
+    @pytest.fixture
+    def happy_path_create_data(self):
+        return AssemblyCreateRequest(
+            name="Test Asm",
+            drawing_no="DWG-ASM-001",
+            customer_id="1",
+            request_date=date(2026, 7, 1),
+            planned_delivery_date=date(2026, 8, 1),
+            children=[
+                AssemblyChildCreateRequest(
+                    drawing_no="PART-A",
+                    name="Child A",
+                    quantity=1,
+                    unit_price=Decimal("10.00"),
+                    page_index=2,
+                ),
+                AssemblyChildCreateRequest(
+                    drawing_no="PART-B",
+                    name="Child B",
+                    quantity=1,
+                    unit_price=Decimal("10.00"),
+                    page_index=3,
+                ),
+                AssemblyChildCreateRequest(
+                    drawing_no="PART-C",
+                    name="Child C",
+                    quantity=1,
+                    unit_price=Decimal("10.00"),
+                    page_index=4,
+                ),
+            ],
+        )
+
+    async def test_one_acquire_serial_per_assembly(
+        self,
+        svc,
+        mock_customers,
+        mock_serial_counters,
+        mock_parts,
+        mock_drawings,
+        happy_path_create_data,
+    ):
+        """acquire_serial called exactly ONCE; children get derived serials."""
+        from schema.drawing import DrawingFileOut
+
+        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+            # arrange
+            leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
+            parent = make_customer(id=10, name="路达", parent_id=None)
+
+            async def mock_get_by_id(cid):
+                if cid == 1: return leaf
+                if cid == 10: return parent
+                return None
+            mock_customers.get_by_id.side_effect = mock_get_by_id
+
+            mock_serial_counters.acquire_serial.return_value = "L1067"
+
+            captured_children: list[TPart] = []
+
+            async def mock_create_part(p):
+                captured_children.append(p)
+                return p
+            mock_parts.create.side_effect = mock_create_part
+
+            svc.parts.list_children = AsyncMock(return_value=[])
+            # Stub heavy conversion with stub schema instance
+            stub_file = DrawingFileOut(
+                id="1",
+                owner_type="assembly",
+                owner_id="1",
+                file_type="PDF",
+                original_filename="test.pdf",
+                file_size=10,
+                content_type="application/pdf",
+                page_index=None,
+                download_url="https://example.com/x",
+                upload_status="READY",
+                created_at=datetime(2026, 7, 1, 10, 0, 0),
+            )
+            mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            svc._assembly_to_out = AsyncMock(
+                return_value=MagicMock(spec=AssemblyOut)
+            )
+            svc.part_service._to_out = AsyncMock(return_value=[])
+
+            # act
+            await svc.create_assembly(
+                happy_path_create_data,
+                pdf_bytes=b"%PDF-1.4 fake",
+                pdf_filename="test.pdf",
+            )
+
+            # assert: serial allocated exactly once, value bound to assembly
+            mock_serial_counters.acquire_serial.assert_awaited_once()
+            assert len(captured_children) == 3
+            assert captured_children[0].serial_no == "L1067-01"
+            assert captured_children[1].serial_no == "L1067-02"
+            assert captured_children[2].serial_no == "L1067-03"
+
+    async def test_too_many_children_raises(
+        self,
+        svc,
+        mock_customers,
+        mock_serial_counters,
+        mock_parts,
+    ):
+        """100+ children → BizError BIZ_ASSEMBLY_TOO_MANY_CHILDREN (no counter touched)."""
+        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+            # arrange: 100 children
+            children = [
+                AssemblyChildCreateRequest(
+                    drawing_no=f"P{i}", name=f"C{i}", quantity=1,
+                    unit_price=Decimal("1"), page_index=i + 1,
+                )
+                for i in range(1, 101)
+            ]
+            data = AssemblyCreateRequest(
+                name="TooBig",
+                drawing_no="DWG-TOO-BIG",
+                customer_id="1",
+                request_date=date(2026, 7, 1),
+                planned_delivery_date=date(2026, 8, 1),
+                children=children,
+            )
+            leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
+            parent = make_customer(id=10, name="路达", parent_id=None)
+            async def mock_get_by_id(cid):
+                if cid == 1: return leaf
+                if cid == 10: return parent
+                return None
+            mock_customers.get_by_id.side_effect = mock_get_by_id
+
+            # act / assert
+            with pytest.raises(BizError) as exc:
+                await svc.create_assembly(
+                    data,
+                    pdf_bytes=b"%PDF-1.4 fake",
+                    pdf_filename="test.pdf",
+                )
+            assert exc.value.code == ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN
+            assert exc.value.http_status == 400
+            mock_serial_counters.acquire_serial.assert_not_awaited()
+
+
+class TestAssemblySerialRelease:
+    """cancel / soft_delete 释放装配体流水号。"""
+
+    async def test_cancel_releases_assembly_serial(self, svc):
+        """Assembly.serial_no → None after cancel_assembly."""
+        asm = make_assembly(serial_no="L0001", status="IN_PROCESS")
+        # Children must be non-terminal so sm.cancel() runs
+        child_active = make_part(id=2001, status="IN_PROCESS")
+        child_done = make_part(id=2002, status="COMPLETED")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        svc.parts.list_children = AsyncMock(return_value=[child_active, child_done])
+        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_service._to_out = AsyncMock(return_value=[])
+
+        async def mock_list_by_ids(ids):
+            return []
+        svc.customers.list_by_ids = mock_list_by_ids
+
+        # act
+        await svc.cancel_assembly(1001)
+
+        # assert
+        assert asm.serial_no is None, (
+            "cancel_assembly 必须把 Assembly.serial_no 置 None 释放槽位"
+        )
+
+    async def test_soft_delete_releases_assembly_serial(self, svc):
+        """Assembly.serial_no → None after soft_delete_assembly (old 代码不会置 None,
+        现在需要置 None 让 partial unique index 把槽位释放)."""
+        asm = make_assembly(serial_no="L9999")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        svc.parts.list_children = AsyncMock(return_value=[])
+        svc.files.list_for_part_ids = AsyncMock(return_value=[])
+        svc.files.list_by_assembly = AsyncMock(return_value=[])
+
+        # act
+        await svc.soft_delete_assembly(1001)
+
+        # assert
+        assert asm.serial_no is None
+
+    async def test_cancel_already_null_serial_skips_release(self, svc):
+        """cancel on asm.serial_no is None: no error, no extra op."""
+        asm = make_assembly(serial_no=None, status="PENDING")
+        # No children
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        svc.parts.list_children = AsyncMock(return_value=[])
+        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_service._to_out = AsyncMock(return_value=[])
+        async def mock_list_by_ids(ids):
+            return []
+        svc.customers.list_by_ids = mock_list_by_ids
+
+        # act — should not raise
+        await svc.cancel_assembly(1001)
+
+        # assert: serial_no still None
+        assert asm.serial_no is None

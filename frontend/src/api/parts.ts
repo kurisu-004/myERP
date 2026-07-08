@@ -2,7 +2,13 @@
 // 所有 ID 在前端是字符串（雪花 ID 经后端 IdStr 序列化）。
 
 import { api } from '@/api/http'
-import type { OrderStatus, PartEventType, PartSortKey, SortDir } from '@/types/parts'
+import type {
+  OrderStatus,
+  PartEventType,
+  PartListItem,
+  PartSortKey,
+  SortDir,
+} from '@/types/parts'
 
 export interface PartItem {
   id: string
@@ -31,7 +37,7 @@ export interface PartItem {
 }
 
 export interface PartListResult {
-  items: PartItem[]
+  items: PartListItem[]
   total: number
   limit: number
   offset: number

@@ -41,6 +41,7 @@ from schema.part import (
     PartBatchCreateResult,
     PartCreateRequest,
     PartEventOut,
+    PartListItem,
     PartListOut,
     PartListQuery,
     PartOut,
@@ -124,6 +125,10 @@ class PartService:
     async def list_parts(self, query: PartListQuery) -> PartListOut:
         # customer_id 入参是雪花 ID 字符串，转 int。
         customer_id_int = parse_snowflake_id(query.customer_id, field_name="customer_id") if query.customer_id else None
+        # 客户筛选级联：选 L1（一级集团）自动包含其下 L2 子客户；选 L2 叶子
+        # 节点就是单 id。两种情形最终都通过 `customer_ids_in=[...]` 传给 repo，
+        # 由 repo 用 `customer_id IN (...)` 一条 SQL 完成。
+        customer_ids_in: list[int] | None = None
         if customer_id_int is not None:
             cust = await self.customers.get_by_id(customer_id_int)
             if cust is None:
@@ -132,8 +137,15 @@ class PartService:
                     message=f"customer {query.customer_id} not found",
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
+            if cust.parent_id is None:
+                # L1 节点：扩展 = [self] + 全部子节点
+                children = await self.customers.list_children(customer_id_int)
+                customer_ids_in = [customer_id_int] + [c.id for c in children]
+            else:
+                # L2 叶子：单 id
+                customer_ids_in = [customer_id_int]
         rows = await self.parts.list_with_filters(
-            customer_id=customer_id_int,
+            customer_ids_in=customer_ids_in,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
@@ -143,12 +155,12 @@ class PartService:
             offset=query.offset,
         )
         total = await self.parts.count_with_filters(
-            customer_id=customer_id_int,
+            customer_ids_in=customer_ids_in,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
         )
-        items = await self._to_out(rows)
+        items = await self._to_list_out(rows)
         return PartListOut(
             items=items, total=total, limit=query.limit, offset=query.offset
         )
@@ -1199,6 +1211,91 @@ class PartService:
                     next_process_name=process_map.get(int(p.next_process_id))
                     if p.next_process_id
                     else None,
+                )
+            )
+        return out
+
+    async def _to_list_out(self, rows: list[TPart]) -> list[PartListItem]:
+        """窄版 _to_out：列表展示用，省去 next_process 批查 / assembly_id / 多态 holder。
+
+        复用 customers + workers + shelves 的批查路径；性能上比 _to_out
+        省一次 processes.list_by_ids 调用。
+        """
+        if not rows:
+            return []
+        cust_ids = list({p.customer_id for p in rows})
+        cust_list = await self.customers.list_by_ids(cust_ids)
+        cust_map: dict[int, TCustomer] = {c.id: c for c in cust_list}
+        parent_ids = [c.parent_id for c in cust_list if c.parent_id]
+        parents = (
+            await self.customers.list_by_ids(parent_ids) if parent_ids else []
+        )
+        parent_map: dict[int, TCustomer] = {p.id: p for p in parents}
+
+        worker_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location == "WORKER" and p.current_holder_id
+        ]
+        worker_map: dict[int, str] = {}
+        if worker_ids:
+            workers = await self.workers.list_by_ids(worker_ids)
+            worker_map = {w.id: w.name for w in workers}
+
+        # 一次性批查所有需要查货架 code 的 id
+        shelf_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
+            and p.current_holder_id
+        ]
+        shelf_map: dict[int, str] = {}
+        if shelf_ids:
+            shelf_rows = await self.shelves.list_by_ids(shelf_ids)
+            shelf_map = {s.id: s.code for s in shelf_rows}
+
+        out: list[PartListItem] = []
+        for p in rows:
+            cust = cust_map.get(p.customer_id)
+            parent = (
+                parent_map.get(cust.parent_id)
+                if cust and cust.parent_id
+                else None
+            )
+            parent_name = parent.name if parent else None
+            child_name = cust.name if cust else None
+            path: str | None = None
+            if parent_name and child_name:
+                path = f"{parent_name} / {child_name}"
+            elif child_name:
+                path = child_name
+            elif parent_name:
+                path = parent_name
+
+            shelf_code: str | None = None
+            worker_name: str | None = None
+            if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and p.current_holder_id:
+                shelf_code = shelf_map.get(int(p.current_holder_id))
+            elif p.location == "WORKER" and p.current_holder_id:
+                worker_name = worker_map.get(int(p.current_holder_id))
+
+            out.append(
+                PartListItem(
+                    id=p.id,
+                    serial_no=p.serial_no,
+                    name=p.name,
+                    drawing_no=p.drawing_no,
+                    quantity=p.quantity,
+                    planned_delivery_date=p.planned_delivery_date,
+                    actual_delivery_date=p.actual_delivery_date,
+                    is_urgent=p.is_urgent,
+                    status=_parse_status(p.status) or PartStatus.PENDING,
+                    customer_name=child_name,
+                    parent_customer_name=parent_name,
+                    customer_path=path,
+                    location=p.location,
+                    shelf_code=shelf_code,
+                    worker_name=worker_name,
                 )
             )
         return out

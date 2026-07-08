@@ -5,8 +5,8 @@
 """
 from __future__ import annotations
 
+import enum
 from datetime import datetime
-from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from model import TAssembly
 
 
-AssemblySortKey = Literal["planned_delivery_date", "request_date", "created_at"]
-AssemblySortDir = Literal["asc", "desc"]
+class AssemblySortKey(str, enum.Enum):
+    """装配体列表支持的排序字段。"""
+
+    PLANNED_DELIVERY_DATE = "PLANNED_DELIVERY_DATE"
+    REQUEST_DATE = "REQUEST_DATE"
+    CREATED_AT = "CREATED_AT"
+    SERIAL_NO = "SERIAL_NO"
+    DRAWING_NO = "DRAWING_NO"
+    NAME = "NAME"
+
+
+AssemblySortDir = str  # "asc" | "desc"，保持简化的字符串
 
 
 class AssemblyRepository:
@@ -59,11 +69,12 @@ class AssemblyRepository:
         self,
         *,
         customer_id: int | None = None,
+        customer_ids_in: list[int] | None = None,
         status: str | None = None,
         is_urgent: bool | None = None,
         drawing_no_like: str | None = None,
         name_like: str | None = None,
-        sort_by: AssemblySortKey = "planned_delivery_date",
+        sort_by: AssemblySortKey = AssemblySortKey.PLANNED_DELIVERY_DATE,
         sort_dir: AssemblySortDir = "asc",
         include_deleted: bool = False,
         limit: int = 50,
@@ -71,6 +82,7 @@ class AssemblyRepository:
     ) -> list[TAssembly]:
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
+            customer_ids_in=customer_ids_in,
             status=status,
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
@@ -78,9 +90,12 @@ class AssemblyRepository:
             include_deleted=include_deleted,
         )
         sort_col = {
-            "planned_delivery_date": TAssembly.planned_delivery_date,
-            "request_date": TAssembly.request_date,
-            "created_at": TAssembly.created_at,
+            AssemblySortKey.PLANNED_DELIVERY_DATE: TAssembly.planned_delivery_date,
+            AssemblySortKey.REQUEST_DATE: TAssembly.request_date,
+            AssemblySortKey.CREATED_AT: TAssembly.created_at,
+            AssemblySortKey.SERIAL_NO: TAssembly.serial_no,
+            AssemblySortKey.DRAWING_NO: TAssembly.drawing_no,
+            AssemblySortKey.NAME: TAssembly.name,
         }[sort_by]
         if sort_dir == "asc":
             stmt = stmt.order_by(sort_col.asc(), TAssembly.id.desc())
@@ -94,6 +109,7 @@ class AssemblyRepository:
         self,
         *,
         customer_id: int | None = None,
+        customer_ids_in: list[int] | None = None,
         status: str | None = None,
         is_urgent: bool | None = None,
         drawing_no_like: str | None = None,
@@ -102,6 +118,7 @@ class AssemblyRepository:
     ) -> int:
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
+            customer_ids_in=customer_ids_in,
             status=status,
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
@@ -126,6 +143,7 @@ class AssemblyRepository:
         self,
         *,
         customer_id: int | None,
+        customer_ids_in: list[int] | None,
         status: str | None,
         is_urgent: bool | None,
         drawing_no_like: str | None,
@@ -135,7 +153,9 @@ class AssemblyRepository:
         stmt = select(TAssembly)
         if not include_deleted:
             stmt = stmt.where(TAssembly.deleted_at.is_(None))
-        if customer_id is not None:
+        if customer_ids_in is not None:
+            stmt = stmt.where(TAssembly.customer_id.in_(customer_ids_in))
+        elif customer_id is not None:
             stmt = stmt.where(TAssembly.customer_id == customer_id)
         if status is not None:
             stmt = stmt.where(TAssembly.status == status)
