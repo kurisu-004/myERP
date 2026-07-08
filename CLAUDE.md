@@ -282,6 +282,13 @@ frontend/src/
 - API 函数参数 `id` 统一为 `string` 类型（`customer_id` 等查询参数除外，调用的地方显式转）。
 - 扫码台脱离 MainLayout，整页占屏。
 
+### Element Plus 工作流
+- 前端 Element Plus 在 `package.json` 中声明为 `^2.7.0`（caret 范围）；实际安装版本以 `cd frontend && npm ls element-plus` 为准。
+- 文档基准版本为 2.14.1（https://element-plus.org/en-US/component/overview）。版本不一致时参考 https://element-plus.org/en-US/guide/migration.html 比对差异，优先已安装版本行为。
+- **任何对 `el-*` 组件、`@element-plus/icons-vue` 图标、`ElMessage` / `ElMessageBox` / `ElNotification` / `ElLoading` 等命令式 API、或 `frontend/src/main.ts` 中 `app.use(ElementPlus, ...)` 与 locale 相关的修改，都必须先调用 `element-plus` skill 并 WebFetch 对应组件官方文档，回复中附 `> Source: https://element-plus.org/...` 一行；不得凭记忆写 props / events / slots。**
+- skill 的 `references/` 是 curated 高频子集（不收录如 `el-autocomplete`、`el-segmented`、`el-affix`、`el-tour` 等），未命中时按 skill 内「What to do when the component is not in references/」回退路径去官网 WebFetch / WebSearch。
+- 项目采用 full import（`main.ts` 中 `app.use(ElementPlus, { locale: zhCn })` + 图标全局注册循环），不要引入 `unplugin-auto-import`。
+
 ## 常用命令
 
 > 所有命令需要在项目根目录执行，使用 `uv run` 触发虚拟环境。
@@ -384,6 +391,27 @@ frontend/src/
     - 前端 `components/FileListCard.vue`：`ACCEPT = '.pdf'`（之前接受 `.pdf,.step,.stp,.dwg,.dxf`）；上传按钮文案按 `files.length` 切换「上传图纸」/「替换图纸」明示语义。删除按钮仍保留（用户可手动归零）。
     - 端到端验证：连传两次 PDF → `t_drawing_file` 第 2 次只剩 1 行（id 新的），第 1 行 `deleted_at` 已设；`.step` 上传 → 400 拒绝。`uv run pytest tests/unit` → 195 passed；`npm run build` 通过。
 
+11. **2026-07-08 装配体流水号体系 + 一览筛选 + 表头 popover UX**
+    - **装配体流水号**：新迁移 `000000000008_assembly_serial_no` 给 `t_assembly` 加 `serial_no String(8) nullable + partial unique (serial_no) WHERE deleted_at IS NULL AND serial_no IS NOT NULL`。老装配件保持 NULL（不迁移）。新装配件创建时一次性 `acquire_serial(code)` → 子件派生为 `f"{serial}-{i:02d}"`（两位零填充，上限 99 件；超限抛 `BIZ_ASSEMBLY_TOO_MANY_CHILDREN 400`）。terminal（cancel/soft_delete）时 `asm.serial_no = None` 释放 partial unique 槽位。
+    - **后端 schema 瘦身**：新增 `PartListItem`（去掉 `assembly_id / next_process_* / current_holder_* / placed_at`）/ `AssemblyListItem`（与 `AssemblyOut` 字段一致 + `serial_no`）两个窄 schema，专门服务于列表端点。`PartOut` / `AssemblyOut` 仍用于详情 / 创建响应。
+    - **客户筛选级联**：service `list_parts` / `list_assemblies` 选 L1 时自动展平为 `[L1, *L2-children]` 传给 repo（`customer_id IN (...)`）。Repository 增加 `customer_ids_in: list[int] | None` 入参，与旧单值 `customer_id` 二选一。
+    - **新增 sort key**：`PartSortKey` / `AssemblySortKey` 加 `SERIAL_NO / DRAWING_NO / NAME` 三项；列表列头点击即可排序。计划交期仍为默认（升序）。
+    - **前端重写 `PartsList.vue` / `AssemblyList.vue`**：
+      - 顶部只保留「图号/名称搜索 + Reset + 共 N 条」；CNC 编程员额外 banner；装配件列表新增「新建装配件」按钮。
+      - 所有筛选下沉到列头 `el-popover`：状态（多选 + 仅加急）/ 客户（el-cascader，checkStrictly + emitPath）。
+      - **draft → 确定/重置** 模式：popover 用本地 draft 缓冲，**确定** 才把 draft 拷到实际 filter 并发起 query；**重置** 立即清空并重查。注意：勿把 sentinel 字符串（如 `URGENT_ONLY`）混入 `statuses` 数组传入后端（曾触发 `is not a valid PartStatus` ValueError）——「仅加急」**必须**是独立 boolean checkbox。
+      - 列重排：序列号 | 图号 | 名称 | 数量 | 计划交期 | 状态 | 客户 | 所在位置 | 操作（移除原「下一道工序 / 装配 / 加急独占列」）。
+      - 加急行 `row-class-name="row-urgent"` → 红底 `#fde2e2`（与 `Dashboard.vue` 同款），跟现有表单的橙底 `#fdf6ec` 区分。
+    - **装配件详情页承担关键操作**：`AssemblyDetail.vue` 加「取消装配件（CLERK+）」「删除装配件（MANAGER-only）」按钮；共用一个 `el-dialog` 输入 `asm.serial_no` 才可提交。`serial_no` 为 NULL（老数据）时按钮禁用 + tooltip 提示「该装配体暂无序列号，请在数据库手工处理」。
+    - **API 权限收紧**：`POST /assemblies/{id}/soft-delete` 端点级 `dependencies=[require_role(MANAGER)]`，OVERRIDE 路由级 MANAGER+CLERK；CLERK 调用现 403。
+    - **新增 composable**：`composables/useCustomerTree.ts` 抽取 cascader 树形构造，`PartBatchNew.vue` / `AssemblyCreate.vue` / `PartsList.vue` / `AssemblyList.vue` 共用。
+    - TDD 红 → 绿 三步走全在 commit `feat(parts/assembly):` 内；`tests/unit/test_assembly_serial.py` 9 个 + `test_assembly_service.TestAssemblySerial*` 4 个 + `test_part_service_query_crud.TestListParts` 重写并扩 5 个用例。`uv run pytest tests/unit` → 231 passed；`npm run build` 通过。
+
+12. **2026-07-08 申请人补全切换 el-select → el-autocomplete**
+    - `composables/useApplicantSearch.ts` 暴露 `querySearch(queryString, callback)` 给 `el-autocomplete` 的 `:fetch-suggestions`，客户端同步子串过滤已缓存的 200 条申请人，**不**触发网络请求。
+    - `PartBatchNew.vue` / `AssemblyCreate.vue` 把原来的 `el-select filterable + el-option` 模板换成 `el-autocomplete`；`:debounce="0"` 避免叠加 Element Plus 默认的 300ms 防抖（纯内存过滤场景不需要）。
+    - `frontend/src/components.d.ts` 自动重生成（`ElAutocomplete` 已注入），无需手改。
+    - `el-autocomplete` 未在 `element-plus` skill `references/` 列出的高频子集内 → WebFetch 官方文档（`https://element-plus.org/en-US/component/input` 的 `Autocomplete` 段）确认 `value-key` / `:fetch-suggestions` / `@select` 用法。
 ---
 
 ## 10. 完整目录树
@@ -591,7 +619,7 @@ myERP/
 | GET | /assemblies | list_assemblies | M,C | 分页，支持 customer_id/status/is_urgent/drawing_no_like/name_like |
 | POST | /assemblies | create_assembly | M,C | multipart: JSON(data) + PDF(file)，创建装配体+子件+上传 |
 | GET | /assemblies/{id} | get_assembly | M,C | 详情：自身+子件+文件 |
-| POST | /assemblies/{id}/soft-delete | soft_delete_assembly | M,C | 级联软删装配体+子件+文件 |
+| POST | /assemblies/{id}/soft-delete | soft_delete_assembly | M | 级联软删装配体+子件+文件（MANAGER-only；端点级 override 路由级 M,C） |
 | POST | /assemblies/{id}/cancel | cancel_assembly | M,C | 取消装配体，级联取消所有非终态子件 |
 | GET | /parts/{id}/assembly | get_assembly_for_child | M,C,CNC | 从子零件反查所属装配件 |
 | POST | /assemblies/{id}/files | upload_assembly_file | M,C,CNC | 上传附加文件（STEP/DWG 等） |
@@ -879,10 +907,10 @@ ON_SHELF 和 WITH_WORKER 共享 DB status="IN_PROCESS"，通过 location 列区�
 ★ 取消：任意非终态→CANCELLED（释放流水号）
 
 **装配体生命周期**
-1. 创建装配体（POST /assemblies，multipart：JSON+PDF）→ 自动创建子零件+分配流水号+上传 PDF→COS+写 drawing_file 行
+1. 创建装配体（POST /assemblies，multipart：JSON+PDF）→ 一次性 `acquire_serial(code)` 给装配体分配顶级流水号 `L1067`；子件派生为 `L1067-01 / L1067-02 / ... / L1067-99`（两位零填充，上限 99）；自动创建子零件 + 上传 PDF→COS + 写 drawing_file 行
 2. 任一子件进入生产 → Assembly 自动 IN_PROCESS（PartService 状态机回调触发）
 3. 全部子件 COMPLETED → Assembly 自动 COMPLETED
-4. 取消 → Assembly CANCELLED + 级联取消所有非终态子件
+4. 取消 → Assembly CANCELLED（`serial_no` 释放回池；级联取消所有非终态子件）
 
 **扫码报工流程**
 1. 工人刷工牌（POST /workers/verify-badge）→ 获取工人信息

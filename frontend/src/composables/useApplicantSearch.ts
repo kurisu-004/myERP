@@ -1,16 +1,24 @@
 // 申请人搜索 composable。
 //
-// 用途：PartBatchNew / AssemblyCreate 对话框里「申请人」下拉共用。
+// 用途：PartBatchNew / AssemblyCreate 对话框里「申请人」自动补全共用。
 //
 // 设计要点：
 // - **只在客户切换时** 拉一次全集（limit=200）→ 缓存到 `applicants` ref。
-// - 用户在 el-select 里输入时，**不**触发网络请求，由 Element Plus 自带
-//   `filterable` 按 el-option 的 label 做客户端前缀匹配。
+// - 暴露 `querySearch(queryString, callback)` 作为 `el-autocomplete` 的
+//   `:fetch-suggestions` 绑定：客户端同步子串过滤已缓存的 200 条，**不**触发
+//   网络请求。`PartBatchNew.vue` / `AssemblyCreate.vue` 模板的 autocomplete 上
+//   配 `:debounce="0"`，避免在纯内存过滤场景下叠加 Element Plus 默认的 300ms。
 // - 没有 debounce、没有 :remote-method、没有 :remote-method 触发的 setTimeout。
 //
 // 使用：
 // ```ts
-// const { applicants, loading, rootCustomerId, loadForCustomer } = useApplicantSearch({
+// const {
+//   applicants,
+//   loading,
+//   rootCustomerId,
+//   loadForCustomer,
+//   querySearch,   // 绑给 el-autocomplete 的 :fetch-suggestions
+// } = useApplicantSearch({
 //   resolveRootCustomerId: (pickedId) => { ... },
 // })
 // onCustomerChange(pickedId) { ... await loadForCustomer(pickedId) }
@@ -71,5 +79,24 @@ export function useApplicantSearch(opts: UseApplicantSearchOptions) {
     }
   }
 
-  return { applicants, loading, rootCustomerId, loadForCustomer }
+  /**
+   * el-autocomplete 的 fetch-suggestions 回调。
+   * 客户端同步过滤已缓存的 200 条申请人（loadForCustomer 在切客户时拉一次）。
+   * 空 query 时返回全集，便于「聚焦即看全表」UX。
+   * 子串匹配而非前缀匹配，是 autocomplete 的自然交互。
+   */
+  function querySearch(
+    queryString: string,
+    callback: (items: Applicant[]) => void,
+  ): void {
+    const q = queryString.trim().toLowerCase()
+    const all = applicants.value
+    if (!q) {
+      callback(all)
+      return
+    }
+    callback(all.filter((a) => a.name.toLowerCase().includes(q)))
+  }
+
+  return { applicants, loading, rootCustomerId, loadForCustomer, querySearch }
 }

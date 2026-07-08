@@ -74,24 +74,19 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="申请人">
-              <el-select
-                v-model="form.applicant_id"
-                filterable
+              <el-autocomplete
+                v-model="form.applicant_name"
+                value-key="name"
+                :fetch-suggestions="querySearch"
+                :trigger-on-focus="true"
+                :debounce="0"
                 :loading="applicantLoading"
                 :disabled="!form.customer_id"
                 placeholder="选择或输入申请人姓名（不在表中则提交时自动新增）"
                 style="width: 100%"
                 clearable
-                @change="onApplicantSelect"
-                @blur="onApplicantInputBlur"
-              >
-                <el-option
-                  v-for="a in applicantCandidates"
-                  :key="a.id"
-                  :label="a.name"
-                  :value="a.id"
-                />
-              </el-select>
+                @select="onApplicantSelect"
+              />
             </el-form-item>
           </el-col>
         </el-row>
@@ -252,7 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ElMessage,
@@ -304,6 +299,7 @@ const {
   applicants: applicantCandidates,
   loading: applicantLoading,
   loadForCustomer: loadApplicantsForCustomer,
+  querySearch,
 } = useApplicantSearch({ resolveRootCustomerId })
 
 async function onCustomerChange(pickedId: unknown): Promise<void> {
@@ -314,33 +310,9 @@ async function onCustomerChange(pickedId: unknown): Promise<void> {
   await loadApplicantsForCustomer(idStr || null)
 }
 
-function onApplicantSelect(value: string | null): void {
-  if (value === null) {
-    form.applicant_name = ''
-    return
-  }
-  const matched = applicantCandidates.value.find((a) => a.id === value)
-  form.applicant_name = matched?.name ?? ''
-}
-
-function onApplicantInputBlur(event: FocusEvent): void {
-  const target = event.target as HTMLInputElement | null
-  const typed = (target?.value ?? '').trim()
-  if (!typed) return
-  if (form.applicant_id !== null) {
-    const matched = applicantCandidates.value.find((a) => a.id === form.applicant_id)
-    if (matched && matched.name === typed) {
-      form.applicant_name = matched.name
-      return
-    }
-  }
-  form.applicant_id = null
-  form.applicant_name = typed
-  // el-select 会在 blur 后清空 filter 输入 → 还原 DOM 值让用户看见
-  nextTick(() => {
-    const el = event.target as HTMLInputElement | null
-    if (el) el.value = typed
-  })
+function onApplicantSelect(item: Record<string, unknown>): void {
+  form.applicant_id = String(item.id)
+  // form.applicant_name 由 v-model 自动同步为 item.name，无需手动设
 }
 
 // ============ 表单状态 ============
@@ -377,6 +349,26 @@ const form = reactive<FormState>({
   planned_delivery_date: '',
   is_urgent: false,
 })
+
+/**
+ * 保持 applicant_id 与 applicant_name 一致：
+ * - 用户从下拉挑了某人：applicant_name = item.name，applicant_id = item.id（@select 设）
+ * - 用户清空 / 继续打字改了名字：当前 applicant_id 已不再指向同名 → 清掉
+ *   → 让 onSubmit 走「自动新增」分支（AssemblyCreate.vue:onSubmit 内 createApplicant 段）。
+ *
+ * 注意：本 watcher 必须在 const form 声明之后注册 —— watch 的 getter 在 setup
+ * 阶段就会同步执行一次以注册 reactive 依赖，提前引用 form 会触发 TDZ。
+ */
+watch(
+  () => form.applicant_name,
+  (next) => {
+    const currentId = form.applicant_id
+    if (currentId === null) return
+    const matched = applicantCandidates.value.find((a) => a.id === currentId)
+    if (matched && matched.name === next) return
+    form.applicant_id = null
+  },
+)
 
 const pdfFile = ref<File | null>(null)
 const pdfName = ref<string>('')
