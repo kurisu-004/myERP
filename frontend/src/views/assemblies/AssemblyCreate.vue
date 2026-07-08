@@ -12,13 +12,14 @@
 
   关键约束（与后端 AssemblyService 对齐）：
   - customer_id 可填一级或二级客户节点（前端用 cascader 选择）
-  - children 至少 1 行；每行 page_index >= 2（page 1 是总装图）
-  - PDF 文件名后缀必须是 .pdf；其他类型后端拒收
+  - 可选上传总装 PDF：上传后系统按页自动生成子件草稿（每页 = 1 个子件）；
+    子件数 = PDF 页数 - 1 锁定，不可手动增删（避免与 PDF 页错位）。
+  - 不上传 PDF：创建空装配体，提交后到详情页用「添加子件 / 上传总装 PDF」补充。
 -->
 <template>
   <div class="assembly-create">
     <p class="hint">
-      一次性创建一个装配件 + 它的全部子零件 + 上传总装 PDF。请先填装配件基础信息，再逐条录入子零件。
+      创建一个新装配件。可选上传总装 PDF 自动按页生成子件，也可不传直接建空装配体（到详情页再补）。
     </p>
 
     <el-card shadow="never" class="form-card" v-loading="loading">
@@ -121,7 +122,7 @@
           </el-col>
         </el-row>
 
-        <el-form-item label="总装 PDF" prop="pdfFile">
+        <el-form-item label="总装 PDF">
           <el-upload
             :show-file-list="false"
             :auto-upload="false"
@@ -130,34 +131,42 @@
           >
             <el-button>
               <el-icon><Upload /></el-icon>
-              <span>{{ pdfName ? '更换 PDF' : '选择 PDF' }}</span>
+              <span>{{ pdfName ? '更换 PDF' : '选择 PDF（可选）' }}</span>
             </el-button>
           </el-upload>
           <div v-if="pdfName" class="pdf-info">
             <el-icon><Document /></el-icon>
             <span class="pdf-name">{{ pdfName }}</span>
             <span class="pdf-size">{{ formatSize(pdfSize) }}</span>
+            <el-button link type="primary" size="small" :disabled="!pdfBlobUrl" @click="onPreviewMaster">
+              预览总装图
+            </el-button>
             <el-button link type="danger" size="small" @click="onPdfRemove">
               移除
             </el-button>
           </div>
           <p class="form-hint">
-            仅支持 .pdf；第一页是总装图，从第 2 页起对应子零件（每行 page_index）。
+            上传后系统自动按页拆分子件（第 1 页 = 总装图，第 2..N 页 = 子件 01、02…）。
+            不上传则创建空装配体，到详情页补充。
           </p>
         </el-form-item>
 
-        <div class="section-title">
+        <div v-if="pdfBlobUrl" class="section-title">
           <span>子零件清单</span>
-          <span class="section-sub">共 {{ children.length }} 条</span>
-          <el-button type="primary" link @click="onAddChild">
-            <el-icon><Plus /></el-icon>
-            <span>添加一行</span>
-          </el-button>
+          <span class="section-sub">
+            共 {{ pageCount - 1 }} 条 · 总装 {{ pageCount }} 页（与 PDF 一一对应）
+          </span>
         </div>
 
-        <el-table :data="children" border size="small" empty-text="暂无子零件">
+        <el-table
+          v-if="pdfBlobUrl"
+          :data="form.children"
+          border
+          size="small"
+          empty-text="PDF 解析中…"
+        >
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column label="图号" min-width="160">
+          <el-table-column label="图号" min-width="140">
             <template #default="{ row, $index }">
               <el-form-item
                 :prop="`children.${$index}.drawing_no`"
@@ -165,7 +174,7 @@
                 :show-message="false"
                 style="margin-bottom: 0"
               >
-                <el-input v-model="row.drawing_no" placeholder="例如：E42FX1020107101-1" size="small" />
+                <el-input v-model="row.drawing_no" size="small" />
               </el-form-item>
             </template>
           </el-table-column>
@@ -177,7 +186,7 @@
                 :show-message="false"
                 style="margin-bottom: 0"
               >
-                <el-input v-model="row.name" placeholder="例如：基础板" size="small" />
+                <el-input v-model="row.name" size="small" />
               </el-form-item>
             </template>
           </el-table-column>
@@ -193,42 +202,10 @@
               />
             </template>
           </el-table-column>
-          <el-table-column label="单价(¥)" width="110">
-            <template #default="{ row }">
-              <el-input-number
-                v-model="row.unit_price"
-                :min="0"
-                :precision="2"
-                :step="0.1"
-                size="small"
-                controls-position="right"
-                style="width: 100%"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="PDF 页码" width="110">
+          <el-table-column label="操作" width="120" align="center" fixed="right">
             <template #default="{ row, $index }">
-              <el-form-item
-                :prop="`children.${$index}.page_index`"
-                :rules="childRules.page_index"
-                :show-message="false"
-                style="margin-bottom: 0"
-              >
-                <el-input-number
-                  v-model="row.page_index"
-                  :min="2"
-                  :step="1"
-                  size="small"
-                  controls-position="right"
-                  style="width: 100%"
-                />
-              </el-form-item>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="80" align="center" fixed="right">
-            <template #default="{ $index }">
-              <el-button link type="danger" size="small" @click="onRemoveChild($index)">
-                删除
+              <el-button link type="primary" size="small" @click="onPreviewChild(row, $index)">
+                预览图纸
               </el-button>
             </template>
           </el-table-column>
@@ -247,21 +224,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ElMessage,
+  ElMessageBox,
   type FormInstance,
   type FormItemRule,
   type FormRules,
   type UploadFile,
 } from 'element-plus'
-import { Check, Document, Plus, Upload } from '@element-plus/icons-vue'
+import { Check, Document, Upload } from '@element-plus/icons-vue'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createAssembly } from '@/api/assembly'
 import { createApplicant } from '@/api/applicant'
 import { useApplicantSearch } from '@/composables/useApplicantSearch'
-import type { AssemblyChildPayload } from '@/types/assembly'
+import { countPdfPages } from '@/composables/usePdfPageCount'
 
 const router = useRouter()
 
@@ -316,6 +294,12 @@ function onApplicantSelect(item: Record<string, unknown>): void {
 }
 
 // ============ 表单状态 ============
+interface ChildRow {
+  drawing_no: string
+  name: string
+  quantity: number
+}
+
 interface FormState {
   drawing_no: string
   name: string
@@ -328,6 +312,12 @@ interface FormState {
   request_date: string
   planned_delivery_date: string
   is_urgent: boolean
+  /**
+   * 子零件清单。挂在 form 上是因为 el-form-item 的 :prop="children.0.drawing_no"
+   * 路径要相对 form 才能被 formRef.validate() 校验到。
+   * 仅在用户上传总装 PDF 后才填充；不传 PDF 时为空数组 → 后端创建空装配体。
+   */
+  children: ChildRow[]
 }
 
 function todayIso(): string {
@@ -348,6 +338,7 @@ const form = reactive<FormState>({
   request_date: todayIso(),
   planned_delivery_date: '',
   is_urgent: false,
+  children: [],
 })
 
 /**
@@ -370,48 +361,101 @@ watch(
   },
 )
 
-const pdfFile = ref<File | null>(null)
-const pdfName = ref<string>('')
-const pdfSize = ref<number>(0)
-
 const loading = ref(false)
 const submitting = ref(false)
 
-interface ChildRow extends AssemblyChildPayload {
-  quantity: number
-  unit_price: number
-}
-const children = ref<ChildRow[]>([])
+// ============ PDF 上传（可选） ============
+const pdfFile = ref<File | null>(null)
+const pdfName = ref<string>('')
+const pdfSize = ref<number>(0)
+/** 本地 PDF 的 blob URL，用于「预览总装图 / 预览图纸」按钮。 */
+const pdfBlobUrl = ref<string | null>(null)
+/** PDF 总页数（page 1 = 总图，page 2..N = 子件 1..N-1）。 */
+const pageCount = ref(0)
 
-function makeEmptyChild(): ChildRow {
+function makeAutoChild(seq: number): ChildRow {
   return {
-    drawing_no: '',
-    name: '',
+    drawing_no: String(seq).padStart(2, '0'),  // "01", "02", ...
+    name: `子零件${String(seq).padStart(2, '0')}`,
     quantity: 1,
-    unit_price: 0,
-    page_index: 2,
   }
 }
-function onAddChild(): void {
-  children.value.push(makeEmptyChild())
+
+function rebuildChildren(total: number): void {
+  const n = Math.max(0, total - 1)
+  form.children = Array.from({ length: n }, (_, i) => makeAutoChild(i + 1))
 }
-function onRemoveChild(idx: number): void {
-  children.value.splice(idx, 1)
-}
-function onPdfChange(uploadFile: UploadFile): void {
+
+async function onPdfChange(uploadFile: UploadFile): Promise<void> {
   if (!uploadFile.raw) return
   if (!uploadFile.name.toLowerCase().endsWith('.pdf')) {
     ElMessage.error('总装文件必须是 .pdf 后缀')
     return
   }
+  // 若已编辑过子零件草稿，弹 confirm 防误操作
+  const isDirty = form.children.some(
+    (c) => !c.name.startsWith('子零件') || c.quantity !== 1,
+  )
+  if (isDirty) {
+    try {
+      await ElMessageBox.confirm(
+        '更换 PDF 将清空当前子零件草稿，是否继续？',
+        '更换 PDF',
+        { type: 'warning' },
+      )
+    } catch {
+      return   // 用户取消
+    }
+  }
+  // 释放旧 blob URL
+  if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
+  pdfBlobUrl.value = URL.createObjectURL(uploadFile.raw)
   pdfFile.value = uploadFile.raw
   pdfName.value = uploadFile.name
   pdfSize.value = uploadFile.size ?? 0
+  await recountPages()
 }
+
+async function recountPages(): Promise<void> {
+  if (!pdfFile.value) {
+    pageCount.value = 0
+    form.children = []
+    return
+  }
+  try {
+    pageCount.value = await countPdfPages(pdfFile.value)
+    rebuildChildren(pageCount.value)
+  } catch (e) {
+    ElMessage.error('PDF 解析失败：' + ((e as Error).message ?? String(e)))
+    pageCount.value = 0
+    form.children = []
+  }
+}
+
 function onPdfRemove(): void {
+  if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
+  pdfBlobUrl.value = null
   pdfFile.value = null
   pdfName.value = ''
   pdfSize.value = 0
+  pageCount.value = 0
+  form.children = []
+}
+
+onBeforeUnmount(() => {
+  if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
+})
+
+function onPreviewChild(_row: unknown, idx: number): void {
+  if (!pdfBlobUrl.value) return
+  // 该子件在原 PDF 中的页码 = idx + 2（page 1 是总装图）
+  const page = idx + 2
+  window.open(`${pdfBlobUrl.value}#page=${page}&toolbar=0`, '_blank', 'noopener')
+}
+
+function onPreviewMaster(): void {
+  if (!pdfBlobUrl.value) return
+  window.open(`${pdfBlobUrl.value}#page=1&toolbar=0`, '_blank', 'noopener')
 }
 
 function formatSize(n: number): string {
@@ -445,32 +489,11 @@ const rules: FormRules = {
   ],
   request_date: [{ required: true, message: '请选择请购日期', trigger: 'change' }],
   planned_delivery_date: [{ required: true, message: '请选择计划交期', trigger: 'change' }],
-  pdfFile: [
-    {
-      validator: (_r, _v, cb) => {
-        if (!pdfFile.value) cb(new Error('请上传总装 PDF'))
-        else cb()
-      },
-      trigger: 'change',
-    },
-  ],
 }
 
 const childRules: Record<string, FormItemRule[]> = {
   drawing_no: [{ required: true, message: '请输入图号', trigger: 'blur' }],
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
-  page_index: [
-    {
-      validator: (_r, value, cb) => {
-        if (typeof value !== 'number' || value < 2) {
-          cb(new Error('page_index 必须 ≥ 2'))
-          return
-        }
-        cb()
-      },
-      trigger: 'change',
-    },
-  ],
 }
 
 function onCancel(): void {
@@ -483,14 +506,6 @@ async function onSubmit(): Promise<void> {
     await formRef.value.validate()
   } catch {
     ElMessage.error('表单校验未通过，请检查输入')
-    return
-  }
-  if (children.value.length === 0) {
-    ElMessage.error('请至少添加 1 个子零件')
-    return
-  }
-  if (!pdfFile.value) {
-    ElMessage.error('请上传总装 PDF')
     return
   }
 
@@ -519,21 +534,31 @@ async function onSubmit(): Promise<void> {
       request_date: form.request_date,
       planned_delivery_date: form.planned_delivery_date,
       is_urgent: form.is_urgent,
-      children: children.value.map((c) => ({
+      children: form.children.map((c) => ({
         drawing_no: c.drawing_no.trim(),
         name: c.name.trim(),
         quantity: c.quantity,
-        unit_price: c.unit_price,
-        total_price: null as number | null,
         applicant_name: null as string | null,
-        page_index: c.page_index,
       })),
     }
-    const result = await createAssembly(payload, pdfFile.value)
-    ElMessage.success(
-      `创建成功：装配件 + ${result.children.length} 个子零件`,
-    )
-    router.push(`/assemblies/${result.assembly.id}`)
+    // 后端接口签名：create_assembly(payload, pdf_bytes?) — 走单文件 multipart。
+    // 本页 PDF 是可选的，所以两个分支都要支持。
+    const { createAssemblyWithFile } = await import('@/api/assembly')
+    const result = pdfFile.value
+      ? await createAssemblyWithFile(payload, pdfFile.value)
+      : await createAssembly(payload)
+    if (pdfFile.value) {
+      ElMessage.success(
+        `创建成功：装配件 + ${result.children.length} 个子件`,
+      )
+      // 释放本地 blob URL
+      if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
+      pdfBlobUrl.value = null
+      router.push({ path: '/assemblies', query: { status: 'PENDING' } })
+    } else {
+      ElMessage.success('创建成功：请到详情页上传总装 PDF 或添加子件')
+      router.push(`/assemblies/${result.assembly.id}`)
+    }
   } catch (e) {
     ElMessage.error((e as Error).message ?? '创建失败')
   } finally {

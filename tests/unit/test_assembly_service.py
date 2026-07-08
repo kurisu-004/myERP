@@ -38,6 +38,22 @@ from service.part import PartService
 pytestmark = pytest.mark.asyncio
 
 
+def _patch_split_pdf(monkeypatch: pytest.MonkeyPatch, n_pages: int) -> None:
+    """把 service.assembly.split_pdf 替换成返回 n_pages 个单页字节流的桩。
+
+    默认每个 blob 是 b"page-{i}"，避免触发真实 pypdf 解析。
+    测试关心的不是 PDF 内容，是「split_pdf 返回 N 段、每段上传一次 COS」这件事。
+
+    split_pdf 本身是同步函数（pypdf 同步 API），所以桩也用 sync。
+    """
+    splits = [f"page-{i}".encode() for i in range(n_pages)]
+
+    def fake_split(pdf_bytes: bytes) -> list[bytes]:
+        return splits
+
+    monkeypatch.setattr("service.assembly.split_pdf", fake_split)
+
+
 # ============================================================
 # Helper factories
 # ============================================================
@@ -598,23 +614,71 @@ class TestCreateAssemblyErrors:
                     drawing_no="PART-001",
                     name="Child Part",
                     quantity=1,
-                    unit_price=Decimal("10.00"),
-                    page_index=2,
                 )
             ],
         )
 
-    async def test_empty_pdf_bytes(self, svc, create_data):
-        """Empty pdf_bytes -> BizError BIZ_DRAWING_FILE_TOO_LARGE 400."""
+    async def test_empty_pdf_with_children_rejected(self, svc, create_data):
+        """无 PDF 但 children 非空 → BIZ_INVALID_VALUE（要在详情页 add_child）。"""
         with pytest.raises(BizError) as exc:
             await svc.create_assembly(
                 create_data, pdf_bytes=b"", pdf_filename="drawing.pdf"
             )
-        assert exc.value.code == ErrCode.BIZ_DRAWING_FILE_TOO_LARGE
+        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
         assert exc.value.http_status == 400
+        assert "未提供 PDF" in str(exc.value.message)
 
-    async def test_non_pdf_filename(self, svc, create_data):
+    async def test_empty_assembly_succeeds(
+        self, svc, mock_customers, mock_assemblies,
+    ):
+        """无 PDF + 无 children → 创建空装配体（PENDING, no serial, no files）。"""
+        from schema.assembly import AssemblyCreateRequest
+
+        leaf = make_customer(id=1, name="Sub", parent_id=10)
+        async def mock_get_by_id(cid):
+            return {1: leaf}.get(cid)
+        mock_customers.get_by_id.side_effect = mock_get_by_id
+        mock_assemblies.session.flush = AsyncMock()
+        mock_assemblies._assembly_to_out = AsyncMock()
+        # Make _assembly_to_out work
+        from schema.assembly import AssemblyOut
+        async def fake_asm_out(asm, child_count):
+            return AssemblyOut(
+                id=str(asm.id), serial_no=asm.serial_no,
+                drawing_no=asm.drawing_no, name=asm.name,
+                applicant_name=asm.applicant_name, customer_id=str(asm.customer_id),
+                customer_name=None, parent_customer_name=None, customer_path=None,
+                request_date=asm.request_date, planned_delivery_date=asm.planned_delivery_date,
+                actual_delivery_date=None, is_urgent=asm.is_urgent,
+                status=asm.status, child_count=child_count,
+                created_at=datetime(2026, 7, 1, 10, 0, 0),
+                updated_at=datetime(2026, 7, 1, 10, 0, 0),
+            )
+        mock_assemblies._assembly_to_out = fake_asm_out
+        svc._assembly_to_out = fake_asm_out
+        svc._broadcast_event = AsyncMock()
+
+        data = AssemblyCreateRequest(
+            name="Empty Asm",
+            drawing_no="DWG-EMPTY",
+            customer_id="1",
+            request_date=date(2026, 7, 1),
+            planned_delivery_date=date(2026, 8, 1),
+            children=[],
+        )
+
+        result = await svc.create_assembly(data, pdf_bytes=None, pdf_filename=None)
+
+        assert result.assembly.status == "PENDING"
+        assert result.assembly.serial_no is None
+        assert result.children == []
+        assert result.files == []
+        # 没调 serial counter
+        svc.serial_counters.acquire_serial.assert_not_called()
+
+    async def test_non_pdf_filename(self, svc, create_data, monkeypatch):
         """Non-PDF filename -> BizError BIZ_DRAWING_FILE_BAD_TYPE 400."""
+        _patch_split_pdf(monkeypatch, n_pages=2)
         with pytest.raises(BizError) as exc:
             await svc.create_assembly(
                 create_data, pdf_bytes=b"fake content", pdf_filename="drawing.jpg"
@@ -622,8 +686,13 @@ class TestCreateAssemblyErrors:
         assert exc.value.code == ErrCode.BIZ_DRAWING_FILE_BAD_TYPE
         assert exc.value.http_status == 400
 
-    async def test_customer_not_found(self, svc, create_data):
-        """Customer not found -> BizError BIZ_ASSEMBLY_BAD_CUSTOMER 404."""
+    async def test_customer_not_found(self, svc, create_data, monkeypatch):
+        """Customer not found -> BizError BIZ_ASSEMBLY_BAD_CUSTOMER 404.
+
+        新流程：PDF split 校验在 customer 校验之前；这里把 split 桩成「合法 2 页」
+        以让流程推进到 customer check。
+        """
+        _patch_split_pdf(monkeypatch, n_pages=2)  # 1 master + 1 child（与 create_data 匹配）
         svc.customers.get_by_id = AsyncMock(return_value=None)
 
         with pytest.raises(BizError) as exc:
@@ -632,6 +701,293 @@ class TestCreateAssemblyErrors:
             )
         assert exc.value.code == ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER
         assert exc.value.http_status == 404
+
+    async def test_single_page_pdf_rejected(
+        self, svc, create_data, monkeypatch
+    ):
+        """单页 PDF（无子件位）→ BIZ_ASSEMBLY_TOO_MANY_CHILDREN。"""
+        _patch_split_pdf(monkeypatch, n_pages=1)
+        with pytest.raises(BizError) as exc:
+            await svc.create_assembly(
+                create_data, pdf_bytes=b"%PDF-1.4 fake", pdf_filename="x.pdf"
+            )
+        assert exc.value.code == ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN
+        assert exc.value.http_status == 400
+        assert "至少 2 页" in str(exc.value.message)
+
+    async def test_zero_page_pdf_rejected(
+        self, svc, create_data, monkeypatch
+    ):
+        """0 页 PDF → BIZ_ASSEMBLY_TOO_MANY_CHILDREN。"""
+        _patch_split_pdf(monkeypatch, n_pages=0)
+        with pytest.raises(BizError) as exc:
+            await svc.create_assembly(
+                create_data, pdf_bytes=b"%PDF-1.4 fake", pdf_filename="x.pdf"
+            )
+        assert exc.value.code == ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN
+        assert exc.value.http_status == 400
+
+    async def test_page_count_mismatch(self, svc, monkeypatch):
+        """PDF 5 页 + 3 children → BIZ_ASSEMBLY_TOO_MANY_CHILDREN。"""
+        _patch_split_pdf(monkeypatch, n_pages=5)  # 应有 4 个子件，但只给 3
+        data = AssemblyCreateRequest(
+            name="Mismatch", drawing_no="DWG-M", customer_id="1",
+            request_date=date(2026, 7, 1), planned_delivery_date=date(2026, 8, 1),
+            children=[
+                AssemblyChildCreateRequest(drawing_no=f"P{i}", name=f"C{i}", quantity=1)
+                for i in range(1, 4)
+            ],
+        )
+        with pytest.raises(BizError) as exc:
+            await svc.create_assembly(
+                data, pdf_bytes=b"%PDF-1.4 fake", pdf_filename="x.pdf"
+            )
+        assert exc.value.code == ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN
+        assert exc.value.http_status == 400
+        assert "应有 4 个子零件" in str(exc.value.message)
+        assert "当前 3 个" in str(exc.value.message)
+
+    async def test_corrupt_pdf_raises(self, svc, create_data):
+        """pypdf 解析失败（split_pdf 抛异常）→ BIZ_DRAWING_UPLOAD_FAILED。"""
+        # 不 patch split_pdf；注入会导致 PdfReadError 的字节
+        with patch(
+            "service.assembly.split_pdf",
+            side_effect=Exception("corrupt stream"),
+        ):
+            with pytest.raises(BizError) as exc:
+                await svc.create_assembly(
+                    create_data, pdf_bytes=b"garbage", pdf_filename="x.pdf"
+                )
+            assert exc.value.code == ErrCode.BIZ_DRAWING_UPLOAD_FAILED
+            assert exc.value.http_status == 400
+            assert "PDF 解析失败" in str(exc.value.message)
+
+
+# ============================================================
+# create_assembly — PDF 按页拆分（成功路径）
+# ============================================================
+
+
+class TestCreateAssemblySplit:
+    """create_assembly 把 PDF 拆成 1 主 + N 子件 COS 对象；每个子件独立 key。"""
+
+    @pytest.fixture
+    def three_child_data(self):
+        return AssemblyCreateRequest(
+            name="Split Asm",
+            drawing_no="DWG-SPLIT",
+            customer_id="1",
+            request_date=date(2026, 7, 1),
+            planned_delivery_date=date(2026, 8, 1),
+            children=[
+                AssemblyChildCreateRequest(
+                    drawing_no="PART-A", name="Child A", quantity=1,
+                ),
+                AssemblyChildCreateRequest(
+                    drawing_no="PART-B", name="Child B", quantity=1,
+                ),
+                AssemblyChildCreateRequest(
+                    drawing_no="PART-C", name="Child C", quantity=1,
+                ),
+            ],
+        )
+
+    async def test_writes_one_master_plus_n_child_files(
+        self,
+        svc,
+        three_child_data,
+        mock_customers,
+        mock_serial_counters,
+        mock_parts,
+        mock_files,
+        mock_drawings,
+        monkeypatch,
+    ):
+        """1 master TDrawingFile（assembly_id, page_index=None）+ 3 child
+        TDrawingFile（part_id, page_index=None, 各自独立 object_key）。"""
+        from schema.drawing import DrawingFileOut
+
+        _patch_split_pdf(monkeypatch, n_pages=4)  # 3 children + 1 master
+
+        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()) as upload_mock:
+            # arrange
+            leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
+            parent = make_customer(id=10, name="路达", parent_id=None)
+
+            async def mock_get_by_id(cid):
+                return {1: leaf, 10: parent}.get(cid)
+            mock_customers.get_by_id.side_effect = mock_get_by_id
+            mock_serial_counters.acquire_serial.return_value = "L1067"
+
+            created_files: list = []
+            async def mock_create_file(f):
+                created_files.append(f)
+                return f
+            mock_files.create.side_effect = mock_create_file
+
+            async def mock_create_part(p):
+                return p
+            mock_parts.create.side_effect = mock_create_part
+
+            stub_file = DrawingFileOut(
+                id="1", owner_type="assembly", owner_id="1",
+                file_type="PDF", original_filename="x.pdf", file_size=10,
+                content_type="application/pdf", page_index=None,
+                download_url="https://example.com/x", upload_status="READY",
+                created_at=datetime(2026, 7, 1, 10, 0, 0),
+            )
+            mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
+            svc.part_service._to_out = AsyncMock(return_value=[])
+
+            # act
+            await svc.create_assembly(
+                three_child_data,
+                pdf_bytes=b"%PDF-1.4 fake",
+                pdf_filename="x.pdf",
+            )
+
+            # assert: 4 个 TDrawingFile 创建
+            assert len(created_files) == 4
+
+            # 1 master: assembly_id != None, part_id is None
+            master = next(f for f in created_files if f.assembly_id is not None)
+            assert master.part_id is None
+            assert master.page_index is None
+
+            # 3 child: part_id != None, assembly_id is None
+            children = [f for f in created_files if f.part_id is not None]
+            assert len(children) == 3
+            for c in children:
+                assert c.assembly_id is None
+                assert c.page_index is None  # 关键：每行就是单页 PDF
+                assert c.object_key.startswith("drawings/part/")
+
+            # COS upload 调用：1 master + 3 children = 4 次
+            assert upload_mock.await_count == 4
+
+    async def test_child_cos_keys_under_part_prefix(
+        self,
+        svc,
+        three_child_data,
+        mock_customers,
+        mock_serial_counters,
+        mock_parts,
+        mock_files,
+        mock_drawings,
+        monkeypatch,
+    ):
+        """每个子件 COS key 形如 drawings/part/{child_id}/{file_id}.pdf。"""
+        from schema.drawing import DrawingFileOut
+
+        _patch_split_pdf(monkeypatch, n_pages=4)
+
+        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+            leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
+            parent = make_customer(id=10, name="路达", parent_id=None)
+
+            async def mock_get_by_id(cid):
+                return {1: leaf, 10: parent}.get(cid)
+            mock_customers.get_by_id.side_effect = mock_get_by_id
+            mock_serial_counters.acquire_serial.return_value = "L0001"
+
+            uploaded_keys: list[str] = []
+
+            async def mock_create_part(p):
+                return p
+            mock_parts.create.side_effect = mock_create_part
+
+            async def capture_upload(key, data, ct):
+                uploaded_keys.append(key)
+            with patch(
+                "service.assembly.cos_mod.upload_object",
+                side_effect=capture_upload,
+            ):
+                stub_file = DrawingFileOut(
+                    id="1", owner_type="assembly", owner_id="1",
+                    file_type="PDF", original_filename="x.pdf", file_size=10,
+                    content_type="application/pdf", page_index=None,
+                    download_url="https://example.com/x", upload_status="READY",
+                    created_at=datetime(2026, 7, 1, 10, 0, 0),
+                )
+                mock_drawings._to_out = AsyncMock(return_value=stub_file)
+                svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
+                svc.part_service._to_out = AsyncMock(return_value=[])
+
+                await svc.create_assembly(
+                    three_child_data,
+                    pdf_bytes=b"%PDF-1.4 fake",
+                    pdf_filename="x.pdf",
+                )
+
+            # 1 master + 3 child = 4 uploads
+            assert len(uploaded_keys) == 4
+            # 第一个是 master（assembly prefix）
+            assert uploaded_keys[0].startswith("drawings/assembly/")
+            # 后三个是 child（part prefix）
+            for child_key in uploaded_keys[1:]:
+                assert child_key.startswith("drawings/part/"), child_key
+                assert child_key.endswith(".pdf")
+                # 形如 drawings/part/{id}/{file_id}.pdf
+                parts = child_key.split("/")
+                assert len(parts) == 4
+                assert parts[0] == "drawings"
+                assert parts[1] == "part"
+                assert parts[2].isdigit()  # child_id
+                assert "." in parts[3]  # file_id.pdf
+
+    async def test_unit_price_and_total_price_default_zero(
+        self,
+        svc,
+        three_child_data,
+        mock_customers,
+        mock_serial_counters,
+        mock_parts,
+        mock_files,
+        mock_drawings,
+        monkeypatch,
+    ):
+        """TPart.unit_price / total_price = 0（不再由前端传入）。"""
+        from schema.drawing import DrawingFileOut
+
+        _patch_split_pdf(monkeypatch, n_pages=4)
+
+        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+            leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
+            parent = make_customer(id=10, name="路达", parent_id=None)
+            async def mock_get_by_id(cid):
+                return {1: leaf, 10: parent}.get(cid)
+            mock_customers.get_by_id.side_effect = mock_get_by_id
+            mock_serial_counters.acquire_serial.return_value = "L0001"
+
+            captured_parts: list[TPart] = []
+
+            async def mock_create_part(p):
+                captured_parts.append(p)
+                return p
+            mock_parts.create.side_effect = mock_create_part
+
+            stub_file = DrawingFileOut(
+                id="1", owner_type="assembly", owner_id="1",
+                file_type="PDF", original_filename="x.pdf", file_size=10,
+                content_type="application/pdf", page_index=None,
+                download_url="https://example.com/x", upload_status="READY",
+                created_at=datetime(2026, 7, 1, 10, 0, 0),
+            )
+            mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
+            svc.part_service._to_out = AsyncMock(return_value=[])
+
+            await svc.create_assembly(
+                three_child_data,
+                pdf_bytes=b"%PDF-1.4 fake",
+                pdf_filename="x.pdf",
+            )
+
+            assert len(captured_parts) == 3
+            for p in captured_parts:
+                assert p.unit_price == Decimal("0")
+                assert p.total_price == Decimal("0")
 
 
 # ============================================================
@@ -682,25 +1038,13 @@ class TestAssemblySerialAllocation:
             planned_delivery_date=date(2026, 8, 1),
             children=[
                 AssemblyChildCreateRequest(
-                    drawing_no="PART-A",
-                    name="Child A",
-                    quantity=1,
-                    unit_price=Decimal("10.00"),
-                    page_index=2,
+                    drawing_no="PART-A", name="Child A", quantity=1,
                 ),
                 AssemblyChildCreateRequest(
-                    drawing_no="PART-B",
-                    name="Child B",
-                    quantity=1,
-                    unit_price=Decimal("10.00"),
-                    page_index=3,
+                    drawing_no="PART-B", name="Child B", quantity=1,
                 ),
                 AssemblyChildCreateRequest(
-                    drawing_no="PART-C",
-                    name="Child C",
-                    quantity=1,
-                    unit_price=Decimal("10.00"),
-                    page_index=4,
+                    drawing_no="PART-C", name="Child C", quantity=1,
                 ),
             ],
         )
@@ -713,10 +1057,12 @@ class TestAssemblySerialAllocation:
         mock_parts,
         mock_drawings,
         happy_path_create_data,
+        monkeypatch,
     ):
         """acquire_serial called exactly ONCE; children get derived serials."""
         from schema.drawing import DrawingFileOut
 
+        _patch_split_pdf(monkeypatch, n_pages=4)  # 3 子件 + 1 总图
         with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
             # arrange
             leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
@@ -778,14 +1124,15 @@ class TestAssemblySerialAllocation:
         mock_customers,
         mock_serial_counters,
         mock_parts,
+        monkeypatch,
     ):
         """100+ children → BizError BIZ_ASSEMBLY_TOO_MANY_CHILDREN (no counter touched)."""
+        _patch_split_pdf(monkeypatch, n_pages=101)  # 100 子件 + 1 总图
         with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
             # arrange: 100 children
             children = [
                 AssemblyChildCreateRequest(
                     drawing_no=f"P{i}", name=f"C{i}", quantity=1,
-                    unit_price=Decimal("1"), page_index=i + 1,
                 )
                 for i in range(1, 101)
             ]

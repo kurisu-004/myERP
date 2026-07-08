@@ -2,14 +2,17 @@
 
 主流程（`create_assembly`）：
 1. 校验客户为叶子节点；
-2. 校验 PDF 字节流合法；
-3. 写 `t_assembly` 行（PENDING）；
-4. 上传 PDF 到 COS；
-5. 写 `t_drawing_file` 装配件挂的总图（page_index=NULL）；
-6. 对每个 child：分配序列号 → 写 `t_part`（assembly_id=装配行 id）→
-   写 `t_part_event(CREATED)` → 写 `t_drawing_file`（part_id=子件 id，
-   page_index=child.page_index 引用同一 PDF）；
-7. 任一失败 → DB 整体回滚；之前已成功上传 COS 的对象由
+2. 校验 PDF 字节流合法 + pypdf 解析成功；
+3. `split_pdf` 把 PDF 拆成 N 个单页 PDF 字节流（page 1 = 总图，page 2..N = 子件）；
+4. 校验页数（≥ 2 且 children 数量匹配且 ≤ 99）；
+5. 写 `t_assembly` 行（PENDING）；
+6. 上传 `page_splits[0]` 到 COS → 写 `t_drawing_file`（装配件总图，page_index=NULL）；
+7. 对每个 child i：分配序列号 `{assembly_serial}-{i:02d}` →
+   写 `t_part`（assembly_id=装配行 id，unit_price=0, total_price=0）→
+   上传 `page_splits[i]` 到 COS `drawings/part/{part_id}/{file_id}.pdf` →
+   写 `t_drawing_file`（part_id=子件 id，page_index=NULL）→
+   写 `t_part_event(CREATED)`；
+8. 任一失败 → DB 整体回滚；之前已成功上传 COS 的对象由
    `drawing.delete_files_silently` 在异常分支清理。
 
 依赖注入：`deps.get_assembly_service` 会同时构造 `PartService` 与
@@ -19,8 +22,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from decimal import Decimal
 
 from fastapi import status as http_status
+from pypdf.errors import PdfReadError
 
 from core import cos as cos_mod
 from core.error_code import ErrCode
@@ -50,6 +55,7 @@ from service.drawing import DrawingService, _guess_content_type, _normalize_ext
 from service.part import PartService
 from service._id_parse import parse_snowflake_id
 from utils.id_gen import new_id
+from utils.pdf import split_pdf
 
 _logger = logging.getLogger(__name__)
 
@@ -108,30 +114,83 @@ class AssemblyService:
     # 写操作：create
     # ============================================================
     async def create_assembly(
-        self, data: AssemblyCreateRequest, *, pdf_bytes: bytes, pdf_filename: str
+        self,
+        data: AssemblyCreateRequest,
+        *,
+        pdf_bytes: bytes | None = None,
+        pdf_filename: str | None = None,
     ) -> AssemblyCreateResult:
-        """创建装配件 + 子零件 + 上传 PDF。
+        """创建装配件（可选带总装 PDF + 子零件）。
 
-        - `pdf_bytes` / `pdf_filename` 由 API 层从 `UploadFile` 读出。
+        - `pdf_bytes` / `pdf_filename` 由 API 层从 `UploadFile` 读出；二者皆可空。
+        - 流程：
+          1. 校验客户为叶子节点（即使空装配体也必填）；
+          2. 写 `t_assembly` 行（PENDING）；
+          3. 若提供 PDF：拆页 + 上传 page 1 = master + page 2..N = 子件；
+             都不提供：创建空装配体（无 master / 无子件 / 无 serial）；
+          4. 拼装返回 + 广播 ASSEMBLY_CREATED 事件。
         - DB 操作全部在调用方所在 session/事务里；任一失败 → 整体回滚。
-        - 已成功上传 COS 的孤儿文件由 `drawings.delete_files_silently`
-          在异常分支清理。
+        - 已成功上传 COS 的孤儿文件由 `drawings.delete_files_silently` 在异常分支清理。
         """
-        if not pdf_bytes:
-            raise BizError(
-                code=ErrCode.BIZ_DRAWING_FILE_TOO_LARGE,
-                message="empty PDF",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        if _normalize_ext(pdf_filename) != "pdf":
-            raise BizError(
-                code=ErrCode.BIZ_DRAWING_FILE_BAD_TYPE,
-                message=(
-                    f"装配件主文件必须是 PDF，当前为 "
-                    f".{_normalize_ext(pdf_filename) or '(无)'}"
-                ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
+        # PDF 校验（仅当提供时）
+        if pdf_bytes:
+            if not pdf_filename or _normalize_ext(pdf_filename) != "pdf":
+                raise BizError(
+                    code=ErrCode.BIZ_DRAWING_FILE_BAD_TYPE,
+                    message=(
+                        f"装配件主文件必须是 PDF，当前为 "
+                        f".{_normalize_ext(pdf_filename) or '(无)'}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 拆 PDF：page 1 = 总装图，page 2..N = 子件 1..N-1
+            try:
+                page_splits = split_pdf(pdf_bytes)
+            except (PdfReadError, Exception) as e:  # noqa: BLE001 — pypdf 异常族复杂，统一兜底
+                raise BizError(
+                    code=ErrCode.BIZ_DRAWING_UPLOAD_FAILED,
+                    message=f"PDF 解析失败：{e!s}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                ) from e
+            total_pages = len(page_splits)
+            if total_pages < 2:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                    message=(
+                        f"总装 PDF 至少 2 页：第 1 页是总装图，剩余每页对应 1 个子零件。"
+                        f"当前 PDF 共 {total_pages} 页。"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if len(data.children) > 99:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                    message=(
+                        f"子件数量 {len(data.children)} > 99，"
+                        f"序列号 '{{serial}}-{{i:02d}}' 派生失败"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if total_pages - 1 != len(data.children):
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                    message=(
+                        f"PDF 共 {total_pages} 页，应有 {total_pages - 1} 个子零件，"
+                        f"当前 {len(data.children)} 个"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            # 无 PDF 模式：data.children 必须为空（避免给子件分配 serial 但无 PDF）
+            if data.children:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="未提供 PDF 时不允许直接传入子件；"
+                    "请在装配体详情页使用「添加子件」接口",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            page_splits = []
 
         # 校验客户是叶子节点
         cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
@@ -193,30 +252,75 @@ class AssemblyService:
                 )
             resolved_applicant_name = applicant.name
 
+        # 非空装配体：先解析一级客户 → code → 一次性 acquire 顶级流水号，
+        # 让 serial_no 从 INSERT 阶段就带进去（不要走"先 INSERT 再 UPDATE 填 serial"
+        # 的两步走——AuditMixin.updated_at 是 onupdate=func.now()，第二次 flush
+        # 会把 updated_at 标记为 expired，触发 _load_expired 同步 IO，
+        # 在 async session 上下文里抛 MissingGreenlet）。
+        # 空装配体：serial_no 留 None，不分配。
+        assembly_serial: str | None = None
+        if page_splits:
+            from core.serial import code_for_parent
+
+            parent = await self.customers.get_by_id(cust.parent_id)
+            if parent is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"parent customer {cust.parent_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            code = code_for_parent(parent.name)
+            if code is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"未配置一级客户「{parent.name}」的序列号代码",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            assembly_serial = await self.serial_counters.acquire_serial(code)
+
         assembly = TAssembly(
             id=new_id(),
             drawing_no=data.drawing_no,
             name=data.name,
             applicant_name=resolved_applicant_name,
-            customer_id=data.customer_id,
+            customer_id=cid,   # 关键：TAssembly.customer_id 是 BigInteger，传 int
             request_date=data.request_date,
             planned_delivery_date=data.planned_delivery_date,
             actual_delivery_date=None,
             is_urgent=data.is_urgent,
             status="PENDING",
+            serial_no=assembly_serial,  # 空装配体 = None；非空装配体 = 顶级流水号
         )
         assembly.created_by = self._user_id
         assembly.updated_by = self._user_id
         await self.assemblies.create(assembly)
 
-        # 2. 上传装配件主 PDF 到 COS + 写 t_drawing_file（装配件挂总图）
+        # 空装配体：跳过 PDF / 子件处理，直接返回
+        if not page_splits:
+            assembly_out = await self._assembly_to_out(assembly, child_count=0)
+            await self._broadcast_event(
+                "ASSEMBLY_CREATED",
+                {
+                    "assembly_id": assembly.id,
+                    "drawing_no": assembly.drawing_no,
+                    "name": assembly.name,
+                    "child_count": 0,
+                },
+            )
+            return AssemblyCreateResult(
+                assembly=assembly_out,
+                children=[],
+                files=[],
+            )
+
+        # 2. 上传装配件总装图（page 1 = 单页 PDF）到 COS + 写 t_drawing_file
         master_pdf_id = new_id()
         master_key = f"drawings/assembly/{assembly.id}/{master_pdf_id}.pdf"
         cos_keys_to_cleanup: list[str] = []
         try:
             await cos_mod.upload_object(
                 master_key,
-                pdf_bytes,
+                page_splits[0],
                 _guess_content_type(pdf_filename, "application/pdf"),
             )
             cos_keys_to_cleanup.append(master_key)
@@ -230,7 +334,7 @@ class AssemblyService:
             file_type="PDF",
             object_key=master_key,
             original_filename=pdf_filename,
-            file_size=len(pdf_bytes),
+            file_size=len(page_splits[0]),
             content_type=_guess_content_type(
                 pdf_filename, "application/pdf"
             ),
@@ -241,50 +345,14 @@ class AssemblyService:
         master_file.updated_by = self._user_id
         await self.files.create(master_file)
 
-        # 3. 写每个子零件：t_part + t_drawing_file (page_index) + t_part_event
+        # 3. 写每个子零件：t_part + t_drawing_file (独立 COS 对象) + t_part_event
         child_parts: list[TPart] = []
         child_files: list[TDrawingFile] = []
+        # assembly_serial 已在 INSERT 之前 acquire，serial_no 也已写进 assembly 行
+        assert assembly_serial is not None
         try:
-            parent = await self.customers.get_by_id(cust.parent_id)
-            if parent is None:
-                raise BizError(
-                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
-                    message=f"parent customer {cust.parent_id} not found",
-                    http_status=http_status.HTTP_404_NOT_FOUND,
-                )
-            from core.serial import code_for_parent
-
-            code = code_for_parent(parent.name)
-            if code is None:
-                raise BizError(
-                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
-                    message=f"未配置一级客户「{parent.name}」的序列号代码",
-                    http_status=http_status.HTTP_400_BAD_REQUEST,
-                )
-
-            # 子件数量上限 = 99：装配体分配一个真实流水号；
-            # 子件派生为 f"{serial}-{i:02d}"，i ∈ [1..99]，最长 8 字符。
-            if len(data.children) > 99:
-                raise BizError(
-                    code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
-                    message=(
-                        f"子件数量 {len(data.children)} > 99，"
-                        f"序列号 '{assembly.serial_no}-{{i:02d}}' 派生失败"
-                    ),
-                    http_status=http_status.HTTP_400_BAD_REQUEST,
-                )
-            # 一次性 acquire 装配体顶级流水号
-            assembly_serial = await self.serial_counters.acquire_serial(code)
-            assembly.serial_no = assembly_serial
-            await self.assemblies.session.flush()
-            # 子件派生：f"{assembly_serial}-{i:02d}"，i 从 1 开始两位零填充
             for i, child in enumerate(data.children, start=1):
                 child_id = new_id()
-                child_total = (
-                    child.total_price
-                    if child.total_price is not None
-                    else child.unit_price * child.quantity
-                )
                 child_serial = f"{assembly_serial}-{i:02d}"
                 tpart = TPart(
                     id=child_id,
@@ -297,14 +365,14 @@ class AssemblyService:
                         or "(未知)"
                     ),
                     quantity=child.quantity,
-                    unit_price=child.unit_price,
-                    total_price=child_total,
+                    unit_price=Decimal("0"),
+                    total_price=Decimal("0"),
                     request_date=data.request_date,
                     planned_delivery_date=data.planned_delivery_date,
                     actual_delivery_date=None,
                     status="PENDING",
                     is_urgent=data.is_urgent,
-                    customer_id=data.customer_id,
+                    customer_id=cid,   # 关键：TPart.customer_id 是 BigInteger
                     assembly_id=assembly.id,
                 )
                 tpart.created_by = self._user_id
@@ -312,25 +380,34 @@ class AssemblyService:
                 await self.parts.create(tpart)
                 child_parts.append(tpart)
 
-                # page_index 引用同一份 PDF 的对应页
-                ref_file = TDrawingFile(
-                    id=new_id(),
-                    part_id=tpart.id,
+                # 上传该子件的单页 PDF 到独立 COS 对象
+                child_file_id = new_id()
+                child_key = f"drawings/part/{child_id}/{child_file_id}.pdf"
+                await cos_mod.upload_object(
+                    child_key,
+                    page_splits[i],
+                    _guess_content_type(pdf_filename, "application/pdf"),
+                )
+                cos_keys_to_cleanup.append(child_key)
+
+                child_file = TDrawingFile(
+                    id=child_file_id,
+                    part_id=child_id,
                     assembly_id=None,
                     file_type="PDF",
-                    object_key=master_key,
+                    object_key=child_key,
                     original_filename=pdf_filename,
-                    file_size=len(pdf_bytes),
+                    file_size=len(page_splits[i]),
                     content_type=_guess_content_type(
                         pdf_filename, "application/pdf"
                     ),
-                    page_index=child.page_index,
+                    page_index=None,  # 关键：每行就是该子件的单页 PDF，不引用 master
                     upload_status="READY",
                 )
-                ref_file.created_by = self._user_id
-                ref_file.updated_by = self._user_id
-                await self.files.create(ref_file)
-                child_files.append(ref_file)
+                child_file.created_by = self._user_id
+                child_file.updated_by = self._user_id
+                await self.files.create(child_file)
+                child_files.append(child_file)
 
                 # 写 CREATED 事件
                 part_event = TPartEvent(
@@ -465,6 +542,322 @@ class AssemblyService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         return await self._build_detail(asm)
+
+    # ============================================================
+    # 详情页扩展：上传总装 PDF / 添加单个子件
+    # ============================================================
+    async def upload_total_pdf(
+        self,
+        assembly_id: int,
+        *,
+        pdf_bytes: bytes,
+        pdf_filename: str,
+    ) -> AssemblyDetail:
+        """详情页上传总装 PDF：拆页 → page 1 作 master + page 2..N 各自派生子件。
+
+        前置条件：
+        - 装配体存在（且未软删）；
+        - 装配体当前**无任何文件 + 无任何子件**（避免与既有 master / 既有子件冲突）；
+        - PDF 至少 2 页、拆分后子件 ≤ 99。
+        """
+        from schema.assembly import AddAssemblyChildRequest
+
+        # 1. 校验装配体
+        asm = await self.assemblies.get_by_id(assembly_id)
+        if asm is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
+                message=f"assembly {assembly_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        existing_files = await self.files.list_by_assembly(assembly_id)
+        existing_children = await self.parts.list_children(assembly_id)
+        if existing_files or existing_children:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"装配体已存在 {len(existing_files)} 个文件、"
+                    f"{len(existing_children)} 个子件；"
+                    "如需替换请先软删后重建"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2. PDF 校验
+        if _normalize_ext(pdf_filename) != "pdf":
+            raise BizError(
+                code=ErrCode.BIZ_DRAWING_FILE_BAD_TYPE,
+                message=(
+                    f"装配件主文件必须是 PDF，当前为 "
+                    f".{_normalize_ext(pdf_filename) or '(无)'}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            page_splits = split_pdf(pdf_bytes)
+        except (PdfReadError, Exception) as e:  # noqa: BLE001
+            raise BizError(
+                code=ErrCode.BIZ_DRAWING_UPLOAD_FAILED,
+                message=f"PDF 解析失败：{e!s}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            ) from e
+        total_pages = len(page_splits)
+        if total_pages < 2:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                message=(
+                    f"总装 PDF 至少 2 页。当前 PDF 共 {total_pages} 页。"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        child_count = total_pages - 1
+        if child_count > 99:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                message=f"PDF 共 {total_pages} 页 > 100（子件上限 99）",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3. 拿父客户 → code → 分配顶级流水号
+        cust = await self.customers.get_by_id(asm.customer_id)
+        if cust is None or cust.parent_id is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                message=(
+                    f"assembly {assembly_id} 的客户 {asm.customer_id} "
+                    "不是叶子节点，无法派生子件"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        parent = await self.customers.get_by_id(cust.parent_id)
+        if parent is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                message=f"parent customer {cust.parent_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        from core.serial import code_for_parent
+
+        code = code_for_parent(parent.name)
+        if code is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                message=f"未配置一级客户「{parent.name}」的序列号代码",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        cos_keys_to_cleanup: list[str] = []
+        try:
+            assembly_serial = await self.serial_counters.acquire_serial(code)
+            asm.serial_no = assembly_serial
+            await self.assemblies.session.flush()
+
+            # 4. 上传 master（page 1 = 单页 PDF）
+            master_pdf_id = new_id()
+            master_key = f"drawings/assembly/{asm.id}/{master_pdf_id}.pdf"
+            await cos_mod.upload_object(
+                master_key,
+                page_splits[0],
+                _guess_content_type(pdf_filename, "application/pdf"),
+            )
+            cos_keys_to_cleanup.append(master_key)
+            master_file = TDrawingFile(
+                id=master_pdf_id,
+                assembly_id=asm.id,
+                part_id=None,
+                file_type="PDF",
+                object_key=master_key,
+                original_filename=pdf_filename,
+                file_size=len(page_splits[0]),
+                content_type=_guess_content_type(
+                    pdf_filename, "application/pdf"
+                ),
+                page_index=None,
+                upload_status="READY",
+            )
+            master_file.created_by = self._user_id
+            master_file.updated_by = self._user_id
+            await self.files.create(master_file)
+
+            # 5. 自动创建 N-1 个子件（每页一个），图号 / 名称预填
+            for i in range(child_count):
+                seq = i + 1
+                child_data = AddAssemblyChildRequest(
+                    drawing_no=str(seq).padStart(2, "0"),
+                    name=f"子零件{str(seq).padStart(2, '0')}",
+                    quantity=1,
+                )
+                await self._create_single_child(
+                    asm=asm,
+                    child=child_data,
+                    assembly_serial=assembly_serial,
+                    index=seq,
+                    pdf_bytes=page_splits[seq],
+                    pdf_filename=pdf_filename,
+                    cos_keys_to_cleanup=cos_keys_to_cleanup,
+                )
+        except BizError:
+            await self.drawings.delete_files_silently(cos_keys_to_cleanup)
+            raise
+
+        return await self._build_detail(asm)
+
+    async def add_child(
+        self,
+        assembly_id: int,
+        child: "AddAssemblyChildRequest",
+    ) -> "PartOut":
+        """详情页添加单个子件（无 PDF；如需 PDF 走 POST /parts/{id}/files）。
+
+        - 装配体必须存在（且未软删）；
+        - 装配体的顶级 serial_no 必须已分配（由 upload_total_pdf 或 create_assembly
+          携带 PDF 时设置）；如果还是空装配体（serial_no is None），本方法先 acquire。
+        """
+        asm = await self.assemblies.get_by_id(assembly_id)
+        if asm is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
+                message=f"assembly {assembly_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        # 派生下一个 index
+        existing_children = await self.parts.list_children(assembly_id)
+        next_index = len(existing_children) + 1
+        if next_index > 99:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_TOO_MANY_CHILDREN,
+                message=(
+                    f"子件数量 {next_index - 1} 已达 99 上限，无法添加更多"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 顶级 serial：若还没有（空装配体），先 acquire
+        assembly_serial = asm.serial_no
+        if assembly_serial is None:
+            cust = await self.customers.get_by_id(asm.customer_id)
+            if cust is None or cust.parent_id is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=(
+                        f"assembly {assembly_id} 的客户 {asm.customer_id} "
+                        "不是叶子节点，无法派生子件"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            parent = await self.customers.get_by_id(cust.parent_id)
+            if parent is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"parent customer {cust.parent_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            from core.serial import code_for_parent
+
+            code = code_for_parent(parent.name)
+            if code is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"未配置一级客户「{parent.name}」的序列号代码",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            assembly_serial = await self.serial_counters.acquire_serial(code)
+            asm.serial_no = assembly_serial
+            await self.assemblies.session.flush()
+
+        tpart = await self._create_single_child(
+            asm=asm,
+            child=child,
+            assembly_serial=assembly_serial,
+            index=next_index,
+            pdf_bytes=None,
+            pdf_filename=None,
+            cos_keys_to_cleanup=[],
+        )
+        # _to_out 接收 list[TPart]；单个子件要包成列表。
+        out_list = await self.part_service._to_out([tpart])  # noqa: SLF001
+        return out_list[0]
+
+    async def _create_single_child(
+        self,
+        *,
+        asm: TAssembly,
+        child: "AddAssemblyChildRequest",
+        assembly_serial: str,
+        index: int,
+        pdf_bytes: bytes | None,
+        pdf_filename: str | None,
+        cos_keys_to_cleanup: list[str],
+    ) -> TPart:
+        """写一个子件（含 t_part + t_drawing_file + t_part_event）。
+
+        pdf_bytes 为 None 时跳过 t_drawing_file 写入（详情页 add_child 场景）。
+        """
+        child_id = new_id()
+        child_serial = f"{assembly_serial}-{index:02d}"
+        tpart = TPart(
+            id=child_id,
+            serial_no=child_serial,
+            name=child.name,
+            drawing_no=child.drawing_no,
+            applicant_name=asm.applicant_name or "(未知)",
+            quantity=child.quantity,
+            unit_price=Decimal("0"),
+            total_price=Decimal("0"),
+            request_date=asm.request_date,
+            planned_delivery_date=asm.planned_delivery_date,
+            actual_delivery_date=None,
+            status="PENDING",
+            is_urgent=asm.is_urgent,
+            customer_id=asm.customer_id,  # 已 int（create_assembly 传的是 cid）
+            assembly_id=asm.id,
+        )
+        tpart.created_by = self._user_id
+        tpart.updated_by = self._user_id
+        await self.parts.create(tpart)
+
+        if pdf_bytes is not None and pdf_filename is not None:
+            child_file_id = new_id()
+            child_key = f"drawings/part/{child_id}/{child_file_id}.pdf"
+            await cos_mod.upload_object(
+                child_key,
+                pdf_bytes,
+                _guess_content_type(pdf_filename, "application/pdf"),
+            )
+            cos_keys_to_cleanup.append(child_key)
+            child_file = TDrawingFile(
+                id=child_file_id,
+                part_id=child_id,
+                assembly_id=None,
+                file_type="PDF",
+                object_key=child_key,
+                original_filename=pdf_filename,
+                file_size=len(pdf_bytes),
+                content_type=_guess_content_type(
+                    pdf_filename, "application/pdf"
+                ),
+                page_index=None,
+                upload_status="READY",
+            )
+            child_file.created_by = self._user_id
+            child_file.updated_by = self._user_id
+            await self.files.create(child_file)
+
+        part_event = TPartEvent(
+            id=new_id(),
+            part_id=tpart.id,
+            worker_id=None,
+            event_type=PartEventType.CREATED.value,
+            from_status=None,
+            to_status="PENDING",
+            drawing_code=None,
+            badge_code=None,
+            note=None,
+        )
+        await self.events.create(part_event)
+        return tpart
 
     # ============================================================
     # 取消（级联）

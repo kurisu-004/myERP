@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -94,25 +93,18 @@ class AssemblyListOut(BaseModel):
 
 
 class AssemblyChildCreateRequest(BaseModel):
-    """装配件上传时的子零件条目。
+    """装配件子零件条目（PDF 自动按页拆分后填入）。
 
-    仅 PDF 中**有图纸页**的零件才传；BOM 中的国标件
-    （如 `圆柱销 GB/T 119.1`、`弹簧 GB/T 2089`）不在这里录入。
+    - 子零件数 = PDF 页数 - 1（page 1 = 总图，page 2..N = 子件 1..N-1）
+    - 不再接受 unit_price / total_price / page_index；DB 层由 model 默认值
+      （unit_price=0, total_price=0）兜底。顺序由前端行序隐式表达：
+      position 0 ↔ PDF page 2。
     """
 
     drawing_no: str = Field(..., min_length=1, max_length=100)
     name: str = Field(..., min_length=1, max_length=200)
     quantity: int = Field(default=1, ge=1)
-    unit_price: Decimal = Field(default=Decimal("0"), ge=0)
-    total_price: Decimal | None = Field(default=None, ge=0)
     applicant_name: str | None = Field(default=None, max_length=50)
-    page_index: int = Field(
-        ...,
-        ge=2,
-        description=(
-            "该子件在 PDF 中的页码（从 2 开始；page 1 固定是装配件总图）。"
-        ),
-    )
 
     @field_validator("drawing_no", "name", "applicant_name")
     @classmethod
@@ -136,7 +128,8 @@ class AssemblyCreateRequest(BaseModel):
     request_date: date
     planned_delivery_date: date
     is_urgent: bool = False
-    children: list[AssemblyChildCreateRequest] = Field(..., min_length=1)
+    # children 可为空（创建空装配体；后续到详情页 add_child / upload-pdf）
+    children: list[AssemblyChildCreateRequest] = Field(default_factory=list)
 
     @field_validator("name", "drawing_no", "applicant_name")
     @classmethod
@@ -152,6 +145,19 @@ class AssemblyCreateResult(BaseModel):
     files: list[DrawingFileOut] = Field(
         description="装配件 PDF 1 条 + 各子件 page_index 引用 N 条"
     )
+
+
+class AddAssemblyChildRequest(BaseModel):
+    """详情页添加单个子件（无 PDF；如需 PDF 走 POST /parts/{id}/files）。"""
+
+    drawing_no: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+    quantity: int = Field(default=1, ge=1)
+
+    @field_validator("drawing_no", "name")
+    @classmethod
+    def strip(cls, v: str) -> str:
+        return v.strip()
 
 
 class AssemblyDetail(BaseModel):

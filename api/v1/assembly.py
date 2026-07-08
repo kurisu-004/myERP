@@ -10,6 +10,7 @@ from api.deps import get_assembly_service, get_drawing_service
 from core.permission import require_role, require_roles
 from model.enums import UserRole
 from schema.assembly import (
+    AddAssemblyChildRequest,
     AssemblyCreateRequest,
     AssemblyCreateResult,
     AssemblyDetail,
@@ -72,17 +73,19 @@ async def list_assemblies(
     "",
     response_model=AssemblyCreateResult,
     status_code=http_status.HTTP_201_CREATED,
-    summary="创建装配件 + 上传总装 PDF + 生成子零件",
+    summary="创建装配件（可同时上传总装 PDF + 生成子零件；也可先建空装配体再到详情页补充）",
 )
 async def create_assembly(
     data: str = Form(..., description="AssemblyCreateRequest 的 JSON 字符串"),
-    file: UploadFile = File(..., description="总装 PDF（必填，第一页是总装图）"),
+    file: UploadFile | None = File(default=None, description="总装 PDF（可选；不传则创建空装配体）"),
     svc: AssemblyService = Depends(get_assembly_service),
 ) -> AssemblyCreateResult:
     payload = AssemblyCreateRequest.model_validate_json(data)
-    pdf_bytes = await file.read()
+    pdf_bytes = await file.read() if file is not None else b""
     return await svc.create_assembly(
-        payload, pdf_bytes=pdf_bytes, pdf_filename=file.filename or "assembly.pdf"
+        payload,
+        pdf_bytes=pdf_bytes if pdf_bytes else None,
+        pdf_filename=file.filename if file is not None else None,
     )
 
 
@@ -121,6 +124,40 @@ async def cancel_assembly(
     svc: AssemblyService = Depends(get_assembly_service),
 ) -> AssemblyDetail:
     return await svc.cancel_assembly(assembly_id)
+
+
+@router.post(
+    "/{assembly_id}/upload-pdf",
+    response_model=AssemblyDetail,
+    status_code=http_status.HTTP_201_CREATED,
+    summary="详情页上传总装 PDF：拆页 → page 1 = master + page 2..N = 自动创建子件",
+)
+async def upload_assembly_pdf(
+    assembly_id: int,
+    file: UploadFile = File(..., description="总装 PDF（必填，第一页是总装图）"),
+    svc: AssemblyService = Depends(get_assembly_service),
+) -> AssemblyDetail:
+    pdf_bytes = await file.read()
+    return await svc.upload_total_pdf(
+        assembly_id,
+        pdf_bytes=pdf_bytes,
+        pdf_filename=file.filename or "assembly.pdf",
+    )
+
+
+@router.post(
+    "/{assembly_id}/children",
+    response_model=dict,  # PartOut（避免循环引用；前端用 PartListItem 接收）
+    status_code=http_status.HTTP_201_CREATED,
+    summary="详情页添加单个子件（无 PDF；如需 PDF 走 POST /parts/{id}/files）",
+)
+async def add_assembly_child(
+    assembly_id: int,
+    payload: AddAssemblyChildRequest,
+    svc: AssemblyService = Depends(get_assembly_service),
+) -> dict:
+    child_out = await svc.add_child(assembly_id, payload)
+    return child_out.model_dump(mode="json")
 
 
 # ---------- 子件反查（MANAGER + CLERK + CNC_PROGRAMMER） ----------

@@ -196,7 +196,7 @@
           </template>
           <template #default="{ row }">
             <el-tag :type="statusTagType(row.status)" effect="plain" size="small">
-              {{ row.status }}
+              {{ statusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -238,20 +238,25 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   ElMessage,
 } from 'element-plus'
 import { Filter, Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import { listAssemblies } from '@/api/assembly'
-import type {
-  AssemblyListItem,
-  AssemblyListQuery,
-  AssemblySortKey,
-  SortDir,
+import {
+  ASSEMBLY_STATUS_LABEL,
+  ASSEMBLY_STATUS_TAG_TYPE,
+  type AssemblyListItem,
+  type AssemblyListQuery,
+  type AssemblySortKey,
+  type AssemblyStatus,
+  type SortDir,
 } from '@/types/assembly'
 import { useCustomerTree } from '@/composables/useCustomerTree'
 
 const { tree: customerTree } = useCustomerTree()
+const route = useRoute()
 
 // ============ 搜索条件 ============
 interface SearchState {
@@ -265,12 +270,16 @@ function initialSearch(): SearchState {
 }
 const search = reactive<SearchState>(initialSearch())
 
-const assemblyStatusOptions = [
-  { value: 'PENDING', label: 'PENDING' },
-  { value: 'IN_PROCESS', label: 'IN_PROCESS' },
-  { value: 'COMPLETED', label: 'COMPLETED' },
-  { value: 'CANCELLED', label: 'CANCELLED' },
-]
+/** 状态列 → 中文 label（与 PartsList 同款）。 */
+function statusLabel(s: string): string {
+  return ASSEMBLY_STATUS_LABEL[s as AssemblyStatus] ?? s
+}
+function statusTagType(s: string): 'info' | 'warning' | 'success' | 'danger' | 'primary' {
+  return ASSEMBLY_STATUS_TAG_TYPE[s as AssemblyStatus] ?? 'info'
+}
+
+const assemblyStatusOptions = (Object.keys(ASSEMBLY_STATUS_LABEL) as AssemblyStatus[])
+  .map((v) => ({ value: v, label: ASSEMBLY_STATUS_LABEL[v] }))
 
 const statusFilterActive = computed(
   () => search.statuses.length > 0 || search.isUrgent === true,
@@ -351,12 +360,6 @@ function rowClassName({ row }: { row: AssemblyListItem }): string {
   return row.is_urgent ? 'row-urgent' : ''
 }
 
-function statusTagType(s: string): 'success' | 'info' | 'warning' | 'danger' {
-  if (s === 'COMPLETED') return 'success'
-  if (s === 'CANCELLED') return 'info'
-  return 'warning'
-}
-
 async function fetchData(): Promise<void> {
   loading.value = true
   try {
@@ -425,6 +428,11 @@ function onSortChange({
 }
 
 onMounted(() => {
+  // 从 URL ?status=PENDING 等注入筛选（与新建后跳转保持一致）
+  const q = route.query.status
+  if (typeof q === 'string' && q in ASSEMBLY_STATUS_LABEL) {
+    search.statuses = [q]
+  }
   void fetchData()
 })
 </script>

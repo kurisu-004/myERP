@@ -11,6 +11,7 @@ import type {
   AssemblyItem,
 } from '@/types/assembly'
 import type { DrawingFileItem } from '@/types/file'
+import type { PartListItem } from '@/types/parts'
 
 function cleanParams<T extends object>(p: T): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -44,13 +45,43 @@ export async function getAssemblyForPart(
 
 export async function createAssembly(
   payload: AssemblyCreatePayload,
+): Promise<AssemblyCreateResult> {
+  const form = new FormData()
+  form.append('data', JSON.stringify(payload))
+  // 不传 file：创建空装配体；详情页再上传 PDF / 添加子件
+  const resp = await api.post<AssemblyCreateResult>('/assemblies', form)
+  return resp.data
+}
+
+/** 一次性创建：上传总装 PDF + 子件一并生成。 */
+export async function createAssemblyWithFile(
+  payload: AssemblyCreatePayload,
   pdfFile: File,
 ): Promise<AssemblyCreateResult> {
   const form = new FormData()
   form.append('data', JSON.stringify(payload))
   form.append('file', pdfFile)
-  // axios 会自动给 FormData 设 multipart/form-data + boundary，不手动指定 Content-Type。
   const resp = await api.post<AssemblyCreateResult>('/assemblies', form)
+  return resp.data
+}
+
+/** 详情页上传总装 PDF：拆页 → 自动创建子件。 */
+export async function uploadAssemblyPdf(
+  id: string,
+  file: File,
+): Promise<AssemblyDetail> {
+  const form = new FormData()
+  form.append('file', file)
+  const resp = await api.post<AssemblyDetail>(`/assemblies/${id}/upload-pdf`, form)
+  return resp.data
+}
+
+/** 详情页添加单个子件（无 PDF；如需 PDF 走 uploadPartFile）。 */
+export async function addAssemblyChild(
+  id: string,
+  payload: { drawing_no: string; name: string; quantity: number },
+): Promise<PartListItem> {
+  const resp = await api.post<PartListItem>(`/assemblies/${id}/children`, payload)
   return resp.data
 }
 

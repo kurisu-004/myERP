@@ -15,6 +15,26 @@ export type AssemblySortKey =
 
 export type SortDir = 'ASC' | 'DESC'
 
+/** 装配件状态枚举（与后端 model/enums.py::AssemblyStatus 对齐）。 */
+export type AssemblyStatus = 'PENDING' | 'IN_PROCESS' | 'COMPLETED' | 'CANCELLED'
+
+/** 装配件状态 → 中文 label（与 PartsList 同款模式）。 */
+export const ASSEMBLY_STATUS_LABEL: Record<AssemblyStatus, string> = {
+  PENDING: '待生产',
+  IN_PROCESS: '生产中',
+  COMPLETED: '已完成',
+  CANCELLED: '已取消',
+}
+
+/** 装配件状态 → el-tag type。 */
+export const ASSEMBLY_STATUS_TAG_TYPE: Record<AssemblyStatus,
+  'info' | 'warning' | 'success' | 'danger' | 'primary'> = {
+  PENDING: 'info',
+  IN_PROCESS: 'primary',
+  COMPLETED: 'success',
+  CANCELLED: 'info',
+}
+
 /** 装配件（与后端 TAssembly 对齐） */
 export interface AssemblyItem {
   id: string
@@ -32,7 +52,7 @@ export interface AssemblyItem {
   actual_delivery_date: string | null
   is_urgent: boolean
   /** PENDING / IN_PROCESS / COMPLETED / CANCELLED */
-  status: string
+  status: AssemblyStatus
   child_count: number
   created_at: string
   updated_at: string
@@ -44,7 +64,7 @@ export type AssemblyListItem = AssemblyItem
 export interface AssemblyListQuery {
   /** 雪花 ID 字符串（CLAUDE.md §3 — 19 位 > JS Number.MAX_SAFE_INTEGER） */
   customer_id?: string
-  status?: string
+  status?: AssemblyStatus | string
   is_urgent?: boolean
   drawing_no_like?: string
   name_like?: string
@@ -61,16 +81,12 @@ export interface AssemblyListResult {
   offset: number
 }
 
-/** 创建装配件时的子零件条目 */
+/** 创建装配件时的子零件条目（PDF 按页拆分后，前端只需要填基础字段）。 */
 export interface AssemblyChildPayload {
   drawing_no: string
   name: string
   quantity?: number
-  unit_price?: number
-  total_price?: number | null
   applicant_name?: string | null
-  /** 子件在 PDF 中的页码（page 1 是总装图，子件从 2 开始） */
-  page_index: number
 }
 
 /** 创建装配件的 JSON body（不含文件；文件单独 multipart 传） */
@@ -88,7 +104,8 @@ export interface AssemblyCreatePayload {
   request_date: string
   planned_delivery_date: string
   is_urgent?: boolean
-  children: AssemblyChildPayload[]
+  /** 子件；可空（创建空装配体到详情页再补） */
+  children?: AssemblyChildPayload[]
 }
 
 /** 创建结果（创建响应需要完整数据；子件用 PartListItem 即可，详情页用窄版） */

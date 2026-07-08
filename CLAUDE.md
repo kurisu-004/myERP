@@ -412,6 +412,109 @@ frontend/src/
     - `PartBatchNew.vue` / `AssemblyCreate.vue` 把原来的 `el-select filterable + el-option` 模板换成 `el-autocomplete`；`:debounce="0"` 避免叠加 Element Plus 默认的 300ms 防抖（纯内存过滤场景不需要）。
     - `frontend/src/components.d.ts` 自动重生成（`ElAutocomplete` 已注入），无需手改。
     - `el-autocomplete` 未在 `element-plus` skill `references/` 列出的高频子集内 → WebFetch 官方文档（`https://element-plus.org/en-US/component/input` 的 `Autocomplete` 段）确认 `value-key` / `:fetch-suggestions` / `@select` 用法。
+
+13. **SQLAlchemy 异步 `MissingGreenlet` 陷阱**（2026-07-08 踩坑）：症状
+    ```
+    sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called;
+    can't call await_only() here. Was IO attempted in an unexpected place?
+    ```
+    含义：项目用 SQLAlchemy 2.0 异步 + asyncpg，所有 DB 操作必须在 `async` 函数里 `await`。
+    任何**同步函数**（包括 Pydantic 校验器 / `from_attributes=True` 反序列化 / `@property` / `__repr__`）
+    都不能触发 `await` 或访问需要 DB IO 的字段，否则会抛此异常。
+
+    常见诱因（务必避开）：
+    - **`from_attributes=True` 反序列化** ORM 对象：构造 Pydantic 响应模型时
+      `AssemblyOut(asm)` 会访问 `asm.id` / `asm.serial_no` 等列；这些列如未在当前
+      session 中显式 `await self.session.refresh(...)`，可能需要 lazy load 触发 IO。
+      **正确做法**：始终用关键字传参（`AssemblyOut(id=asm.id, ...)`），不要 `from_attributes`。
+    - **访问 `lazy="raise"` 关系**（如 `TPart.customer`）：抛 `InvalidRequestError`，
+      但若关系触发器内部有 IO，错误会变成 `MissingGreenlet`。**不要**在 service
+      层用 `part.customer.name`，显式 `await self.customers.get_by_id(part.customer_id)`。
+    - **在 `field_validator` / `field_serializer` 中访问 ORM 字段**：Pydantic 校验器跑在
+      同步上下文，访问未加载的列会抛 `MissingGreenlet`。校验器只做值变换（strip /
+      str / enum 转换），不查 DB。
+    - **将 ORM 对象传给 `jsonable_encoder` / `model_dump_json` 之前**未确保属性已加载：
+      `await self.session.flush()` 后属性才会从 server_default 填回本地对象。
+    - **新写 ORM 字段忘了给 server_default 或 `default=`**（如 `created_at` / `updated_at`）：
+      flush 后访问该字段会触发 refresh。
+    - **`onupdate=func.now()` 列被 UPDATE 触碰后访问**：`AuditMixin.updated_at` 是
+      `onupdate=func.now()`。如果对 ORM 对象做了任何 UPDATE（哪怕只动了一列），
+      SQLAlchemy 都会把 `updated_at` 标 expired 以便刷新回填。在 async session
+      里这个 lazy load 触发的同步 IO 直接抛 `MissingGreenlet`——而且**不一定在
+      `flush()` 内立即抛**，也可能延后到下次 `asm.updated_at` 访问才爆。
+      **正确做法**：尽量不要走「先 INSERT 再 UPDATE 同一行」的两阶段写；构造
+      对象时就把所有列都填好（连 `serial_no` 这种后续才知道的，也应该在 INSERT
+      之前先 `acquire_serial` 再构造），单次 INSERT 完成。详见 [item 15](#15-sqlalchemy-onupdate--missinggreenlet--2026-07-08)。
+      `expire_on_commit=False` **不**防这种 expire（它只防 commit）。
+
+    排查方法：搜 `lazy=`、搜 `from_attributes=True`、搜 `@property` 里的 ORM 字段访问、
+    搜 `field_validator`/`field_serializer`。**最关键**：所有 DB 操作必须 `await`，
+    `await self.session.flush()` 之后才能读 server_default 列。
+
+    项目里出现过的真实案例：
+    - `service/assembly.py::add_child` 曾把单个 `TPart` 直接传给
+      `self.part_service._to_out(...)`（签名是 `list[TPart]`），导致后续
+      `cust_map.get(p.customer_id)` 等访问触发错误。修复：包成 `[tpart]` 列表。
+
+14. **2026-07-08 装配体创建流**（统一记录于此）：
+    - 详情见 [第 11 节 /assemblies](#assembliesapiv1assemblypy--3-router)：
+      「创建空装配体」「详情页上传总装 PDF（自动按页拆分）」「详情页单独添加子件」
+      三种模式。`service/assembly.py` 三个公开方法：`create_assembly`（可选 PDF）、
+      `upload_total_pdf`、`add_child`。
+    - 新增 `t_part.customer_id` 必须是 `int`（雪花 ID int，序列化到 JSON 时转 str），
+      之前 `service/assembly.py` 传 `data.customer_id`（str）会导致 asyncpg 报
+      `'str' object cannot be interpreted as an integer`。统一改用 `parse_snowflake_id`
+      转出来的 `cid`（int）。
+    - `AssemblyCreateRequest.children` 改为 `default_factory=list`（允许空 → 创建空装配体）；
+      若同时提供 `data.children` 和 `pdf_bytes`，后端校验 `len(children) == page_count - 1`。
+    - `TDrawingFile.page_index` 在创建流程中永远是 `NULL`（每行就是该子件的单页 PDF，
+      不再通过 `page_index` 引用 master）。老装配件行（`page_index=2..N`）继续可读可预览。
+    - `t_part.unit_price` / `t_part.total_price` 装配体创建时一律写 0；详情页手工添加的
+      子件同样写 0。价格字段对文员是隐藏的；后续单独加价编辑入口再说。
+    - 装配体创建成功后跳哪儿？
+      - 一次性传 PDF → `/assemblies?status=PENDING`（列表核对刚创建的）
+      - 空装配体 → `/assemblies/{id}`（到详情页用「上传总装 PDF」/「添加子件」补充）
+
+15. **SQLAlchemy `onupdate` 触发的 `MissingGreenlet`**（2026-07-08 踩坑 + 修复）：
+    - **症状**：`POST /api/v1/assemblies`（带 PDF + children）抛
+      `sqlalchemy.exc.MissingGreenlet`，堆栈停在 `service/assembly.py`
+      `_assembly_to_out_obj` 里的 `updated_at=asm.updated_at,`（[item 13] 提到的
+      `_load_expired` 同步 IO 链路）。
+    - **根因**：`service/assembly.py::create_assembly` 原实现是两步走写装配体：
+      ```python
+      assembly = TAssembly(..., status="PENDING")  # 没 serial_no
+      await self.assemblies.create(assembly)        # 第一次 flush (INSERT)
+      ...
+      assembly_serial = await self.serial_counters.acquire_serial(code)
+      assembly.serial_no = assembly_serial
+      await self.assemblies.session.flush()         # 第二次 flush (UPDATE serial_no)
+      ```
+      `AuditMixin.updated_at = mapped_column(..., onupdate=func.now())`。
+      SQLAlchemy 2.0 看到 UPDATE 涉及 `onupdate` 列，flush 时会把它标 expired
+      以便刷新回填。async session 里这个 refresh 触发同步 IO → `MissingGreenlet`。
+      **不一定在 `flush()` 内立即抛**，也可能延后到下次属性访问才爆（视 session
+      flush 模式而定）。`expire_on_commit=False` 不防这种 expire。
+    - **修复**：把 `parent` / `code` / `acquire_serial` 挪到 `TAssembly(...)` 之前，
+      `serial_no=assembly_serial` 在构造时就带进去；删除那次多余的
+      `await self.assemblies.session.flush()`，单次 INSERT 搞定。
+      `server_default=func.now()` 走 PostgreSQL RETURNING 一次性把 `created_at` /
+      `updated_at` 填回 Python 对象，没有 onupdate expire 触发。
+    - **约束（今后写 service 务必遵守）**：
+      - **任何带 `AuditMixin` 的 ORM 都不应该走「先 INSERT 再 UPDATE 同一行」
+        的两阶段写**。如果某个列后续才知道，**先在 Python 侧解析完再构造对象
+        一次性 INSERT**；不要先 INSERT 一行大部分列 NULL / 默认值，再 UPDATE
+        补字段。
+      - 配套：「先 acquire serial 再 INSERT」也是为了避免 UPDATE partial unique
+        索引的行（原 `t_assembly.serial_no` partial unique，UPDATE 改 serial_no
+        会瞬时破索引唯一性，理论上并发场景有竞态）—— 一并消除。
+    - **次要修正**：`TAssembly.customer_id` 之前传 `data.customer_id`（schema
+      端是雪花 ID 字符串）会触发 asyncpg 报 `'str' object cannot be interpreted
+      as an integer`。统一改用 `parse_snowflake_id` 转出来的 `cid`（int）。
+    - **端到端验证**：
+      - 最小复现脚本：原两阶段「先 INSERT 无 serial 再 UPDATE 填 serial」必抛
+        `MissingGreenlet`；修复后单次 INSERT 带 serial，访问 `updated_at` 正常
+        返回 `2026-07-08 12:31:41.258440`。
+      - `uv run pytest tests/unit/` → **250 passed**。
 ---
 
 ## 10. 完整目录树
