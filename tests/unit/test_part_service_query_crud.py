@@ -85,9 +85,20 @@ def _make_part(id: int, customer_id: int, **kwargs) -> TPart:
     )
 
 
-def _make_customer(id: int, name: str, parent_id: int | None = None) -> TCustomer:
-    """Construct a TCustomer using the SQLAlchemy constructor."""
-    return TCustomer(id=id, name=name, parent_id=parent_id)
+def _make_customer(
+    id: int,
+    name: str,
+    parent_id: int | None = None,
+    serial_prefix: str | None = "L",
+) -> TCustomer:
+    """Construct a TCustomer using the SQLAlchemy constructor.
+
+    2026-07-09 起默认 serial_prefix='L'，与旧测试用 `code_for_parent` 兜底
+    返回 'L' 的行为对齐；不传则设 None（用于测「未配置前缀」场景）。
+    """
+    return TCustomer(
+        id=id, name=name, parent_id=parent_id, serial_prefix=serial_prefix,
+    )
 
 
 def _make_worker(id: int, name: str = "Worker") -> TWorker:
@@ -590,8 +601,7 @@ class TestCreatePart:
 
         # ── act ──────────────────────────────────────────────────
         with patch("service.part.new_id", return_value=9001):
-            with patch("service.part.code_for_parent", return_value="L"):
-                result = await service.create_part(data)
+            result = await service.create_part(data)
 
         # ── assert repository calls ──────────────────────────────
         mock_customers.get_by_id.assert_awaited_once_with(10)
@@ -660,8 +670,7 @@ class TestCreatePart:
 
         # ── act ──────────────────────────────────────────────────
         with patch("service.part.new_id", return_value=9001):
-            with patch("service.part.code_for_parent", return_value="L"):
-                result = await service.create_part(data)
+            result = await service.create_part(data)
 
         # ── assert ───────────────────────────────────────────────
         # Two calls: one for cust, one for parent
@@ -734,7 +743,9 @@ class TestCreatePart:
     ) -> None:
         """No serial code configured for customer → BizError(BIZ_CUSTOMER_NOT_FOUND, 400)."""
         # ── arrange ──────────────────────────────────────────────
-        cust = _make_customer(id=10, name="UnknownCorp")
+        # 一级客户名 "UnknownCorp" 不在 PARENT_TO_CODE 兜底，且 serial_prefix 为 None
+        # → resolve_root_prefix 双兜底都拿不到，触发 BIZ_CUSTOMER_NOT_FOUND 400。
+        cust = _make_customer(id=10, name="UnknownCorp", serial_prefix=None)
         mock_customers.get_by_id.return_value = cust
 
         data = PartCreateRequest(
@@ -747,14 +758,13 @@ class TestCreatePart:
         )
 
         # ── act ──────────────────────────────────────────────────
-        with patch("service.part.code_for_parent", return_value=None):
-            with pytest.raises(BizError) as exc_info:
-                await service.create_part(data)
+        with pytest.raises(BizError) as exc_info:
+            await service.create_part(data)
 
         mock_customers.get_by_id.assert_awaited_once_with(10)
         assert exc_info.value.code == ErrCode.BIZ_CUSTOMER_NOT_FOUND
         assert exc_info.value.http_status == 400
-        assert "未配置客户" in exc_info.value.message
+        assert "未配置一级客户「UnknownCorp」" in exc_info.value.message
 
     async def test_total_price_auto_calculated(
         self,
@@ -783,8 +793,7 @@ class TestCreatePart:
 
         # ── act ──────────────────────────────────────────────────
         with patch("service.part.new_id", return_value=9001):
-            with patch("service.part.code_for_parent", return_value="L"):
-                result = await service.create_part(data)
+            result = await service.create_part(data)
 
         # ── assert total_price was auto-calculated ───────────────
         created_part: TPart = mock_parts.create.call_args[0][0]
@@ -835,8 +844,7 @@ class TestCreatePartsBatch:
 
         # ── act ──────────────────────────────────────────────────
         with patch("service.part.new_id", return_value=9001):
-            with patch("service.part.code_for_parent", return_value="L"):
-                result = await service.create_parts_batch(payload)
+            result = await service.create_parts_batch(payload)
 
         # ── assert ───────────────────────────────────────────────
         assert isinstance(result, PartBatchCreateResult)
@@ -876,8 +884,7 @@ class TestCreatePartsBatch:
         payload = PartBatchCreateRequest(items=[item0, item1])
 
         # ── act ──────────────────────────────────────────────────
-        with patch("service.part.code_for_parent", return_value="L"):
-            result = await service.create_parts_batch(payload)
+        result = await service.create_parts_batch(payload)
 
         # ── assert ───────────────────────────────────────────────
         assert result.created == []

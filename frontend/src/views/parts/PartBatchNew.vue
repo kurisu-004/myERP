@@ -7,11 +7,11 @@
   1. 点空白区 / 「+ 添加零件」 → 弹出 Dialog 填写一条零件（含图纸上传）
   2. Dialog 确定 → 校验通过后入队到「待新增零件」表
   3. 点表格中任意行 → 弹出只读预览 Dialog（含图纸预览）
-  4. 全部填好 → 点底部「提交 N 条」 → POST /api/v1/parts/batch
+  4. 全部填好 → 点底部「提交 N 条」 → POST /api/v1/parts/batch（multipart）
   5. 成功 → 清空列表 + 跳回 /parts；失败 → 弹窗列出失败行
 
-  注意：图纸目前只在浏览器侧（blob URL 预览），后端 batch 接口暂不接收文件；
-  后续接好 t_part.drawing_url + 文件存储后，把 dialog 里的文件加入 batch payload 即可。
+  2026-07-09 起：图纸在提交时通过 multipart/form-data 一起上行到后端
+  （`data` JSON 字符串 + `files` PDF 数组，按 items 下标对齐）。
 -->
 
 <template>
@@ -296,7 +296,7 @@ import {
 } from 'element-plus'
 import { DocumentAdd, Picture, Plus, Upload } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
-import { batchCreateParts, type PartCreatePayload } from '@/api/parts'
+import { batchCreateParts, type PartBatchFilePayload, type PartCreatePayload } from '@/api/parts'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createApplicant } from '@/api/applicant'
 import { useApplicantSearch } from '@/composables/useApplicantSearch'
@@ -734,7 +734,18 @@ async function onSubmit(): Promise<void> {
       // customer_id 雪花 ID 字符串（CLAUDE.md §3）
       customer_id: s.customerId!,
     }))
-    const res = await batchCreateParts(items)
+    // 2026-07-09 起：图纸走 multipart，与 items 按下标对齐。
+    // drawingFile 为 null → 该行不上传图纸（后端按 None 处理）。
+    const files: (PartBatchFilePayload | null)[] = staged.value.map((s) =>
+      s.drawingFile
+        ? {
+            data: s.drawingFile,
+            filename: s.drawingName ?? 'drawing.pdf',
+            contentType: 'application/pdf',
+          }
+        : null,
+    )
+    const res = await batchCreateParts(items, files)
     if (res.failed.length > 0) {
       const sample = res.failed
         .slice(0, 5)

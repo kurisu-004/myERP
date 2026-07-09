@@ -197,8 +197,27 @@ onMounted(async () => {
 
 .sidebar-menu {
   flex: 1;
+  min-height: 0; /* 让 flex 项可收缩至内容尺寸以下,否则溢出时不会触发滚动 */
+  overflow-y: auto; /* 菜单项超出可视高度时纵向滚动 */
   border-right: none;
   background-color: var(--sidebar-bg);
+}
+
+.sidebar-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-menu::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.sidebar-menu::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
+.sidebar-menu::-webkit-scrollbar-track {
+  background-color: transparent;
 }
 
 .sidebar-empty {

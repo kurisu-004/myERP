@@ -30,6 +30,11 @@ class TCustomer(Base, AuditMixin):
     原 BigSerial 序列已 DROP（迁移 000000000006）。所有 customer_id 入参
     在 schema 层统一为 str（CLAUDE.md §3「雪花 ID 入参必须用 str 类型」），
     service 层 parse_snowflake_id 转回 int。
+
+    2026-07-09 起：一级客户（parent_id IS NULL）新增 `serial_prefix` 列
+    （A-Z 单字母），用于派生该客户旗下零件/装配体的流水号前缀。
+    叶子客户（parent_id 非空）继承所属一级客户的 prefix，本列写 NULL。
+    DB 层约束（check constraint + 部分唯一索引）在迁移 000000000013 里建。
     """
 
     __tablename__ = "t_customer"
@@ -42,6 +47,11 @@ class TCustomer(Base, AuditMixin):
     # 雪花 ID 入参在 schema 层是 str；DB 列保持 BigInteger，service 转换。
     parent_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, index=True
+    )
+    # 一级客户的序列号前缀（单字符 A-Z）。叶子客户 NULL，由所属一级客户派生。
+    # service 层校验：一级客户创建必填、清空拒绝；DB 部分唯一索引兜底冲突。
+    serial_prefix: Mapped[str | None] = mapped_column(
+        String(1), nullable=True, index=True,
     )
 
     parts: Mapped[list["TPart"]] = relationship(

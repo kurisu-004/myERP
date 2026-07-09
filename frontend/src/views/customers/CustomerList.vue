@@ -8,6 +8,12 @@
     - 二级节点：可编辑/删除（未被零件或装配体引用时）
 
   数据：调 `listCustomers()` 拉全量平铺数据，前端拼成 2 级树。
+
+  2026-07-09 起一级客户新增 `serial_prefix`（A-Z 单字符）字段：
+  - 弹窗 el-form 多一个 `el-form-item`，仅在 parentId 为空时启用 + 必填；
+    切到二级（选了父客户）时禁用并清空。
+  - 树行 hover 槽内，根节点名前挂一个 `el-tag` 显示当前前缀字母。
+    叶子节点不显示 tag。
 -->
 <template>
   <div class="customer-list">
@@ -48,6 +54,25 @@
       >
         <template #default="{ data }">
           <div class="tree-row">
+            <!-- 一级客户：前缀 tag 挂在名字前面 -->
+            <el-tag
+              v-if="(data as TreeNode).parent_id === null && (data as TreeNode).serial_prefix"
+              size="small"
+              effect="dark"
+              type="primary"
+              class="tree-row__prefix"
+            >
+              {{ (data as TreeNode).serial_prefix }}
+            </el-tag>
+            <el-tag
+              v-else-if="(data as TreeNode).parent_id === null"
+              size="small"
+              effect="plain"
+              type="info"
+              class="tree-row__prefix"
+            >
+              未设置
+            </el-tag>
             <span class="tree-row__name">{{ (data as TreeNode).name }}</span>
             <span class="tree-row__actions">
               <el-button
@@ -71,7 +96,7 @@
     <!-- 新增 / 编辑 Dialog -->
     <el-dialog
       v-model="dialogVisible"
-      :title="editing ? '编辑客户' : '新增客户'"
+      :title="dialogTitle"
       width="480px"
       :close-on-click-modal="false"
       @closed="onDialogClosed"
@@ -91,13 +116,29 @@
             show-word-limit
           />
         </el-form-item>
-        <el-form-item label="父客户" prop="parentId">
+
+        <!-- 父客户：
+             - newRoot 模式下整项隐藏（parent_id 隐式为 NULL）；
+             - newChild 模式下显示为禁用的 el-input，展示锁定的父客户名；
+             - edit 模式下保留 el-select（clearable，可改）。 -->
+        <el-form-item
+          v-if="mode !== 'newRoot'"
+          label="父客户"
+          prop="parentId"
+        >
+          <el-input
+            v-if="mode === 'newChild'"
+            :model-value="lockedParentName"
+            disabled
+          />
           <el-select
+            v-else
             v-model="form.parentId"
             placeholder="不选 = 一级客户；选了一个一级客户 = 二级"
             clearable
             filterable
             style="width: 100%"
+            @change="onParentChange"
           >
             <el-option
               v-for="r in rootOptions"
@@ -106,8 +147,37 @@
               :value="r.id"
             />
           </el-select>
-          <p class="form-hint">
+          <p v-if="mode === 'edit'" class="form-hint">
             二级客户必须挂在一级客户下；编辑根时清空此项。
+          </p>
+        </el-form-item>
+
+        <!-- 序列号前缀：
+             - newChild 模式下整项隐藏（叶子继承父，无需设置）；
+             - newRoot 必填；
+             - edit 模式下根客户可改，叶子客户禁用（保持原行为）。 -->
+        <el-form-item
+          v-if="mode !== 'newChild'"
+          label="序列号前缀"
+          prop="serialPrefix"
+        >
+          <el-select
+            v-model="form.serialPrefix"
+            placeholder="一级客户必填 A-Z"
+            clearable
+            filterable
+            :disabled="mode === 'edit' && form.parentId !== null"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="p in serialPrefixOptions"
+              :key="p"
+              :label="p"
+              :value="p"
+            />
+          </el-select>
+          <p class="form-hint">
+            一级客户的序列号前缀 A-Z；新建后可在客户一览再次修改（仅影响后续创建的零件/装配体流水号）。
           </p>
         </el-form-item>
       </el-form>
@@ -140,6 +210,7 @@ interface TreeNode {
   name: string
   parent_id: string | null
   parent_name: string | null
+  serial_prefix: string | null
   children: TreeNode[]
 }
 
@@ -157,6 +228,7 @@ const tree = computed<TreeNode[]>(() => {
     name: r.name,
     parent_id: r.parent_id,
     parent_name: r.parent_name,
+    serial_prefix: r.serial_prefix,
     children: all
       .filter((c) => c.parent_id === r.id)
       .map((c) => ({
@@ -164,6 +236,7 @@ const tree = computed<TreeNode[]>(() => {
         name: c.name,
         parent_id: c.parent_id,
         parent_name: r.name,
+        serial_prefix: null,  // 叶子节点不展示 prefix
         children: [],
       })),
   }))
@@ -192,6 +265,12 @@ const rootOptions = computed(() =>
     .map((c) => ({ id: c.id, name: c.name })),
 )
 
+// A-Z 单字符序列号前缀候选项（运行时生成，硬编码 26 行太啰嗦）
+const SERIAL_PREFIX_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+const serialPrefixOptions = computed<string[]>(() =>
+  SERIAL_PREFIX_LETTERS.split(''),
+)
+
 async function fetchList(): Promise<void> {
   loading.value = true
   try {
@@ -211,41 +290,104 @@ function onReset(): void {
 }
 
 // ===== Dialog 表单 =====
+type DialogMode = 'newRoot' | 'newChild' | 'edit'
+
 interface FormState {
   name: string
   parentId: string | null
+  serialPrefix: string | null
 }
 const formRef = ref<FormInstance>()
 const dialogVisible = ref(false)
 const editing = ref<Customer | null>(null)
-const form = reactive<FormState>({ name: '', parentId: null })
+const mode = ref<DialogMode>('newRoot')
+// 新增子客户场景：锁定显示的父客户名（不可改）。
+const lockedParentName = ref<string>('')
+const form = reactive<FormState>({ name: '', parentId: null, serialPrefix: null })
+
+// 弹窗标题按 mode 分支
+const dialogTitle = computed(() =>
+  mode.value === 'newRoot'
+    ? '新增一级客户'
+    : mode.value === 'newChild'
+      ? '新增子客户'
+      : '编辑客户',
+)
 
 const rules: FormRules = {
   name: [{ required: true, message: '请输入客户名', trigger: 'blur' }],
+  serialPrefix: [
+    {
+      validator: (_rule, value, callback) => {
+        // 新增子客户：表单里没这字段，跳过
+        if (mode.value === 'newChild') {
+          callback()
+          return
+        }
+        // 编辑叶子客户：前缀 disabled，service 层忽略，跳过
+        if (mode.value === 'edit' && form.parentId !== null) {
+          callback()
+          return
+        }
+        // 新增一级客户 / 编辑一级客户：必填 A-Z
+        if (!value) {
+          callback(new Error('一级客户必须指定序列号前缀 A-Z'))
+          return
+        }
+        if (
+          typeof value !== 'string' ||
+          value.length !== 1 ||
+          value < 'A' ||
+          value > 'Z'
+        ) {
+          callback(new Error('序列号前缀必须是 A-Z 单字符'))
+          return
+        }
+        callback()
+      },
+      trigger: 'change',
+    },
+  ],
 }
 
 function onNewRoot(): void {
+  mode.value = 'newRoot'
   editing.value = null
   form.name = ''
   form.parentId = null
+  form.serialPrefix = null
+  lockedParentName.value = ''
   dialogVisible.value = true
 }
 
 function onAddChild(parent: TreeNode): void {
   if (parent.parent_id !== null) return  // 仅一级节点可加子
+  mode.value = 'newChild'
   editing.value = null
   form.name = ''
   form.parentId = parent.id
+  form.serialPrefix = null
+  lockedParentName.value = parent.name
   dialogVisible.value = true
 }
 
 function onEdit(node: TreeNode): void {
   const cust = customers.value.find((c) => c.id === node.id)
   if (!cust) return
+  mode.value = 'edit'
   editing.value = cust
   form.name = cust.name
   form.parentId = cust.parent_id
+  // 一级客户：带出原 prefix；叶子客户：永远 null
+  form.serialPrefix = cust.parent_id === null ? cust.serial_prefix : null
+  lockedParentName.value = ''
   dialogVisible.value = true
+}
+
+// 切换父客户时（仅 edit 模式可达）：清空 prefix，避免残值。
+function onParentChange(_value: string | null): void {
+  form.serialPrefix = null
+  formRef.value?.clearValidate('serialPrefix')
 }
 
 async function onSave(): Promise<void> {
@@ -260,9 +402,20 @@ async function onSave(): Promise<void> {
     const payload = {
       name: form.name.trim(),
       parent_id: form.parentId || null,
+      // 一级客户：传当前 prefix（可能 null = 让后端报必填校验）；
+      // 叶子客户：service 层会忽略，payload 仍带 null 保持类型一致。
+      serial_prefix: form.serialPrefix || null,
     }
     if (editing.value) {
-      await updateCustomer(editing.value.id, payload)
+      // update 时未传 prefix 即视为不改；只有显式非空才放进 payload
+      const updatePayload: Parameters<typeof updateCustomer>[1] = {
+        name: payload.name,
+        parent_id: payload.parent_id,
+      }
+      if (payload.serial_prefix) {
+        updatePayload.serial_prefix = payload.serial_prefix
+      }
+      await updateCustomer(editing.value.id, updatePayload)
       ElMessage.success('已保存')
     } else {
       await createCustomer(payload)
@@ -279,8 +432,11 @@ async function onSave(): Promise<void> {
 
 function onDialogClosed(): void {
   editing.value = null
+  mode.value = 'newRoot'
   form.name = ''
   form.parentId = null
+  form.serialPrefix = null
+  lockedParentName.value = ''
 }
 
 async function onDelete(node: TreeNode): Promise<void> {
@@ -308,9 +464,6 @@ async function onDelete(node: TreeNode): Promise<void> {
   }
 }
 
-// ===== el-tree 自定义节点渲染（hover 显示按钮） =====
-// 已在模板中用 <template #default> 内联实现，避免与 el-tree 内部类型不兼容。
-
 onMounted(fetchList)
 </script>
 
@@ -333,6 +486,12 @@ onMounted(fetchList)
   align-items: center;
   width: 100%;
   padding: 2px 4px;
+  gap: 8px;
+}
+:deep(.tree-row__prefix) {
+  flex-shrink: 0;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 :deep(.tree-row__name) {
   flex: 1;

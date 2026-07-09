@@ -85,7 +85,10 @@ class TestCustomerAudit:
         )
         # CustomerService.create_customer 不调 _to_out，直接构造 CustomerOut
         # （无 datetime 字段），不需要 patch。
-        await svc.create_customer(CustomerCreateRequest(name="C-A"))
+        # 2026-07-09：root customer 现在要求带 serial_prefix。
+        await svc.create_customer(
+            CustomerCreateRequest(name="C-A", parent_id=None, serial_prefix="G"),
+        )
         created = customers.create.await_args.args[0]
         assert created.created_by == 100
         assert created.updated_by == 100
@@ -375,7 +378,10 @@ class TestAuditRegressionNoUser:
         assemblies.count_with_filters = AsyncMock(return_value=0)
         svc = CustomerService(customers=customers, parts=parts, assemblies=assemblies)
         # CustomerService.create_customer 不调 _to_out
-        await svc.create_customer(CustomerCreateRequest(name="C"))
+        # 2026-07-09：root customer 现在要求带 serial_prefix；这里传一个字母即可。
+        await svc.create_customer(
+            CustomerCreateRequest(name="C", parent_id=None, serial_prefix="G"),
+        )
         created = customers.create.await_args.args[0]
         assert created.created_by is None
         assert created.updated_by is None
