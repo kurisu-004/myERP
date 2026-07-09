@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status as http_status
 
-from api.deps import get_assembly_service, get_drawing_service
+from api.deps import get_assembly_service
 from core.permission import require_role, require_roles
 from model.enums import UserRole
 from schema.assembly import (
@@ -17,9 +17,8 @@ from schema.assembly import (
     AssemblyListOut,
     AssemblyListQuery,
 )
-from schema.drawing import DrawingFileOut
+from schema.part_file import PartFileOut
 from service.assembly import AssemblyService
-from service.drawing import DrawingService
 
 # 装配体自身的 CRUD（MANAGER + CLERK：文员也能建/查/编辑装配体）
 router = APIRouter(
@@ -184,7 +183,8 @@ async def get_assembly_for_child(
     return await svc.get_assembly_for_child(part_id)
 
 
-# 装配件级文件管理（MANAGER + CLERK + CNC_PROGRAMMER 读；上传仅 MANAGER+CLERK）
+# 装配件文件：list（聚合 master + 子件 drawings），
+# 上传已合并到 create_assembly / upload_total_pdf 流程，不再有独立 POST 端点。
 file_router = APIRouter(
     prefix="/assemblies",
     tags=["装配体管理"],
@@ -196,34 +196,25 @@ file_router = APIRouter(
 )
 
 
-@file_router.post(
-    "/{assembly_id}/files",
-    response_model=DrawingFileOut,
-    status_code=http_status.HTTP_201_CREATED,
-    summary="为装配件上传附加文件（STEP/DWG/DXF 等）",
-)
-async def upload_assembly_file(
-    assembly_id: int,
-    file: UploadFile = File(...),
-    drawings: DrawingService = Depends(get_drawing_service),
-) -> DrawingFileOut:
-    data = await file.read()
-    return await drawings.upload_to_assembly(
-        assembly_id,
-        data=data,
-        original_filename=file.filename or "file",
-        content_type=file.content_type,
-        page_index=None,
-    )
-
-
 @file_router.get(
     "/{assembly_id}/files",
-    response_model=list[DrawingFileOut],
-    summary="装配件下的所有文件（含挂在子件上的）",
+    response_model=list[PartFileOut],
+    summary="装配件下的所有文件（master + 子件 drawings）",
 )
 async def list_assembly_files(
     assembly_id: int,
-    drawings: DrawingService = Depends(get_drawing_service),
-) -> list[DrawingFileOut]:
-    return await drawings.list_for_assembly(assembly_id)
+    svc: AssemblyService = Depends(get_assembly_service),
+) -> list[PartFileOut]:
+    asm = await svc.assemblies.get_by_id(assembly_id)
+    if asm is None:
+        from core.error_code import ErrCode
+        from core.exception import BizError
+        from fastapi import status as http_status
+        raise BizError(
+            code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
+            message=f"assembly {assembly_id} not found",
+            http_status=http_status.HTTP_404_NOT_FOUND,
+        )
+    return await svc.part_files.list_for_assembly(
+        assembly_id, child_part_ids=[c.id for c in await svc.parts.list_children(assembly_id)],
+    )

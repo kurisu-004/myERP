@@ -2,12 +2,11 @@ from .applicant import TApplicant
 from .assembly import TAssembly
 from .audit import AuditMixin, EventTimestampMixin
 from .base import Base
-from .cnc_program import TCncProgram
 from .customer import TCustomer
-from .drawing_file import TDrawingFile
 from .enums import (
     AssemblyStatus,
     PartEventType,
+    PartFileKind,
     PartLocation,
     PartSortKey,
     PartStatus,
@@ -20,6 +19,7 @@ from .enums import (
 from .menu import TMenu, TRoleMenu
 from .part import TPart
 from .part_event import TPartEvent
+from .part_file import TPartFile
 from .process import TProcess
 from .serial_counter import TSerialCounter
 from .shelf import TShelf
@@ -37,11 +37,10 @@ __all__ = [
     "TApplicant",
     "TAssembly",
     "TCustomer",
-    "TDrawingFile",
-    "TCncProgram",
     "TMenu",
     "TPart",
     "TPartEvent",
+    "TPartFile",
     "TProcess",
     "TRoleMenu",
     "TSerialCounter",
@@ -54,6 +53,7 @@ __all__ = [
     "TWorkTypeProcess",
     "AssemblyStatus",
     "PartEventType",
+    "PartFileKind",
     "PartLocation",
     "PartSortKey",
     "PartStatus",

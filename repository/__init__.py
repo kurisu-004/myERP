@@ -1,11 +1,10 @@
 from .applicant import ApplicantRepository
 from .assembly import AssemblyRepository
-from .cnc_program import CncProgramRepository
 from .customer import CustomerRepository
-from .drawing_file import DrawingFileRepository
 from .menu import MenuRepository
 from .part import PartRepository
 from .part_event import PartEventRepository
+from .part_file import PartFileRepository
 from .process import ProcessRepository
 from .serial_counter import SerialCounterRepository
 from .shelf import ShelfRepository
@@ -18,16 +17,15 @@ from .work_type_process import WorkTypeProcessRepository
 __all__ = [
     "ApplicantRepository",
     "AssemblyRepository",
-    "CncProgramRepository",
     "CustomerRepository",
-    "DrawingFileRepository",
     "MenuRepository",
-    "PartRepository",
     "PartEventRepository",
+    "PartFileRepository",
+    "PartRepository",
     "ProcessRepository",
     "SerialCounterRepository",
-    "ShelfRepository",
     "ShelfProcessRepository",
+    "ShelfRepository",
     "UserRepository",
     "UserRoleRepository",
     "WorkerRepository",

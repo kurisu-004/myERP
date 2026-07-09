@@ -192,3 +192,107 @@ async def test_programming_can_be_cancelled(clean_db):
     assert part.status == PartStatus.CANCELLED.value
     assert part.location is None
     assert part.serial_no is None  # 释放流水号
+
+
+async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db):
+    """集成测试：release_from_programming 必须先上传 G_CODE + SETUP_SHEET。
+
+    走 PartService.release_from_programming 端到端，验证前置校验。
+    """
+    from sqlalchemy import text as _sql_text
+
+    from core.exception import BizError
+    from repository.customer import CustomerRepository
+    from repository.part_file import PartFileRepository
+    from service.part import PartService
+    from service.part_file import PartFileService
+    from schema.part import PlaceOnShelfRequest
+    from model.enums import PartFileKind
+
+    session = clean_db
+    await session.execute(_sql_text("TRUNCATE TABLE t_part_event RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_part_file RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_shelf RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_process RESTART IDENTITY"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_customer"))
+    await session.execute(_sql_text("TRUNCATE TABLE t_serial_counter"))
+    await session.commit()
+
+    customer = await _make_customer(session, "测试客户")
+    shelf_repo = ShelfRepository(session)
+    shelf = await shelf_repo.create(
+        TShelf(code="PROD-CNC-X", name="CNC 货架 X", zone=ShelfZone.PRODUCTION.value)
+    )
+    process_repo = ProcessRepository(session)
+    process = await process_repo.create(
+        await _make_process(session, "CNC-OPX", "CNC 操机 X")
+    )
+
+    part_repo = PartRepository(session)
+    part = await part_repo.create(
+        TPart(
+            name="cnc-need-files",
+            drawing_no="D-NEED",
+            applicant_name="tester",
+            quantity=1,
+            request_date=date(2026, 7, 10),
+            planned_delivery_date=date(2026, 7, 20),
+            customer_id=customer.id,
+            serial_no="X0001",
+            status=PartStatus.PROGRAMMING.value,
+            location="OFFICE",
+        )
+    )
+
+    files_repo = PartFileRepository(session)
+    files_svc = PartFileService(files=files_repo)
+    # 屏蔽真实 COS 调用
+    from unittest.mock import AsyncMock as _AM, patch as _P
+    _P("service.part_file.cos_mod.upload_object", new=_AM()).start()
+    part_svc = PartService(
+        parts=part_repo,
+        customers=CustomerRepository(session),
+        workers=None,
+        events=PartEventRepository(session),
+        serial_counters=None,
+        shelves=shelf_repo,
+        processes=process_repo,
+        work_types=None,
+        work_type_process=None,
+        files=files_repo,
+        broadcaster=None,
+        event_broadcaster=None,
+    )
+
+    # case 1: 既无 G 代码也无设定单 → BIZ_CNC_PROGRAM_REQUIRED
+    with pytest.raises(BizError) as exc:
+        await part_svc.release_from_programming(
+            part_id=part.id,
+            data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
+        )
+    assert exc.value.code.value == 21106
+
+    # case 2: 只有 G 代码 → BIZ_CNC_SETUP_SHEET_REQUIRED
+    await files_svc.upload(
+        owner_id=part.id, kind=PartFileKind.G_CODE,
+        data=b"%NC", original_filename="p.nc",
+        content_type=None,
+    )
+    with pytest.raises(BizError) as exc:
+        await part_svc.release_from_programming(
+            part_id=part.id,
+            data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
+        )
+    assert exc.value.code.value == 21107
+
+    # case 3: 又有 G 代码又有设定单 → 成功（状态机走 PROGRAMMING → IN_PROCESS）
+    await files_svc.upload(
+        owner_id=part.id, kind=PartFileKind.SETUP_SHEET,
+        data=b"%PDF", original_filename="setup.pdf",
+        content_type=None,
+    )
+    out = await part_svc.release_from_programming(
+        part_id=part.id,
+        data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
+    )
+    assert out.status == PartStatus.IN_PROCESS.value

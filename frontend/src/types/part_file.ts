@@ -1,0 +1,37 @@
+// types/part_file.ts
+//
+// 2026-07-10 起统一的零件 / 装配体文件类型（与后端 schema/part_file.PartFileOut 对齐）。
+// 取代旧的 DrawingFileItem / CncProgramItem。Assembly master / 零件图纸 / 3D 模型 /
+// G 代码 / 设定单 全部走这一个类型，用 `kind` 字段区分。
+
+/** 文件类型枚举（与后端 PartFileKind 的字符串值对齐） */
+export type PartFileKind =
+  | 'DRAWING'
+  | '3D_MODEL'
+  | 'G_CODE'
+  | 'SETUP_SHEET'
+  | 'ASSEMBLY_MASTER'
+
+/** 统一文件项 */
+export interface PartFileItem {
+  id: string
+  /** polymorphic owner_id：真实 t_part.id 或 t_assembly.id（kind=ASSEMBLY_MASTER） */
+  owner_id: string
+  kind: PartFileKind
+  /** 扩展名大写：PDF / STEP / NC / TAP / CNC / MPF / NGC */
+  file_type: string
+  original_filename: string
+  file_size: number
+  content_type: string
+  upload_status: string
+  created_at: string
+  /** COS 临时签名 URL；每次请求即时签发 */
+  download_url: string
+}
+
+// ---------- 向后兼容 alias（旧 import 路径仍可用） ----------
+
+/** @deprecated 用 PartFileItem 替代 */
+export type DrawingFileItem = PartFileItem
+/** @deprecated 用 PartFileItem 替代 */
+export type CncProgramItem = PartFileItem

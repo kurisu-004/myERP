@@ -181,47 +181,90 @@
       </div>
     </el-card>
 
-    <!-- 图纸 / 文件 -->
+    <!-- 图纸 -->
     <FileListCard
-      :files="files"
+      :files="drawings"
       owner-type="part"
       :owner-id="partId"
-      :show-upload="true"
-      :show-delete="true"
+      kind="DRAWING"
+      :show-upload="canManageDrawings"
+      :show-delete="canManageDrawings"
       :show-print="true"
-      @refresh="fetchFiles"
+      :api-upload="uploadPartDrawing"
+      @refresh="fetchDrawings"
     />
 
-    <!-- CNC 程序（仅 PROGRAMMING 状态展示上传入口；其他状态仅可看列表） -->
+    <!-- 3D 模型 -->
+    <FileListCard
+      :files="models3d"
+      owner-type="part"
+      :owner-id="partId"
+      kind="3D_MODEL"
+      :show-upload="canManage3DModels"
+      :show-delete="canManage3DModels"
+      :api-upload="uploadPart3DModel"
+      @refresh="fetch3DModels"
+    />
+
+    <!-- CNC 文件（G 代码 + 设定单）合并到 el-tabs -->
     <el-card shadow="never" class="cnc-card" v-loading="cncLoading">
       <template #header>
         <div class="card-header">
           <span class="card-title">
             <el-icon><Cpu /></el-icon>
-            <span>CNC 程序（G 代码）</span>
+            <span>CNC 文件</span>
           </span>
-          <span v-if="cncPrograms" class="event-count">共 {{ cncPrograms.length }} 个</span>
+          <span v-if="canManageCncFiles && part?.status === 'PROGRAMMING'" class="event-count">
+            下发前需上传 G 代码 + 设定单
+          </span>
         </div>
       </template>
-      <div v-if="cncPrograms && cncPrograms.length > 0" class="cnc-list">
-        <div v-for="p in cncPrograms" :key="p.id" class="cnc-row">
-          <el-tag size="small" type="info">{{ p.file_type }}</el-tag>
-          <span class="cnc-name">{{ p.original_filename }}</span>
-          <span class="cnc-size">{{ formatBytes(p.file_size) }}</span>
-          <span class="cnc-time">{{ formatDateTime(p.created_at) }}</span>
-          <el-button link type="primary" size="small" @click="onDownloadCnc(p)">下载</el-button>
-          <el-button
-            v-if="canManageCnc"
-            link
-            type="danger"
-            size="small"
-            @click="onDeleteCnc(p.id)"
-          >删除</el-button>
-        </div>
-      </div>
-      <el-empty v-else description="暂无 G 代码程序" :image-size="80" />
-      <div v-if="canUploadCnc" class="cnc-upload">
+
+      <el-tabs v-model="cncActiveTab">
+        <el-tab-pane name="gcode" label="G 代码">
+          <div v-if="cncPrograms && cncPrograms.length > 0" class="cnc-list">
+            <div v-for="p in cncPrograms" :key="p.id" class="cnc-row">
+              <el-tag size="small" type="info">{{ p.file_type }}</el-tag>
+              <span class="cnc-name">{{ p.original_filename }}</span>
+              <span class="cnc-size">{{ formatBytes(p.file_size) }}</span>
+              <span class="cnc-time">{{ formatDateTime(p.created_at) }}</span>
+              <el-button link type="primary" size="small" @click="onDownloadCnc(p)">下载</el-button>
+              <el-button
+                v-if="canManageCncFiles"
+                link
+                type="danger"
+                size="small"
+                @click="onDeleteCnc(p.id)"
+              >删除</el-button>
+            </div>
+          </div>
+          <el-empty v-else description="暂无 G 代码程序" :image-size="80" />
+        </el-tab-pane>
+
+        <el-tab-pane name="setup" label="CNC 设定单">
+          <div v-if="setupSheets && setupSheets.length > 0" class="cnc-list">
+            <div v-for="p in setupSheets" :key="p.id" class="cnc-row">
+              <el-tag size="small" type="info">{{ p.file_type }}</el-tag>
+              <span class="cnc-name">{{ p.original_filename }}</span>
+              <span class="cnc-size">{{ formatBytes(p.file_size) }}</span>
+              <span class="cnc-time">{{ formatDateTime(p.created_at) }}</span>
+              <el-button link type="primary" size="small" @click="onDownloadCnc(p)">下载</el-button>
+              <el-button
+                v-if="canManageSetupSheet"
+                link
+                type="danger"
+                size="small"
+                @click="onDeleteCnc(p.id)"
+              >删除</el-button>
+            </div>
+          </div>
+          <el-empty v-else description="暂无 CNC 设定单" :image-size="80" />
+        </el-tab-pane>
+      </el-tabs>
+
+      <div v-if="canManageCncFiles || canManageSetupSheet" class="cnc-upload">
         <el-upload
+          v-if="canManageCncFiles"
           :http-request="onUploadCnc"
           :show-file-list="false"
           accept=".nc,.tap,.cnc,.mpf,.ngc,.txt"
@@ -231,8 +274,19 @@
             <el-icon><Upload /></el-icon><span>上传 G 代码</span>
           </el-button>
         </el-upload>
+        <el-upload
+          v-if="canManageSetupSheet"
+          :http-request="onUploadSetupSheet"
+          :show-file-list="false"
+          accept=".pdf"
+          :before-upload="beforeCncUpload"
+        >
+          <el-button type="primary" plain>
+            <el-icon><Upload /></el-icon><span>上传设定单</span>
+          </el-button>
+        </el-upload>
         <el-button
-          v-if="part?.status === 'PROGRAMMING'"
+          v-if="canManageCncFiles && part?.status === 'PROGRAMMING'"
           type="success"
           :loading="releaseSubmitting"
           @click="onOpenReleaseDialog"
@@ -298,15 +352,19 @@
       <el-empty v-else description="暂无历史记录" />
     </el-card>
 
-    <!-- 底部操作：取消订单 / 删除 -->
+    <!-- 底部操作：取消订单 / 删除（按角色门控） -->
     <el-card shadow="never" class="bottom-actions" v-if="part">
       <div class="action-row">
         <el-button
-          v-if="part.status !== 'CANCELLED' && part.status !== 'COMPLETED'"
+          v-if="canCancelPart && part.status !== 'CANCELLED' && part.status !== 'COMPLETED'"
           type="warning"
           @click="onCancelOrder"
         >取消订单</el-button>
-        <el-button type="danger" @click="onDeletePart">删除</el-button>
+        <el-button
+          v-if="canDeletePart"
+          type="danger"
+          @click="onDeletePart"
+        >删除</el-button>
       </div>
     </el-card>
 
@@ -404,9 +462,11 @@ import {
   deleteCncProgram,
   getCncDownloadUrl,
   listPartCncPrograms,
+  listPartSetupSheets,
   uploadPartCncProgram,
+  uploadPartSetupSheet,
 } from '@/api/cnc'
-import type { CncProgramItem } from '@/types/cnc'
+import type { PartFileItem } from '@/types/part_file'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
@@ -421,8 +481,11 @@ import {
 } from '@/types/parts'
 import { getAssemblyForPart } from '@/api/assembly'
 import type { AssemblyDetail } from '@/types/assembly'
-import type { DrawingFileItem } from '@/types/file'
-import { listPartFiles } from '@/api/assembly'
+import {
+  listPartFiles,
+  uploadPartDrawing,
+  uploadPart3DModel,
+} from '@/api/assembly'
 import { useAuthSession } from '@/composables/useAuthSession'
 
 const route = useRoute()
@@ -432,12 +495,17 @@ const partId = ref<string>(String(route.params.id ?? ''))
 // ============ 数据 ============
 const part = ref<PartItem | null>(null)
 const events = ref<PartEvent[] | null>(null)
-const files = ref<DrawingFileItem[]>([])
+const drawings = ref<PartFileItem[]>([])
+const models3d = ref<PartFileItem[]>([])
+const cncPrograms = ref<PartFileItem[]>([])
+const setupSheets = ref<PartFileItem[]>([])
 const assemblyDetail = ref<AssemblyDetail | null>(null)
 const infoLoading = ref(false)
 const eventsLoading = ref(false)
 const filesLoading = ref(false)
+const cncLoading = ref(false)
 const assemblyLoading = ref(false)
+const cncActiveTab = ref<'gcode' | 'setup'>('gcode')
 
 // ============ 编辑模式 ============
 const editing = ref(false)
@@ -596,15 +664,38 @@ async function fetchEvents(): Promise<void> {
   }
 }
 
-async function fetchFiles(): Promise<void> {
+async function fetchDrawings(): Promise<void> {
   filesLoading.value = true
   try {
-    files.value = await listPartFiles(partId.value)
+    drawings.value = await listPartFiles(partId.value, 'DRAWING')
   } catch (e) {
-    files.value = []
-    ElMessage.error((e as Error).message ?? '加载文件列表失败')
+    drawings.value = []
+    ElMessage.error((e as Error).message ?? '加载图纸列表失败')
   } finally {
     filesLoading.value = false
+  }
+}
+
+async function fetch3DModels(): Promise<void> {
+  try {
+    models3d.value = await listPartFiles(partId.value, '3D_MODEL')
+  } catch (e) {
+    models3d.value = []
+    ElMessage.error((e as Error).message ?? '加载 3D 模型列表失败')
+  }
+}
+
+async function fetchCncPrograms(): Promise<void> {
+  cncLoading.value = true
+  try {
+    cncPrograms.value = await listPartCncPrograms(partId.value, 'G_CODE')
+    setupSheets.value = await listPartSetupSheets(partId.value)
+  } catch (e) {
+    cncPrograms.value = []
+    setupSheets.value = []
+    ElMessage.error((e as Error).message ?? '加载 CNC 文件失败')
+  } finally {
+    cncLoading.value = false
   }
 }
 
@@ -632,13 +723,16 @@ watch(
     partId.value = s
     editing.value = false
     assemblyDetail.value = null
-    files.value = []
-    cncPrograms.value = null
+    drawings.value = []
+    models3d.value = []
+    cncPrograms.value = []
+    setupSheets.value = []
     await fetchPart()
     void fetchEvents()
-    void fetchFiles()
-    void fetchAssembly()
+    void fetchDrawings()
+    void fetch3DModels()
     void fetchCncPrograms()
+    void fetchAssembly()
   },
 )
 
@@ -651,32 +745,25 @@ watch(
 
 // ============ 角色权限（前端 UI 控制；后端有真权限校验兜底） ============
 const { hasRole } = useAuthSession()
-const canManageCnc = computed(() =>
-  hasRole('MANAGER') || hasRole('CNC_PROGRAMMER'),
-)
-const canUploadCnc = computed(() => {
-  if (!part.value) return false
-  if (!(hasRole('MANAGER') || hasRole('CNC_PROGRAMMER'))) return false
-  // 任何状态下都可上传；PROGRAMMING 状态显眼展示。
-  return true
-})
+const isManager = computed(() => hasRole('MANAGER'))
+const isClerk = computed(() => hasRole('CLERK'))
+const isCnc = computed(() => hasRole('CNC_PROGRAMMER'))
 
-// ============ CNC 程序 ============
-const cncLoading = ref(false)
-const cncPrograms = ref<CncProgramItem[] | null>(null)
+// 图纸 / 3D 模型：MANAGER + CLERK（文员日常操作）
+const canManageDrawings = computed(() => isManager.value || isClerk.value)
+const canManage3DModels = computed(() => isManager.value || isClerk.value)
 
-async function fetchCncPrograms(): Promise<void> {
-  cncLoading.value = true
-  try {
-    cncPrograms.value = await listPartCncPrograms(partId.value)
-  } catch (e) {
-    cncPrograms.value = []
-    ElMessage.error((e as Error).message ?? '加载 CNC 程序失败')
-  } finally {
-    cncLoading.value = false
-  }
-}
+// G 代码 / 设定单：MANAGER + CNC_PROGRAMMER
+const canManageCncFiles = computed(() => isManager.value || isCnc.value)
+const canManageSetupSheet = computed(() => isManager.value || isCnc.value)
 
+// 取消订单：MANAGER + CLERK
+const canCancelPart = computed(() => isManager.value || isClerk.value)
+
+// 删除订单：MANAGER-only
+const canDeletePart = computed(() => isManager.value)
+
+// ============ CNC 程序（G 代码 + 设定单）============
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -691,9 +778,7 @@ function beforeCncUpload(file: File): boolean {
   return true
 }
 
-async function onUploadCnc(req: {
-  file: File
-}): Promise<void> {
+async function onUploadCnc(req: { file: File }): Promise<void> {
   try {
     await uploadPartCncProgram(partId.value, req.file)
     ElMessage.success('上传成功')
@@ -703,7 +788,17 @@ async function onUploadCnc(req: {
   }
 }
 
-async function onDownloadCnc(p: CncProgramItem): Promise<void> {
+async function onUploadSetupSheet(req: { file: File }): Promise<void> {
+  try {
+    await uploadPartSetupSheet(partId.value, req.file)
+    ElMessage.success('设定单上传成功')
+    void fetchCncPrograms()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '上传失败')
+  }
+}
+
+async function onDownloadCnc(p: PartFileItem): Promise<void> {
   try {
     const url = await getCncDownloadUrl(p.id)
     window.open(url, '_blank')
@@ -773,7 +868,8 @@ async function onReleaseConfirm(): Promise<void> {
 onMounted(() => {
   void fetchPart()
   void fetchEvents()
-  void fetchFiles()
+  void fetchDrawings()
+  void fetch3DModels()
   void fetchCncPrograms()
 })
 </script>

@@ -33,14 +33,15 @@ api_router.include_router(ws.router)
 api_router.include_router(assembly.router)
 # 子件反查 /parts/{part_id}/assembly —— 由装配 router 提供，已自带 MANAGER 守卫
 api_router.include_router(assembly.child_router)
-# 装配件级文件管理（MANAGER+CLERK+CNC_PROGRAMMER）
+# 装配件级文件管理（MANAGER+CLERK+CNC_PROGRAMMER，仅 list，master 由 create 流创建）
 api_router.include_router(assembly.file_router)
-# 子件文件 /parts/{part_id}/files —— MANAGER+CLERK
-api_router.include_router(drawing.child_file_router)
-# 文件级管理 /drawings/{file_id}/... —— MANAGER+CLERK+CNC_PROGRAMMER
+# 零件文件：/parts/{id}/drawings + /parts/{id}/3d-models + /parts/{id}/files
+api_router.include_router(drawing.part_file_router)
+# 通用文件：/files/{id}/download-url + /content + /delete
 api_router.include_router(drawing.file_router)
-# CNC 程序：/parts/{part_id}/cnc-programs + /cnc-programs/{file_id}/...
-api_router.include_router(cnc_program.child_program_router)
+# CNC 文件：/parts/{id}/cnc-programs + /parts/{id}/setup-sheets
+api_router.include_router(cnc_program.child_cnc_router)
+# CNC 文件级：/cnc-programs/{id}/... (别名 → /files/{id}/...)
 api_router.include_router(cnc_program.program_router)
 # 工种 / 工序 / 映射（写 MANAGER-only；读 MANAGER+CLERK+CNC_PROGRAMMER）
 api_router.include_router(work_type.router)

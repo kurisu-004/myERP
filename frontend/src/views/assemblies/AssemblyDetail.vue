@@ -103,8 +103,8 @@
       :files="detail?.files ?? []"
       owner-type="assembly"
       :owner-id="assemblyId"
-      :show-upload="true"
-      :show-delete="true"
+      :show-upload="false"
+      :show-delete="false"
       @refresh="fetchData"
     />
 

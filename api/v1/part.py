@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, Query, Response, status as http_status
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status as http_status
 
-from api.deps import get_drawing_repository, get_part_repository, get_part_service
+from api.deps import get_part_file_repository, get_part_repository, get_part_service
 from core.permission import (
     CurrentUser,
     require_auth,
@@ -9,8 +9,8 @@ from core.permission import (
     require_shelf_account_from_body,
 )
 from model.enums import UserRole
-from repository.drawing_file import DrawingFileRepository
 from repository.part import PartRepository
+from repository.part_file import PartFileRepository
 from schema.part import (
     PartBatchCreateRequest,
     PartBatchCreateResult,
@@ -99,14 +99,40 @@ async def create_part(
 @router.post(
     "/batch",
     response_model=PartBatchCreateResult,
-    summary="批量新增零件（MANAGER / CLERK）",
+    summary="批量新增零件（MANAGER / CLERK；可选随每行上传 PDF 图纸）",
+    description=(
+        "multipart/form-data：`data` 是 PartBatchCreateRequest 的 JSON 字符串；"
+        "`files` 是可选的 PDF 数组，与 items 按下标对齐，"
+        "未上传的行用省略或留空表示。任一上传失败 → 整批回滚。"
+    ),
     dependencies=_office_dep,
 )
 async def create_parts_batch(
-    payload: PartBatchCreateRequest,
+    data: str = Form(..., description="PartBatchCreateRequest 的 JSON 字符串"),
+    files: list[UploadFile] | None = File(
+        default=None,
+        description=(
+            "可选 PDF 数组，与 items 按下标对齐；可少于 items 长度（缺位按无图处理）。"
+        ),
+    ),
     svc: PartService = Depends(get_part_service),
 ) -> PartBatchCreateResult:
-    return await svc.create_parts_batch(payload)
+    payload = PartBatchCreateRequest.model_validate_json(data)
+    # 读取每个上传文件，构建与 items 下标对齐的 file_payloads 列表。
+    # items[i] 的图纸是 file_payloads[i]；None = 该行无图。
+    # 前端可省略 file（或 length < len(items)），按 None 补齐。
+    file_payloads: list[tuple[bytes, str, str | None] | None] = []
+    if files:
+        for f in files:
+            raw = await f.read()
+            file_payloads.append(
+                (raw, f.filename or "drawing.pdf", f.content_type)
+            )
+        while len(file_payloads) < len(payload.items):
+            file_payloads.append(None)
+    else:
+        file_payloads = [None] * len(payload.items)
+    return await svc.create_parts_batch(payload, file_payloads=file_payloads)
 
 
 @router.post(
@@ -417,10 +443,10 @@ async def list_pickable_parts_by_work_type(
 async def print_part_drawing(
     part_id: int,
     parts: PartRepository = Depends(get_part_repository),
-    drawings: DrawingFileRepository = Depends(get_drawing_repository),
+    part_files: PartFileRepository = Depends(get_part_file_repository),
 ) -> Response:
     pdf_bytes = await build_part_print_pdf(
-        part_id=part_id, parts=parts, drawings=drawings,
+        part_id=part_id, parts=parts, part_files=part_files,
     )
     # 文件名建议：serial_no + drawing_no，便于纸面贴标查找
     part = await parts.get_by_id(part_id)

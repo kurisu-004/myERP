@@ -27,8 +27,8 @@ from pypdf import PdfReader, PdfWriter
 from core import cos as cos_mod
 from core.error_code import ErrCode
 from core.exception import BizError
-from model import TDrawingFile
-from repository.drawing_file import DrawingFileRepository
+from model import TPartFile
+from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from fastapi import status as http_status
 
@@ -242,7 +242,7 @@ def _detect_image_orientation(img: Image.Image) -> str:
     return "landscape" if img.width > img.height else "portrait"
 
 
-async def _download_drawing_bytes(drawing: TDrawingFile) -> bytes:
+async def _download_drawing_bytes(drawing: TPartFile) -> bytes:
     """从 COS 拉图纸原始字节。"""
     return await cos_mod.download_object(drawing.object_key)
 
@@ -254,13 +254,15 @@ async def build_part_print_pdf(
     *,
     part_id: int,
     parts: PartRepository,
-    drawings: DrawingFileRepository,
+    part_files: PartFileRepository,
 ) -> bytes:
     """为指定零件生成「图纸 + 条形码」双面打印 PDF。
 
     朝向：自动跟随上传图纸的 orientation（landscape 优先，因图纸常用横向）；
     无图纸时默认 landscape。条码页 / 信息卡页与图纸页朝向一致，保证双面
     打印翻转方向正确。
+
+    2026-07-10 起：图纸存储统一到 `t_part_file` (kind=DRAWING)。
     """
     part = await parts.get_by_id(part_id)
     if part is None:
@@ -270,18 +272,9 @@ async def build_part_print_pdf(
             http_status=http_status.HTTP_404_NOT_FOUND,
         )
 
-    # 取 master 图纸：page_index IS NULL 优先；否则取任意最新一条
-    drawings_for_part = await drawings.list_by_part(part_id)
-    master: TDrawingFile | None = None
-    for d in drawings_for_part:
-        if d.page_index is None and d.deleted_at is None:
-            master = d
-            break
-    if master is None:
-        for d in drawings_for_part:
-            if d.deleted_at is None:
-                master = d
-                break
+    # 取 master 图纸：kind=DRAWING 的最新一条
+    drawings_for_part = await part_files.list_by_part(part_id, kind="DRAWING")
+    master: TPartFile | None = drawings_for_part[0] if drawings_for_part else None
 
     serial_no = part.serial_no or "NO-SERIAL"
 

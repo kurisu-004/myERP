@@ -43,6 +43,16 @@ class ErrCode(IntEnum):
     BIZ_DRAWING_FILE_TOO_LARGE = 20403  # 文件大小 ≤0 或 > cos_max_file_size_bytes
     BIZ_DRAWING_UPLOAD_FAILED = 20404   # COS SDK 抛错（含 put/delete/get/head）
 
+    # ---- 零件文件（t_part_file，2026-07-10 起统一 5 类）----
+    # 211xx：零件文件相关（取代/扩展 204xx）
+    BIZ_PART_FILE_NOT_FOUND = 21101
+    BIZ_PART_FILE_BAD_TYPE = 21102       # 扩展名与 kind 不匹配
+    BIZ_PART_FILE_TOO_LARGE = 21103      # 文件大小 ≤0 或 > cos_max_file_size_bytes
+    BIZ_PART_FILE_UPLOAD_FAILED = 21104  # COS SDK 抛错
+    BIZ_PART_FILE_OWNER_NOT_FOUND = 21105  # polymorphic owner (part/assembly) 不存在
+    BIZ_CNC_PROGRAM_REQUIRED = 21106     # 下发前必须上传 G 代码
+    BIZ_CNC_SETUP_SHEET_REQUIRED = 21107 # 下发前必须上传设定单
+
     # ---- 货架（t_shelf）----
     # 205xx：货架相关
     BIZ_SHELF_NOT_FOUND = 20501

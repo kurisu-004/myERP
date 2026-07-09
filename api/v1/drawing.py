@@ -1,13 +1,15 @@
-"""图纸文件 API。
+"""零件文件 API（2026-07-10 起：图纸 + 3D 模型，合并为单 router）。
 
-子件反查：`/parts/{part_id}/assembly`（见 assembly router）
-子件文件：`/parts/{part_id}/files`
-绘图管理：`/drawings/{file_id}/...`
+端点：
+- POST /parts/{part_id}/drawings         MANAGER + CLERK   kind=DRAWING (PDF)
+- POST /parts/{part_id}/3d-models        MANAGER + CLERK   kind=3D_MODEL (STEP/STP)
+- GET  /parts/{part_id}/files            任意已登录       (kind 可选过滤)
+- GET  /files/{file_id}/download-url     任意已登录
+- GET  /files/{file_id}/content          任意已登录
+- POST /files/{file_id}/delete           按 file.kind 自动派角色
 
-权限模型（2026-07-06 调整）：
-- 上传 / 删除：MANAGER + CLERK（文员日常操作）
-- 列 / 预览 / 下载：任意已登录用户
-  （包括编程员要下载图纸来写程序；后端代理下载无需暴露 COS URL）
+注：装配体的总装图（kind=ASSEMBLY_MASTER）通过 `POST /assemblies` 创建流
+产生，polymorphic part_id = assembly.id，**不**走这个 router。
 """
 from __future__ import annotations
 
@@ -16,65 +18,86 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, UploadFile, status as http_status
 from fastapi.responses import Response
 
-from api.deps import get_drawing_service
-from core.permission import get_current_user, require_roles
-from model.enums import UserRole
-from schema.drawing import DrawingFileOut
-from service.drawing import DrawingService
+from api.deps import get_part_file_repository, get_part_file_service
+from core.permission import (
+    get_current_user,
+    require_part_file_role,
+)
+from model.enums import PartFileKind
+from repository.part_file import PartFileRepository
+from schema.part_file import PartFileOut
+from service.part_file import PartFileService
 
 
-# 写侧守卫：上传 / 删除图纸文件 → MANAGER + CLERK。
-_office_write_dep = [Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))]
-
-
-# ---------- 子件文件 ----------
-# router 级仅要求已登录；列接口无需 role guard，写接口在 route 级显式收紧。
-child_file_router = APIRouter(
+# ---------- 零件文件（按 part） ----------
+part_file_router = APIRouter(
     prefix="/parts",
-    tags=["零件管理"],
+    tags=["零件文件"],
     dependencies=[Depends(get_current_user)],
 )
 
 
-@child_file_router.post(
-    "/{part_id}/files",
-    response_model=DrawingFileOut,
+@part_file_router.post(
+    "/{part_id}/drawings",
+    response_model=PartFileOut,
     status_code=http_status.HTTP_201_CREATED,
-    summary="为子零件上传附加文件（STEP/DWG/DXF 等，MANAGER / CLERK）",
-    dependencies=_office_write_dep,
+    summary="为零件上传图纸 PDF（MANAGER + CLERK；自动覆盖旧文件）",
+    dependencies=[Depends(require_part_file_role(PartFileKind.DRAWING))],
 )
-async def upload_part_file(
+async def upload_part_drawing(
     part_id: int,
     file: UploadFile = File(...),
-    drawings: DrawingService = Depends(get_drawing_service),
-) -> DrawingFileOut:
+    svc: PartFileService = Depends(get_part_file_service),
+) -> PartFileOut:
     data = await file.read()
-    return await drawings.upload_to_part(
-        part_id,
+    return await svc.upload(
+        owner_id=part_id,
+        kind=PartFileKind.DRAWING,
         data=data,
-        original_filename=file.filename or "file",
+        original_filename=file.filename or "drawing.pdf",
         content_type=file.content_type,
-        page_index=None,
     )
 
 
-@child_file_router.get(
+@part_file_router.post(
+    "/{part_id}/3d-models",
+    response_model=PartFileOut,
+    status_code=http_status.HTTP_201_CREATED,
+    summary="为零件上传 3D 模型（STEP/STP，MANAGER + CLERK；自动覆盖旧文件）",
+    dependencies=[Depends(require_part_file_role(PartFileKind.THREE_D_MODEL))],
+)
+async def upload_part_3d_model(
+    part_id: int,
+    file: UploadFile = File(...),
+    svc: PartFileService = Depends(get_part_file_service),
+) -> PartFileOut:
+    data = await file.read()
+    return await svc.upload(
+        owner_id=part_id,
+        kind=PartFileKind.THREE_D_MODEL,
+        data=data,
+        original_filename=file.filename or "model.stp",
+        content_type=file.content_type,
+    )
+
+
+@part_file_router.get(
     "/{part_id}/files",
-    response_model=list[DrawingFileOut],
-    summary="列出子零件的所有文件（任意已登录用户）",
+    response_model=list[PartFileOut],
+    summary="列出零件的文件（任意已登录；可选 kind 过滤）",
 )
 async def list_part_files(
     part_id: int,
-    drawings: DrawingService = Depends(get_drawing_service),
-) -> list[DrawingFileOut]:
-    return await drawings.list_for_part(part_id)
+    kind: str | None = None,
+    svc: PartFileService = Depends(get_part_file_service),
+) -> list[PartFileOut]:
+    return await svc.list_for_part(part_id, kind=kind)
 
 
 # ---------- 文件级操作（不关心归属） ----------
-# 列 / 预览 / 下载：任意已登录；删除：MANAGER + CLERK。
 file_router = APIRouter(
-    prefix="/drawings",
-    tags=["图纸文件"],
+    prefix="/files",
+    tags=["零件文件"],
     dependencies=[Depends(get_current_user)],
 )
 
@@ -85,9 +108,9 @@ file_router = APIRouter(
 )
 async def get_download_url(
     file_id: int,
-    drawings: DrawingService = Depends(get_drawing_service),
+    svc: PartFileService = Depends(get_part_file_service),
 ) -> dict:
-    url = await drawings.get_download_url(file_id)
+    url = await svc.get_download_url(file_id)
     return {"url": url}
 
 
@@ -97,9 +120,9 @@ async def get_download_url(
 )
 async def get_file_content(
     file_id: int,
-    drawings: DrawingService = Depends(get_drawing_service),
+    svc: PartFileService = Depends(get_part_file_service),
 ):
-    data, content_type, filename = await drawings.get_file_content(file_id)
+    data, content_type, filename = await svc.get_file_content(file_id)
     encoded = quote(filename, safe="")
     return Response(
         content=data,
@@ -110,12 +133,26 @@ async def get_file_content(
 
 @file_router.post(
     "/{file_id}/delete",
-    summary="软删文件（COS 对象异步清理，MANAGER / CLERK）",
-    dependencies=_office_write_dep,
+    summary="软删文件（COS 异步清理；按文件 kind 自动校验角色）",
 )
 async def delete_file(
     file_id: int,
-    drawings: DrawingService = Depends(get_drawing_service),
+    files: PartFileRepository = Depends(get_part_file_repository),
+    svc: PartFileService = Depends(get_part_file_service),
+    user=Depends(get_current_user),
 ) -> dict:
-    await drawings.delete_file(file_id)
+    f = await files.get_by_id(file_id)
+    if f is None:
+        from core.error_code import ErrCode
+        from core.exception import BizError
+        raise BizError(
+            code=ErrCode.BIZ_PART_FILE_NOT_FOUND,
+            message=f"file {file_id} not found",
+            http_status=http_status.HTTP_404_NOT_FOUND,
+        )
+    # 按 file.kind 派角色
+    dep = require_part_file_role(PartFileKind(f.kind))
+    # 重新跑一次依赖校验（不能直接 await dep，需要重新构造 CurrentUser）
+    await dep(user)
+    await svc.delete_file(file_id)
     return {"ok": True}

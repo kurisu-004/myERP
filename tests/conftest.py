@@ -198,7 +198,7 @@ async def _postgres_test_lifecycle():
 _BUSINESS_TABLES = (
     "t_part_event",
     "t_work_type_process",
-    "t_drawing_file",
+    "t_part_file",
     "t_part",
     "t_assembly",
     "t_serial_counter",
@@ -222,10 +222,12 @@ async def _truncate_all(session: AsyncSession) -> None:
         suffix = "" if table == "t_customer" else " RESTART IDENTITY CASCADE"
         await session.execute(text(f'TRUNCATE TABLE "{table}"{suffix}'))
     # 复位流水号计数器；alembic 迁移可能没 seed，单独 ensure 一次。
+    # 2026-07-09 起：seed A-Z 全 26 行（迁移 000000000014），不再限于 L/F/H。
     await session.execute(text("SELECT 1 FROM t_serial_counter LIMIT 0"))  # 探测表存在
     await session.execute(text(
         "INSERT INTO t_serial_counter (prefix, counter) "
-        "VALUES ('L', 0), ('F', 0), ('H', 0) "
+        "SELECT chr(ascii('A') + i), 0 "
+        "FROM generate_series(0, 25) i "
         "ON CONFLICT (prefix) DO UPDATE SET counter = 0"
     ))
     await session.commit()

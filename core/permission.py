@@ -202,3 +202,43 @@ def require_shelf_account_from_body(
         return user, shelf_id
 
     return _dep
+
+
+def require_part_file_role(
+    kind: str | UserRole,
+) -> Callable[..., Awaitable[CurrentUser]]:
+    """依赖工厂：要求账号对该 kind 有写权限。
+
+    映射见 `core._file_kind_policy.WRITE_ROLES_BY_KIND`：
+    - DRAWING / 3D_MODEL / ASSEMBLY_MASTER → MANAGER + CLERK
+    - G_CODE / SETUP_SHEET → MANAGER + CNC_PROGRAMMER
+
+    用法（在 router 里）：
+    ```python
+    @router.post("/parts/{id}/drawings", dependencies=[
+        Depends(require_part_file_role(PartFileKind.DRAWING))
+    ])
+    async def upload_drawing(...): ...
+    ```
+    """
+    from core._file_kind_policy import WRITE_ROLES_BY_KIND
+    from model.enums import PartFileKind
+
+    kind_enum = PartFileKind(kind.value if isinstance(kind, UserRole) else kind)
+    allowed = WRITE_ROLES_BY_KIND[kind_enum]
+
+    async def _dep(
+        user: CurrentUser = Depends(get_current_user),
+    ) -> CurrentUser:
+        if not any(user.has_role(r) for r in allowed):
+            expected = ", ".join(r.value for r in allowed)
+            raise BizError(
+                code=ErrCode.FORBIDDEN,
+                message=(
+                    f"kind={kind_enum.value} 写权限需要任一 role [{expected}]"
+                ),
+                http_status=http_status.HTTP_403_FORBIDDEN,
+            )
+        return user
+
+    return _dep

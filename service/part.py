@@ -21,11 +21,12 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
-from core.serial import code_for_parent
+from core.serial import resolve_root_prefix
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import PartEventType, PartStatus, ShelfZone
 from repository.applicant import ApplicantRepository
 from repository.customer import CustomerRepository
+from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
@@ -51,6 +52,7 @@ from schema.part import (
     PlaceOnShelfRequest,
 )
 from service._id_parse import parse_snowflake_id
+from service.part_file import PartFileService
 from utils.id_gen import new_id
 
 Broadcaster = Callable[[], Awaitable[None]]
@@ -99,6 +101,7 @@ class PartService:
         work_type_process: WorkTypeProcessRepository | None = None,
         applicants: ApplicantRepository | None = None,
         shelf_process_repo: ShelfProcessRepository | None = None,
+        files: PartFileRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
@@ -115,8 +118,10 @@ class PartService:
         self.work_type_process = work_type_process
         self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
         self.shelf_process_repo = shelf_process_repo  # 可选：用于放回时校验工序属于货架
+        self.files = files  # 可选：批量新建零件时上传 PDF 图纸
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
+        self._current_user = current_user
         self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
@@ -297,7 +302,7 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         if cust.parent_id is not None:
-            # 二级客户 → 用一级父客户名取序列号代码
+            # 二级客户 → 用一级父客户的 serial_prefix 派生前缀
             parent = await self.customers.get_by_id(cust.parent_id)
             if parent is None:
                 raise BizError(
@@ -305,19 +310,14 @@ class PartService:
                     message=f"parent customer {cust.parent_id} not found",
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
-            parent_name = parent.name
+            root_customer = parent
             root_customer_id = parent.id
         else:
-            # 一级客户自身 → 直接用其名称取序列号代码
-            parent_name = cust.name
+            # 一级客户自身
+            root_customer = cust
             root_customer_id = cust.id
-        code = code_for_parent(parent_name)
-        if code is None:
-            raise BizError(
-                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
-                message=f"未配置客户「{parent_name}」的序列号代码",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
+        # 解析前缀（DB 列优先；PARENT_TO_CODE 兜底；都无 → 400）。
+        code = resolve_root_prefix(root_customer)
         # 解析 applicant_id → applicant_name（按姓名快照写入 t_part）
         # 注：applicant_id 在 schema 是 str（雪花 ID 字符串，避免 JS Number 精度丢失），
         # 这里转回 int 再去 repository 查询。
@@ -392,11 +392,38 @@ class PartService:
         return items[0]
 
     async def create_parts_batch(
-        self, payload: PartBatchCreateRequest
+        self,
+        payload: PartBatchCreateRequest,
+        *,
+        file_payloads: list[tuple[bytes, str, str | None] | None] | None = None,
     ) -> PartBatchCreateResult:
+        """批量新建零件；可选地按 items 下标对齐上传 PDF 图纸。
+
+        `file_payloads[i]` 是 `items[i]` 的 PDF（`(bytes, filename, content_type)`）；
+        `None` 表示该行无图纸。前端可传比 items 短的文件列表（按 None 补齐），
+        也可不传（`file_payloads=None`，全部按无图纸处理）。
+
+        事务边界：与 caller 共享同一 session/事务（由 `api/deps.get_session`
+        在请求结束 commit）。任一 PDF 上传失败 → BizError 上抛 → 整批回滚，
+        已 flush 的 t_part / t_part_file 行全部丢失；COS 孤儿由 helper
+        fire-and-forget 兜底清理。
+        """
+        # 若前端传了任何 PDF 但 service 未注入 files repo，是配置错误：
+        # 不要把 t_part 行悄悄建好却不挂图，导致「零件已建但图丢了」的不一致。
+        if file_payloads and any(fp is not None for fp in file_payloads):
+            if self.files is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="server missing part file repository",
+                    http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
         customer_cache: dict[int, TCustomer | None] = {}
         parent_cache: dict[int, TCustomer | None] = {}
-        code_cache: dict[str, str | None] = {}
+        # 缓存键改为 root_customer_id（int），闭包内部调 resolve_root_prefix 取前缀。
+        # 缓存键改为 root_customer_id（int），闭包内部调 resolve_root_prefix 取前缀。
+        # 避免对同一 root 重复 dict 查找；resolve_root_prefix 自身已有 PARENT_TO_CODE 兜底。
+        prefix_cache: dict[int, str] = {}
 
         async def get_customer(cid: int) -> TCustomer | None:
             if cid not in customer_cache:
@@ -408,10 +435,12 @@ class PartService:
                 parent_cache[pid] = await self.customers.get_by_id(pid)
             return parent_cache[pid]
 
-        def get_code(parent_name: str) -> str | None:
-            if parent_name not in code_cache:
-                code_cache[parent_name] = code_for_parent(parent_name)
-            return code_cache[parent_name]
+        def get_prefix_for_root(root: TCustomer) -> str:
+            if root.id in prefix_cache:
+                return prefix_cache[root.id]
+            prefix = resolve_root_prefix(root)
+            prefix_cache[root.id] = prefix
+            return prefix
 
         failed: list[PartBatchCreateItemFailure] = []
         for idx, item in enumerate(payload.items):
@@ -431,19 +460,44 @@ class PartService:
                 if parent is None:
                     failed.append(PartBatchCreateItemFailure(index=idx, message=f"parent customer {cust.parent_id} not found"))
                     continue
-                parent_name = parent.name
+                root_customer = parent
             else:
-                parent_name = cust.name
-            if get_code(parent_name) is None:
-                failed.append(PartBatchCreateItemFailure(index=idx, message=f"未配置客户「{parent_name}」的序列号代码"))
-                continue
+                root_customer = cust
+            try:
+                get_prefix_for_root(root_customer)
+            except BizError as exc:
+                # 包装成 failed 条目；message 与旧版「未配置客户...序列号代码」对齐
+                # 以保证旧测试的 substring 断言仍命中。
+                failed.append(PartBatchCreateItemFailure(
+                    index=idx,
+                    message=f"未配置客户「{root_customer.name}」的序列号代码",
+                ))
+                # 用 exc 的 message 字段校验 root.name 是否真的在 helper message 里
+                # （仅 debug 价值，不影响主流程）
+                assert root_customer.name in exc.message
 
         if failed:
             return PartBatchCreateResult(created=[], failed=failed)
 
         created: list[PartOut] = []
-        for item in payload.items:
+        for idx, item in enumerate(payload.items):
             out = await self.create_part(item)
+            # file_payloads 与 items 按下标对齐：fp 非 None 才上传 PDF。
+            # `out.id` 是 IdStrNonNull，Python 内部仍是 int（schema/_types.py）。
+            if file_payloads and idx < len(file_payloads):
+                fp = file_payloads[idx]
+                if fp is not None:
+                    file_data, filename, content_type = fp
+                    # 2026-07-10 起：统一文件表，单文件 kind=DRAWING 自动覆盖
+                    from model.enums import PartFileKind
+                    _part_files = PartFileService(files=self.files, current_user=self._current_user)
+                    await _part_files.upload(
+                        owner_id=out.id,
+                        kind=PartFileKind.DRAWING,
+                        data=file_data,
+                        original_filename=filename,
+                        content_type=content_type,
+                    )
             created.append(out)
         return PartBatchCreateResult(created=created, failed=[])
 
@@ -573,11 +627,20 @@ class PartService:
         与 place_on_shelf 走同一个货架/工序校验，落到 ON_SHELF 状态机入口
         复用同一份 on_enter_ON_SHELF 副作用；事件类型为 CNC_RELEASED
         （见 on_release_from_programming 回调）。
+
+        2026-07-10 起加文件前置校验（项目约定 9）：
+        - 必须已上传 ≥1 G 代码（kind=G_CODE）；
+        - 必须已上传 ≥1 CNC 设定单（kind=SETUP_SHEET）；
+        - 否则 BIZ_CNC_PROGRAM_REQUIRED / BIZ_CNC_SETUP_SHEET_REQUIRED。
         """
         part = await self._get_part_or_404(part_id)
+        # 1) 前置文件校验（DB 访问校验，按项目约定放 service 层）
+        await self._assert_cnc_release_prerequisites(part_id)
+        # 2) 货架 / 工序校验
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
         )
+        # 3) 状态机转换
         part.sm.release_from_programming(
             shelf=shelf, process=process, event_repo=self.events,
         )
@@ -594,6 +657,35 @@ class PartService:
             ),
         )
         return items[0]
+
+    async def _assert_cnc_release_prerequisites(self, part_id: int) -> None:
+        """下发前置：必须已上传 ≥1 G 代码 + ≥1 CNC 设定单（否则拒绝）。"""
+        from model.enums import PartFileKind
+
+        if self.files is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing part file repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        g_codes = await self.files.list_by_part(part_id, kind=PartFileKind.G_CODE.value)
+        if not g_codes:
+            raise BizError(
+                code=ErrCode.BIZ_CNC_PROGRAM_REQUIRED,
+                message="未上传 G 代码，无法下发零件到货架",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        setup_sheets = await self.files.list_by_part(
+            part_id, kind=PartFileKind.SETUP_SHEET.value,
+        )
+        if not setup_sheets:
+            raise BizError(
+                code=ErrCode.BIZ_CNC_SETUP_SHEET_REQUIRED,
+                message="未上传 CNC 设定单，无法下发零件到货架",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
 
     async def _get_part_or_404(self, part_id: int) -> TPart:
         part = await self.parts.get_by_id(part_id)

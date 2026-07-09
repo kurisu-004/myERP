@@ -235,10 +235,33 @@ export async function listPartEvents(id: string): Promise<PartEvent[]> {
   return resp.data
 }
 
+export interface PartBatchFilePayload {
+  /** 浏览器里的 File 对象（el-upload 的 uploadFile.raw）。 */
+  data: Blob
+  /** 原始文件名（含扩展名，后端据此判 PDF 类型）。 */
+  filename: string
+  /** 可选 content-type；后端会按文件扩展名兜底。 */
+  contentType?: string
+}
+
+/**
+ * 批量新建零件（multipart/form-data）。
+ *
+ * 后端 `POST /parts/batch` 2026-07-09 起接受 `data` (JSON 字符串) + `files` (PDF 数组)，
+ * 文件与 items 按下标对齐；缺失位按无图处理。任一上传失败 → 整批回滚。
+ *
+ * 不手动设 Content-Type —— axios 会自动加正确的 multipart boundary。
+ */
 export async function batchCreateParts(
   items: PartCreatePayload[],
+  files: (PartBatchFilePayload | null)[] = [],
 ): Promise<PartBatchResult> {
-  const resp = await api.post<PartBatchResult>('/parts/batch', { items })
+  const form = new FormData()
+  form.append('data', JSON.stringify({ items }))
+  files.forEach((f) => {
+    if (f) form.append('files', f.data, f.filename)
+  })
+  const resp = await api.post<PartBatchResult>('/parts/batch', form)
   return resp.data
 }
 

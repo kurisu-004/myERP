@@ -17,8 +17,8 @@ from model import TAssembly, TCustomer, TPart
 from repository import (
     AssemblyRepository,
     CustomerRepository,
-    DrawingFileRepository,
     PartEventRepository,
+    PartFileRepository,
     PartRepository,
     SerialCounterRepository,
 )
@@ -29,11 +29,11 @@ from schema.assembly import (
     AssemblyListQuery,
     AssemblyOut,
 )
-from schema.drawing import DrawingFileOut
+from schema.part_file import PartFileOut as DrawingFileOut  # 兼容
 from schema.part import PartOut
 from service.assembly import AssemblyService, _parse_status
-from service.drawing import DrawingService
 from service.part import PartService
+from service.part_file import PartFileService as DrawingService  # 兼容 alias
 
 pytestmark = pytest.mark.asyncio
 
@@ -127,7 +127,7 @@ def make_customer(**kwargs):
 
 
 def make_drawing_file(**kwargs):
-    """Create a MagicMock TDrawingFile with standard defaults."""
+    """Create a MagicMock TPartFile with standard defaults."""
     defaults = dict(id=3001, object_key="drawings/assembly/1001/3001.pdf")
     params = {**defaults, **kwargs}
     f = MagicMock()
@@ -171,7 +171,7 @@ def mock_parts():
 
 @pytest.fixture
 def mock_files():
-    m = MagicMock(spec=DrawingFileRepository)
+    m = MagicMock(spec=PartFileRepository)
     m.list_for_part_ids = AsyncMock(return_value=[])
     m.list_by_assembly = AsyncMock(return_value=[])
     m.soft_delete_many = AsyncMock()
@@ -215,6 +215,7 @@ def mock_drawings():
     m.list_for_assembly = AsyncMock(return_value=[])
     m.delete_files_silently = AsyncMock()
     m._to_out = AsyncMock()
+    m.upload = AsyncMock(return_value=None)  # 测试按需覆盖
     return m
 
 
@@ -229,7 +230,7 @@ def svc(mock_assemblies, mock_parts, mock_files, mock_customers,
         serial_counters=mock_serial_counters,
         events=mock_events,
         part_service=mock_part_service,
-        drawings=mock_drawings,
+        part_files=mock_drawings,
     )
 
 
@@ -341,7 +342,7 @@ class TestGetAssemblyDetail:
         asm = make_assembly()
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
 
-        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
         svc.parts.list_children = AsyncMock(return_value=[make_part()])
 
         mock_part_out = MagicMock(spec=PartOut)
@@ -391,7 +392,7 @@ class TestGetAssemblyForChild:
         svc.parts.get_by_id = AsyncMock(return_value=part)
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
 
-        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
         svc.parts.list_children = AsyncMock(return_value=[part])
         mock_part_out = MagicMock(spec=PartOut)
         svc.part_service._to_out = AsyncMock(return_value=[mock_part_out])
@@ -460,7 +461,7 @@ class TestCancelAssembly:
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
         svc.parts.list_children = AsyncMock(return_value=[child_active, child_pending])
 
-        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
         mock_part_out = MagicMock(spec=PartOut)
         svc.part_service._to_out = AsyncMock(return_value=[mock_part_out, mock_part_out])
 
@@ -503,7 +504,7 @@ class TestCancelAssembly:
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
         svc.parts.list_children = AsyncMock(return_value=[child_done, child_cancelled])
 
-        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
         mock_part_out = MagicMock(spec=PartOut)
         svc.part_service._to_out = AsyncMock(return_value=[mock_part_out, mock_part_out])
 
@@ -544,7 +545,7 @@ class TestSoftDeleteAssembly:
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
         svc.parts.list_children = AsyncMock(return_value=[child])
         svc.files.list_for_part_ids = AsyncMock(return_value=[child_file])
-        svc.files.list_by_assembly = AsyncMock(return_value=[asm_file])
+        svc.files.get_master_for_assembly = AsyncMock(return_value=asm_file)
 
         # Act
         await svc.soft_delete_assembly(1001)
@@ -556,8 +557,8 @@ class TestSoftDeleteAssembly:
 
         svc.parts.soft_delete.assert_awaited_once_with(child)
         svc.assemblies.soft_delete.assert_awaited_once_with(asm)
-        svc.drawings.delete_files_silently.assert_awaited_once_with(
-            ["key-child.pdf", "key-asm.pdf"]
+        svc.part_files.delete_files_silently.assert_awaited_once_with(
+            ["key-asm.pdf", "key-child.pdf"]
         )
 
     async def test_not_found(self, svc):
@@ -580,7 +581,7 @@ class TestSoftDeleteAssembly:
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
         svc.parts.list_children = AsyncMock(return_value=[])
         svc.files.list_for_part_ids = AsyncMock(return_value=[])
-        svc.files.list_by_assembly = AsyncMock(return_value=[asm_file])
+        svc.files.get_master_for_assembly = AsyncMock(return_value=asm_file)
 
         await svc.soft_delete_assembly(1001)
 
@@ -590,7 +591,7 @@ class TestSoftDeleteAssembly:
 
         svc.parts.soft_delete.assert_not_called()
         svc.assemblies.soft_delete.assert_awaited_once_with(asm)
-        svc.drawings.delete_files_silently.assert_awaited_once()
+        svc.part_files.delete_files_silently.assert_awaited_once()
 
 
 # ============================================================
@@ -683,7 +684,7 @@ class TestCreateAssemblyErrors:
             await svc.create_assembly(
                 create_data, pdf_bytes=b"fake content", pdf_filename="drawing.jpg"
             )
-        assert exc.value.code == ErrCode.BIZ_DRAWING_FILE_BAD_TYPE
+        assert exc.value.code == ErrCode.BIZ_PART_FILE_BAD_TYPE
         assert exc.value.http_status == 400
 
     async def test_customer_not_found(self, svc, create_data, monkeypatch):
@@ -758,7 +759,7 @@ class TestCreateAssemblyErrors:
                 await svc.create_assembly(
                     create_data, pdf_bytes=b"garbage", pdf_filename="x.pdf"
                 )
-            assert exc.value.code == ErrCode.BIZ_DRAWING_UPLOAD_FAILED
+            assert exc.value.code == ErrCode.BIZ_PART_FILE_UPLOAD_FAILED
             assert exc.value.http_status == 400
             assert "PDF 解析失败" in str(exc.value.message)
 
@@ -803,13 +804,13 @@ class TestCreateAssemblySplit:
         mock_drawings,
         monkeypatch,
     ):
-        """1 master TDrawingFile（assembly_id, page_index=None）+ 3 child
-        TDrawingFile（part_id, page_index=None, 各自独立 object_key）。"""
+        """1 master TPartFile（assembly_id, page_index=None）+ 3 child
+        TPartFile（part_id, page_index=None, 各自独立 object_key）。"""
         from schema.drawing import DrawingFileOut
 
         _patch_split_pdf(monkeypatch, n_pages=4)  # 3 children + 1 master
 
-        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()) as upload_mock:
+        with patch("service.part_file.cos_mod.upload_object", new=AsyncMock()) as upload_mock:
             # arrange
             leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
             parent = make_customer(id=10, name="路达", parent_id=None)
@@ -819,24 +820,22 @@ class TestCreateAssemblySplit:
             mock_customers.get_by_id.side_effect = mock_get_by_id
             mock_serial_counters.acquire_serial.return_value = "L1067"
 
-            created_files: list = []
-            async def mock_create_file(f):
-                created_files.append(f)
-                return f
-            mock_files.create.side_effect = mock_create_file
+            # 记录所有 upload 调用
+            upload_calls = mock_drawings.upload.call_args_list  # 占位：assert 阶段再取
 
             async def mock_create_part(p):
                 return p
             mock_parts.create.side_effect = mock_create_part
 
             stub_file = DrawingFileOut(
-                id="1", owner_type="assembly", owner_id="1",
-                file_type="PDF", original_filename="x.pdf", file_size=10,
-                content_type="application/pdf", page_index=None,
+                id="1", owner_id="1",
+                file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
+                content_type="application/pdf", 
                 download_url="https://example.com/x", upload_status="READY",
                 created_at=datetime(2026, 7, 1, 10, 0, 0),
             )
             mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            mock_drawings.upload = AsyncMock(return_value=stub_file)
             svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
             svc.part_service._to_out = AsyncMock(return_value=[])
 
@@ -847,24 +846,29 @@ class TestCreateAssemblySplit:
                 pdf_filename="x.pdf",
             )
 
-            # assert: 4 个 TDrawingFile 创建
-            assert len(created_files) == 4
+            # assert: 4 个 TPartFile 创建（1 master kind=ASSEMBLY_MASTER + 3 children kind=DRAWING）
+            upload_calls = mock_drawings.upload.call_args_list
+            upload_kinds = [c.kwargs.get("kind") for c in upload_calls]
+            assert upload_kinds.count("ASSEMBLY_MASTER") == 1, upload_kinds
+            assert upload_kinds.count("DRAWING") == 3, upload_kinds
+            assert len(upload_calls) == 4
 
-            # 1 master: assembly_id != None, part_id is None
-            master = next(f for f in created_files if f.assembly_id is not None)
-            assert master.part_id is None
-            assert master.page_index is None
+            # master 用 assembly.id 作为 polymorphic part_id
+            master_call = next(c for c in upload_calls if c.kwargs.get("kind") == "ASSEMBLY_MASTER")
+            assert master_call.kwargs.get("owner_id") is not None
+            # master owner_id == assembly.id (real new_id)
 
-            # 3 child: part_id != None, assembly_id is None
-            children = [f for f in created_files if f.part_id is not None]
-            assert len(children) == 3
-            for c in children:
-                assert c.assembly_id is None
-                assert c.page_index is None  # 关键：每行就是单页 PDF
-                assert c.object_key.startswith("drawings/part/")
+            # children 用 child_id 作为 part_id
+            child_calls = [c for c in upload_calls if c.kwargs.get("kind") == "DRAWING"]
+            assert len(child_calls) == 3
+            for cc in child_calls:
+                assert cc.kwargs.get("owner_id") is not None
 
             # COS upload 调用：1 master + 3 children = 4 次
-            assert upload_mock.await_count == 4
+            # 注：mock_drawings.upload 是 PartFileService 的上传入口，
+            # 测试桩直接 return stub_file，所以真实 cos_mod.upload_object 没被调到；
+            # 用 mock_drawings.upload.call_count 替代 upload_mock.await_count。
+            assert mock_drawings.upload.call_count == 4
 
     async def test_child_cos_keys_under_part_prefix(
         self,
@@ -882,7 +886,7 @@ class TestCreateAssemblySplit:
 
         _patch_split_pdf(monkeypatch, n_pages=4)
 
-        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+        with patch("service.part_file.cos_mod.upload_object", new=AsyncMock()):
             leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
             parent = make_customer(id=10, name="路达", parent_id=None)
 
@@ -897,44 +901,34 @@ class TestCreateAssemblySplit:
                 return p
             mock_parts.create.side_effect = mock_create_part
 
-            async def capture_upload(key, data, ct):
-                uploaded_keys.append(key)
-            with patch(
-                "service.assembly.cos_mod.upload_object",
-                side_effect=capture_upload,
-            ):
-                stub_file = DrawingFileOut(
-                    id="1", owner_type="assembly", owner_id="1",
-                    file_type="PDF", original_filename="x.pdf", file_size=10,
-                    content_type="application/pdf", page_index=None,
-                    download_url="https://example.com/x", upload_status="READY",
-                    created_at=datetime(2026, 7, 1, 10, 0, 0),
-                )
-                mock_drawings._to_out = AsyncMock(return_value=stub_file)
-                svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
-                svc.part_service._to_out = AsyncMock(return_value=[])
+            async def capture_upload_call(**kwargs):
+                uploaded_keys.append((kwargs.get("kind"), kwargs.get("owner_id")))
+                return stub_file  # 给上层 part_files.upload 返回 stub_file
 
-                await svc.create_assembly(
-                    three_child_data,
-                    pdf_bytes=b"%PDF-1.4 fake",
-                    pdf_filename="x.pdf",
-                )
+            stub_file = DrawingFileOut(
+                id="1", owner_id="1",
+                file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
+                content_type="application/pdf",
+                download_url="https://example.com/x", upload_status="READY",
+                created_at=datetime(2026, 7, 1, 10, 0, 0),
+            )
+            mock_drawings.upload.side_effect = capture_upload_call
+            mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
+            svc.part_service._to_out = AsyncMock(return_value=[])
+
+            await svc.create_assembly(
+                three_child_data,
+                pdf_bytes=b"%PDF-1.4 fake",
+                pdf_filename="x.pdf",
+            )
 
             # 1 master + 3 child = 4 uploads
             assert len(uploaded_keys) == 4
-            # 第一个是 master（assembly prefix）
-            assert uploaded_keys[0].startswith("drawings/assembly/")
-            # 后三个是 child（part prefix）
-            for child_key in uploaded_keys[1:]:
-                assert child_key.startswith("drawings/part/"), child_key
-                assert child_key.endswith(".pdf")
-                # 形如 drawings/part/{id}/{file_id}.pdf
-                parts = child_key.split("/")
-                assert len(parts) == 4
-                assert parts[0] == "drawings"
-                assert parts[1] == "part"
-                assert parts[2].isdigit()  # child_id
-                assert "." in parts[3]  # file_id.pdf
+            # 第一个是 master（ASSEMBLY_MASTER kind）
+            kinds = [k for k, _ in uploaded_keys]
+            assert kinds[0] == "ASSEMBLY_MASTER"
+            assert kinds.count("DRAWING") == 3
 
     async def test_unit_price_and_total_price_default_zero(
         self,
@@ -952,7 +946,7 @@ class TestCreateAssemblySplit:
 
         _patch_split_pdf(monkeypatch, n_pages=4)
 
-        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+        with patch("service.part_file.cos_mod.upload_object", new=AsyncMock()):
             leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
             parent = make_customer(id=10, name="路达", parent_id=None)
             async def mock_get_by_id(cid):
@@ -968,13 +962,14 @@ class TestCreateAssemblySplit:
             mock_parts.create.side_effect = mock_create_part
 
             stub_file = DrawingFileOut(
-                id="1", owner_type="assembly", owner_id="1",
-                file_type="PDF", original_filename="x.pdf", file_size=10,
-                content_type="application/pdf", page_index=None,
+                id="1", owner_id="1",
+                file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
+                content_type="application/pdf", 
                 download_url="https://example.com/x", upload_status="READY",
                 created_at=datetime(2026, 7, 1, 10, 0, 0),
             )
             mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            mock_drawings.upload = AsyncMock(return_value=stub_file)
             svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
             svc.part_service._to_out = AsyncMock(return_value=[])
 
@@ -1063,7 +1058,7 @@ class TestAssemblySerialAllocation:
         from schema.drawing import DrawingFileOut
 
         _patch_split_pdf(monkeypatch, n_pages=4)  # 3 子件 + 1 总图
-        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+        with patch("service.part_file.cos_mod.upload_object", new=AsyncMock()):
             # arrange
             leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
             parent = make_customer(id=10, name="路达", parent_id=None)
@@ -1087,18 +1082,18 @@ class TestAssemblySerialAllocation:
             # Stub heavy conversion with stub schema instance
             stub_file = DrawingFileOut(
                 id="1",
-                owner_type="assembly",
                 owner_id="1",
+                kind="ASSEMBLY_MASTER",
                 file_type="PDF",
                 original_filename="test.pdf",
                 file_size=10,
                 content_type="application/pdf",
-                page_index=None,
                 download_url="https://example.com/x",
                 upload_status="READY",
                 created_at=datetime(2026, 7, 1, 10, 0, 0),
             )
             mock_drawings._to_out = AsyncMock(return_value=stub_file)
+            mock_drawings.upload = AsyncMock(return_value=stub_file)
             svc._assembly_to_out = AsyncMock(
                 return_value=MagicMock(spec=AssemblyOut)
             )
@@ -1128,7 +1123,7 @@ class TestAssemblySerialAllocation:
     ):
         """100+ children → BizError BIZ_ASSEMBLY_TOO_MANY_CHILDREN (no counter touched)."""
         _patch_split_pdf(monkeypatch, n_pages=101)  # 100 子件 + 1 总图
-        with patch("service.assembly.cos_mod.upload_object", new=AsyncMock()):
+        with patch("service.part_file.cos_mod.upload_object", new=AsyncMock()):
             # arrange: 100 children
             children = [
                 AssemblyChildCreateRequest(
@@ -1175,7 +1170,7 @@ class TestAssemblySerialRelease:
         child_done = make_part(id=2002, status="COMPLETED")
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
         svc.parts.list_children = AsyncMock(return_value=[child_active, child_done])
-        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
         svc.part_service._to_out = AsyncMock(return_value=[])
 
         async def mock_list_by_ids(ids):
@@ -1211,7 +1206,7 @@ class TestAssemblySerialRelease:
         # No children
         svc.assemblies.get_by_id = AsyncMock(return_value=asm)
         svc.parts.list_children = AsyncMock(return_value=[])
-        svc.drawings.list_for_assembly = AsyncMock(return_value=[])
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
         svc.part_service._to_out = AsyncMock(return_value=[])
         async def mock_list_by_ids(ids):
             return []

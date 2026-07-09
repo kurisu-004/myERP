@@ -1,5 +1,5 @@
 // 装配体 REST API（走 @/api/http 统一 axios 客户端）。
-// 创建 / 上传文件走 multipart：data 字段为 JSON 字符串，file 字段为 PDF / step。
+// 创建 / 上传文件走 multipart：data 字段为 JSON 字符串，file 字段为 PDF。
 
 import { api } from '@/api/http'
 import type {
@@ -10,7 +10,7 @@ import type {
   AssemblyListResult,
   AssemblyItem,
 } from '@/types/assembly'
-import type { DrawingFileItem } from '@/types/file'
+import type { PartFileItem } from '@/types/part_file'
 import type { PartListItem } from '@/types/parts'
 
 function cleanParams<T extends object>(p: T): Record<string, unknown> {
@@ -96,43 +96,52 @@ export async function cancelAssembly(id: string): Promise<AssemblyDetail> {
 }
 
 // ---- 文件相关 ----
+// 2026-07-10 起：装配体文件由 create_assembly / upload_total_pdf 流创建，
+// 不再有独立的 POST /assemblies/{id}/files。list 仍可调用。
 
-export async function listAssemblyFiles(id: string): Promise<DrawingFileItem[]> {
-  const resp = await api.get<DrawingFileItem[]>(`/assemblies/${id}/files`)
+export async function listAssemblyFiles(id: string): Promise<PartFileItem[]> {
+  const resp = await api.get<PartFileItem[]>(`/assemblies/${id}/files`)
   return resp.data
 }
 
-export async function uploadAssemblyFile(
-  id: string,
-  file: File,
-): Promise<DrawingFileItem> {
-  const form = new FormData()
-  form.append('file', file)
-  const resp = await api.post<DrawingFileItem>(`/assemblies/${id}/files`, form)
+export async function listPartFiles(
+  partId: string,
+  kind?: 'DRAWING' | '3D_MODEL' | 'G_CODE' | 'SETUP_SHEET' | 'ASSEMBLY_MASTER',
+): Promise<PartFileItem[]> {
+  const resp = await api.get<PartFileItem[]>(`/parts/${partId}/files`, {
+    params: kind ? { kind } : {},
+  })
   return resp.data
 }
 
-export async function listPartFiles(partId: string): Promise<DrawingFileItem[]> {
-  const resp = await api.get<DrawingFileItem[]>(`/parts/${partId}/files`)
-  return resp.data
-}
-
-export async function uploadPartFile(
+/** 上传零件图纸 PDF（走新的 /drawings 端点）。 */
+export async function uploadPartDrawing(
   partId: string,
   file: File,
-): Promise<DrawingFileItem> {
+): Promise<PartFileItem> {
   const form = new FormData()
   form.append('file', file)
-  const resp = await api.post<DrawingFileItem>(`/parts/${partId}/files`, form)
+  const resp = await api.post<PartFileItem>(`/parts/${partId}/drawings`, form)
+  return resp.data
+}
+
+/** 上传零件 3D 模型（STEP / STP）。 */
+export async function uploadPart3DModel(
+  partId: string,
+  file: File,
+): Promise<PartFileItem> {
+  const form = new FormData()
+  form.append('file', file)
+  const resp = await api.post<PartFileItem>(`/parts/${partId}/3d-models`, form)
   return resp.data
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
-  await api.post(`/drawings/${fileId}/delete`)
+  await api.post(`/files/${fileId}/delete`)
 }
 
 export async function getDownloadUrl(fileId: string): Promise<string> {
-  const resp = await api.get<{ url: string }>(`/drawings/${fileId}/download-url`)
+  const resp = await api.get<{ url: string }>(`/files/${fileId}/download-url`)
   return resp.data.url
 }
 

@@ -7,7 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from repository.assembly import AssemblySortKey
 from schema._types import IdStr, IdStrNonNull
-from schema.drawing import DrawingFileOut
+from schema.drawing import DrawingFileOut  # noqa: F401  # 兼容旧 import
+from schema.part_file import PartFileOut
 from schema.part import PartOut
 from model.enums import SortDir
 
@@ -142,8 +143,8 @@ class AssemblyCreateResult(BaseModel):
 
     assembly: AssemblyOut
     children: list[PartOut] = Field(description="子零件列表（含分配的序列号）")
-    files: list[DrawingFileOut] = Field(
-        description="装配件 PDF 1 条 + 各子件 page_index 引用 N 条"
+    files: list[PartFileOut] = Field(
+        description="装配件 master (kind=ASSEMBLY_MASTER) + 各子件 drawings (kind=DRAWING)"
     )
 
 
@@ -165,4 +166,4 @@ class AssemblyDetail(BaseModel):
 
     assembly: AssemblyOut
     children: list[PartOut]
-    files: list[DrawingFileOut]
+    files: list[PartFileOut]

@@ -1,12 +1,11 @@
 from .applicant import ApplicantService
 from .assembly import AssemblyService
 from .auth import AuthService
-from .cnc_program import CncProgramService
 from .customer import CustomerService
 from .dashboard import build_snapshot_with_workers
-from .drawing import DrawingService
 from .menu import build_menu_tree
 from .part import PartService
+from .part_file import PartFileService
 from .process import ProcessService
 from .shelf import ShelfService
 from .shelf_process import ShelfProcessService
@@ -19,9 +18,8 @@ __all__ = [
     "ApplicantService",
     "AssemblyService",
     "AuthService",
-    "CncProgramService",
     "CustomerService",
-    "DrawingService",
+    "PartFileService",
     "PartService",
     "ProcessService",
     "ShelfProcessService",

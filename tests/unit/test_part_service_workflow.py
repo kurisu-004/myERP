@@ -1329,3 +1329,109 @@ class TestCheckParentAssembly:
         mock_session.execute.assert_awaited_once()
         mock_parts.list_children.assert_awaited_once_with(123)
         mock_assembly.sm.complete.assert_called_once()
+
+
+# ===================================================================
+# release_from_programming — 2026-07-10 起加文件前置校验
+# ===================================================================
+
+
+class TestReleaseFromProgrammingPrerequisites:
+    """下发到 CNC 货架必须先上传 ≥1 G 代码 + ≥1 CNC 设定单。"""
+
+    async def test_no_g_code_raises(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+        mock_processes,
+    ) -> None:
+        from schema.part import PlaceOnShelfRequest
+
+        part = _make_part(status="PROGRAMMING")
+        mock_parts.get_by_id.return_value = part
+        # G 代码缺失
+        service.files = MagicMock()
+        service.files.list_by_part = AsyncMock(return_value=[])  # 都没有
+
+        with pytest.raises(BizError) as exc:
+            await service.release_from_programming(
+                part_id=1001,
+                data=PlaceOnShelfRequest(shelf_id=1, next_process_id=42),
+            )
+        assert exc.value.code == ErrCode.BIZ_CNC_PROGRAM_REQUIRED
+        assert exc.value.http_status == 400
+
+    async def test_no_setup_sheet_raises(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+        mock_processes,
+    ) -> None:
+        from schema.part import PlaceOnShelfRequest
+
+        part = _make_part(status="PROGRAMMING")
+        mock_parts.get_by_id.return_value = part
+        # G 代码有，设定单没有
+        g_code_mock = MagicMock()
+        g_code_mock.kind = "G_CODE"
+        service.files = MagicMock()
+        service.files.list_by_part = AsyncMock(
+            side_effect=lambda pid, kind=None: [g_code_mock] if kind == "G_CODE" else []
+        )
+
+        with pytest.raises(BizError) as exc:
+            await service.release_from_programming(
+                part_id=1001,
+                data=PlaceOnShelfRequest(shelf_id=1, next_process_id=42),
+            )
+        assert exc.value.code == ErrCode.BIZ_CNC_SETUP_SHEET_REQUIRED
+        assert exc.value.http_status == 400
+
+    async def test_with_both_files_succeeds(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+        mock_processes,
+    ) -> None:
+        from schema.part import PlaceOnShelfRequest
+        from model.process import TProcess
+
+        part = _make_part(status="PROGRAMMING")
+        shelf = _make_shelf()
+        process = TProcess(
+            id=42, code="车", name="车床加工",
+            category="INHOUSE", is_inspection=False, sort_order=0,
+        )
+        process.created_at = datetime(2026, 1, 1)
+        process.updated_at = datetime(2026, 1, 1)
+        process.description = None
+        process.deleted_at = None
+        mock_parts.get_by_id.return_value = part
+        mock_shelves.get_by_id.return_value = shelf
+        mock_processes.get_by_id.return_value = process
+        mock_out = _make_part_out()
+        service._to_out.return_value = [mock_out]
+
+        # G 代码 + 设定单都有
+        g_code_mock = MagicMock()
+        g_code_mock.kind = "G_CODE"
+        setup_mock = MagicMock()
+        setup_mock.kind = "SETUP_SHEET"
+        service.files = MagicMock()
+        service.files.list_by_part = AsyncMock(
+            side_effect=lambda pid, kind=None: {
+                "G_CODE": [g_code_mock],
+                "SETUP_SHEET": [setup_mock],
+            }.get(kind, [])
+        )
+
+        result = await service.release_from_programming(
+            part_id=1001,
+            data=PlaceOnShelfRequest(shelf_id=1, next_process_id=42),
+        )
+        assert result == mock_out
+        # 状态机 release_from_programming 被调
+        part.sm.release_from_programming.assert_called_once()

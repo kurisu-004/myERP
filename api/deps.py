@@ -8,11 +8,10 @@ from core.permission import CurrentUser, get_current_user
 from repository import (
     ApplicantRepository,
     AssemblyRepository,
-    CncProgramRepository,
     CustomerRepository,
-    DrawingFileRepository,
     MenuRepository,
     PartEventRepository,
+    PartFileRepository,
     PartRepository,
     ProcessRepository,
     SerialCounterRepository,
@@ -28,9 +27,8 @@ from service import (
     ApplicantService,
     AssemblyService,
     AuthService,
-    CncProgramService,
     CustomerService,
-    DrawingService,
+    PartFileService,
     PartService,
     ProcessService,
     ShelfProcessService,
@@ -129,6 +127,10 @@ def get_part_service(
     - `_broadcaster()`：触发整张 snapshot 立即重推；
     - `_event_broadcaster(event_type, payload)`：触发单条业务事件推送
       （PICKED_UP / RELEASED / PLACED_ON_SHELF），由前端横幅组件消费。
+
+    2026-07-10 起：注入 `PartFileRepository` 以支持
+    `POST /parts/batch` multipart 端点的 PDF 上传 + 下发前置校验
+    (≥1 G_CODE + ≥1 SETUP_SHEET)。
     """
     from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
@@ -150,6 +152,7 @@ def get_part_service(
         work_type_process=WorkTypeProcessRepository(session),
         applicants=ApplicantRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
+        files=PartFileRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,
@@ -280,14 +283,20 @@ def get_applicant_service(
     )
 
 
-def get_drawing_service(
+def get_part_file_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PartFileRepository:
+    """统一文件仓储工厂（零件 / 装配体图纸 + G 代码 + 设定单）。"""
+    return PartFileRepository(session)
+
+
+def get_part_file_service(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
-) -> DrawingService:
-    return DrawingService(
-        files=DrawingFileRepository(session),
-        parts=PartRepository(session),
-        assemblies=AssemblyRepository(session),
+) -> PartFileService:
+    """统一文件 service 工厂。"""
+    return PartFileService(
+        files=PartFileRepository(session),
         current_user=user,
     )
 
@@ -299,24 +308,6 @@ def get_part_repository(
     return PartRepository(session)
 
 
-def get_drawing_repository(
-    session: AsyncSession = Depends(get_session),
-) -> DrawingFileRepository:
-    """图纸打印 service 用的 DrawingFileRepository 工厂。"""
-    return DrawingFileRepository(session)
-
-
-def get_cnc_program_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> CncProgramService:
-    return CncProgramService(
-        programs=CncProgramRepository(session),
-        parts=PartRepository(session),
-        current_user=user,
-    )
-
-
 def get_assembly_service(
     session: AsyncSession = Depends(get_session),
     serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
@@ -324,13 +315,13 @@ def get_assembly_service(
 ) -> AssemblyService:
     """注入 AssemblyService。
 
-    共享同一 session/事务：构造 PartService / DrawingService 时复用 session，
+    共享同一 session/事务：构造 PartService / PartFileService 时复用 session，
     装配体创建时的所有 DB 写入都在一个事务里，任一失败整体回滚。
     """
     from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
     parts_repo = PartRepository(session)
-    files_repo = DrawingFileRepository(session)
+    files_repo = PartFileRepository(session)
     assemblies_repo = AssemblyRepository(session)
     customers_repo = CustomerRepository(session)
     workers_repo = WorkerRepository(session)
@@ -346,10 +337,11 @@ def get_assembly_service(
         shelves=shelves_repo,
         processes=ProcessRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
+        files=files_repo,
         current_user=user,
     )
-    drawings = DrawingService(
-        files=files_repo, parts=parts_repo, assemblies=assemblies_repo,
+    part_files = PartFileService(
+        files=files_repo,
         current_user=user,
     )
 
@@ -369,7 +361,7 @@ def get_assembly_service(
         serial_counters=serial_counters,
         events=events_repo,
         part_service=part_service,
-        drawings=drawings,
+        part_files=part_files,
         applicants=ApplicantRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,

@@ -1,33 +1,44 @@
 <!--
   FileListCard.vue
 
-  显示某 part / assembly 关联的所有图纸文件，支持：
-  - PDF 内嵌预览（多页 PDF 跳转到当前 part 对应的 page_index）
-  - STEP/DWG/DXF 等只显示文件名 + 下载链接
-  - 上传按钮（multipart，调用后端 /v1/{parts|assemblies}/{id}/files）
-  - 删除按钮（软删，COS 清理由后端异步做）
+  通用「文件列表 + 上传/删除/预览」卡片组件（2026-07-10 重写）。
 
-  Props:
-  - files: DrawingFileItem[]
-  - ownerType: 'assembly' | 'part'
-  - ownerId: number
-  - defaultPage?: number
-  - showUpload / showDelete: boolean
+  用 kind 字段区分文件类型：
+  - DRAWING           零件 / 子件 PDF 图纸
+  - 3D_MODEL          零件 3D 模型（STEP / STP）
+  - G_CODE            零件 CNC G 代码（NC / TAP / CNC / MPF / NGC）
+  - SETUP_SHEET       零件 CNC 设定单（PDF）
+  - ASSEMBLY_MASTER   装配体总装图（PDF）
+
+  Props：
+  - files:               PartFileItem[]
+  - ownerType:           'assembly' | 'part'
+  - ownerId:             string (雪花 ID 字符串)
+  - defaultPage?:        number  默认 1
+  - showUpload?:         boolean 默认 false
+  - showDelete?:         boolean 默认 false
+  - showPrint?:          boolean 默认 false（仅对 ownerType='part' 生效）
+  - kind?:               PartFileKind 默认 'DRAWING'（决定 ACCEPT 与 title）
+  - title?:              string   默认按 kind 显示
+  - accept?:             string   默认按 kind 决定
+  - emptyText?:          string   默认按 kind 显示
+  - uploadLabel?:        string   默认 '上传' / '替换'（按 files.length 自动）
+  - apiUpload?:          (id, file) => Promise<PartFileItem>   必填（自定义 endpoint）
+  - apiDelete?:          (id) => Promise<void>                 默认走全局 deleteFile
 -->
 <template>
   <el-card shadow="never" class="files-card">
     <template #header>
       <div class="card-header">
         <span class="card-title">
-          图纸 / 文件
+          {{ titleText }}
           <el-tag v-if="files.length > 0" type="info" size="small" effect="plain">
             {{ files.length }} 个
           </el-tag>
         </span>
         <div class="header-actions">
-          <!-- 打印按钮：仅零件可见，用于触发双面打印 PDF（图纸 + 反面条形码） -->
           <el-button
-            v-if="showPrint"
+            v-if="showPrint && ownerType === 'part'"
             type="success"
             plain
             :loading="printing"
@@ -45,7 +56,7 @@
           >
             <el-button type="primary" plain :loading="uploading">
               <el-icon><Upload /></el-icon>
-              <span>{{ files.length > 0 ? '替换图纸' : '上传图纸' }}</span>
+              <span>{{ uploadLabelText }}</span>
             </el-button>
           </el-upload>
         </div>
@@ -54,7 +65,7 @@
 
     <div v-if="files.length === 0" class="empty-tip">
       <el-icon :size="32" color="#c0c4cc"><DocumentRemove /></el-icon>
-      <p>暂无图纸 / 文件</p>
+      <p>{{ emptyTextText }}</p>
     </div>
 
     <div v-else class="file-grid">
@@ -74,9 +85,6 @@
           </div>
           <div class="file-sub">
             <el-tag size="small" effect="plain">{{ f.file_type }}</el-tag>
-            <span v-if="f.page_index != null" class="page-tag">
-              第 {{ f.page_index }} 页
-            </span>
             <span>{{ formatSize(f.file_size) }}</span>
           </div>
         </div>
@@ -105,7 +113,7 @@
       <PdfViewer
         v-if="previewFile && isPdf(previewFile.file_type)"
         :url="previewBlobUrl"
-        :page="previewFile.page_index ?? defaultPage ?? 1"
+        :page="defaultPage"
         :initial-scale="1.4"
       />
       <div v-else class="non-pdf-preview">
@@ -123,7 +131,7 @@
       </div>
     </el-dialog>
 
-    <!-- 打印用隐藏 iframe（src 注入 PDF blob URL，触发浏览器打印） -->
+    <!-- 打印用隐藏 iframe -->
     <iframe
       ref="printIframeRef"
       style="position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; border: 0; opacity: 0; pointer-events: none;"
@@ -147,39 +155,96 @@ import {
 import type { UploadFile } from 'element-plus'
 import PdfViewer from './PdfViewer.vue'
 import { api } from '@/api/http'
-import { deleteFile, getDownloadUrl, uploadAssemblyFile, uploadPartFile } from '@/api/assembly'
+import { deleteFile, getDownloadUrl } from '@/api/assembly'
 import { printPartDrawing } from '@/api/parts'
-import type { DrawingFileItem } from '@/types/file'
+import type { PartFileItem, PartFileKind } from '@/types/part_file'
+
+// ----- ACCEPT 与 title 按 kind 自动派生 -----
+const ACCEPT_BY_KIND: Record<PartFileKind, string> = {
+  DRAWING: '.pdf',
+  '3D_MODEL': '.step,.stp',
+  G_CODE: '.nc,.tap,.cnc,.mpf,.ngc',
+  SETUP_SHEET: '.pdf',
+  ASSEMBLY_MASTER: '.pdf',
+}
+
+const TITLE_BY_KIND: Record<PartFileKind, string> = {
+  DRAWING: '图纸',
+  '3D_MODEL': '3D 模型',
+  G_CODE: 'G 代码',
+  SETUP_SHEET: 'CNC 设定单',
+  ASSEMBLY_MASTER: '总装图',
+}
+
+const EMPTY_TEXT_BY_KIND: Record<PartFileKind, string> = {
+  DRAWING: '暂无图纸',
+  '3D_MODEL': '暂无 3D 模型',
+  G_CODE: '暂无 G 代码',
+  SETUP_SHEET: '暂无 CNC 设定单',
+  ASSEMBLY_MASTER: '暂无总装图',
+}
+
+const UPLOAD_LABEL_BY_KIND: Record<PartFileKind, string> = {
+  DRAWING: '图纸',
+  '3D_MODEL': '3D 模型',
+  G_CODE: 'G 代码',
+  SETUP_SHEET: '设定单',
+  ASSEMBLY_MASTER: '总装图',
+}
 
 interface Props {
-  files: DrawingFileItem[]
+  files: PartFileItem[]
   ownerType: 'assembly' | 'part'
-  /** 后端 IdStr 序列化为字符串；雪花 ID 完整保留 */
   ownerId: string
   defaultPage?: number
   showUpload?: boolean
   showDelete?: boolean
-  /** 显示「打印图纸（含条形码）」按钮；仅对 ownerType='part' 生效 */
   showPrint?: boolean
+  kind?: PartFileKind
+  title?: string
+  accept?: string
+  emptyText?: string
+  /** 自定义上传函数（用于不同 kind 走不同 endpoint） */
+  apiUpload?: (ownerId: string, file: File) => Promise<PartFileItem>
+  /** 自定义删除函数（默认走 /files/{id}/delete） */
+  apiDelete?: (fileId: string) => Promise<void>
 }
 const props = withDefaults(defineProps<Props>(), {
   defaultPage: 1,
   showUpload: false,
   showDelete: false,
   showPrint: false,
+  kind: 'DRAWING',
+  title: '',
+  accept: '',
+  emptyText: '',
 })
 
 const emit = defineEmits<{
-  uploaded: [DrawingFileItem]
+  uploaded: [PartFileItem]
   deleted: [string]
   refresh: []
 }>()
 
-const ACCEPT = '.pdf'
+const ACCEPT = computed<string>(() =>
+  props.accept || ACCEPT_BY_KIND[props.kind],
+)
+const titleText = computed<string>(() =>
+  props.title || TITLE_BY_KIND[props.kind],
+)
+const emptyTextText = computed<string>(() =>
+  props.emptyText || EMPTY_TEXT_BY_KIND[props.kind],
+)
+const uploadLabelText = computed<string>(() => {
+  const base = UPLOAD_LABEL_BY_KIND[props.kind]
+  return `${files.value.length > 0 ? '替换' : '上传'}${base}`
+})
+
 const uploading = ref(false)
 const previewVisible = ref(false)
-const previewFile = ref<DrawingFileItem | null>(null)
+const previewFile = ref<PartFileItem | null>(null)
 const previewBlobUrl = ref<string>('')
+const files = computed<PartFileItem[]>(() => props.files)
 
 const previewTitle = computed<string>(
   () => `预览 — ${previewFile.value?.original_filename ?? ''}`,
@@ -208,12 +273,13 @@ function formatSize(n: number): string {
 
 async function onPick(uploadFile: UploadFile): Promise<void> {
   if (!uploadFile.raw) return
+  if (!props.apiUpload) {
+    ElMessage.error('FileListCard 未配置 apiUpload，无法上传')
+    return
+  }
   uploading.value = true
   try {
-    const result: DrawingFileItem =
-      props.ownerType === 'assembly'
-        ? await uploadAssemblyFile(props.ownerId, uploadFile.raw)
-        : await uploadPartFile(props.ownerId, uploadFile.raw)
+    const result = await props.apiUpload(props.ownerId, uploadFile.raw)
     ElMessage.success(`已上传：${result.original_filename}`)
     emit('uploaded', result)
     emit('refresh')
@@ -224,12 +290,11 @@ async function onPick(uploadFile: UploadFile): Promise<void> {
   }
 }
 
-async function onPreview(f: DrawingFileItem): Promise<void> {
+async function onPreview(f: PartFileItem): Promise<void> {
   previewFile.value = f
   previewVisible.value = true
-  // 通过 axios 拉取文件内容（带上 Authorization header），生成 blob URL 给 pdfjs
   try {
-    const resp = await api.get(`/drawings/${f.id}/content`, { responseType: 'blob' })
+    const resp = await api.get(`/files/${f.id}/content`, { responseType: 'blob' })
     if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
     previewBlobUrl.value = URL.createObjectURL(resp.data)
   } catch (e) {
@@ -261,10 +326,10 @@ async function downloadCurrent(): Promise<void> {
   }
 }
 
-async function onDelete(f: DrawingFileItem): Promise<void> {
+async function onDelete(f: PartFileItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `确认删除「${f.original_filename}」？删除后 PDF 仍可从 COS 重新下载，但前端不再列出。`,
+      `确认删除「${f.original_filename}」？删除后文件仍可从 COS 重新下载，但前端不再列出。`,
       '删除文件',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
@@ -272,7 +337,11 @@ async function onDelete(f: DrawingFileItem): Promise<void> {
     return
   }
   try {
-    await deleteFile(f.id)
+    if (props.apiDelete) {
+      await props.apiDelete(f.id)
+    } else {
+      await deleteFile(f.id)
+    }
     ElMessage.success('已删除')
     emit('deleted', f.id)
     emit('refresh')
@@ -282,7 +351,7 @@ async function onDelete(f: DrawingFileItem): Promise<void> {
 }
 
 // ============================================================
-// 双面打印：拉后端生成的 PDF（图纸 + 反面右下角条形码）→ 触发浏览器打印
+// 双面打印：仅对 ownerType='part' 生效
 // ============================================================
 const printing = ref(false)
 const printIframeRef = ref<HTMLIFrameElement | null>(null)
@@ -293,25 +362,20 @@ async function onPrint(): Promise<void> {
   printing.value = true
   try {
     const blob = await printPartDrawing(props.ownerId)
-    // 清理上一次的 blob URL（避免内存泄漏）
     if (printBlobUrl) URL.revokeObjectURL(printBlobUrl)
     printBlobUrl = URL.createObjectURL(blob)
 
-    // 用隐藏 iframe 加载 PDF，触发打印对话框；
-    // 比 window.open 更好：不被弹窗拦截，且打印对话框自然出现。
     const iframe = printIframeRef.value
     if (!iframe) {
       ElMessage.error('打印 iframe 未挂载，请刷新页面后重试')
       return
     }
     iframe.src = printBlobUrl
-    // 等待 PDF 加载完成后调 print
     iframe.onload = () => {
       try {
         iframe.contentWindow?.focus()
         iframe.contentWindow?.print()
       } catch {
-        // 某些浏览器 sandbox 限制 — fallback：开新窗口
         const w = window.open(printBlobUrl, '_blank')
         if (w) w.print()
       }
@@ -319,7 +383,6 @@ async function onPrint(): Promise<void> {
   } catch (e) {
     ElMessage.error((e as Error).message ?? '生成打印 PDF 失败')
   } finally {
-    // 留几秒给打印对话框弹出再清 loading
     setTimeout(() => {
       printing.value = false
     }, 800)
@@ -412,13 +475,6 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--text-secondary);
-}
-.page-tag {
-  background: #f0f7ff;
-  color: var(--primary-color);
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 11px;
 }
 .del-btn {
   flex-shrink: 0;

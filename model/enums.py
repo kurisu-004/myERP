@@ -156,3 +156,26 @@ class ProcessCategory(str, enum.Enum):
     """
     INHOUSE = "INHOUSE"
     OUTSOURCE = "OUTSOURCE"
+
+
+class PartFileKind(str, enum.Enum):
+    """零件 / 装配体的统一文件类型。
+
+    DB 存 `varchar(20)` (`t_part_file.kind`)，check 约束限定在 5 个取值。
+
+    - DRAWING          零件 / 装配体子件的图纸 (PDF)
+    - THREE_D_MODEL    零件 3D 模型 (STEP / STP)
+    - G_CODE           零件的 CNC G 代码 (NC / TAP / CNC / MPF / NGC) — 多版本
+    - SETUP_SHEET      零件的 CNC 设定单 (PDF)
+    - ASSEMBLY_MASTER  装配体的总装图 (PDF)，polymorphic part_id = assembly.id
+
+    单文件约束 (DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER)：每 part
+    每 kind 最多 1 份；G_CODE 允许多版本。索引 `uk_t_part_file_single` 在
+    DB 层强制。
+    """
+
+    DRAWING = "DRAWING"
+    THREE_D_MODEL = "3D_MODEL"
+    G_CODE = "G_CODE"
+    SETUP_SHEET = "SETUP_SHEET"
+    ASSEMBLY_MASTER = "ASSEMBLY_MASTER"
