@@ -6,7 +6,7 @@
 
 `zone` ∈ {PRODUCTION, INSPECTION}（ShelfZone enum），service 层校验。
 """
-from sqlalchemy import BigInteger, Boolean, String
+from sqlalchemy import BigInteger, Boolean, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import AuditMixin
@@ -21,6 +21,9 @@ class TShelf(Base, AuditMixin):
     - `zone` 由 service 层强校验（`ShelfZone` enum）。
     - `is_active=False` 时不入 login 时的 scope 解析，新工人不能在新机器上
       登入；已有零件仍按历史 holder 留存。
+    - `display_order` 控制共享 HMI 卡片网格 picker 的物理顺序；
+      默认 0（未设置），manager 在 `ShelfList.vue` 后台手填。
+      列表/picker 一律按 `(display_order ASC, code ASC)` 排序。
     """
 
     __tablename__ = "t_shelf"
@@ -34,4 +37,7 @@ class TShelf(Base, AuditMixin):
     location: Mapped[str | None] = mapped_column(String(200), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
+    )
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0", index=True
     )

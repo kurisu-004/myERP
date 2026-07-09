@@ -68,6 +68,7 @@ declare module 'vue' {
     PdfViewer: typeof import('./components/PdfViewer.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    ShelfPickerCard: typeof import('./components/ShelfPickerCard.vue')['default']
   }
   export interface ComponentCustomProperties {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

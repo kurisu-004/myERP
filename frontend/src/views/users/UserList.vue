@@ -64,12 +64,16 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="addRoleForm.role === 'SHELF_ACCOUNT'" label="货架">
-          <el-select v-model="addRoleForm.shelfId" placeholder="选货架" style="width:160px" clearable>
+          <el-select v-model="addRoleForm.shelfId" placeholder="选货架（留空=共享 HMI 通行）" style="width:240px" clearable>
             <el-option v-for="s in shelfOptions" :key="s.id" :label="`${s.code} (${s.zone === 'PRODUCTION' ? '生产' : '品检'})`" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item><el-button @click="doAddRole" :disabled="!addRoleForm.role">添加</el-button></el-form-item>
       </el-form>
+      <p v-if="addRoleForm.role === 'SHELF_ACCOUNT' && !addRoleForm.shelfId" class="scope-hint">
+        <el-icon><InfoFilled /></el-icon>
+        <span>货架留空 = 共享工控机（HMI）通行：该账号意图覆盖车间所有 PRODUCTION 架，不绑死单架。</span>
+      </p>
     </el-dialog>
   </div>
 </template>
@@ -81,6 +85,7 @@ import { listUsers, createUser, updateUser, deactivateUser, listUserRoles, addUs
 import { listShelves } from '@/api/shelves'
 import type { UserOut, UserRoleOut } from '@/types/user'
 import type { Shelf } from '@/types/shelf'
+import { InfoFilled } from '@element-plus/icons-vue'
 
 const items = ref<UserOut[]>([])
 const loading = ref(false)
@@ -149,7 +154,8 @@ async function doAddRole() {
   if (!roleUser.value || !addRoleForm.role) return
   const scopeType = addRoleForm.role === 'SHELF_ACCOUNT' ? 'shelf' : null
   const scopeId = addRoleForm.role === 'SHELF_ACCOUNT' ? addRoleForm.shelfId : null
-  if (addRoleForm.role === 'SHELF_ACCOUNT' && !scopeId) { ElMessage.warning('请选择货架'); return }
+  // 共享 HMI 场景：SHELF_ACCOUNT 留空 shelfId = scope_id NULL = 通配所有架
+  // （与 can_operate_shelf shelf_wildcard 配合），不再阻断。
   try {
     await addUserRole(String(roleUser.value.id), { role: addRoleForm.role, scope_type: scopeType, scope_id: scopeId })
     roleList.value = await listUserRoles(String(roleUser.value.id))
@@ -165,4 +171,17 @@ onMounted(fetchData)
 <style lang="scss" scoped>
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; h2 { margin: 0; font-size: 18px; } }
 .no-roles { color: #c0c4cc; font-size: 13px; }
+.scope-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  background: #fdf6ec;
+  border: 1px solid #faecd8;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #b88230;
+  line-height: 1.5;
+}
 </style>

@@ -33,17 +33,28 @@ class CurrentUser:
     is_active: bool
     roles: tuple[str, ...]
     shelf_ids: tuple[int, ...]
+    # 共享 HMI 场景：账号有 SHELF_ACCOUNT 角色且 scope_id IS NULL
+    # （不绑死单架，意图操作车间所有 PRODUCTION 架）→ wildcard=True，
+    # `can_operate_shelf` 对任意 shelf_id 返回 True。
+    # JWT 字段 `shelf_wildcard` 缺省 False（与历史账号行为兼容）。
+    shelf_wildcard: bool = False
 
     def has_role(self, role: str | UserRole) -> bool:
         target = role.value if isinstance(role, UserRole) else role
         return target in self.roles
 
     def can_operate_shelf(self, shelf_id: int) -> bool:
-        """SHELF_ACCOUNT @ 此 shelf 可操作；MANAGER 一律允许（admin 越权兜底）。"""
+        """SHELF_ACCOUNT @ 此 shelf 可操作；MANAGER 一律允许（admin 越权兜底）。
+
+        共享 HMI：账号有 `shelf_wildcard=True`（SHELF_ACCOUNT scope=NULL）
+        → 对任意 PRODUCTION 货架放行。
+        """
         if self.has_role(UserRole.MANAGER):
             return True
         if not self.has_role(UserRole.SHELF_ACCOUNT):
             return False
+        if self.shelf_wildcard:
+            return True
         return shelf_id in self.shelf_ids
 
 
@@ -99,6 +110,7 @@ async def get_current_user(request: Request) -> CurrentUser:
 
     roles = tuple(payload.get("roles") or ())
     shelf_ids = tuple(int(x) for x in (payload.get("shelf_ids") or ()))
+    shelf_wildcard = bool(payload.get("shelf_wildcard", False))
     if not roles:
         raise BizError(
             code=ErrCode.BIZ_USER_NO_ROLE,
@@ -113,6 +125,7 @@ async def get_current_user(request: Request) -> CurrentUser:
         is_active=user.is_active,
         roles=roles,
         shelf_ids=shelf_ids,
+        shelf_wildcard=shelf_wildcard,
     )
 
 

@@ -1051,6 +1051,29 @@ class PartService:
         )
         return await self._to_out(rows)
 
+    async def list_pickable_parts_all_shelves(
+        self, work_type_id: int
+    ) -> list[PartOut]:
+        """共享 HMI PICK_UP 跨架列表：列出**所有**生产货架上、由指定工种
+        可领的零件。前端按 `current_holder_id` 在卡片网格里分组。
+
+        与 `list_pickable_parts` 差异：去掉 shelf_id 过滤；保留工种过滤。
+        短路逻辑一致。
+        """
+        if work_type_id is None:
+            return []
+        if self.work_type_process is None:
+            return []
+        process_ids = await self.work_type_process.list_process_ids_by_work_type(
+            work_type_id, include_deleted=False,
+        )
+        if not process_ids:
+            return []
+        rows = await self.parts.list_for_work_type_all_shelves(
+            mapped_process_ids=process_ids,
+        )
+        return await self._to_out(rows)
+
     async def pass_inspection(self, part_id: int) -> PartOut:
         """INSPECTION -> READY_TO_SHIP：品检合格。"""
         part = await self.parts.get_by_id(part_id)

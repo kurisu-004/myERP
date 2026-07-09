@@ -263,9 +263,18 @@
       </el-radio-group>
       <template #footer>
         <el-button @click="showNextProcessDialog = false">取消</el-button>
-        <el-button type="primary" @click="confirmNextProcess">确认放回</el-button>
+        <el-button type="primary" @click="confirmNextProcess">下一步</el-button>
       </template>
     </el-dialog>
+
+    <!-- 共享 HMI RETURN 货架选择卡片网格 picker（2026-07-10） -->
+    <ShelfPickerDialog
+      v-if="showShelfPicker"
+      v-model="showShelfPicker"
+      :next-process-id="selectedNextProcessId || ''"
+      @confirm="onShelfPicked"
+      @cancel="onShelfPickerCancel"
+    />
   </div>
 </template>
 
@@ -294,6 +303,7 @@ import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
 import { PROCESS_CATEGORY_LABEL } from '@/types/process'
+import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 
 type PageState = 'scanning' | 'submitting' | 'done'
 
@@ -315,6 +325,12 @@ const targetInspectionShelfId = ref<string>()
 const showNextProcessDialog = ref(false)
 const processes = ref<Process[]>([])
 const selectedNextProcessId = ref<string>()
+// 共享 HMI RETURN 货架 picker（2026-07-10）
+// 流程：选完 next_process_id 后弹出 → 默认高亮推荐架 → 工人「完成」
+// 即提交，或点其他卡片切换。空 / 错误态 dialog 自带提示。
+const showShelfPicker = ref(false)
+// 「下一道工序确定后才选架」中间态：记下 next_process_id 后开 picker
+const pendingNextProcessId = ref<string | null>(null)
 
 const actionLabel = computed(() => (action.value ? ACTION_LABEL[action.value] : ''))
 const actionTagType = computed(() => (action.value ? ACTION_TAG_TYPE[action.value] : 'info'))
@@ -380,9 +396,12 @@ async function onSubmit(): Promise<void> {
   await doSubmit(undefined)
 }
 
-async function doSubmit(nextProcessId?: string | null): Promise<void> {
+async function doSubmit(targetShelfId?: string | null, nextProcessId?: string | null): Promise<void> {
   state.value = 'submitting'
-  await submit(shelfId.value, worker.value!.badge_code, action.value!, targetInspectionShelfId.value, nextProcessId)
+  // 共享 HMI（2026-07-10）：RETURN 时使用 picker 选的目标架（targetShelfId）；
+  // 若无则降级到当前 activeShelfId（兼容旧 SHELF_ACCOUNT 单架模型）。
+  const useShelfId = targetShelfId || shelfId.value
+  await submit(useShelfId, worker.value!.badge_code, action.value!, targetInspectionShelfId.value, nextProcessId)
   state.value = 'done'
 }
 
@@ -391,13 +410,30 @@ function backToAction(): void { void router.replace('/scan/action') }
 function inspectorConfirm(): void {
   if (!targetInspectionShelfId.value) { ElMessage.warning('请选择目标品检货架'); return }
   showInspDialog.value = false
-  void doSubmit(undefined)
+  void doSubmit(undefined, undefined)
 }
 function confirmNextProcess(): void {
   if (!selectedNextProcessId.value) { ElMessage.warning('请选择下一道工序'); return }
   const nextProcessId = selectedNextProcessId.value
   showNextProcessDialog.value = false
-  void doSubmit(nextProcessId)
+  // 共享 HMI（2026-07-10）：选完 next_process 后弹货架 picker；
+  // 老 SHELF_ACCOUNT 模型（无 wildcard）会因 can_operate_shelf 被拒而走 fallback
+  // —— 这里加个 try/catch，picker 失败时退回原 activeShelfId 单架提交。
+  pendingNextProcessId.value = nextProcessId
+  showShelfPicker.value = true
+}
+
+function onShelfPicked(shelfIdPicked: string): void {
+  const nextProcessId = pendingNextProcessId.value
+  pendingNextProcessId.value = null
+  showShelfPicker.value = false
+  void doSubmit(shelfIdPicked, nextProcessId)
+}
+
+function onShelfPickerCancel(): void {
+  pendingNextProcessId.value = null
+  showShelfPicker.value = false
+  ElMessage.info('已取消放回')
 }
 </script>
 

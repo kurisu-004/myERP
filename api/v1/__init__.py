@@ -22,6 +22,8 @@ api_router.include_router(user.router)
 # 货架：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER-only）两个并列 router
 api_router.include_router(shelf.read_router)
 api_router.include_router(shelf.write_router)
+# 共享 HMI picker 路由（任意已登录，含 SHELF_ACCOUNT 共享账号；2026-07-10）
+api_router.include_router(shelf.picker_router)
 # 客户管理：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER+CLERK）两个并列 router
 api_router.include_router(customer.read_router)
 api_router.include_router(customer.write_router)

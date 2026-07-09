@@ -46,8 +46,8 @@
 
       <div v-else-if="parts.length === 0" class="empty-block">
         <el-icon :size="60" color="#c0c4cc"><Box /></el-icon>
-        <h3>当前货架无可领件</h3>
-        <p>该工种在生产货架 {{ activeShelfCode || shelfId || '?' }} 上没有匹配「下一道工序」的零件。</p>
+        <h3>当前工种无可领件</h3>
+        <p>该工种在所有生产货架上没有匹配「下一道工序」的零件。</p>
         <el-button @click="refresh" type="primary">刷新</el-button>
         <el-button @click="backToAction">返回</el-button>
       </div>
@@ -55,9 +55,9 @@
       <div v-else>
         <div class="parts-header">
           <el-icon :size="24"><Box /></el-icon>
-          <span class="parts-header-text">可领件列表</span>
+          <span class="parts-header-text">可领件列表（按货架分组）</span>
           <el-tag type="info" effect="plain" size="large" class="count-tag">
-            共 {{ parts.length }} 件
+            共 {{ parts.length }} 件 / {{ shelfGroups.length }} 架
           </el-tag>
           <el-button :icon="Refresh" circle size="small" @click="refresh" />
         </div>
@@ -67,54 +67,69 @@
           <span class="confirm-text">
             已选 <strong>{{ selectedPart.serial_no || selectedPart.drawing_no }}</strong>
             · {{ selectedPart.name }}
+            · 当前所在 {{ selectedPart.shelf_code || '?' }}
             · 请扫描该零件的序列号条码确认
           </span>
           <el-button size="small" @click="cancelSelect">取消选择</el-button>
         </div>
 
-        <div class="parts-list">
-          <el-card
-            v-for="(p, idx) in parts"
-            :key="p.id"
-            shadow="hover"
-            class="part-row"
-            :class="{
-              'is-selected': selectedPart?.id === p.id,
-              'is-urgent': p.is_urgent,
-            }"
-            @click="onSelect(p)"
+        <div class="shelf-groups">
+          <div
+            v-for="group in shelfGroups"
+            :key="group.shelfId"
+            class="shelf-group"
           >
-            <div class="part-row-left">
-              <span class="part-index">{{ idx + 1 }}</span>
-              <div class="part-info">
-                <div class="part-line-1">
-                  <span class="serial-no">{{ p.serial_no || p.drawing_no }}</span>
-                  <el-tag v-if="p.is_urgent" type="danger" size="small" effect="dark" class="urgent-pulse">加急</el-tag>
-                  <el-tag :type="deliveryUrgencyTag(p.planned_delivery_date)" size="small" effect="plain">
-                    {{ formatDate(p.planned_delivery_date) }}
-                  </el-tag>
-                  <span class="days-left" :class="deliveryUrgencyClass(p.planned_delivery_date)">
-                    {{ daysLeftText(p.planned_delivery_date) }}
-                  </span>
-                </div>
-                <div class="part-line-2">
-                  <span class="part-name">{{ p.name }}</span>
-                  <span v-if="p.customer_path" class="customer">· {{ p.customer_path }}</span>
-                </div>
-                <div class="part-line-3">
-                  <span class="qty">× {{ p.quantity }}</span>
-                  <span class="drawing">· 图号 {{ p.drawing_no }}</span>
-                  <span v-if="p.worker_name" class="holder">· 当前持有: {{ p.worker_name }}</span>
-                </div>
-              </div>
+            <div class="shelf-group-header">
+              <el-icon><Box /></el-icon>
+              <span class="shelf-code">{{ group.shelfCode || group.shelfId }}</span>
+              <el-tag size="small" type="info" effect="plain">
+                {{ group.parts.length }} 件
+              </el-tag>
             </div>
-            <div class="part-row-right">
-              <el-button text size="small" type="info" @click.stop="onPreview(p)">
-                <el-icon><View /></el-icon>预览
-              </el-button>
-              <el-button type="primary" plain size="small">选 中</el-button>
+            <div class="parts-list">
+              <el-card
+                v-for="(p, idx) in group.parts"
+                :key="p.id"
+                shadow="hover"
+                class="part-row"
+                :class="{
+                  'is-selected': selectedPart?.id === p.id,
+                  'is-urgent': p.is_urgent,
+                }"
+                @click="onSelect(p)"
+              >
+                <div class="part-row-left">
+                  <span class="part-index">{{ idx + 1 }}</span>
+                  <div class="part-info">
+                    <div class="part-line-1">
+                      <span class="serial-no">{{ p.serial_no || p.drawing_no }}</span>
+                      <el-tag v-if="p.is_urgent" type="danger" size="small" effect="dark" class="urgent-pulse">加急</el-tag>
+                      <el-tag :type="deliveryUrgencyTag(p.planned_delivery_date)" size="small" effect="plain">
+                        {{ formatDate(p.planned_delivery_date) }}
+                      </el-tag>
+                      <span class="days-left" :class="deliveryUrgencyClass(p.planned_delivery_date)">
+                        {{ daysLeftText(p.planned_delivery_date) }}
+                      </span>
+                    </div>
+                    <div class="part-line-2">
+                      <span class="part-name">{{ p.name }}</span>
+                      <span v-if="p.customer_path" class="customer">· {{ p.customer_path }}</span>
+                    </div>
+                    <div class="part-line-3">
+                      <span class="qty">× {{ p.quantity }}</span>
+                      <span class="drawing">· 图号 {{ p.drawing_no }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="part-row-right">
+                  <el-button text size="small" type="info" @click.stop="onPreview(p)">
+                    <el-icon><View /></el-icon>预览
+                  </el-button>
+                  <el-button type="primary" plain size="small">选 中</el-button>
+                </div>
+              </el-card>
             </div>
-          </el-card>
+          </div>
         </div>
       </div>
     </div>
@@ -162,7 +177,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeMount, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -180,19 +195,43 @@ import Barcode from '@/components/Barcode.vue'
 import { useScanSession } from '@/composables/useScanSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useAuthSession } from '@/composables/useAuthSession'
-import { listPartsByWorkType, pickUpPart, type PartItem } from '@/api/parts'
+import { listPartsByWorkTypeAllShelves, pickUpPart, type PartItem } from '@/api/parts'
 
 const router = useRouter()
 const { worker, requireWorker } = useScanSession()
 const { onScan } = useBarcodeScanner()
+// 共享 HMI（2026-07-10）：activeShelfId 仅用于 pick-up 提交时确定 shelf_id 入参；
+// 列表展示已切到 listPartsByWorkTypeAllShelves（不绑架）。
 const { activeShelfId } = useAuthSession()
 
 const shelfId = ref<string>('')
-const activeShelfCode = ref<string>('')
 const parts = ref<PartItem[]>([])
 const loadingList = ref(false)
 const selectedPart = ref<PartItem | null>(null)
 const submitting = ref(false)
+
+// 按 current_holder_id 分组（每组对应一个货架）
+interface ShelfGroup {
+  shelfId: string
+  shelfCode: string | null
+  parts: PartItem[]
+}
+const shelfGroups = computed<ShelfGroup[]>(() => {
+  const map = new Map<string, ShelfGroup>()
+  for (const p of parts.value) {
+    if (!p.current_holder_id) continue
+    const key = p.current_holder_id
+    if (!map.has(key)) {
+      map.set(key, {
+        shelfId: key,
+        shelfCode: p.shelf_code ?? null,
+        parts: [],
+      })
+    }
+    map.get(key)!.parts.push(p)
+  }
+  return Array.from(map.values())
+})
 
 // --- 预览 ---
 const showPreview = ref(false)
@@ -249,10 +288,11 @@ onBeforeMount(async () => {
 })
 
 async function refresh(): Promise<void> {
-  if (!worker.value?.work_type_id || !shelfId.value) return
+  if (!worker.value?.work_type_id) return
   loadingList.value = true
   try {
-    parts.value = await listPartsByWorkType(worker.value.work_type_id, shelfId.value)
+    // 共享 HMI（2026-07-10）：跨架列表，按 current_holder_id 在前端分组
+    parts.value = await listPartsByWorkTypeAllShelves(worker.value.work_type_id)
   } catch (e) {
     ElMessage.error((e as Error).message ?? '加载列表失败')
   } finally {
@@ -286,12 +326,19 @@ async function onScanCode(rawCode: string): Promise<void> {
     ElMessage.error(`扫码与选中件不匹配 (期望 ${selectedPart.value.serial_no}, 扫到 ${code})`)
     return
   }
-  if (!worker.value || !shelfId.value) return
+  if (!worker.value) return
+  // 共享 HMI：用选中件的实际 current_holder_id（来自跨架列表）作为 pick-up 提交 shelf_id；
+  // 老 SHELF_ACCOUNT 模型下若没选过件 → 走 activeShelfId 兜底。
+  const useShelfId = selectedPart.value.current_holder_id || shelfId.value
+  if (!useShelfId) {
+    ElMessage.error('未找到零件所在货架信息')
+    return
+  }
   submitting.value = true
   try {
     await pickUpPart({
       serial_no: code,
-      shelf_id: shelfId.value,
+      shelf_id: useShelfId,
       badge_code: worker.value.badge_code,
     })
     ElMessage.success(`已领取: ${code}`)
@@ -379,6 +426,31 @@ function backToAction(): void {
 }
 
 .parts-list { display: flex; flex-direction: column; gap: 10px; }
+.shelf-groups { display: flex; flex-direction: column; gap: 18px; }
+.shelf-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fafbfc;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.shelf-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #303133;
+  font-weight: 600;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #ebeef5;
+}
+.shelf-code {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 16px;
+  color: #409eff;
+  font-weight: 700;
+}
 .part-row {
   display: flex !important;
   align-items: center;

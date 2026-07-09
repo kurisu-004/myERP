@@ -13,10 +13,11 @@
 from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_shelf_process_service, get_shelf_service
-from core.permission import require_role, require_roles
+from core.permission import require_auth, require_role, require_roles
 from model.enums import ShelfZone, UserRole
 from schema.shelf import (
     ShelfCreateRequest,
+    ShelfForReturnListOut,
     ShelfListOut,
     ShelfListQuery,
     ShelfOut,
@@ -71,6 +72,33 @@ async def list_shelf_processes(
     svc: ShelfProcessService = Depends(get_shelf_process_service),
 ) -> ShelfWithProcessesOut:
     return await svc.list_for_shelf(shelf_id)
+
+
+# ============================================================
+# 共享 HMI picker 路由（任意已登录用户可调，含 SHELF_ACCOUNT 共享账号）
+# 2026-07-10：RETURN 流程卡片网格 picker 数据源
+# ============================================================
+picker_router = APIRouter(
+    prefix="/shelves",
+    tags=["货架管理(HMI picker)"],
+    dependencies=[Depends(require_auth())],
+)
+
+
+@picker_router.get(
+    "/for-return",
+    response_model=ShelfForReturnListOut,
+    summary=(
+        "共享 HMI RETURN 卡片网格 picker：列出可放目标货架 + 系统推荐。"
+        "候选 = active PRODUCTION ∩ 映射了 next_process_id；"
+        "按 current_load ASC 排序，top-1 标 is_recommended。"
+    ),
+)
+async def list_shelves_for_return(
+    next_process_id: int = Query(..., description="目标工序 id（RETURN 时选定）"),
+    svc: ShelfService = Depends(get_shelf_service),
+) -> ShelfForReturnListOut:
+    return await svc.list_for_return(next_process_id)
 
 
 # ============================================================

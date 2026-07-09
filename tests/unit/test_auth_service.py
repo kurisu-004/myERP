@@ -519,3 +519,133 @@ class TestMe:
         mock_build.assert_not_called()
         assert exc_info.value.code == ErrCode.BIZ_AUTH_INVALID
         assert exc_info.value.http_status == 401
+
+
+# =============================================================================
+# 2026-07-10 共享 HMI：_has_wildcard_shelf_account 判定 + login 写入 JWT
+# =============================================================================
+class TestHasWildcardShelfAccount:
+    """`AuthService._has_wildcard_shelf_account` 判定逻辑。
+
+    行为契约：
+    - 任一 SHELF_ACCOUNT 行 scope_id IS NULL → True（wildcard）
+    - 所有 SHELF_ACCOUNT 行都 scope_id 实际值 → False（锁单架）
+    - 没有 SHELF_ACCOUNT 行 → False
+    """
+
+    def test_no_shelf_account_role(self) -> None:
+        from service.auth import AuthService
+
+        roles: list[TUserRole] = []
+        assert AuthService._has_wildcard_shelf_account(roles) is False
+
+    def test_scoped_shelf_account_only(self) -> None:
+        from service.auth import AuthService
+
+        roles = [
+            TUserRole(
+                id=1, user_id=1, role=UserRole.SHELF_ACCOUNT.value,
+                scope_type="shelf", scope_id=100,
+                created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            )
+        ]
+        assert AuthService._has_wildcard_shelf_account(roles) is False
+
+    def test_wildcard_shelf_account(self) -> None:
+        from service.auth import AuthService
+
+        roles = [
+            TUserRole(
+                id=1, user_id=1, role=UserRole.SHELF_ACCOUNT.value,
+                scope_type="shelf", scope_id=None,
+                created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            )
+        ]
+        assert AuthService._has_wildcard_shelf_account(roles) is True
+
+    def test_mixed_wildcard_and_scoped(self) -> None:
+        from service.auth import AuthService
+
+        roles = [
+            TUserRole(
+                id=1, user_id=1, role=UserRole.SHELF_ACCOUNT.value,
+                scope_type="shelf", scope_id=100,
+                created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            ),
+            TUserRole(
+                id=2, user_id=1, role=UserRole.SHELF_ACCOUNT.value,
+                scope_type="shelf", scope_id=None,
+                created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            ),
+        ]
+        # 任一 NULL scope 就足够触发 wildcard
+        assert AuthService._has_wildcard_shelf_account(roles) is True
+
+    def test_non_shelf_account_role_with_null_scope(self) -> None:
+        """非 SHELF_ACCOUNT 的 scope_id=NULL 不算 wildcard（其他 role 本来就无 scope）。"""
+        from service.auth import AuthService
+
+        roles = [
+            TUserRole(
+                id=1, user_id=1, role=UserRole.MANAGER.value,
+                scope_type=None, scope_id=None,
+                created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            )
+        ]
+        assert AuthService._has_wildcard_shelf_account(roles) is False
+
+
+class TestCanOperateShelfWildcard:
+    """`CurrentUser.can_operate_shelf` 接受 `shelf_wildcard=True` 放行任意架。"""
+
+    def test_wildcard_user_any_shelf(self) -> None:
+        from core.permission import CurrentUser
+
+        u = CurrentUser(
+            id=1, username="hmi", full_name="车间 HMI", is_active=True,
+            roles=(UserRole.SHELF_ACCOUNT.value,),
+            shelf_ids=(),  # 空 = 没有具体 scope
+            shelf_wildcard=True,
+        )
+        # 任意 shelf_id 都通过
+        assert u.can_operate_shelf(100) is True
+        assert u.can_operate_shelf(200) is True
+        assert u.can_operate_shelf(0) is True
+
+    def test_scoped_user_only_listed_shelves(self) -> None:
+        from core.permission import CurrentUser
+
+        u = CurrentUser(
+            id=1, username="op", full_name="工人", is_active=True,
+            roles=(UserRole.SHELF_ACCOUNT.value,),
+            shelf_ids=(100,),
+            shelf_wildcard=False,
+        )
+        assert u.can_operate_shelf(100) is True
+        assert u.can_operate_shelf(200) is False  # 不在列表里
+
+    def test_wildcard_default_false_preserves_legacy(self) -> None:
+        """不传 shelf_wildcard = False（兼容历史 JWT 解码路径）。"""
+        from core.permission import CurrentUser
+
+        u = CurrentUser(
+            id=1, username="op", full_name="工人", is_active=True,
+            roles=(UserRole.SHELF_ACCOUNT.value,),
+            shelf_ids=(100,),
+        )
+        # 默认 False → 仍是锁单架行为
+        assert u.shelf_wildcard is False
+        assert u.can_operate_shelf(100) is True
+        assert u.can_operate_shelf(200) is False
+
+    def test_manager_always_operates_any_shelf(self) -> None:
+        """MANAGER 越权兜底（与 wildcard 无关）。"""
+        from core.permission import CurrentUser
+
+        u = CurrentUser(
+            id=1, username="mgr", full_name="管理员", is_active=True,
+            roles=(UserRole.MANAGER.value,),
+            shelf_ids=(),
+            shelf_wildcard=False,
+        )
+        assert u.can_operate_shelf(999) is True

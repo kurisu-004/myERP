@@ -76,6 +76,37 @@ class ShelfProcessRepository:
         result = await self.session.execute(stmt)
         return [int(pid) for pid in result.scalars().all()]
 
+    async def list_mapped_process_codes_by_shelf_ids(
+        self, shelf_ids: list[int]
+    ) -> dict[int, list[str]]:
+        """批量取每架的 mapped process code 列表（按 sort_order 排）。
+
+        Returns: `{shelf_id: [process_code, ...]}`；传入 id 不在结果中时为空 list。
+        共享 HMI picker 用：service 一次性拿所有候选架的工序 code 列表，
+        避免 N+1。
+        """
+        out: dict[int, list[str]] = {sid: [] for sid in shelf_ids}
+        if not shelf_ids:
+            return out
+        from model import TProcess
+
+        stmt = (
+            select(TShelfProcess.shelf_id, TProcess.code)
+            .join(TProcess, TProcess.id == TShelfProcess.process_id)
+            .where(
+                TShelfProcess.shelf_id.in_(shelf_ids),
+                TShelfProcess.deleted_at.is_(None),
+            )
+            .order_by(
+                TShelfProcess.shelf_id.asc(),
+                TShelfProcess.sort_order.asc(),
+            )
+        )
+        result = await self.session.execute(stmt)
+        for shelf_id, code in result.all():
+            out[int(shelf_id)].append(code)
+        return out
+
     # ===== 集合替换（Manager 维护映射用）=====
     async def delete_by_shelf(self, shelf_id: int) -> None:
         """把某货架的全部映射置为软删。

@@ -181,6 +181,38 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_work_type_all_shelves(
+        self,
+        *,
+        mapped_process_ids: list[int],
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """共享 HMI PICK_UP 跨架列表：列出**所有**生产货架上、由某工种可领的零件。
+
+        与 `list_for_work_type` 的唯一差异：去掉 `current_holder_id == shelf_id`
+        过滤，前端按 `current_holder_id` 在卡片网格里分组。
+        排序与前者一致。
+        """
+        if not mapped_process_ids:
+            return []
+        stmt = (
+            select(TPart)
+            .where(
+                TPart.status == "IN_PROCESS",
+                TPart.location == "PRODUCTION_SHELF",
+                TPart.next_process_id.in_(mapped_process_ids),
+            )
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 申请人引用计数（软删前 BIZ_APPLICANT_IN_USE 校验）=====
     async def count_by_applicant_name_in_customers(
         self,
@@ -203,6 +235,33 @@ class PartRepository:
             stmt = stmt.where(TPart.deleted_at.is_(None))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
+
+    # ===== 在架件数批量统计（共享 HMI picker current_load）=====
+    async def get_load_map_by_shelf_ids(
+        self, shelf_ids: list[int]
+    ) -> dict[int, int]:
+        """批量取每架的 `current_load`（status=IN_PROCESS + location=PRODUCTION_SHELF 的件数）。
+
+        Returns: `{shelf_id: count}`；传入 id 不在结果中时返回 0。
+        service 层给每张卡片填 current_load。
+        """
+        out: dict[int, int] = {sid: 0 for sid in shelf_ids}
+        if not shelf_ids:
+            return out
+        stmt = (
+            select(TPart.current_holder_id, func.count(TPart.id))
+            .where(
+                TPart.current_holder_id.in_(shelf_ids),
+                TPart.status == "IN_PROCESS",
+                TPart.location == "PRODUCTION_SHELF",
+                TPart.deleted_at.is_(None),
+            )
+            .group_by(TPart.current_holder_id)
+        )
+        result = await self.session.execute(stmt)
+        for shelf_id, count in result.all():
+            out[int(shelf_id)] = int(count)
+        return out
 
     # ===== 内部 =====
     def _build_filter_stmt(

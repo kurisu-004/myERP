@@ -72,6 +72,7 @@ class AuthService:
 
         role_values = [r.role for r in roles]
         shelf_ids = await self._resolve_active_shelf_ids(roles)
+        shelf_wildcard = self._has_wildcard_shelf_account(roles)
         menus_tree = await build_menu_tree(self.menus, role_values)
 
         token = create_access_token(
@@ -79,6 +80,7 @@ class AuthService:
             username=u.username,
             roles=role_values,
             shelf_ids=shelf_ids,
+            extra={"shelf_wildcard": shelf_wildcard},
         )
         # 更新最近登录时间
         await self.users.touch_login(u)
@@ -133,3 +135,18 @@ class AuthService:
                 continue
             ids.append(int(shelf.id))
         return ids
+
+    @staticmethod
+    def _has_wildcard_shelf_account(roles: list[TUserRole]) -> bool:
+        """共享 HMI 场景：账号有任一 SHELF_ACCOUNT 行 scope_id IS NULL
+        → 该账号意图覆盖车间所有 PRODUCTION 货架（不绑死单架）。
+
+        写入 JWT payload `shelf_wildcard` 字段，permission 层
+        `CurrentUser.can_operate_shelf` 据此放行任意 shelf_id。
+        """
+        return any(
+            r.role == UserRole.SHELF_ACCOUNT.value
+            and r.scope_type == "shelf"
+            and r.scope_id is None
+            for r in roles
+        )

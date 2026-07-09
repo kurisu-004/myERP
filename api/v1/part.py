@@ -421,6 +421,25 @@ async def list_pickable_parts_by_work_type(
 ) -> list[PartOut]:
     return await svc.list_pickable_parts(work_type_id, shelf_id)
 
+
+# 共享 HMI PICK_UP 跨架列表（2026-07-10）
+@router.get(
+    "/pickable-by-work-type/{work_type_id}",
+    response_model=list[PartOut],
+    summary="共享 HMI PICK_UP 跨架列表：所有生产货架上某工种可领的零件",
+    description=(
+        "按工种 id 列出**所有**生产货架上、下一道工序属于该工种映射的零件。"
+        "前端按 `current_holder_id` 在卡片网格里分组；不传 shelf_id。"
+        "用于共享工控机场景：工人刷工牌后看到所有候选架的分组列表。"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def list_pickable_parts_by_work_type_all_shelves(
+    work_type_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> list[PartOut]:
+    return await svc.list_pickable_parts_all_shelves(work_type_id)
+
 # ============================================================
 # 双面打印 PDF（图纸 + 反面条形码）
 # ============================================================

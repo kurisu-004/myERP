@@ -40,6 +40,7 @@ def _make_shelf(
     location: str | None = "一楼东侧",
     is_active: bool = True,
     deleted_at: datetime | None = None,
+    display_order: int = 0,
 ) -> TShelf:
     """Build a TShelf instance without a real DB session.
 
@@ -54,6 +55,7 @@ def _make_shelf(
         location=location,
         is_active=is_active,
         deleted_at=deleted_at,
+        display_order=display_order,
         created_at=datetime(2026, 1, 1),
         updated_at=datetime(2026, 1, 1),
     )
@@ -477,3 +479,172 @@ class TestSoftDeleteShelf:
         mock_shelves.get_by_id.assert_awaited_once_with(999)
         mock_shelves.soft_delete.assert_not_awaited()
         service._account_count_map.assert_not_awaited()
+
+
+# =============================================================================
+# 2026-07-10 共享 HMI RETURN picker（list_for_return）
+# =============================================================================
+class TestListForReturn:
+    """`ShelfService.list_for_return(next_process_id)`：RETURN 卡片网格 picker 数据源。
+
+    行为契约：
+    - 候选 = active PRODUCTION ∩ 映射了 next_process_id
+    - 排序：current_load ASC, display_order ASC, code ASC
+    - 标记：top-1 is_recommended=True，recommended_shelf_id=top-1.id
+    - 错误：process 不存在 / 没有候选架 → BIZ_*
+    """
+
+    @pytest.fixture
+    def svc_with_picker(
+        self,
+        mock_shelves: ShelfRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> ShelfService:
+        """带 parts/processes/shelf_process 三个 repo 的 service（list_for_return 必用）。"""
+        from repository.part import PartRepository
+        from repository.process import ProcessRepository
+        from repository.shelf_process import ShelfProcessRepository
+
+        parts = PartRepository.__new__(PartRepository)
+        processes = ProcessRepository.__new__(ProcessRepository)
+        shelf_process = ShelfProcessRepository.__new__(ShelfProcessRepository)
+        parts.get_load_map_by_shelf_ids = AsyncMock()
+        processes.get_by_id = AsyncMock()
+        shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock()
+        svc = ShelfService(
+            shelves=mock_shelves,
+            user_roles=mock_user_roles,
+            parts=parts,
+            processes=processes,
+            shelf_process=shelf_process,
+        )
+        svc._account_count_map = AsyncMock(return_value={})
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_no_candidate_raises(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """没有 active PRODUCTION 架 → BIZ_SHELF_NO_MATCH_FOR_PROCESS。"""
+        from model.process import TProcess
+        from model.enums import ShelfZone
+
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc  # type: ignore[union-attr]
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[])  # type: ignore[union-attr]
+
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_return(10)
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+        assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_no_mapped_shelf_raises(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """有架但都没映射 next_process → BIZ_SHELF_NO_MATCH_FOR_PROCESS。"""
+        from model.process import TProcess
+
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc  # type: ignore[union-attr]
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[  # type: ignore[union-attr]
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+        ])
+        # 两架都没映射"车"
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={  # type: ignore[union-attr]
+            1: ["铣", "磨"],
+            2: ["CNC"],
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0})  # type: ignore[union-attr]
+
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_return(10)
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+
+    @pytest.mark.asyncio
+    async def test_recommend_least_loaded(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """多候选 → current_load 最小的 = 推荐。"""
+        from model.process import TProcess
+
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc  # type: ignore[union-attr]
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[  # type: ignore[union-attr]
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+            _make_shelf(id=3, code="PROD-C1", display_order=3),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={  # type: ignore[union-attr]
+            1: ["车", "铣"],
+            2: ["车"],
+            3: ["车", "CNC"],
+        })
+        # B1 架最空 → 推荐
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 5, 2: 1, 3: 3})  # type: ignore[union-attr]
+
+        result = await svc_with_picker.list_for_return(10)
+
+        assert len(result.items) == 3
+        assert result.recommended_shelf_id == "2"  # B1 最空
+        assert result.items[0].code == "PROD-B1"
+        assert result.items[0].is_recommended is True
+        # 排序：B1(1) < C1(3) < A1(5)
+        assert [s.code for s in result.items] == ["PROD-B1", "PROD-C1", "PROD-A1"]
+
+    @pytest.mark.asyncio
+    async def test_filter_unmapped_shelves(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """未映射 next_process 的架不进入候选。"""
+        from model.process import TProcess
+
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc  # type: ignore[union-attr]
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[  # type: ignore[union-attr]
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={  # type: ignore[union-attr]
+            1: ["车"],
+            2: ["铣", "磨"],  # B1 没映射"车" → 不进候选
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0})  # type: ignore[union-attr]
+
+        result = await svc_with_picker.list_for_return(10)
+
+        assert len(result.items) == 1
+        assert result.items[0].code == "PROD-A1"
+        assert result.recommended_shelf_id == "1"
+
+    @pytest.mark.asyncio
+    async def test_process_not_found_raises(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        from core.exception import BizError
+        from core.error_code import ErrCode
+        from fastapi import status as http_status
+
+        svc_with_picker.processes.get_by_id.return_value = None  # type: ignore[union-attr]
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_return(999)
+        assert exc.value.code == ErrCode.BIZ_PROCESS_NOT_FOUND
+        assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
+
+
+def _make_process_obj(id: int, code: str, name: str):
+    """构造轻量 TProcess 替身（不需要真 DB session）。"""
+    from model.process import TProcess
+
+    p = TProcess(
+        id=id, code=code, name=name,
+        category="INHOUSE", is_inspection=False,
+        sort_order=0, description=None,
+    )
+    return p

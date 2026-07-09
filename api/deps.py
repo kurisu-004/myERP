@@ -81,6 +81,35 @@ def get_menu_repo(
     return MenuRepository(session)
 
 
+def get_part_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PartRepository:
+    """图纸打印 / 打印 service 共用的 PartRepository 工厂。
+
+    2026-07-10 起也被 `get_shelf_service` 引用（list_for_return 拿 current_load），
+    故前置到此避免模块加载顺序问题。
+    """
+    return PartRepository(session)
+
+
+def get_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> ProcessRepository:
+    """2026-07-10 起被 `get_shelf_service` 引用（list_for_return 校验 next_process_id），
+    故前置到此避免模块加载顺序问题。
+    """
+    return ProcessRepository(session)
+
+
+def get_shelf_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> ShelfProcessRepository:
+    """2026-07-10 起被 `get_shelf_service` 引用（list_for_return 取 mapped process codes），
+    故前置到此避免模块加载顺序问题。
+    """
+    return ShelfProcessRepository(session)
+
+
 def get_auth_service(
     users: UserRepository = Depends(get_user_repo),
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
@@ -106,10 +135,22 @@ def get_user_service(
 def get_shelf_service(
     shelves: ShelfRepository = Depends(get_shelf_repo),
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
+    parts: PartRepository = Depends(get_part_repository),
+    processes: ProcessRepository = Depends(get_process_repo),
+    shelf_process: ShelfProcessRepository = Depends(get_shelf_process_repo),
     user: CurrentUser = Depends(get_current_user),
 ) -> ShelfService:
+    """注入 ShelfService；2026-07-10 起 list_for_return 需要 parts/processes/
+    shelf_process 三个 repo（共享 HMI RETURN picker）。CRUD 流用不到，但
+    注入是 cheap（无 IO），不区分。
+    """
     return ShelfService(
-        shelves=shelves, user_roles=user_roles, current_user=user,
+        shelves=shelves,
+        user_roles=user_roles,
+        parts=parts,
+        processes=processes,
+        shelf_process=shelf_process,
+        current_user=user,
     )
 
 
@@ -179,22 +220,10 @@ def get_work_type_repo(
     return WorkTypeRepository(session)
 
 
-def get_process_repo(
-    session: AsyncSession = Depends(get_session),
-) -> ProcessRepository:
-    return ProcessRepository(session)
-
-
 def get_work_type_process_repo(
     session: AsyncSession = Depends(get_session),
 ) -> WorkTypeProcessRepository:
     return WorkTypeProcessRepository(session)
-
-
-def get_shelf_process_repo(
-    session: AsyncSession = Depends(get_session),
-) -> ShelfProcessRepository:
-    return ShelfProcessRepository(session)
 
 
 def get_shelf_process_service(

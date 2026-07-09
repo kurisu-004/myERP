@@ -71,6 +71,26 @@ class ShelfRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_active_production_ordered(self) -> list[TShelf]:
+        """共享 HMI picker 用：按 `(display_order ASC, code ASC)` 列出所有
+        active PRODUCTION 架。
+
+        `list_active_by_zone('PRODUCTION')` 按 code 字母序；这里新增
+        `display_order` 排序键，使卡片网格按物理顺序铺（manager 在
+        ShelfList 后台手填 display_order）。
+        """
+        stmt = (
+            select(TShelf)
+            .where(
+                TShelf.zone == "PRODUCTION",
+                TShelf.is_active.is_(True),
+                TShelf.deleted_at.is_(None),
+            )
+            .order_by(TShelf.display_order.asc(), TShelf.code.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 列表 =====
     async def list_with_filters(
         self,

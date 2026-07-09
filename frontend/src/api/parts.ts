@@ -305,6 +305,21 @@ export async function listPartsByWorkType(
 }
 
 /**
+ * 共享 HMI PICK_UP 跨架列表（2026-07-10）。
+ * 列出**所有**生产货架上、该工种可领的零件；前端按 `current_holder_id`
+ * 在卡片网格里分组。
+ * 排序与 `listPartsByWorkType` 一致。
+ */
+export async function listPartsByWorkTypeAllShelves(
+  workTypeId: string,
+): Promise<PartItem[]> {
+  const resp = await api.get<PartItem[]>(
+    `/parts/pickable-by-work-type/${encodeURIComponent(workTypeId)}`,
+  )
+  return resp.data
+}
+
+/**
  * 生成零件的双面打印 PDF（图纸 + 反面右下角条形码）。
  * 返回 Blob，content-type=application/pdf。
  *
