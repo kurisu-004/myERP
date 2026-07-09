@@ -662,10 +662,10 @@ myERP/
 │
 ├── alembic/
 │   ├── env.py                     # 异步迁移上下文（target_metadata=Base.metadata）
-│   └── versions/
-│       ├── 000000000001_init_schema.py    # 初始全部 DDL
-│       ├── 000000000002_init_seed.py      # 初始种子数据
-│       └── 000000000003_cnc_programming.py # t_cnc_program + 种子菜单/账号
+│   └── versions/                  # 3 层目录（schema/dev_data/prod_data，详见 §15）
+│       ├── schema/                # 纯 DDL：001-005 + 013
+│       ├── dev_data/              # dev 种子：006-011
+│       └── prod_data/             # 生产种子：012 + 014
 │
 ├── frontend/                      # Vue 3 + Vite + TypeScript + Element Plus（见 §前端架构）
 │   └── src/
@@ -1039,6 +1039,23 @@ ON_SHELF 和 WITH_WORKER 共享 DB status="IN_PROCESS"，通过 location 列区�
 
 ---
 
+14. **2026-07-09 一级客户序列号前缀（A-Z）可编辑 + t_serial_counter 预置 26 行（修 20108 BIZ_SERIAL_PREFIX_UNKNOWN）**：
+    - **新功能**
+      - `t_customer` 新增 `serial_prefix String(1) nullable`（schema/013）：一级客户必填 A-Z 单字符，叶子客户 NULL 继承父。
+      - DB 层：`ck_t_customer_serial_prefix_uppercase`（`serial_prefix IS NULL OR serial_prefix ~ '^[A-Z]$'`）+ 部分唯一索引 `uq_t_customer_root_prefix`（仅约束未软删的根客户，避免二级或已删的客户干扰）。
+      - 历史回填：迁移 013 内置 `UPDATE` 把 法拉电子/路达/宏发 三个一级客户的 prefix 分别置 F/L/H（与原 `PARENT_TO_CODE` 兜底一致）。
+      - `t_serial_counter` 预置 A-Z 全 26 行（prod_data/014）：`INSERT ... SELECT chr(ascii('A') + i), 0 FROM generate_series(0, 25) i ON CONFLICT DO NOTHING`，幂等。任意字母可立即用，**不再触发 20108**。
+      - 后端新增 `core.serial.resolve_root_prefix(root_customer)` helper：DB 列优先，`PARENT_TO_CODE` 兜底（保留兼容回退，已标 deprecated）。所有 4 个 `acquire_serial(prefix)` 调用点（`service/part.py::create_part` + `create_parts_batch` 缓存键改为 root_id；`service/assembly.py::create_assembly` + `upload_total_pdf` + `add_child`）统一改用 helper，无新 DB 调用。
+      - `CustomerService.create_customer`：一级客户未带 `serial_prefix` → `BIZ_INVALID_VALUE 400`；叶子客户忽略 payload 里的 `serial_prefix`。
+      - `CustomerService.update_customer`：仅在 payload 显式给出非 None 时更新；DB `IntegrityError`（撞部分唯一索引）→ `BIZ_INVALID_VALUE 409`。
+      - 前端 `CustomerList.vue` 弹窗新增 `序列号前缀` `el-select` A-Z（`el-form-item`，运行时生成 26 个 option 而非硬编码）；仅一级客户启用 + 必填，叶子客户禁用。树行根节点名前挂 `el-tag` 显示当前 prefix，未设置时显示灰色「未设置」。
+      - 权限沿用 `CustomerService` 的 MANAGER + CLERK 写权限；无新增角色约束。
+    - **修改后行为**：已生成的 `t_part.serial_no` / `t_assembly.serial_no` **不变**（列在创建时一次性写入并随状态机流转，事后不回填）；只有后续新建的零件 / 装配体会用新前缀。
+    - **约定（写入 §1 后续参考）**：任何新增的「序列号前缀」字段都应改 `t_customer.serial_prefix` + 调 `resolve_root_prefix`，**不要**再写 `PARENT_TO_CODE` 硬编码映射。`core/serial.py::code_for_parent` 标 deprecated，仅作迁移兜底保留。
+    - **端到端验证**：`uv run alembic upgrade head` 14 步线性成功；`SELECT count(*) FROM t_serial_counter` = 26；`SELECT name, serial_prefix FROM t_customer WHERE parent_id IS NULL AND deleted_at IS NULL` = 3 行 (F/L/H)。新建 root「测试客户A」prefix=G → 200；建零件 → serial_no=G1000；编辑 prefix G→Z → 200；再建零件 → serial_no=Z1000；之前 G1000 零件 serial_no 不变。`uv run pytest tests/unit` → **259 passed**；`npm run build` 通过。
+
+---
+
 ## 15. Alembic 迁移三层目录（schema / dev_data / prod_data）
 
 `alembic/versions/` 拆为 3 个子目录，每类文件一个职责；`alembic.ini` 已配 `version_locations` + `recursive_version_locations = true`，env.py 无需改。
@@ -1049,7 +1066,7 @@ ON_SHELF 和 WITH_WORKER 共享 DB status="IN_PROCESS"，通过 location 列区�
 | `dev_data/`   | dev 期种子（20 假工人 W001-W020 / 50 假零件 / 10 假装配 / 20 假客户 / 6 dev users / shelf_process 映射 / customer snowflake 重写） | dev 库（`alembic upgrade head`） |
 | `prod_data/`  | 真实员工生产种子（19 工人 + 4 用户 + 9 工种 + 20 菜单 + role_menu） | dev + prod 都需要 |
 
-### 15.1 完整 revision 链（线性，12 步，单 head = 000000000012）
+### 15.1 完整 revision 链（线性，14 步，单 head = 000000000014）
 
 ```
 schema/001 init_schema             → base
@@ -1057,6 +1074,7 @@ schema/002 cnc_program_table       → 001  (t_cnc_program DDL)
 schema/003 applicant_table         → 002  (t_applicant DDL)
 schema/004 shelf_process_table     → 003  (t_shelf_process DDL)
 schema/005 assembly_serial_no      → 004  (t_assembly.serial_no)
+schema/013 add_customer_serial_prefix → 012 (t_customer.serial_prefix + check + 部分唯一索引 + 历史 F/L/H 回填)
 
 dev_data/006 dev_seed              → 005  (init seed: work_types/processes/customers/shelves/parts/assemblies/20 假工人/12 base 菜单/4 settings 菜单/admin+proda1+prodb1+inspi1)
 dev_data/007 dev_cnc_seed          → 006  (+1 pending_programming 菜单 + clerk/cncprog 用户)
@@ -1066,19 +1084,22 @@ dev_data/010 dev_customer_snowflake→ 009  (t_customer BigSerial→snowflake，
 dev_data/011 dev_shelf_process_seed→ 010  (每架 PRODUCTION 货架自动映射全部 INHOUSE 工序)
 
 prod_data/012 prod_seed            → 011  (9 工种幂等 / 19 工人 / 4 用户 / 4 user_role / 20 菜单 / 30 role_menu)
+prod_data/014 seed_serial_counter_a_z → 013 (t_serial_counter 预置 A-Z 全 26 行，counter=0，ON CONFLICT DO NOTHING)
 ```
 
-`alembic history --rev-range =000000000001:000000000012` 验证。`alembic heads` 应只返回 1 行（`000000000012`）。
+`alembic history --rev-range =000000000001:000000000014` 验证。`alembic heads` 应只返回 1 行（`000000000014`）。
 
 ### 15.2 升级命令模板
 
 | 场景 | 命令 | 结果 |
 |------|------|------|
-| **dev 库冷启** | `uv run alembic upgrade head` | 12 步线性跑全：t_user=10, t_worker=39, t_menu=20, t_role_menu=36 + 50 假零件 / 10 假装配 / 20 假客户 / 3 dev 货架 |
-| **prod 库冷启（推荐）** | `uv run alembic upgrade 000000000005` 后 `uv run alembic stamp 000000000011` 后 `uv run alembic upgrade 000000000012` | 6 步真跑（schema 5 + prod 1）+ stamp 跳过 dev_data：t_user=4, t_worker=19, t_menu=20, t_role_menu=30（MANAGER×20+CLERK×6+CNC×4），**0 假数据** |
-| **老库升级**（已有 8 个旧迁移 001-008） | `uv run alembic stamp 000000000012` | 一次性 stamp 跳过；新链只走差异部分；旧 dev 假数据保留（schema 已对齐），prod 数据需另写导入 |
+| **dev 库冷启** | `uv run alembic upgrade head` | 14 步线性跑全：t_user=10, t_worker=39, t_menu=20, t_role_menu=36 + 50 假零件 / 10 假装配 / 20 假客户 / 3 dev 货架 / t_serial_counter=26 行 / t_customer 一级客户带 prefix |
+| **prod 库冷启（推荐）** | `uv run alembic upgrade 000000000005 && uv run alembic stamp 000000000011 && uv run alembic upgrade 000000000012 && uv run alembic upgrade 000000000013 && uv run alembic upgrade 000000000014` | 8 步真跑（schema 6 + prod 2）+ stamp 跳过 dev_data：t_user=4, t_worker=19, t_menu=20, t_role_menu=30（MANAGER×20+CLERK×6+CNC×4），**0 假数据** |
+| **老库升级**（已有 8 个旧迁移 001-008） | `uv run alembic stamp 000000000014` | 一次性 stamp 跳过；新链只走差异部分；旧 dev 假数据保留（schema 已对齐），prod 数据需另写导入 |
 
 dev_data 链依赖 schema 末端 005（而不是 base）——这是为了让 dev_seed 的 `DELETE FROM` 顶部清理在已建表的库上跑；prod_seed 在 dev_data 末端 011 之后跑，让 `ON CONFLICT` 兜底合并 dev + prod 的 role_menu/menu/user（dev users / 6 dev users 与 prod 4 users 共存）。
+
+**2026-07-09 追加 013 / 014**：013 给 `t_customer` 加 `serial_prefix` 列 + check + 部分唯一索引 + 历史 F/L/H 回填；014 给 `t_serial_counter` 预置 A-Z 全 26 行（dev / prod 都跑，保证任意字母可立即用，避免再触发 20108 BIZ_SERIAL_PREFIX_UNKNOWN）。两者 down_revision 链路：`013 → 012`（schema），`014 → 013`（prod_data），保持线性单 head。
 
 ### 15.3 prod_data 迁移内容（`alembic/versions/prod_data/000000000012_prod_seed.py`）
 
