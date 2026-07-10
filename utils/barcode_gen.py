@@ -2,7 +2,7 @@
 
 - `_make_barcode_png(data: str) -> bytes | None`：把任意字符串用 Code128 编码
   成 PNG 字节流（用于 Excel 嵌入 / PDF 嵌入）。失败返回 None。
-- 保留原 `barcode_obj.save(...)` 的 CLI 用法供本地调试。
+- `python -m utils.barcode_gen F2036` 本地 CLI 调试用法。
 """
 from __future__ import annotations
 
@@ -32,16 +32,10 @@ def _make_barcode_png(data: str) -> bytes | None:
         return None
 
 
-# 1. 定义你要编码的数据
-data_to_encode = "F2036"
-
-# 2. 创建一个 Code128 条形码对象，并指定用 ImageWriter 来生成图片
-#    ImageWriter() 是生成图片所必需的[reference:7]
-barcode_obj = barcode.Code128(data_to_encode, writer=ImageWriter())
-
-# 3. 保存条形码为图片
-#    文件将保存为 'l2014_barcode.png'
-#    save 方法会返回保存的完整文件名
-filename = barcode_obj.save('./tmp/F2036')
-
-print(f"条形码已成功生成，文件名为: {filename}")
+if __name__ == "__main__":
+    # CLI 调试用法：python -m utils.barcode_gen F2036
+    import sys
+    data_to_encode = sys.argv[1] if len(sys.argv) > 1 else "F2036"
+    barcode_obj = barcode.Code128(data_to_encode, writer=ImageWriter())
+    filename = barcode_obj.save("./tmp/" + data_to_encode)
+    print(f"条形码已成功生成，文件名为: {filename}")

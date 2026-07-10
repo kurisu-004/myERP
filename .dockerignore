@@ -25,11 +25,15 @@ dist/
 frontend/
 
 # ---------- 文档 / 数据 / 临时文件 ----------
-docs/
+# docs/ 例外：DELIVERY_NOTE_TEMPLATE_PATH 默认指向 docs/example/送货单模板.xlsx，
+# service 层 Excel 导出需要这个文件。docs/example/ 大约 3.3MB，runtime 必需。
 data/
 tmp/
 tests/
 .alembic/
+docs/**/*.md
+docs/**/.DS_Store
+docs/*.csv
 
 # ---------- 本地工具 / 编辑器 ----------
 .claude/
