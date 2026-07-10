@@ -277,13 +277,11 @@ function deliveryUrgencyTag(s: string): 'danger' | 'warning' | 'info' {
 
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
-  const sid = activeShelfId()
-  if (!sid) {
-    ElMessage.error('未找到当前货架信息')
-    await router.replace('/scan/action')
-    return
-  }
-  shelfId.value = sid
+  // 共享 HMI（wildcard，activeShelfId=null）：不绑死单架，列表走
+  // listPartsByWorkTypeAllShelves 跨架取；shelfId 仅在 pick-up 提交时作 fallback
+  // （由选中件 current_holder_id 兜底，见 onScanCode line 332）。
+  // 老 scoped HMI：shelfId 直接 = activeShelfId()。
+  shelfId.value = activeShelfId() ?? ''
   await refresh()
 })
 

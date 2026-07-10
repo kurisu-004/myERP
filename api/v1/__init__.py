@@ -48,6 +48,9 @@ api_router.include_router(drawing.file_router)
 api_router.include_router(cnc_program.child_cnc_router)
 # CNC 文件级：/cnc-programs/{id}/... (别名 → /files/{id}/...)
 api_router.include_router(cnc_program.program_router)
-# 工种 / 工序 / 映射（写 MANAGER-only；读 MANAGER+CLERK+CNC_PROGRAMMER）
-api_router.include_router(work_type.router)
-api_router.include_router(process.router)
+# 工种：读（MANAGER+CLERK+CNC_PROGRAMMER+SHELF_ACCOUNT）+ 写（MANAGER-only）
+api_router.include_router(work_type.read_router)
+api_router.include_router(work_type.write_router)
+# 工序：读（MANAGER+CLERK+CNC_PROGRAMMER+SHELF_ACCOUNT）+ 写（MANAGER-only）
+api_router.include_router(process.read_router)
+api_router.include_router(process.write_router)

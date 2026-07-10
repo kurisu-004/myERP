@@ -349,9 +349,10 @@ onBeforeMount(async () => {
   const a = slugToAction(route.query.action)
   if (a && a !== action.value) { setAction(a) } else if (!a) { void router.replace('/scan/action') }
 
-  // 取当前货架（activeShelfId 现在直接返回 string，不再 Number()）
-  const sid = activeShelfId()
-  if (sid) shelfId.value = sid
+  // 取当前货架（activeShelfId 现在直接返回 string，不再 Number()）。
+  // 共享 HMI（wildcard，sid=null）：shelfId 留空，由后续 picker 流程
+  // （INSPECT 选品检架 / RETURN 选目标架）提供 shelf_id。
+  shelfId.value = activeShelfId() ?? ''
 })
 
 const unsubscribe = onScan((code) => { if (state.value !== 'scanning') return; void addOrIgnore(code) })
@@ -363,9 +364,8 @@ function onRemove(uid: string): void { remove(uid) }
 async function onSubmit(): Promise<void> {
   if (!worker.value || !action.value) return
   if (parts.value.length === 0) return
-  if (!shelfId.value) { ElMessage.warning('未找到当前货架信息，请重新登录'); return }
 
-  // INSPECT 需要先弹窗选目标品检货架
+  // INSPECT 需要先弹窗选目标品检货架（picker 流程；wildcard HMI 也走这里）
   if (action.value === 'INSPECT') {
     inspShelves.value = (await listShelves({ zone: 'INSPECTION', is_active: true })).items
     targetInspectionShelfId.value = undefined
@@ -373,13 +373,19 @@ async function onSubmit(): Promise<void> {
     return
   }
 
-  // RETURN 需要选下一道工序（仅显示当前货架关联的工序）
+  // RETURN 需要选下一道工序（仅显示当前货架关联的工序）。
+  // wildcard HMI（shelfId 空）跳过货架映射，直接列全部工序兜底。
   if (action.value === 'RETURN') {
     try {
-      const sp = await getShelfProcesses(shelfId.value)
-      const processIds = sp.processes.map((p) => p.process_id)
+      let processIds: string[] | null = null
+      if (shelfId.value) {
+        const sp = await getShelfProcesses(shelfId.value)
+        processIds = sp.processes.map((p) => p.process_id)
+      }
       const allProcs = (await listProcesses({ limit: 200 })).items
-      processes.value = allProcs.filter((p) => processIds.includes(String(p.id)))
+      processes.value = processIds
+        ? allProcs.filter((p) => processIds!.includes(String(p.id)))
+        : allProcs
       if (processes.value.length === 0) {
         ElMessage.warning('当前货架未配置可执行的工序，请联系管理员')
         return
@@ -392,6 +398,9 @@ async function onSubmit(): Promise<void> {
     showNextProcessDialog.value = true
     return
   }
+
+  // 其它路径（实际不会被触发，ScanPartsWork 只处理 RETURN / INSPECT）
+  if (!shelfId.value) { ElMessage.warning('未找到当前货架信息，请重新登录'); return }
 
   await doSubmit(undefined)
 }

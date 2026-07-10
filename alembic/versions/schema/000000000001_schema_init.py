@@ -1,37 +1,27 @@
-"""init_schema: create all tables, columns, indexes, checks
+"""schema_init: 一次性建全部表/索引/约束（squash 合并）
 
 Revision ID: 000000000001
 Revises:
-Create Date: 2026-07-02
+Create Date: 2026-07-10
 
 说明：
-- 整合原 5 个迁移（init_schema / init_seed / user_and_shelf / menu /
-  add_part_location）的 DDL 为一个 schema 迁移。
-- **fresh-install only**：本迁移假定数据库为空。
+- 本文件是 myERP 的**唯一 schema 迁移**，把历史上分散的所有 DDL 迁移
+  （init_schema / cnc_program / applicant / shelf_process / assembly_serial_no /
+  customer_serial_prefix / unify_part_files / shelf_display_order /
+  user_refresh_token_version）合并为一份「最终 schema」。
+- **fresh-install only**：假定数据库为空。
 - **不使用物理外键**（CLAUDE.md §1）：所有跨表引用都是普通列 + 普通索引。
-- **不使用 DB ENUM**（CLAUDE.md）：t_part.status / t_assembly.status
-  全部用 `varchar(20)`，取值合法性由 Python Enum 在 service 层校验。
-- 审计字段（created_at / created_by / updated_at / updated_by / deleted_at）
-  列顺序与 model/audit.py:AuditMixin 严格对齐。
-- t_part_event 是事件流（append-only），继承 EventTimestampMixin。
-- 软删约定：默认查询 `deleted_at IS NULL`；repository 已统一加。
+- **不使用 DB ENUM**：status 等一律 varchar，合法性由 Python Enum 在 service 层校验。
+- 审计字段列顺序与 model/audit.py:AuditMixin 严格对齐。
+- t_customer.id 用 autoincrement=False（不建 sequence）：全表统一雪花 ID，
+  App 侧 default=new_id 显式传入。
+- 文件表已统一为 t_part_file（polymorphic kind），不再有 t_drawing_file /
+  t_cnc_program。
 
-表清单（共 15 张）：
-  1. t_customer       — 客户邻接表
-  2. t_part           — 零件订单（含全部列）
-  3. t_worker         — 工人
-  4. t_work_type_process — 工种↔工序 N:M 映射（子表先建）
-  5. t_process        — 工序
-  6. t_work_type      — 工种
-  7. t_part_event     — 零件事件流
-  8. t_serial_counter — 流水号计数器
-  9. t_assembly       — 装配体
-  10. t_drawing_file   — 图纸文件元数据
-  11. t_user           — 账号主表
-  12. t_user_role      — 账号↔角色
-  13. t_shelf         — 货架
-  14. t_menu          — 菜单（邻接表）
-  15. t_role_menu     — 角色↔菜单
+表清单（共 17 张）：
+  t_customer / t_part / t_worker / t_work_type_process / t_process / t_work_type /
+  t_part_event / t_serial_counter / t_assembly / t_part_file / t_user /
+  t_user_role / t_shelf / t_menu / t_role_menu / t_applicant / t_shelf_process
 """
 from typing import Sequence, Union
 
@@ -50,7 +40,7 @@ def upgrade() -> None:
     # =================================================================
     op.create_table(
         "t_customer",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=False),
         sa.Column("name", sa.String(length=100), nullable=False),
         sa.Column("parent_id", sa.BigInteger, nullable=True),
         # —— 审计字段 ——
@@ -65,6 +55,10 @@ def upgrade() -> None:
         ),
         sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "serial_prefix", sa.String(length=1), nullable=True,
+            comment="一级客户序列号前缀（A-Z）；叶子客户 NULL",
+        ),
     )
     op.create_index("ix_t_customer_name", "t_customer", ["name"])
     op.create_index("ix_t_customer_parent_id", "t_customer", ["parent_id"])
@@ -74,12 +68,23 @@ def upgrade() -> None:
         "t_customer",
         "parent_id IS NULL OR parent_id <> id",
     )
+    op.create_check_constraint(
+        "ck_t_customer_serial_prefix_uppercase",
+        "t_customer",
+        "serial_prefix IS NULL OR serial_prefix ~ '^[A-Z]$'",
+    )
+    op.create_index(
+        "uq_t_customer_root_prefix",
+        "t_customer",
+        ["serial_prefix"],
+        unique=True,
+        postgresql_where=sa.text(
+            "deleted_at IS NULL AND parent_id IS NULL AND serial_prefix IS NOT NULL"
+        ),
+    )
 
     # =================================================================
-    # 2) t_part：零件订单（含全部列，一次性建好）
-    #    - current_holder_id：多态 holder（→ t_worker.id 或 t_shelf.id）
-    #    - location：解决多态歧义（OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF）
-    #    - 不含 released_at（READY 状态已移除）
+    # 2) t_part：零件订单
     # =================================================================
     op.create_table(
         "t_part",
@@ -115,7 +120,6 @@ def upgrade() -> None:
             server_default=sa.text("false"),
             comment="是否加急",
         ),
-        # 报工字段
         sa.Column(
             "current_holder_id", sa.BigInteger(), nullable=True,
             comment="多态 holder → t_worker.id 或 t_shelf.id",
@@ -124,12 +128,10 @@ def upgrade() -> None:
             "placed_at", sa.DateTime(), nullable=True,
             comment="PENDING→IN_PROCESS 时置位",
         ),
-        # 下一道工序
         sa.Column(
             "next_process_id", sa.BigInteger(), nullable=True,
             comment="逻辑外键 → t_process.id；place_on_shelf / RETURNED 时更新",
         ),
-        # 逻辑外键
         sa.Column("customer_id", sa.BigInteger, nullable=False),
         sa.Column(
             "assembly_id", sa.BigInteger(), nullable=True,
@@ -148,7 +150,6 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
-    # t_part 索引
     op.create_index("ix_t_part_name", "t_part", ["name"])
     op.create_index("ix_t_part_drawing_no", "t_part", ["drawing_no"])
     op.create_index("ix_t_part_customer_id", "t_part", ["customer_id"])
@@ -159,7 +160,6 @@ def upgrade() -> None:
         "ix_t_part_planned_delivery_date", "t_part", ["planned_delivery_date"],
     )
     op.create_index("ix_t_part_deleted_at", "t_part", ["deleted_at"])
-    # serial_no 部分唯一索引
     op.create_index(
         "uk_t_part_serial_no",
         "t_part",
@@ -167,17 +167,12 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("serial_no IS NOT NULL"),
     )
-    # current_holder_id
     op.create_index(
         "ix_t_part_current_holder_id", "t_part", ["current_holder_id"],
     )
-    # placed_at
     op.create_index("ix_t_part_placed_at", "t_part", ["placed_at"])
-    # location
     op.create_index("ix_t_part_location", "t_part", ["location"])
-    # assembly_id
     op.create_index("ix_t_part_assembly_id", "t_part", ["assembly_id"])
-    # 复合索引
     op.create_index(
         "ix_t_part_customer_status_delivery",
         "t_part",
@@ -191,7 +186,6 @@ def upgrade() -> None:
         "t_part",
         ["status", "current_holder_id"],
     )
-    # 扫码台 PICK_UP 列表热点索引
     op.create_index(
         "ix_t_part_location_status_next_process",
         "t_part",
@@ -385,7 +379,7 @@ def upgrade() -> None:
     op.create_index("ix_t_work_type_deleted_at", "t_work_type", ["deleted_at"])
 
     # =================================================================
-    # 7) t_part_event：订单全生命周期事件流（append-only，EventTimestampMixin）
+    # 7) t_part_event：订单全生命周期事件流（append-only）
     # =================================================================
     op.create_table(
         "t_part_event",
@@ -401,6 +395,10 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "created_by", sa.BigInteger, nullable=True,
+            comment="操作者 t_user.id（NULL = 系统调度/历史数据）",
         ),
     )
     op.create_index("ix_part_event_part_id", "t_part_event", ["part_id"])
@@ -474,6 +472,10 @@ def upgrade() -> None:
         ),
         sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "serial_no", sa.String(length=8), nullable=True,
+            comment="装配体序列号；子件派生为 '{serial_no}-{i:02d}'",
+        ),
     )
     op.create_index("ix_t_assembly_drawing_no", "t_assembly", ["drawing_no"])
     op.create_index("ix_t_assembly_customer_id", "t_assembly", ["customer_id"])
@@ -485,72 +487,76 @@ def upgrade() -> None:
         "ix_t_assembly_customer_status", "t_assembly", ["customer_id", "status"],
     )
     op.create_index("ix_t_assembly_deleted_at", "t_assembly", ["deleted_at"])
+    op.create_index("ix_t_assembly_serial_no", "t_assembly", ["serial_no"])
+    op.execute(
+        sa.text(
+            "CREATE UNIQUE INDEX uk_t_assembly_serial_no "
+            "ON t_assembly (serial_no) "
+            "WHERE deleted_at IS NULL AND serial_no IS NOT NULL"
+        )
+    )
 
     # =================================================================
-    # 10) t_drawing_file：COS 上的图纸文件元数据
+    # 10) t_part_file：统一文件表（polymorphic kind）
     # =================================================================
     op.create_table(
-        "t_drawing_file",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=False),
+        "t_part_file",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
         sa.Column(
-            "part_id", sa.BigInteger, nullable=True,
-            comment="逻辑外键 → t_part.id；NULL 表示挂在装配件上",
+            "part_id", sa.BigInteger(), nullable=False,
+            comment="polymorphic: t_part.id 或 t_assembly.id (kind=ASSEMBLY_MASTER)",
         ),
         sa.Column(
-            "assembly_id", sa.BigInteger, nullable=True,
-            comment="逻辑外键 → t_assembly.id；NULL 表示挂在子件上",
+            "kind", sa.String(length=20), nullable=False,
+            comment="DRAWING / 3D_MODEL / G_CODE / SETUP_SHEET / ASSEMBLY_MASTER",
         ),
         sa.Column(
             "file_type", sa.String(length=20), nullable=False,
-            comment="PDF / STEP / DWG / DXF",
+            comment="扩展名大写（PDF / STEP / NC / ...），与 kind 配套",
         ),
         sa.Column(
             "object_key", sa.String(length=500), nullable=False,
             comment="COS 对象 key",
         ),
         sa.Column("original_filename", sa.String(length=255), nullable=False),
-        sa.Column("file_size", sa.BigInteger, nullable=False),
+        sa.Column("file_size", sa.BigInteger(), nullable=False),
         sa.Column("content_type", sa.String(length=100), nullable=False),
         sa.Column(
-            "page_index", sa.Integer(), nullable=True,
-            comment="多页 PDF 中该行指向的页码；非 PDF 场景 NULL",
-        ),
-        sa.Column(
             "upload_status", sa.String(length=20), nullable=False,
-            server_default=sa.text("'READY'"),
+            server_default="READY",
             comment="PENDING / READY / FAILED",
         ),
-        # —— 审计字段 ——
+        # AuditMixin
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("created_by", sa.BigInteger, nullable=True),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
         sa.Column(
             "updated_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("updated_by", sa.BigInteger, nullable=True),
-        sa.Column("deleted_at", sa.DateTime, nullable=True),
-        # part_id 与 assembly_id 二选一非空（XOR）
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.CheckConstraint(
-            "(part_id IS NOT NULL) <> (assembly_id IS NOT NULL)",
-            name="ck_t_drawing_file_owner_xor",
+            "kind IN ('DRAWING','3D_MODEL','G_CODE','SETUP_SHEET','ASSEMBLY_MASTER')",
+            name="ck_t_part_file_kind",
         ),
     )
-    op.create_index("ix_t_drawing_file_part_id", "t_drawing_file", ["part_id"])
+    op.create_index("ix_t_part_file_part_id", "t_part_file", ["part_id"])
     op.create_index(
-        "ix_t_drawing_file_assembly_id", "t_drawing_file", ["assembly_id"],
+        "ix_t_part_file_part_kind", "t_part_file", ["part_id", "kind"],
     )
+    op.create_index("ix_t_part_file_created_at", "t_part_file", ["created_at"])
     op.create_index(
-        "ix_t_drawing_file_part_type", "t_drawing_file", ["part_id", "file_type"],
-    )
-    op.create_index(
-        "ix_t_drawing_file_assembly_type",
-        "t_drawing_file", ["assembly_id", "file_type"],
-    )
-    op.create_index(
-        "ix_t_drawing_file_deleted_at", "t_drawing_file", ["deleted_at"],
+        "uk_t_part_file_single",
+        "t_part_file",
+        ["part_id", "kind"],
+        unique=True,
+        postgresql_where=sa.text(
+            "deleted_at IS NULL AND "
+            "kind IN ('DRAWING','3D_MODEL','SETUP_SHEET','ASSEMBLY_MASTER')"
+        ),
     )
 
     # =================================================================
@@ -580,6 +586,11 @@ def upgrade() -> None:
         ),
         sa.Column("updated_by", sa.BigInteger(), nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "refresh_token_version", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+            comment="refresh token 轮转计数器；每次成功 refresh 后 +1",
+        ),
     )
     op.create_index(
         "uk_t_user_username",
@@ -651,6 +662,11 @@ def upgrade() -> None:
         ),
         sa.Column("updated_by", sa.BigInteger(), nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "display_order", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+            comment="物理顺序（0=未设置；manager 在 ShelfList 后台手填）",
+        ),
     )
     op.create_index(
         "uk_t_shelf_code",
@@ -661,6 +677,12 @@ def upgrade() -> None:
     )
     op.create_index("ix_t_shelf_zone", "t_shelf", ["zone"])
     op.create_index("ix_t_shelf_deleted_at", "t_shelf", ["deleted_at"])
+    op.create_index(
+        "ix_t_shelf_display_order",
+        "t_shelf",
+        ["display_order", "code"],
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
 
     # =================================================================
     # 14) t_menu：菜单主表（邻接表）
@@ -740,100 +762,96 @@ def upgrade() -> None:
     op.create_index("ix_t_role_menu_menu_id", "t_role_menu", ["menu_id"])
     op.create_index("ix_t_role_menu_deleted_at", "t_role_menu", ["deleted_at"])
 
+    # =================================================================
+    # 16) t_applicant：申请人（姓名 + 所属一级客户，多对一）
+    # =================================================================
+    op.create_table(
+        "t_applicant",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("name", sa.String(length=50), nullable=False,
+                  comment="申请人姓名"),
+        sa.Column("customer_id", sa.BigInteger(), nullable=False,
+                  comment="逻辑外键 → t_customer.id（一级客户）"),
+        # AuditMixin
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index("ix_t_applicant_customer_id", "t_applicant", ["customer_id"])
+    op.create_index("ix_t_applicant_name", "t_applicant", ["name"])
+    op.create_index("ix_t_applicant_deleted_at", "t_applicant", ["deleted_at"])
+    op.execute(
+        sa.text(
+            """
+            CREATE UNIQUE INDEX uq_t_applicant_name_customer_active
+            ON t_applicant (name, customer_id)
+            WHERE deleted_at IS NULL
+            """
+        )
+    )
+
+    # =================================================================
+    # 17) t_shelf_process：货架 ↔ 工序 N:M
+    # =================================================================
+    op.create_table(
+        "t_shelf_process",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("shelf_id", sa.BigInteger(), nullable=False,
+                  comment="逻辑外键 → t_shelf.id"),
+        sa.Column("process_id", sa.BigInteger(), nullable=False,
+                  comment="逻辑外键 → t_process.id"),
+        sa.Column("sort_order", sa.Integer(), nullable=False,
+                  server_default=sa.text("0"),
+                  comment="工序在货架映射内的显示顺序"),
+        # AuditMixin
+        sa.Column("created_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index("ix_t_shelf_process_shelf", "t_shelf_process", ["shelf_id"])
+    op.create_index("ix_t_shelf_process_process", "t_shelf_process", ["process_id"])
+    op.create_index("ix_t_shelf_process_deleted_at", "t_shelf_process", ["deleted_at"])
+    op.execute(
+        sa.text(
+            """
+            CREATE UNIQUE INDEX uk_t_shelf_process
+            ON t_shelf_process (shelf_id, process_id)
+            WHERE deleted_at IS NULL
+            """
+        )
+    )
+    op.create_check_constraint(
+        "ck_t_shelf_process_no_self_loop",
+        "t_shelf_process",
+        "shelf_id <> process_id",
+    )
+
 
 def downgrade() -> None:
-    # 倒序 drop
-    op.drop_index("ix_t_role_menu_deleted_at", table_name="t_role_menu")
-    op.drop_index("ix_t_role_menu_menu_id", table_name="t_role_menu")
-    op.drop_index("ix_t_role_menu_role", table_name="t_role_menu")
-    op.drop_table("t_role_menu")
-
-    op.drop_index("ix_t_menu_deleted_at", table_name="t_menu")
-    op.drop_index("ix_t_menu_parent_id", table_name="t_menu")
-    op.drop_table("t_menu")
-
-    op.drop_index("ix_t_shelf_deleted_at", table_name="t_shelf")
-    op.drop_index("ix_t_shelf_zone", table_name="t_shelf")
-    op.drop_index("uk_t_shelf_code", table_name="t_shelf")
-    op.drop_table("t_shelf")
-
-    op.drop_index("ix_t_user_role_deleted_at", table_name="t_user_role")
-    op.drop_index("ix_t_user_role_scope", table_name="t_user_role")
-    op.drop_index("ix_t_user_role_user_id", table_name="t_user_role")
-    op.drop_table("t_user_role")
-
-    op.drop_index("ix_t_user_deleted_at", table_name="t_user")
-    op.drop_index("uk_t_user_username", table_name="t_user")
-    op.drop_table("t_user")
-
-    op.drop_index("ix_t_drawing_file_deleted_at", table_name="t_drawing_file")
-    op.drop_index("ix_t_drawing_file_assembly_type", table_name="t_drawing_file")
-    op.drop_index("ix_t_drawing_file_part_type", table_name="t_drawing_file")
-    op.drop_index("ix_t_drawing_file_assembly_id", table_name="t_drawing_file")
-    op.drop_index("ix_t_drawing_file_part_id", table_name="t_drawing_file")
-    op.drop_table("t_drawing_file")
-
-    op.drop_index("ix_t_assembly_deleted_at", table_name="t_assembly")
-    op.drop_index("ix_t_assembly_customer_status", table_name="t_assembly")
-    op.drop_index("ix_t_assembly_planned_delivery", table_name="t_assembly")
-    op.drop_index("ix_t_assembly_status", table_name="t_assembly")
-    op.drop_index("ix_t_assembly_customer_id", table_name="t_assembly")
-    op.drop_index("ix_t_assembly_drawing_no", table_name="t_assembly")
-    op.drop_table("t_assembly")
-
-    op.drop_table("t_serial_counter")
-
-    op.drop_index("ix_part_event_worker_id", table_name="t_part_event")
-    op.drop_index("ix_part_event_event_type", table_name="t_part_event")
-    op.drop_index("ix_part_event_created_at", table_name="t_part_event")
-    op.drop_index("ix_part_event_part_id", table_name="t_part_event")
-    op.drop_table("t_part_event")
-
-    op.drop_index("ix_t_worker_deleted_at", table_name="t_worker")
-    op.drop_index("ix_t_worker_name", table_name="t_worker")
-    op.drop_index("ix_t_worker_work_type_id", table_name="t_worker")
-    op.drop_index("uk_t_worker_id_card_no", table_name="t_worker")
-    op.drop_index("uk_t_worker_badge_code", table_name="t_worker")
-    op.drop_table("t_worker")
-
-    op.drop_index("ix_t_work_type_process_deleted_at", table_name="t_work_type_process")
-    op.drop_index("ix_t_work_type_process_process", table_name="t_work_type_process")
-    op.drop_index("ix_t_work_type_process_work_type", table_name="t_work_type_process")
-    op.drop_table("t_work_type_process")
-
-    op.drop_index("ix_t_process_deleted_at", table_name="t_process")
-    op.drop_index("ix_t_process_category", table_name="t_process")
-    op.drop_index("ix_t_process_code", table_name="t_process")
-    op.drop_table("t_process")
-
-    op.drop_index("ix_t_work_type_deleted_at", table_name="t_work_type")
-    op.drop_index("ix_t_work_type_code", table_name="t_work_type")
-    op.drop_table("t_work_type")
-
-    op.drop_index("ix_t_part_location_status_next_process", table_name="t_part")
-    op.drop_index("ix_t_part_next_process_id", table_name="t_part")
-    op.drop_index("ix_t_part_status_holder", table_name="t_part")
-    op.drop_index("ix_t_part_assembly_id_status", table_name="t_part")
-    op.drop_index("ix_t_part_customer_status_delivery", table_name="t_part")
-    op.drop_index("ix_t_part_assembly_id", table_name="t_part")
-    op.drop_index("ix_t_part_location", table_name="t_part")
-    op.drop_index("ix_t_part_placed_at", table_name="t_part")
-    op.drop_index("ix_t_part_current_holder_id", table_name="t_part")
-    op.drop_index("uk_t_part_serial_no", table_name="t_part")
-    op.drop_index("ix_t_part_deleted_at", table_name="t_part")
-    op.drop_index("ix_t_part_planned_delivery_date", table_name="t_part")
-    op.drop_index("ix_t_part_request_date", table_name="t_part")
-    op.drop_index("ix_t_part_is_urgent", table_name="t_part")
-    op.drop_index("ix_t_part_status", table_name="t_part")
-    op.drop_index("ix_t_part_customer_id", table_name="t_part")
-    op.drop_index("ix_t_part_drawing_no", table_name="t_part")
-    op.drop_index("ix_t_part_name", table_name="t_part")
-    op.drop_table("t_part")
-
-    op.drop_index("ix_t_customer_deleted_at", table_name="t_customer")
-    op.drop_constraint(
-        "ck_t_customer_no_self_parent", "t_customer", type_="check",
-    )
-    op.drop_index("ix_t_customer_parent_id", table_name="t_customer")
-    op.drop_index("ix_t_customer_name", table_name="t_customer")
-    op.drop_table("t_customer")
+    # 无物理外键，drop 顺序无所谓；drop_table 自动清掉自身索引/约束。
+    for table in (
+        "t_shelf_process",
+        "t_applicant",
+        "t_role_menu",
+        "t_menu",
+        "t_shelf",
+        "t_user_role",
+        "t_user",
+        "t_part_file",
+        "t_assembly",
+        "t_serial_counter",
+        "t_part_event",
+        "t_work_type",
+        "t_process",
+        "t_work_type_process",
+        "t_worker",
+        "t_part",
+        "t_customer",
+    ):
+        op.drop_table(table)
