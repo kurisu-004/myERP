@@ -61,6 +61,14 @@ class Settings(BaseSettings):
         default="pdf,step,stp,dwg,dxf,nc,tap,cnc,mpf,ngc", alias="COS_ALLOWED_TYPES"
     )
 
+    # ---- 送货单 Excel 模板（PR-B 2026-07-10）----
+    # 仓库根相对路径；service 层 load_workbook 加载后按行填字段。
+    # 模板由用户提供（含公司抬头 / 列头 / 签字栏），代码只填值。
+    delivery_note_template_path: str = Field(
+        default="docs/example/送货单模板.xlsx",
+        alias="DELIVERY_NOTE_TEMPLATE_PATH",
+    )
+
 
 settings = Settings()
 print(settings)

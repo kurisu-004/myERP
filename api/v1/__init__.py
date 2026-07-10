@@ -6,6 +6,7 @@ from . import (
     auth,
     cnc_program,
     customer,
+    delivery_note,
     drawing,
     part,
     process,
@@ -31,6 +32,8 @@ api_router.include_router(applicant.router)
 api_router.include_router(worker.router)
 api_router.include_router(part.router)
 api_router.include_router(ws.router)
+# 送货单 Excel 导出（PR-B 2026-07-10；MANAGER + CLERK）
+api_router.include_router(delivery_note.router)
 # 装配体（多个 router 共享同一组路径前缀，避免相互覆盖）
 api_router.include_router(assembly.router)
 # 子件反查 /parts/{part_id}/assembly —— 由装配 router 提供，已自带 MANAGER 守卫

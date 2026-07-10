@@ -22,6 +22,7 @@ dependencies = [
     "python-statemachine>=2.5",
     "bcrypt<5.0",
     "websockets>=16.0",
+    "openpyxl>=3.1.5",  # 2026-07-10 起 runtime 化：送货单 Excel 模板导出
 ]
 
 [tool.pytest.ini_options]
@@ -30,7 +31,6 @@ asyncio_mode = "auto"
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    "openpyxl>=3.1.5",
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",

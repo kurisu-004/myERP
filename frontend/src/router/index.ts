@@ -77,6 +77,17 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '新建装配件', menuCode: 'assemblies_new', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览', path: '/assemblies' }, { label: '新建' }] },
       },
       {
+        path: 'delivery-notes/new',
+        name: 'DeliveryNoteNew',
+        component: () => import('@/views/delivery/DeliveryNoteNew.vue'),
+        meta: {
+          title: '生成送货单',
+          icon: 'Document',
+          menuCode: 'delivery_notes_new',
+          breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '生成送货单' }],
+        },
+      },
+      {
         path: 'assemblies/:id(\\d+)',
         name: 'AssemblyDetail',
         component: () => import('@/views/assemblies/AssemblyDetail.vue'),

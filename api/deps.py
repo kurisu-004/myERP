@@ -28,6 +28,7 @@ from service import (
     AssemblyService,
     AuthService,
     CustomerService,
+    DeliveryNoteService,
     PartFileService,
     PartService,
     ProcessService,
@@ -395,4 +396,18 @@ def get_assembly_service(
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,
+    )
+
+
+def get_delivery_note_service(
+    session: AsyncSession = Depends(get_session),
+) -> DeliveryNoteService:
+    """送货单 Excel 导出 service 工厂（PR-B 2026-07-10）。
+
+    只需要 PartRepository（按 id 批量查）+ CustomerRepository（按 id 批量查父/子
+    客户名拼路径）。无 user 依赖，调用方 API 层再做权限校验。
+    """
+    return DeliveryNoteService(
+        parts=PartRepository(session),
+        customers=CustomerRepository(session),
     )
