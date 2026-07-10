@@ -65,6 +65,9 @@ export interface PartListItem {
   location: string | null
   shelf_code: string | null
   worker_name: string | null
+  /** 所在位置（2026-07-11 接入）：装配体子件表用，PRODUCTION_SHELF→'货架 A-01'；
+   * INSPECTION_SHELF→'品检 A-01'；WORKER→'工人 张三'；OFFICE→'编程员持有'。 */
+  current_holder_display?: string | null
 }
 
 /** 后端 PartEventType 枚举 */

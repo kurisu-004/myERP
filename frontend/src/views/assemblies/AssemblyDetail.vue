@@ -194,9 +194,9 @@
         <el-table-column label="计划交期" width="120">
           <template #default="{ row }">{{ row.planned_delivery_date }}</template>
         </el-table-column>
-        <el-table-column label="加急" width="70" align="center">
+        <el-table-column label="所在位置" width="160">
           <template #default="{ row }">
-            <el-tag v-if="row.is_urgent" type="danger" size="small" effect="dark">加急</el-tag>
+            <span v-if="row.current_holder_display">{{ row.current_holder_display }}</span>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
