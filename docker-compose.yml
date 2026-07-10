@@ -67,45 +67,24 @@ services:
     depends_on:
       - backend
     ports:
+      # 备案期间 / 测试阶段：用 80 端口 HTTP 访问（nginx.conf 已配置 HTTP 块也 serve 资源）。
+      # 备案通过后加 443:443 映射 + 把 cert/key 拷到宿主机对应路径。
       - "${FRONTEND_PORT:-80}:80"
-      - "${FRONTEND_HTTPS_PORT:-443}:443"
-    volumes:
-      - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud_bundle.crt:/etc/nginx/ssl/hsh-erp.cloud_bundle.crt:ro
-      - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud.key:/etc/nginx/ssl/hsh-erp.cloud.key:ro
+      # HTTPS 端口：备案通过且证书上传到 /home/ubuntu/hsh-erp/ssl/ 后打开下行注释。
+      # - "${FRONTEND_HTTPS_PORT:-443}:443"
+    # volumes:
+      # 备案通过后启用 bind mount 把 SSL 证书挂进 frontend：
+      # - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud_bundle.crt:/etc/nginx/ssl/hsh-erp.cloud_bundle.crt:ro
+      # - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud.key:/etc/nginx/ssl/hsh-erp.cloud.key:ro
+      # 没挂证书时 nginx.conf 的 HTTPS server 块会在启动时探测不到证书文件自动失败；
+      # 当前 nginx.conf 的 HTTP 块直接 serve 资源，不依赖证书。
     # frontend/nginx.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
 
-  nanobot:
-    build:
-      context: ../nanobot
-      dockerfile: Dockerfile
-    container_name: myerp-nanobot
-    restart: unless-stopped
-    depends_on:
-      - backend
-    environment:
-      NANOBOT_LLM_API_KEY: ${NANOBOT_LLM_API_KEY}
-      NANOBOT_LLM_MODEL: ${NANOBOT_LLM_MODEL:-anthropic/claude-opus-4-5}
-      NANOBOT_LLM_PROVIDER: ${NANOBOT_LLM_PROVIDER:-auto}
-      NANOBOT_LLM_API_BASE: ${NANOBOT_LLM_API_BASE:-}
-      NANOBOT_QQ_ENABLED: ${NANOBOT_QQ_ENABLED:-false}
-      NANOBOT_QQ_APP_ID: ${NANOBOT_QQ_APP_ID:-}
-      NANOBOT_QQ_SECRET: ${NANOBOT_QQ_SECRET:-}
-      NANOBOT_WEIXIN_ENABLED: ${NANOBOT_WEIXIN_ENABLED:-false}
-      NANOBOT_WEIXIN_TOKEN: ${NANOBOT_WEIXIN_TOKEN:-}
-      NANOBOT_ERP_API_URL: http://backend:8000
-      NANOBOT_ERP_USERNAME: ${NANOBOT_ERP_USERNAME:-}
-      NANOBOT_ERP_PASSWORD: ${NANOBOT_ERP_PASSWORD:-}
-      NANOBOT_TIMEZONE: ${TZ:-Asia/Shanghai}
-      NANOBOT_BOT_NAME: ${NANOBOT_BOT_NAME:-小助手}
-    volumes:
-      - nanobot_data:/home/nanobot/.nanobot
-    command: ["gateway", "--foreground"]
-    # WebUI 端口暴露给宿主机（可选）；生产环境建议通过 frontend nginx 反代
-    # ports:
-    #   - "18790:18790"
+# 注：nanobot 服务已于 2026-07-11 暂时下线。
+# 原因：CVM 上没有 nanobot 源码目录（之前 docker-compose 用 build context: ../nanobot
+#       会构建失败），且业务未到启用 LLM 助手阶段。
+# 恢复方法：见 docs/deploy.md（待写）；需要重新加 build: ../nanobot 或独立 push nanobot 镜像。
 
 volumes:
   pgdata:
     name: myerp-pgdata
-  nanobot_data:
-    name: myerp-nanobot-data
