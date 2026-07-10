@@ -110,11 +110,12 @@
     </el-card>
 
     <FileListCard
-      :files="detail?.files ?? []"
+      :files="masterFiles"
       owner-type="assembly"
       :owner-id="assemblyId"
       :show-upload="false"
       :show-delete="false"
+      kind="ASSEMBLY_MASTER"
       @refresh="fetchData"
     />
 
@@ -177,9 +178,14 @@
         </el-table-column>
         <el-table-column label="图号" width="160">
           <template #default="{ row }">
-            <el-link type="primary" @click="$router.push(`/parts/${row.id}`)">
+            <el-link
+              v-if="childDrawingMap[row.id]"
+              type="primary"
+              @click="onChildDrawingClick(row, childDrawingMap[row.id]!)"
+            >
               {{ row.drawing_no }}
             </el-link>
+            <span v-else class="mono">{{ row.drawing_no }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
@@ -332,6 +338,27 @@
       </template>
     </el-dialog>
 
+    <!-- 子件图号直接预览 PDF（全屏） -->
+    <el-dialog
+      v-model="drawingPreviewVisible"
+      :title="drawingPreviewFile?.original_filename ?? '图纸预览'"
+      fullscreen
+      :close-on-click-modal="false"
+      destroy-on-close
+      @closed="onDrawingPreviewClosed"
+    >
+      <PdfViewer
+        v-if="drawingPreviewFile && drawingPreviewBlobUrl"
+        :url="drawingPreviewBlobUrl"
+        :page="1"
+        :initial-scale="1.4"
+      />
+      <div v-else class="loading-tip">
+        <el-icon class="is-loading"><Loading /></el-icon>
+        <span>加载中…</span>
+      </div>
+    </el-dialog>
+
     <!-- 添加子件对话框 -->
     <el-dialog
       v-model="addChildVisible"
@@ -372,8 +399,9 @@ import {
   type FormRules,
   type UploadFile,
 } from 'element-plus'
-import { Back, CircleClose, Delete, Edit, Plus, Upload } from '@element-plus/icons-vue'
+import { Back, CircleClose, Delete, Edit, Loading, Plus, Upload } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
+import PdfViewer from '@/components/PdfViewer.vue'
 import {
   addAssemblyChild,
   cancelAssembly,
@@ -382,7 +410,9 @@ import {
   updateAssembly,
   uploadAssemblyPdf,
 } from '@/api/assembly'
-import { listCustomers, type Customer } from '@/api/customer'
+import { api } from '@/api/http'
+import { listCustomers } from '@/api/customer'
+import type { PartFileItem } from '@/types/part_file'
 import { useApplicantSearch } from '@/composables/useApplicantSearch'
 import {
   ASSEMBLY_STATUS_LABEL,
@@ -461,6 +491,57 @@ function formatDateTime(iso: string): string {
   } catch {
     return iso
   }
+}
+
+// ===== 图纸卡片过滤 + 子件图号图号直接预览（2026-07-11 接入） =====
+/** 总装图（kind=ASSEMBLY_MASTER）—— FileListCard 只显示 master。 */
+const masterFiles = computed<PartFileItem[]>(
+  () => (detail.value?.files ?? []).filter((f) => f.kind === 'ASSEMBLY_MASTER') as PartFileItem[],
+)
+
+/** 子件 → DRAWING 映射（按 owner_id 索引；多文件取最新一条）。 */
+const childDrawingMap = computed<Record<string, PartFileItem>>(() => {
+  const m: Record<string, PartFileItem> = {}
+  for (const f of detail.value?.files ?? []) {
+    if (f.kind === 'DRAWING' && f.owner_id) {
+      // repository 端 list_for_assembly 已按 id DESC，单 key 直接覆盖即可（最新一条胜）
+      m[f.owner_id] = f as PartFileItem
+    }
+  }
+  return m
+})
+
+/** 子件图号点击 → 全屏 PDF 预览（不走详情页）。 */
+const drawingPreviewVisible = ref(false)
+const drawingPreviewFile = ref<PartFileItem | null>(null)
+const drawingPreviewBlobUrl = ref('')
+
+async function onChildDrawingClick(
+  _row: unknown,
+  drawing: PartFileItem,
+): Promise<void> {
+  drawingPreviewFile.value = drawing
+  drawingPreviewVisible.value = true
+  try {
+    const resp = await api.get<Blob>(`/files/${drawing.id}/content`, {
+      responseType: 'blob',
+    })
+    if (drawingPreviewBlobUrl.value) {
+      URL.revokeObjectURL(drawingPreviewBlobUrl.value)
+    }
+    drawingPreviewBlobUrl.value = URL.createObjectURL(resp.data)
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载图纸失败')
+    drawingPreviewVisible.value = false
+  }
+}
+
+function onDrawingPreviewClosed(): void {
+  if (drawingPreviewBlobUrl.value) {
+    URL.revokeObjectURL(drawingPreviewBlobUrl.value)
+  }
+  drawingPreviewBlobUrl.value = ''
+  drawingPreviewFile.value = null
 }
 
 async function fetchData(): Promise<void> {
