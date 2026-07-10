@@ -7,6 +7,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status as http_status
 
 from api.deps import get_assembly_service
+from core.error_code import ErrCode
+from core.exception import BizError
 from core.permission import require_role, require_roles
 from model.enums import UserRole
 from schema.assembly import (
@@ -18,6 +20,7 @@ from schema.assembly import (
     AssemblyListQuery,
 )
 from schema.part_file import PartFileOut
+from service._id_parse import parse_snowflake_id
 from service.assembly import AssemblyService
 
 # 装配体自身的 CRUD（MANAGER + CLERK：文员也能建/查/编辑装配体）
@@ -180,7 +183,17 @@ async def get_assembly_for_child(
     part_id: str,
     svc: AssemblyService = Depends(get_assembly_service),
 ) -> AssemblyDetail:
-    return await svc.get_assembly_for_child(part_id)
+    # path 参数 part_id 是雪花 ID 字符串（避免 JS Number.MAX_SAFE_INTEGER 丢精度），
+    # 在 service 边界 parse 转 int；失败抛 BIZ_INVALID_VALUE 400。
+    # 见 CLAUDE.md §3 「雪花 ID 入参必须用 str 类型」。
+    part_id_int = parse_snowflake_id(part_id, field_name="part_id")
+    if part_id_int is None:
+        raise BizError(
+            code=ErrCode.BIZ_INVALID_VALUE,
+            message=f"invalid part id: {part_id!r}",
+            http_status=http_status.HTTP_400_BAD_REQUEST,
+        )
+    return await svc.get_assembly_for_child(part_id_int)
 
 
 # 装配件文件：list（聚合 master + 子件 drawings），
