@@ -164,6 +164,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'action', name: 'ScanAction', component: () => import('@/views/scan/ScanActionPicker.vue'), meta: { title: '扫码台 · 操作选择', menuCode: 'scan_badge' } },
       { path: 'pick', name: 'ScanPick', component: () => import('@/views/scan/ScanPickParts.vue'), meta: { title: '扫码台 · 选件领取', menuCode: 'scan_badge' } },
       { path: 'parts', name: 'ScanParts', component: () => import('@/views/scan/ScanPartsWork.vue'), meta: { title: '扫码台 · 扫码报工', menuCode: 'scan_badge' } },
+      { path: 'deliver', name: 'ScanDeliver', component: () => import('@/views/scan/ScanDeliver.vue'), meta: { title: '扫码台 · 司机确认发货', menuCode: 'scan_badge' } },
     ],
   },
 ]

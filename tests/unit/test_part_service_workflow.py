@@ -1199,7 +1199,21 @@ class TestFailInspection:
 
 
 class TestDeliver:
-    """``PartService.deliver`` — READY_TO_SHIP → DELIVERED."""
+    """``PartService.deliver`` — READY_TO_SHIP → DELIVERED。
+
+    PR-C（2026-07-10）新增司机扫码路径：
+    - worker_badge_code=None → 文员手动调用，actual_delivery_date 写今天；
+    - worker_badge_code=... → 校验 t_worker 工种 = '送货司机'；
+      state machine on_deliver 接收 worker 参数并写 PartEvent.worker_id / badge_code。
+    """
+
+    @staticmethod
+    def _driver_work_type():
+        from model.work_type import TWorkType
+        wt = MagicMock(spec=TWorkType)
+        wt.id = 99
+        wt.code = "送货司机"
+        return wt
 
     async def test_normal(
         self,
@@ -1216,10 +1230,117 @@ class TestDeliver:
         result = await service.deliver(1001)
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
-        part.sm.deliver.assert_called_once_with(event_repo=mock_events)
+        part.sm.deliver.assert_called_once_with(
+            worker=None, event_repo=mock_events,
+        )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
+        # actual_delivery_date 默认填今天
+        assert part.actual_delivery_date == date.today()
         assert result is mock_out
+
+    async def test_with_explicit_actual_delivery_date(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        part = _make_part(status="READY_TO_SHIP")
+        mock_parts.get_by_id.return_value = part
+        service._to_out.return_value = [_make_part_out()]
+        service._check_parent_assembly = AsyncMock()
+
+        explicit = date(2026, 7, 9)
+        await service.deliver(1001, actual_delivery_date=explicit)
+        assert part.actual_delivery_date == explicit
+
+    async def test_driver_badge_happy_path(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_workers: WorkerRepository,
+        mock_work_types,
+    ) -> None:
+        """扫码台：worker_badge_code 命中送货司机 → 写入 worker_id / badge_code。"""
+        part = _make_part(status="READY_TO_SHIP")
+        mock_parts.get_by_id.return_value = part
+        driver = _make_worker(worker_id=42, badge_code="18059214776")
+        driver.work_type_id = 99
+        mock_workers.get_by_badge_code.return_value = driver
+        wt = self._driver_work_type()
+        mock_work_types.get_by_id.return_value = wt
+        service._to_out.return_value = [_make_part_out()]
+        service._check_parent_assembly = AsyncMock()
+
+        result = await service.deliver(1001, worker_badge_code="18059214776")
+
+        mock_workers.get_by_badge_code.assert_awaited_once_with("18059214776")
+        mock_work_types.get_by_id.assert_awaited_once_with(99)
+        part.sm.deliver.assert_called_once_with(
+            worker=driver, event_repo=mock_events if False else service.events,
+        )
+        assert part.actual_delivery_date == date.today()
+        assert result is not None
+
+    async def test_driver_badge_worker_not_found(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_workers: WorkerRepository,
+        mock_work_types,
+    ) -> None:
+        part = _make_part(status="READY_TO_SHIP")
+        mock_parts.get_by_id.return_value = part
+        mock_workers.get_by_badge_code.return_value = None
+
+        with pytest.raises(BizError) as exc:
+            await service.deliver(1001, worker_badge_code="UNKNOWN")
+
+        assert exc.value.code == ErrCode.BIZ_WORKER_NOT_FOUND
+        assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
+
+    async def test_driver_badge_worker_inactive(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_workers: WorkerRepository,
+        mock_work_types,
+    ) -> None:
+        part = _make_part(status="READY_TO_SHIP")
+        mock_parts.get_by_id.return_value = part
+        mock_workers.get_by_badge_code.return_value = _make_worker(is_active=False)
+
+        with pytest.raises(BizError) as exc:
+            await service.deliver(1001, worker_badge_code="W001")
+
+        assert exc.value.code == ErrCode.BIZ_WORKER_INACTIVE
+        assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+
+    async def test_driver_badge_wrong_work_type(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_workers: WorkerRepository,
+        mock_work_types,
+    ) -> None:
+        """非送货司机工种 → BIZ_INVALID_VALUE 400。"""
+        part = _make_part(status="READY_TO_SHIP")
+        mock_parts.get_by_id.return_value = part
+        worker = _make_worker(badge_code="W001")
+        worker.work_type_id = 7
+        mock_workers.get_by_badge_code.return_value = worker
+
+        from model.work_type import TWorkType
+        bad_wt = MagicMock(spec=TWorkType)
+        bad_wt.id = 7
+        bad_wt.code = "车床"
+        mock_work_types.get_by_id.return_value = bad_wt
+
+        with pytest.raises(BizError) as exc:
+            await service.deliver(1001, worker_badge_code="W001")
+
+        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
+        assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+        assert "送货司机" in exc.value.message
 
 
 # ===================================================================

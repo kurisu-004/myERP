@@ -310,13 +310,22 @@ class PartStateMachine(StateChart):
                 note=f"back to shelf {shelf_code}" if shelf_code else None,
             ))
 
-    def on_deliver(self, event_repo=None, **_):
+    def on_deliver(self, worker=None, event_repo=None, **_):
+        """READY_TO_SHIP → DELIVERED：发货（可由送货司机扫码触发）。
+
+        接收 worker 入参：扫码台调用时由 service 喂入送货司机的 TWorker，
+        把 worker_id/badge_code 写入 PartEvent 便于审计追溯；文员手动调用时
+        worker=None，仍走通用 STATUS_CHANGED 事件。
+        """
         if event_repo and self.model:
             event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.STATUS_CHANGED,
                 from_status=PartStatus.READY_TO_SHIP,
                 to_status=PartStatus.DELIVERED,
+                worker_id=worker.id if worker else None,
+                drawing_code=self.model.serial_no,
+                badge_code=worker.badge_code if worker and hasattr(worker, "badge_code") else None,
             ))
 
     def on_complete(self, event_repo=None, **_):

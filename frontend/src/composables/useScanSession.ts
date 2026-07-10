@@ -15,35 +15,39 @@ import { ref, type Ref } from 'vue'
 import type { Router } from 'vue-router'
 import type { Worker } from '@/types/worker'
 
-export type WorkAction = 'PICK_UP' | 'RETURN' | 'INSPECT'
+export type WorkAction = 'PICK_UP' | 'RETURN' | 'INSPECT' | 'DELIVER'
 
-export const WORK_ACTION_VALUES: readonly WorkAction[] = ['PICK_UP', 'RETURN', 'INSPECT'] as const
+export const WORK_ACTION_VALUES: readonly WorkAction[] = ['PICK_UP', 'RETURN', 'INSPECT', 'DELIVER'] as const
 
-/** 路由 query 里用的简写：?action=pickup|return|inspect */
-export type WorkActionSlug = 'pickup' | 'return' | 'inspect'
+/** 路由 query 里用的简写：?action=pickup|return|inspect|deliver */
+export type WorkActionSlug = 'pickup' | 'return' | 'inspect' | 'deliver'
 
 export const ACTION_LABEL: Record<WorkAction, string> = {
   PICK_UP: '取件',
   RETURN: '放回',
   INSPECT: '送检',
+  DELIVER: '送货',
 }
 
-export const ACTION_TAG_TYPE: Record<WorkAction, 'primary' | 'warning' | 'success'> = {
+export const ACTION_TAG_TYPE: Record<WorkAction, 'primary' | 'warning' | 'success' | 'danger'> = {
   PICK_UP: 'primary',
   RETURN: 'warning',
   INSPECT: 'success',
+  DELIVER: 'danger',
 }
 
 const SLUG_TO_ACTION: Record<WorkActionSlug, WorkAction> = {
   pickup: 'PICK_UP',
   return: 'RETURN',
   inspect: 'INSPECT',
+  deliver: 'DELIVER',
 }
 
 const ACTION_TO_SLUG: Record<WorkAction, WorkActionSlug> = {
   PICK_UP: 'pickup',
   RETURN: 'return',
   INSPECT: 'inspect',
+  DELIVER: 'deliver',
 }
 
 // ============ 单例状态 ============

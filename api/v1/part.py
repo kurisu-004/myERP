@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status as http_status
+from pydantic import BaseModel, Field
 
 from api.deps import get_part_file_repository, get_part_repository, get_part_service
 from core.permission import (
@@ -25,6 +26,7 @@ from schema.part import (
     PlaceOnShelfRequest,
 )
 from service import PartService
+from service._id_parse import parse_snowflake_id
 from service.printing import build_part_print_pdf
 
 router = APIRouter(prefix="/parts", tags=["零件管理"])
@@ -292,7 +294,11 @@ async def fail_part_inspection(
 @router.post(
     "/{part_id}/deliver",
     response_model=PartOut,
-    summary="READY_TO_SHIP → DELIVERED：发货（MANAGER / CLERK）",
+    summary="READY_TO_SHIP → DELIVERED：发货（MANAGER / CLERK；手动调用）",
+    description=(
+        "文员/管理员手动调用：service 走通用路径，actual_delivery_date 默"
+        "认写今天。司机扫码签收请走 `/scan/deliver-part` 端点（PR-C 2026-07-10）。"
+    ),
     dependencies=_office_dep,
 )
 async def deliver_part(
@@ -300,6 +306,44 @@ async def deliver_part(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.deliver(part_id)
+
+
+# ============================================================
+# 扫码台：司机确认发货（PR-C 2026-07-10）
+# ============================================================
+class DeliverByDriverRequest(BaseModel):
+    """扫码台：司机确认发货请求体。
+
+    - `part_id` 是雪花 ID 字符串（前端从流水号反查得到后传入）。
+    - `worker_badge_code` 是前置「扫工牌」得到的送货司机工牌码；
+      service 层校验 `t_worker.work_type.code == '送货司机'`。
+    """
+
+    part_id: str = Field(description="雪花 ID 字符串")
+    worker_badge_code: str = Field(min_length=1, max_length=50, description="司机工牌码")
+
+
+@router.post(
+    "/scan/deliver-part",
+    response_model=PartOut,
+    summary="扫码台：司机确认发货（任意已登录 + worker_badge_code 必须是送货司机）",
+    description=(
+        "权限 `require_auth()`：一体机 SHELF_ACCOUNT 账号即可调用。"
+        "真正的鉴权点在 service 层 —— 仅当 worker_badge_code 对应的 t_worker "
+        "工种 = '送货司机' 才允许触发 DELIVERED 转换；其他人调用 400。"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def scan_deliver_part(
+    payload: DeliverByDriverRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    part_id_int = parse_snowflake_id(payload.part_id, field_name="part_id")
+    return await svc.deliver(
+        part_id=part_id_int,
+        actual_delivery_date=None,
+        worker_badge_code=payload.worker_badge_code,
+    )
 
 
 @router.post(

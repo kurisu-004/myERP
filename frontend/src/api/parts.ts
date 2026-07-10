@@ -302,6 +302,19 @@ export async function deliverPart(id: string): Promise<PartItem> {
   return resp.data
 }
 
+/** 扫码台：司机确认发货（PR-C 2026-07-10）。 */
+export interface ScanDeliverPartPayload {
+  part_id: string
+  worker_badge_code: string
+}
+
+export async function scanDeliverPart(
+  payload: ScanDeliverPartPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>('/parts/scan/deliver-part', payload)
+  return resp.data
+}
+
 /** DELIVERED → COMPLETED：确认完成，释放流水号。 */
 export async function completePart(id: string): Promise<PartItem> {
   const resp = await api.post<PartItem>(`/parts/${id}/complete`)

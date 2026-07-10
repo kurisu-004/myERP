@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import status as http_status
 
@@ -1091,8 +1091,23 @@ class PartService:
         items = await self._to_out([part])
         return items[0]
 
-    async def deliver(self, part_id: int) -> PartOut:
-        """READY_TO_SHIP -> DELIVERED：发货。"""
+    async def deliver(
+        self,
+        part_id: int,
+        *,
+        actual_delivery_date: date | None = None,
+        worker_badge_code: str | None = None,
+    ) -> PartOut:
+        """READY_TO_SHIP -> DELIVERED：发货。
+
+        - 文员/管理员手动调用：worker_badge_code=None → 走原通用路径，
+          不写 actual_delivery_date。
+        - 扫码台司机调用：worker_badge_code 必填；service 层校验
+          `t_worker.work_type.code == '送货司机'` 且 is_active；写入
+          `part.actual_delivery_date = today()` 与 PartEvent.worker_id / badge_code。
+
+        实际送货日期入参用于 CLERK 补录（默认 None 即「今天」）。
+        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -1100,7 +1115,42 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        part.sm.deliver(event_repo=self.events)
+
+        driver: TWorker | None = None
+        if worker_badge_code:
+            worker = await self.workers.get_by_badge_code(worker_badge_code)
+            if worker is None:
+                raise BizError(
+                    code=ErrCode.BIZ_WORKER_NOT_FOUND,
+                    message=f"worker badge_code={worker_badge_code!r} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if not worker.is_active:
+                raise BizError(
+                    code=ErrCode.BIZ_WORKER_INACTIVE,
+                    message=f"worker badge_code={worker_badge_code!r} is inactive",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            # 校验工种必须是「送货司机」
+            wt = (
+                await self.work_types.get_by_id(worker.work_type_id)
+                if self.work_types and worker.work_type_id
+                else None
+            )
+            if wt is None or wt.code != "送货司机":
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"worker badge_code={worker_badge_code!r} "
+                        f"work_type_code={wt.code if wt else None!r}; "
+                        f"deliver requires work_type='送货司机'"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            driver = worker
+
+        part.actual_delivery_date = actual_delivery_date or date.today()
+        part.sm.deliver(worker=driver, event_repo=self.events)
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
