@@ -2,21 +2,34 @@
 //
 // 通用账号 session（不是业务 worker；后者保持在 useScanSession）。
 // - 模块级单例，跨组件共享（与 useScanSession / useBarcodeScanner 同构）。
-// - localStorage key: 'auth_session'；内容 { token, user }。
-// - login() → POST /auth/login；logout() → 清 storage + 回 /login。
+// - localStorage key: 'auth_session'；内容 { token, refresh_token, user }。
+// - login() → POST /auth/login（返回双 token）；logout() → 清 storage + 回 /login。
 // - hasRole / canOperateShelf 供路由守卫和组件使用。
 // - menus() 返回当前用户的菜单树（来自后端 CurrentUser.menus），供
 //   MainLayout 渲染侧边栏 + 路由守卫校验 menuCode。
+//
+// 2026-07-10 新增：
+// - storage 多带一个 refresh_token 字段（兼容老条目：缺省当 null）；
+// - 监听 'auth:tokens-refreshed' 事件，拦截器刷新成功后同步 module-level refs；
+// - login() 把 resp.refresh_token 也存进去；
+// - logout() 不变（直接 removeItem 把三件套一起清）。
 
 import { ref, type Ref } from 'vue'
 import { login as apiLogin, logout as apiLogout, me as apiMe } from '@/api/auth'
 import type { CurrentUser } from '@/types/user'
 import type { MenuNode } from '@/types/menu'
 
-interface StoredSession { token: string; user: CurrentUser }
+interface StoredSession {
+  token: string
+  /** 2026-07-10 新增：refresh token（7d TTL）。老条目可能缺省，按 null 处理。 */
+  refresh_token?: string | null
+  user: CurrentUser
+}
 
 const user = ref<CurrentUser | null>(null) as Ref<CurrentUser | null>
 const token = ref<string | null>(null)
+// refresh_token 不暴露给组件（只由 axios 拦截器读），但用模块级常量便于内部测试
+let refreshTokenValue: string | null = null
 
 function loadFromStorage(): boolean {
   try {
@@ -27,6 +40,7 @@ function loadFromStorage(): boolean {
     // 兼容旧版本 localStorage（没有 menus 字段）：补默认值，下次 /auth/me 会刷新。
     s.user.menus = s.user.menus ?? []
     token.value = s.token
+    refreshTokenValue = s.refresh_token ?? null
     user.value = s.user
     return true
   } catch {
@@ -39,7 +53,27 @@ function saveToStorage(): void {
     localStorage.removeItem('auth_session')
     return
   }
-  localStorage.setItem('auth_session', JSON.stringify({ token: token.value, user: user.value }))
+  localStorage.setItem(
+    'auth_session',
+    JSON.stringify({
+      token: token.value,
+      refresh_token: refreshTokenValue,
+      user: user.value,
+    }),
+  )
+}
+
+// 监听拦截器刷新成功的广播事件，同步 module-level refs
+if (typeof window !== 'undefined') {
+  window.addEventListener('auth:tokens-refreshed', ((e: Event) => {
+    const ce = e as CustomEvent<{ token: string; refresh_token: string; user: CurrentUser }>
+    const pair = ce.detail
+    if (pair?.token) {
+      token.value = pair.token
+      refreshTokenValue = pair.refresh_token ?? null
+      user.value = pair.user
+    }
+  }) as EventListener)
 }
 
 // 启动时尝试恢复
@@ -95,6 +129,7 @@ export function useAuthSession() {
   async function login(username: string, password: string): Promise<CurrentUser> {
     const resp = await apiLogin(username, password)
     token.value = resp.token
+    refreshTokenValue = resp.refresh_token ?? null
     user.value = resp.user
     saveToStorage()
     return resp.user
@@ -103,6 +138,7 @@ export function useAuthSession() {
   async function logout(): Promise<void> {
     await apiLogout()
     token.value = null
+    refreshTokenValue = null
     user.value = null
     localStorage.removeItem('auth_session')
   }
@@ -117,6 +153,7 @@ export function useAuthSession() {
       return true
     } catch {
       token.value = null
+      refreshTokenValue = null
       user.value = null
       localStorage.removeItem('auth_session')
       router.replace('/login')

@@ -8,7 +8,7 @@
 """
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import AuditMixin
@@ -40,4 +40,9 @@ class TUser(Base, AuditMixin):
     )
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
+    )
+    # refresh token 轮转计数器：每次成功 POST /auth/refresh 后 +1；
+    # 旧的 refresh token（payload.ver 落后当前值）立即失效。
+    refresh_token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
     )

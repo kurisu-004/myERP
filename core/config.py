@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = Field(
         default=720, alias="JWT_ACCESS_TOKEN_EXPIRE_MINUTES", ge=1
     )
+    # 2026-07-10 新增：refresh token TTL（双 token 轮转方案）。
+    # 默认 7 天（10080 min），通过 JWT_REFRESH_TOKEN_EXPIRE_MINUTES 覆盖。
+    jwt_refresh_token_expire_minutes: int = Field(
+        default=10080, alias="JWT_REFRESH_TOKEN_EXPIRE_MINUTES", ge=1
+    )
     jwt_issuer: str = Field(default="myerp", alias="JWT_ISSUER")
 
     # ---- Dev seed (t_user / t_shelf 迁移后自动 seed) ----

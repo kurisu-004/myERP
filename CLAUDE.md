@@ -1133,3 +1133,77 @@ Excel「备注」列 → 9 工种 code 映射：
 
 **down_revision = `000000000011`**（dev_data 末端），保证 prod_seed 在 dev_seed 的 `DELETE FROM` 之后跑，ON CONFLICT 把 prod 数据追加到 dev 数据之上。
 
+---
+
+## 16. JWT 双 token 自动刷新（2026-07-10 接入）
+
+解决用户反馈「操作到一半 token 过期跳回登录页」—— 引入业界标准的 **access + refresh 双 token + 轮转** 方案。
+
+### 16.1 token 分类
+
+| Token | TTL | 用途 | Payload 关键字段 |
+|---|---|---|---|
+| **access token** | dev 720 min / prod 2880 min（保持不变）| 业务请求携带 | `sub`, `username`, `roles`, `shelf_ids`, `type="access"`, `iat`, `exp`, `iss`, 可选 `shelf_wildcard` |
+| **refresh token** | 默认 7 天（10080 min，通过 `JWT_REFRESH_TOKEN_EXPIRE_MINUTES` 覆盖） | 仅用于换新 access；轮转 | `sub`, `type="refresh"`, `ver=<当前 t_user.refresh_token_version>`, `iat`, `exp`, `iss` |
+
+新错误码 `BIZ_AUTH_REFRESH_INVALID = 40103`：refresh token 失效 / 类型不匹配 / 版本落后 / 用户已停用。
+
+### 16.2 关键文件
+
+| 文件 | 改动 |
+|---|---|
+| `alembic/versions/schema/000000000020_add_user_refresh_token_version.py` | **新**：t_user 加 `refresh_token_version` 列（NOT NULL DEFAULT 0）|
+| `model/user.py` | + `refresh_token_version` 字段 |
+| `repository/user.py` | + `increment_refresh_token_version(user)` |
+| `core/error_code.py` | + `BIZ_AUTH_REFRESH_INVALID = 40103` |
+| `core/config.py` | + `jwt_refresh_token_expire_minutes`（默认 10080） |
+| `core/security.py` | 重构：`_build_token_claims` 共用工厂；`create_access_token` 加 `type="access"`；新 `create_refresh_token`（带 ver）；`_decode_token(expected_type=)` 共用解码器，对**老 access token 无 type 字段**保持兼容 |
+| `schema/user.py` | `LoginResponse.refresh_token: str`（新增必填） |
+| `service/auth.py` | `_build_token_pair` 抽取（login + refresh 复用）；`refresh(refresh_token_str)` 新方法 |
+| `api/v1/auth.py` | + `POST /auth/refresh`（公开端点，body `{refresh_token}`） |
+
+### 16.3 轮转机制（关键不变量）
+
+`AuthService.refresh()` 调用顺序**严格**：
+1. `decode_refresh_token` → 失败抛 40103；
+2. `users.get_by_id(sub)` → 不存在 / 软删 / 停用 → 40103；
+3. 比对 `u.refresh_token_version == payload.ver` → 落后 → 40103；
+4. 重新读 roles/shelf_ids/menus（反映最新 DB）；
+5. **`users.increment_refresh_token_version(u)` 必须先于 `_build_token_pair`**——先让旧 refresh 失效（DB +1），再用新 ver 签发新 refresh；
+6. 返回新 LoginResponse。
+
+⚠️ **集成测试发现的真实 bug**：把 `increment_refresh_token_version` 放在 `_build_token_pair` 之后 → 新 refresh token 仍带旧 ver → 下次刷新立刻被自己顶掉。已修复（`service/auth.py`）。
+
+### 16.4 前端：axios 拦截器（`frontend/src/api/http.ts`）
+
+**两路刷新 + 一个 stampede 队列**：
+
+- **Reactive**：响应拦截器收到 `code === 40102`（access 过期）→ 触发 `getOrCreateRefresh()` → 拿到新 access → 用 `_isRetryAfterRefresh` 标记重试原请求（防递归）。
+- **Proactive**：每次成功响应都 `decodeJwt(token).exp - now` < 5 分钟 → fire-and-forget 调一次 refresh（30s 节流避免短时间内反复刷）。绝大多数 40102 在 proactive 阶段就拦下了。
+- **Stampede 队列**：模块级 `refreshPromise: Promise<LoginResponse> | null`。首个 40102 创建 promise；后续 40102 复用同一个 promise（`finally` 里 `setTimeout` 清空）。同一时刻 N 个并发 401 → 只发 1 个 `/auth/refresh`。
+
+**专用 refresh 客户端**（`refreshClient`，独立 axios 实例，**无任何拦截器**）：避免响应拦截器里的 40102 → refresh → 拦截器递归。
+
+**失败兜底**：`doRefresh()` 失败 → `window.dispatchEvent('auth:logout')` → `main.ts` 监听 → `router.replace('/login')`。
+
+**状态同步**：拦截器 `persistTokens(pair)` 写 localStorage + dispatch `auth:tokens-refreshed` → `useAuthSession.ts` 监听 → 同步 module-level refs（避免组件层看到陈旧 token）。
+
+### 16.5 测试覆盖
+
+- `tests/unit/test_security.py`（**新，13 用例**）：token 工厂端到端、解码兼容、过期 / 篡改 / 错误 issuer 失败路径
+- `tests/unit/test_auth_service.py::TestRefresh`（**新，7 用例**）：happy path / 篡改 / access 当 refresh / 用户停用 / 软删 / **轮转 / 版本 mismatch / 降级生效**
+- `tests/test_auth_refresh.py`（**新，7 用例**，走真实 PG）：login 返回双 token、refresh 真实轮转、access 当 refresh、用户停用后 refresh 失败、降级后再 refresh roles 反映最新
+
+端到端：`uv run pytest tests/unit/ tests/test_auth_refresh.py` → **347 passed**；`cd frontend && npm run build` 通过。
+
+### 16.6 兼容与回滚
+
+- **老 access token 无 `type` 字段**：`_decode_token` 兼容视为 `access`；`refresh` 端**严格**校验 `type="refresh"`，老 token 不能蒙混。
+- **回滚**：DB 列可 drop（`refresh_token_version` 默认 0，回滚无破坏）；前后端代码 git revert 即可，老用户凭 `auth_session` 里只剩 token 的旧 storage 仍能跑（`refresh_token` 缺省当 null）。
+
+### 16.7 用户决策记录
+
+- access token TTL **保持 12h / 48h 不动**（dev / prod 各自现有值；零破坏）
+- refresh token TTL = **7 天**（10080 min）
+- **启用 refresh token 轮转**（每次成功 refresh → 旧 refresh 立即失效）
+

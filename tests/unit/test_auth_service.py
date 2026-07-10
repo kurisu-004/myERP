@@ -31,6 +31,7 @@ def mock_users() -> UserRepository:
     repo.get_by_id = AsyncMock()
     repo.get_by_username = AsyncMock()
     repo.touch_login = AsyncMock()
+    repo.increment_refresh_token_version = AsyncMock()
     return repo
 
 
@@ -83,6 +84,7 @@ def _make_user(
     is_active: bool = True,
     last_login_at: datetime | None = None,
     deleted_at: datetime | None = None,
+    refresh_token_version: int = 0,
 ) -> TUser:
     """Construct a TUser without a DB session.
 
@@ -98,6 +100,7 @@ def _make_user(
         phone=phone,
         is_active=is_active,
         last_login_at=last_login_at,
+        refresh_token_version=refresh_token_version,
         created_at=datetime(2025, 1, 1, 0, 0, 0),
         updated_at=datetime(2025, 1, 1, 0, 0, 0),
         deleted_at=deleted_at,
@@ -649,3 +652,230 @@ class TestCanOperateShelfWildcard:
             shelf_wildcard=False,
         )
         assert u.can_operate_shelf(999) is True
+
+
+# =============================================================================
+# 2026-07-10 refresh token：AuthService.refresh()
+# =============================================================================
+class TestRefresh:
+    """`AuthService.refresh(refresh_token_str)` 的全部场景：
+
+    - 合法 refresh token → 返回新 LoginResponse + t_user.refresh_token_version +1
+    - 过期 / 篡改 refresh → BIZ_AUTH_REFRESH_INVALID 401
+    - 拿 access token 来 refresh → BIZ_AUTH_REFRESH_INVALID 401
+    - user 已被停用 / 软删 → BIZ_AUTH_REFRESH_INVALID 401
+    - 同一 refresh token 用第二次（轮转生效） → BIZ_AUTH_REFRESH_INVALID 401
+    - refresh 时重新解析 roles（user 被降级 → 新 token roles 反映最新 DB）
+    """
+
+    async def test_happy_path_rotates_version(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+        mock_menus: MenuRepository,
+    ) -> None:
+        """合法 refresh → 新 token 对 + DB version +1。"""
+        from core.security import create_refresh_token
+
+        # 准备 user：DB version=5，refresh token 内 ver=5
+        u = _make_user(id=42, username="admin", refresh_token_version=5)
+        mock_users.get_by_id.return_value = u
+
+        # refresh 后 version 应变成 6；increment_refresh_token_version 直接 +1 后 flush
+        async def _bump_version(user_obj):
+            user_obj.refresh_token_version = int(user_obj.refresh_token_version) + 1
+            return user_obj
+        mock_users.increment_refresh_token_version.side_effect = _bump_version
+
+        role = _make_user_role(id=10, user_id=42, role="MANAGER")
+        mock_user_roles.list_by_user.return_value = [role]
+
+        # 构造合法 refresh token（用真 JWT 工厂 + 当前 settings）
+        rt = create_refresh_token(
+            user_id=42,
+            username="admin",
+            roles=["MANAGER"],
+            shelf_ids=[],
+            refresh_token_version=5,
+        )
+
+        with (
+            patch("service.auth.build_menu_tree", AsyncMock(return_value=[])),
+            patch(
+                "service.auth.create_access_token",
+                return_value="new-access-token",
+            ),
+            patch(
+                "service.auth.create_refresh_token",
+                return_value="new-refresh-token",
+            ),
+        ):
+            result = await service.refresh(rt)
+
+        # 返回新对
+        assert result.token == "new-access-token"
+        assert result.refresh_token == "new-refresh-token"
+        assert result.user.id == 42
+        assert result.user.username == "admin"
+        assert result.user.roles == ["MANAGER"]
+
+        # 轮转被调用过一次，且 user 的 version 现在是 6
+        mock_users.increment_refresh_token_version.assert_awaited_once_with(u)
+        assert u.refresh_token_version == 6
+
+    async def test_invalid_refresh_token_signature(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+    ) -> None:
+        """坏签名的 refresh token → BIZ_AUTH_REFRESH_INVALID 401。"""
+        with pytest.raises(BizError) as exc_info:
+            await service.refresh("not.a.valid.jwt")
+
+        assert exc_info.value.code == ErrCode.BIZ_AUTH_REFRESH_INVALID
+        assert exc_info.value.http_status == 401
+        # decode 失败 → 不查 DB
+        mock_users.get_by_id.assert_not_called()
+
+    async def test_access_token_passed_to_refresh(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+    ) -> None:
+        """把 access token 当 refresh token 用 → type 不匹配 → 401。"""
+        from core.security import create_access_token
+
+        at = create_access_token(
+            user_id=42,
+            username="admin",
+            roles=["MANAGER"],
+            shelf_ids=[],
+        )
+        with pytest.raises(BizError) as exc_info:
+            await service.refresh(at)
+
+        assert exc_info.value.code == ErrCode.BIZ_AUTH_REFRESH_INVALID
+        mock_users.get_by_id.assert_not_called()
+
+    async def test_user_inactive_after_login(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+    ) -> None:
+        """用户在 access 期间被停用 → refresh 拒绝。"""
+        from core.security import create_refresh_token
+
+        u = _make_user(id=42, username="admin", is_active=False, refresh_token_version=0)
+        mock_users.get_by_id.return_value = u
+
+        rt = create_refresh_token(
+            user_id=42,
+            username="admin",
+            roles=["MANAGER"],
+            shelf_ids=[],
+            refresh_token_version=0,
+        )
+
+        with pytest.raises(BizError) as exc_info:
+            await service.refresh(rt)
+        assert exc_info.value.code == ErrCode.BIZ_AUTH_REFRESH_INVALID
+        # 不发 token、不轮转
+        mock_users.increment_refresh_token_version.assert_not_called()
+
+    async def test_user_deleted(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+    ) -> None:
+        """用户被软删 → get_by_id 返回 None → refresh 拒绝。"""
+        from core.security import create_refresh_token
+
+        mock_users.get_by_id.return_value = None  # 软删后 get_by_id 返回 None
+
+        rt = create_refresh_token(
+            user_id=999,
+            username="deleted",
+            roles=["MANAGER"],
+            shelf_ids=[],
+            refresh_token_version=0,
+        )
+
+        with pytest.raises(BizError) as exc_info:
+            await service.refresh(rt)
+        assert exc_info.value.code == ErrCode.BIZ_AUTH_REFRESH_INVALID
+
+    async def test_version_mismatch_after_rotation(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> None:
+        """同一 refresh token 用第二次（version 已被轮转）→ 第二次拒绝。"""
+        from core.security import create_refresh_token
+
+        # 模拟"第一次 refresh 之后"的状态：DB version 已经是 6
+        u = _make_user(id=42, username="admin", refresh_token_version=6)
+        mock_users.get_by_id.return_value = u
+
+        # 但 refresh token 是第一次签发的，ver=5（落后）
+        rt = create_refresh_token(
+            user_id=42,
+            username="admin",
+            roles=["MANAGER"],
+            shelf_ids=[],
+            refresh_token_version=5,  # ← 落后
+        )
+
+        with pytest.raises(BizError) as exc_info:
+            await service.refresh(rt)
+        assert exc_info.value.code == ErrCode.BIZ_AUTH_REFRESH_INVALID
+        assert "version mismatch" in exc_info.value.message.lower()
+        # version 不对就根本不进入轮转
+        mock_users.increment_refresh_token_version.assert_not_called()
+
+    async def test_re_resolves_roles(
+        self,
+        service: AuthService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> None:
+        """refresh 时重新从 DB 读 roles —— 用户在 access 期间被降级时生效。"""
+        from core.security import create_refresh_token
+
+        u = _make_user(id=42, username="admin", refresh_token_version=2)
+        mock_users.get_by_id.return_value = u
+
+        # DB 当前 roles 已经被改成只剩 CLERK（之前是 MANAGER）
+        current_roles = [
+            _make_user_role(id=10, user_id=42, role=UserRole.CLERK.value),
+        ]
+        mock_user_roles.list_by_user.return_value = current_roles
+
+        async def _bump(user_obj):
+            user_obj.refresh_token_version += 1
+            return user_obj
+        mock_users.increment_refresh_token_version.side_effect = _bump
+
+        rt = create_refresh_token(
+            user_id=42,
+            username="admin",
+            roles=["MANAGER"],  # ← 老 roles（access token 里的）
+            shelf_ids=[],
+            refresh_token_version=2,
+        )
+
+        with (
+            patch("service.auth.build_menu_tree", AsyncMock(return_value=[])),
+            patch("service.auth.create_access_token", return_value="new-at") as ct_at,
+            patch("service.auth.create_refresh_token", return_value="new-rt"),
+        ):
+            result = await service.refresh(rt)
+
+        # 新 token 应反映当前 DB roles（CLERK），不是老 access 里的 MANAGER
+        assert result.user.roles == ["CLERK"]
+        # 实际签发用的是当前 DB 的 roles
+        ct_at.assert_called_once()
+        # roles 参数应包含 CLERK，不包含 MANAGER
+        kwargs = ct_at.call_args.kwargs
+        assert kwargs["roles"] == ["CLERK"]
