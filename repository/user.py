@@ -36,6 +36,17 @@ class UserRepository:
         await self.session.flush()
         return user
 
+    async def increment_refresh_token_version(self, user: TUser) -> TUser:
+        """refresh token 轮转：版本 +1，让旧 refresh token 失效。
+
+        写入后旧 refresh token 仍能解码 JWT 本身（exp 未到），但其携带的
+        `ver` 字段落后于 DB 当前值 → service.refresh() 比对失败抛
+        BIZ_AUTH_REFRESH_INVALID。
+        """
+        user.refresh_token_version = int(user.refresh_token_version) + 1
+        await self.session.flush()
+        return user
+
     # ===== 单条 =====
     async def get_by_id(
         self, user_id: int, *, include_deleted: bool = False

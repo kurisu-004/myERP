@@ -110,4 +110,7 @@ class CurrentUserOut(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
+    # 2026-07-10 新增：refresh token（7d TTL，type="refresh"）。
+    # access token 过期时前端用它换新对；每次成功 refresh 后旧 refresh 失效（轮转）。
+    refresh_token: str
     user: CurrentUserOut
