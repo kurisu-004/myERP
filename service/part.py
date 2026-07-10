@@ -1476,6 +1476,16 @@ class PartService:
                 holder_kind = "worker"
                 worker_name = worker_map.get(int(p.current_holder_id))
 
+            # 所在位置的人类可读描述（2026-07-11 装配体子件表使用）
+            holder_display: str | None = None
+            if shelf_code is not None:
+                prefix = "品检 " if p.location == "INSPECTION_SHELF" else ""
+                holder_display = f"货架 {prefix}{shelf_code}"
+            elif worker_name is not None:
+                holder_display = f"工人 {worker_name}"
+            elif p.location == "OFFICE":
+                holder_display = "编程员持有"
+
             out.append(
                 PartOut(
                     id=p.id,
@@ -1497,6 +1507,7 @@ class PartService:
                     placed_at=getattr(p, "placed_at", None),
                     location=p.location,
                     worker_name=worker_name,
+                    current_holder_display=holder_display,
                     next_process_id=p.next_process_id,
                     next_process_name=process_map.get(int(p.next_process_id))
                     if p.next_process_id
@@ -1569,6 +1580,16 @@ class PartService:
             elif p.location == "WORKER" and p.current_holder_id:
                 worker_name = worker_map.get(int(p.current_holder_id))
 
+            # 所在位置的人类可读描述
+            holder_display: str | None = None
+            if shelf_code is not None:
+                prefix = "品检 " if p.location == "INSPECTION_SHELF" else ""
+                holder_display = f"货架 {prefix}{shelf_code}"
+            elif worker_name is not None:
+                holder_display = f"工人 {worker_name}"
+            elif p.location == "OFFICE":
+                holder_display = "编程员持有"
+
             out.append(
                 PartListItem(
                     id=p.id,
@@ -1586,6 +1607,7 @@ class PartService:
                     location=p.location,
                     shelf_code=shelf_code,
                     worker_name=worker_name,
+                    current_holder_display=holder_display,
                 )
             )
         return out

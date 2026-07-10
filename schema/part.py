@@ -85,6 +85,17 @@ class PartOut(BaseModel):
         default=None,
         description="当 holder 是工人时返回工人姓名；否则 null",
     )
+    current_holder_display: str | None = Field(
+        default=None,
+        description=(
+            "所在位置的人类可读描述："
+            "PRODUCTION_SHELF → '货架 A-01'；"
+            "INSPECTION_SHELF → '品检 A-01'；"
+            "WORKER → '工人 张三'；"
+            "OFFICE → '编程员持有'；"
+            "None → '—'。"
+        ),
+    )
     next_process_id: IdStr = Field(
         default=None,
         description="下一道工序 id（NULL = 未设置）",
@@ -137,6 +148,12 @@ class PartListItem(BaseModel):
     )
     worker_name: str | None = Field(
         default=None, description="holder 为工人时的姓名"
+    )
+    current_holder_display: str | None = Field(
+        default=None,
+        description=(
+            "所在位置的人类可读描述；见 PartOut 字段说明"
+        ),
     )
 
 
