@@ -54,6 +54,17 @@ const routes: RouteRecordRaw[] = [
         props: true,
       },
       {
+        path: 'inspection/pending',
+        name: 'InspectionPending',
+        component: () => import('@/views/inspection/InspectionPending.vue'),
+        meta: {
+          title: '待品检',
+          icon: 'CircleCheck',
+          menuCode: 'inspection_pending',
+          breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '待品检' }],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),

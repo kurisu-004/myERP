@@ -277,6 +277,56 @@ export async function updatePart(
   return resp.data
 }
 
+/** INSPECTION → READY_TO_SHIP：品检合格。 */
+export async function passInspection(id: string): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/pass-inspection`)
+  return resp.data
+}
+
+/** INSPECTION → IN_PROCESS：品检不通过，打回生产货架。`shelfId` 必填（PRODUCTION 区）。 */
+export async function failInspection(
+  id: string,
+  shelfId: string,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/fail-inspection`,
+    null,
+    { params: { shelf_id: shelfId } },
+  )
+  return resp.data
+}
+
+/** READY_TO_SHIP → DELIVERED：发货（文员/管理员手动）。 */
+export async function deliverPart(id: string): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/deliver`)
+  return resp.data
+}
+
+/** DELIVERED → COMPLETED：确认完成，释放流水号。 */
+export async function completePart(id: string): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/complete`)
+  return resp.data
+}
+
+/** → REPAIRING：开始返修（INSPECTION/READY_TO_SHIP/DELIVERED 进入）。 */
+export async function startPartRepair(id: string): Promise<PartItem> {
+  const resp = await api.post<PartItem>(`/parts/${id}/start-repair`)
+  return resp.data
+}
+
+/** REPAIRING → IN_PROCESS：返修完成，需要指定目标生产货架。 */
+export async function completePartRepair(
+  id: string,
+  shelfId: string,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/complete-repair`,
+    null,
+    { params: { shelf_id: shelfId } },
+  )
+  return resp.data
+}
+
 export async function cancelPart(id: string): Promise<PartItem> {
   const resp = await api.post<PartItem>(`/parts/${id}/cancel`)
   return resp.data

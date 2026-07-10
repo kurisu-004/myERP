@@ -355,6 +355,18 @@
     <!-- 底部操作：取消订单 / 删除（按角色门控） -->
     <el-card shadow="never" class="bottom-actions" v-if="part">
       <div class="action-row">
+        <!-- 品检相关：仅 INSPECTION 状态可见 -->
+        <template v-if="canInspect && part.status === 'INSPECTION'">
+          <el-button
+            type="success"
+            :loading="passSubmitting"
+            @click="onPassInspection"
+          >品检通过</el-button>
+          <el-button
+            type="warning"
+            @click="openFailInspectionDialog"
+          >品检打回</el-button>
+        </template>
         <el-button
           v-if="canCancelPart && part.status !== 'CANCELLED' && part.status !== 'COMPLETED'"
           type="warning"
@@ -367,6 +379,52 @@
         >删除</el-button>
       </div>
     </el-card>
+
+    <!-- 品检打回对话框（PartDetail 用，复用 releaseVisible 之外的独立状态） -->
+    <el-dialog
+      v-model="failInspDialogVisible"
+      title="品检打回 — 选择目标生产货架"
+      width="480px"
+      :close-on-click-modal="false"
+      @closed="onFailInspDialogClosed"
+    >
+      <el-form label-width="96px">
+        <el-form-item label="目标生产货架" required>
+          <el-radio-group
+            v-model="failInspShelfId"
+            style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto"
+          >
+            <el-radio
+              v-for="s in productionShelves"
+              :key="s.id"
+              :value="String(s.id)"
+              :disabled="!s.is_active"
+            >
+              {{ s.code }} — {{ s.name }}
+              <span v-if="!s.is_active" class="muted">（已停用）</span>
+            </el-radio>
+            <span v-if="productionShelves.length === 0" class="muted">
+              没有可用生产货架
+            </span>
+          </el-radio-group>
+        </el-form-item>
+        <el-alert
+          type="info"
+          :closable="false"
+          title="打回后零件回到「在生产货架上」状态，next_process_id 清空，文员重新下发时再选下一道工序。"
+          show-icon
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="failInspDialogVisible = false">取消</el-button>
+        <el-button
+          type="warning"
+          :loading="failInspSubmitting"
+          :disabled="!failInspShelfId"
+          @click="onFailInspectionConfirm"
+        >确认打回</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 取消 / 删除确认对话框 -->
     <el-dialog v-model="confirmVisible" :title="confirmTitle" width="420px">
@@ -443,14 +501,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowRight, Connection, Cpu, PriceTag, Right, Upload, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
 import Barcode from '@/components/Barcode.vue'
 import {
   cancelPart,
+  failInspection,
   getPart,
   listPartEvents,
+  passInspection,
   releaseFromProgramming,
   softDeletePart,
   updatePart,
@@ -763,6 +823,12 @@ const canCancelPart = computed(() => isManager.value || isClerk.value)
 // 删除订单：MANAGER-only
 const canDeletePart = computed(() => isManager.value)
 
+// 品检通过 / 打回：MANAGER + CLERK + INSPECTOR（与后端 _inspector_dep 一致）
+const isInspector = computed(() => hasRole('INSPECTOR'))
+const canInspect = computed(
+  () => isManager.value || isClerk.value || isInspector.value,
+)
+
 // ============ CNC 程序（G 代码 + 设定单）============
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -862,6 +928,70 @@ async function onReleaseConfirm(): Promise<void> {
     ElMessage.error((e as Error).message ?? '下发失败')
   } finally {
     releaseSubmitting.value = false
+  }
+}
+
+// ============ 品检通过 / 打回 ============
+const passSubmitting = ref(false)
+
+async function onPassInspection(): Promise<void> {
+  if (!part.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认零件「${part.value.name}」(${part.value.serial_no || part.value.drawing_no}) 品检合格，进入待送货状态？`,
+      '品检通过',
+      { type: 'success', confirmButtonText: '确认通过', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  passSubmitting.value = true
+  try {
+    await passInspection(partId.value)
+    ElMessage.success('品检通过')
+    await fetchPart()
+    void fetchEvents()
+  } catch (e) {
+    ElMessage.error(`品检通过失败：${(e as Error).message}`)
+  } finally {
+    passSubmitting.value = false
+  }
+}
+
+const failInspDialogVisible = ref(false)
+const failInspShelfId = ref<string>('')
+const failInspSubmitting = ref(false)
+
+async function openFailInspectionDialog(): Promise<void> {
+  failInspShelfId.value = ''
+  if (productionShelves.value.length === 0) {
+    try {
+      const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
+      productionShelves.value = resp.items
+    } catch {
+      productionShelves.value = []
+    }
+  }
+  failInspDialogVisible.value = true
+}
+
+function onFailInspDialogClosed(): void {
+  failInspShelfId.value = ''
+}
+
+async function onFailInspectionConfirm(): Promise<void> {
+  if (!failInspShelfId.value) return
+  failInspSubmitting.value = true
+  try {
+    await failInspection(partId.value, failInspShelfId.value)
+    ElMessage.success('已打回生产货架')
+    failInspDialogVisible.value = false
+    await fetchPart()
+    void fetchEvents()
+  } catch (e) {
+    ElMessage.error(`品检打回失败：${(e as Error).message}`)
+  } finally {
+    failInspSubmitting.value = false
   }
 }
 

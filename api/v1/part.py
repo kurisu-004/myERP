@@ -41,6 +41,14 @@ _office_dep = [
     Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
 ]
 
+# MANAGER + CLERK + INSPECTOR：品检相关端点（pass-inspection / fail-inspection）。
+# 品检员可以独立验收，不依赖文员。
+_inspector_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+    ))
+]
+
 # MANAGER + CLERK + CNC_PROGRAMMER：待编程一览 / 详情只读 / 文件下载
 _read_lots_dep = [
     Depends(require_roles(
@@ -252,14 +260,33 @@ async def release_part_from_programming(
 @router.post(
     "/{part_id}/pass-inspection",
     response_model=PartOut,
-    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER / CLERK）",
-    dependencies=_office_dep,
+    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER / CLERK / INSPECTOR）",
+    dependencies=_inspector_dep,
 )
 async def pass_part_inspection(
     part_id: int,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.pass_inspection(part_id)
+
+
+@router.post(
+    "/{part_id}/fail-inspection",
+    response_model=PartOut,
+    summary="INSPECTION → IN_PROCESS：品检不通过，打回生产货架（MANAGER / CLERK / INSPECTOR）",
+    description=(
+        "品检员/文员在 INSPECTION 状态下点击打回，指定目标生产货架；"
+        "next_process_id 清空，零件回到 IN_PROCESS/ON_SHELF，文员重新下发时"
+        "再选下一道工序。"
+    ),
+    dependencies=_inspector_dep,
+)
+async def fail_part_inspection(
+    part_id: int,
+    shelf_id: int = Query(..., description="目标生产货架 id（必须 zone=PRODUCTION）"),
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.fail_inspection(part_id, shelf_id)
 
 
 @router.post(

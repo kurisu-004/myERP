@@ -1178,6 +1178,59 @@ class PartService:
         items = await self._to_out([part])
         return items[0]
 
+    async def fail_inspection(self, part_id: int, shelf_id: int) -> PartOut:
+        """INSPECTION -> IN_PROCESS：品检不通过，打回生产货架。
+
+        与 complete_repair 的区别：本路径不经过 REPAIRING 状态，直接回 ON_SHELF；
+        next_process_id 清空，由文员在重新下发时指定下一道工序。
+        """
+        part = await self.parts.get_by_id(part_id)
+        if part is None:
+            raise BizError(
+                code=ErrCode.BIZ_PART_NOT_FOUND,
+                message=f"part {part_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if part.status != PartStatus.INSPECTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"part {part_id} status={part.status!r}; "
+                    f"fail_inspection requires INSPECTION"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        shelf = await self.shelves.get_by_id(shelf_id)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {shelf_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not shelf.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message=f"shelf {shelf.code!r} is inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if shelf.zone != ShelfZone.PRODUCTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
+                    f"fail_inspection requires PRODUCTION"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        part.next_process_id = None  # 清空，由文员重新下发时再选
+        part.sm.fail_inspection(shelf=shelf, event_repo=self.events)
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        await self._check_parent_assembly(part)
+        items = await self._to_out([part])
+        return items[0]
+
     async def cancel(self, part_id: int) -> PartOut:
         """-> CANCELLED：取消零件，释放流水号。"""
         part = await self.parts.get_by_id(part_id)

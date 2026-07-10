@@ -52,6 +52,7 @@ class PartStateMachine(StateChart):
     return_to_shelf = WITH_WORKER.to(ON_SHELF)
     inspect = WITH_WORKER.to(INSPECTION)
     pass_inspection = INSPECTION.to(READY_TO_SHIP)
+    fail_inspection = INSPECTION.to(ON_SHELF)
     deliver = READY_TO_SHIP.to(DELIVERED)
     complete = DELIVERED.to(COMPLETED)
     start_repair = (
@@ -290,6 +291,23 @@ class PartStateMachine(StateChart):
                 event_type=PartEventType.STATUS_CHANGED,
                 from_status=PartStatus.INSPECTION,
                 to_status=PartStatus.READY_TO_SHIP,
+            ))
+
+    def on_fail_inspection(self, shelf=None, event_repo=None, **_):
+        """品检不通过：打回生产货架（INSPECTION → ON_SHELF）。
+
+        与 on_complete_repair 区别：本路径不经过 REPAIRING 状态，直接回到 ON_SHELF
+        （DB status='IN_PROCESS', location='PRODUCTION_SHELF'）；next_process_id
+        由 service 在调本方法前清空，文员重新下发时再选工序。
+        """
+        if event_repo and self.model:
+            shelf_code = shelf.code if shelf and hasattr(shelf, "code") else ""
+            event_repo.add(TPartEvent(
+                part_id=self.model.id,
+                event_type=PartEventType.INSPECTION_FAILED,
+                from_status=PartStatus.INSPECTION,
+                to_status=PartStatus.IN_PROCESS,
+                note=f"back to shelf {shelf_code}" if shelf_code else None,
             ))
 
     def on_deliver(self, event_repo=None, **_):

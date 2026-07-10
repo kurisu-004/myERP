@@ -1069,6 +1069,131 @@ class TestPassInspection:
 
 
 # ===================================================================
+# fail_inspection
+# ===================================================================
+
+
+class TestFailInspection:
+    """``PartService.fail_inspection`` — INSPECTION → IN_PROCESS（打回生产货架）。
+
+    与 complete_repair 形状一致：先校验 shelf 存在/active/zone=PRODUCTION，
+    再清空 next_process_id（让文员重新下发时再选），最后调 sm.fail_inspection。
+    """
+
+    async def test_normal(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+        mock_events: PartEventRepository,
+    ) -> None:
+        part = _make_part(
+            status="INSPECTION", location="INSPECTION_SHELF",
+        )
+        # 模拟已有 next_process_id（应该被清空）
+        part.next_process_id = 42
+        shelf = _make_shelf()
+        mock_parts.get_by_id.return_value = part
+        mock_shelves.get_by_id.return_value = shelf
+        mock_out = _make_part_out()
+        service._to_out.return_value = [mock_out]
+        service._check_parent_assembly = AsyncMock()
+
+        result = await service.fail_inspection(1001, shelf_id=1)
+
+        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_shelves.get_by_id.assert_awaited_once_with(1)
+        assert part.next_process_id is None  # 清空
+        part.sm.fail_inspection.assert_called_once_with(
+            shelf=shelf, event_repo=mock_events,
+        )
+        mock_parts.update.assert_awaited_once_with(part)
+        service._check_parent_assembly.assert_awaited_once_with(part)
+        assert result is mock_out
+
+    async def test_part_not_found(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        mock_parts.get_by_id.return_value = None
+
+        with pytest.raises(BizError) as exc:
+            await service.fail_inspection(999, shelf_id=1)
+
+        assert exc.value.code == ErrCode.BIZ_PART_NOT_FOUND
+        assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
+
+    async def test_part_not_in_inspection(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+    ) -> None:
+        """非 INSPECTION 状态的零件调用 fail_inspection → 400。"""
+        part = _make_part(status="READY_TO_SHIP")
+        mock_parts.get_by_id.return_value = part
+        mock_shelves.get_by_id.return_value = _make_shelf()
+
+        with pytest.raises(BizError) as exc:
+            await service.fail_inspection(1001, shelf_id=1)
+
+        assert exc.value.code == ErrCode.BIZ_INVALID_TRANSITION
+        assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+
+    async def test_shelf_not_found(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+    ) -> None:
+        part = _make_part(status="INSPECTION")
+        mock_parts.get_by_id.return_value = part
+        mock_shelves.get_by_id.return_value = None
+
+        with pytest.raises(BizError) as exc:
+            await service.fail_inspection(1001, shelf_id=99)
+
+        assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
+        assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
+
+    async def test_shelf_inactive(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+    ) -> None:
+        part = _make_part(status="INSPECTION")
+        mock_parts.get_by_id.return_value = part
+        mock_shelves.get_by_id.return_value = _make_shelf(is_active=False)
+
+        with pytest.raises(BizError) as exc:
+            await service.fail_inspection(1001, shelf_id=1)
+
+        assert exc.value.code == ErrCode.BIZ_SHELF_IN_USE
+        assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+
+    async def test_shelf_zone_not_production(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_shelves: ShelfRepository,
+    ) -> None:
+        """INSPECTION 区货架不允许打回（必须 PRODUCTION）。"""
+        part = _make_part(status="INSPECTION")
+        mock_parts.get_by_id.return_value = part
+        mock_shelves.get_by_id.return_value = _make_shelf(
+            zone=ShelfZone.INSPECTION.value
+        )
+
+        with pytest.raises(BizError) as exc:
+            await service.fail_inspection(1001, shelf_id=1)
+
+        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
+        assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+
+
+# ===================================================================
 # deliver
 # ===================================================================
 
