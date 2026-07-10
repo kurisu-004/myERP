@@ -121,3 +121,18 @@ export interface AssemblyDetail {
   children: PartListItem[]
   files: DrawingFileItem[]
 }
+/** 编辑装配件的 payload（field-level partial；POST /assemblies/{id}/update）。 */
+export interface AssemblyUpdatePayload {
+  drawing_no?: string | null
+  name?: string | null
+  /** 雪花 ID 字符串（CLAUDE.md §3） */
+  customer_id?: string | null
+  applicant_name?: string | null
+  /** 雪花 ID 字符串 */
+  applicant_id?: string | null
+  /** YYYY-MM-DD */
+  request_date?: string | null
+  planned_delivery_date?: string | null
+  actual_delivery_date?: string | null
+  is_urgent?: boolean | null
+}

@@ -26,6 +26,16 @@
               <el-icon><Back /></el-icon>
               <span>返回列表</span>
             </el-button>
+            <!-- 编辑元数据（CLERK+；PENDING 才允许编辑） -->
+            <el-button
+              v-if="canEditContent && detail?.assembly.status === 'PENDING'"
+              type="primary"
+              plain
+              @click="openEditDialog"
+            >
+              <el-icon><Edit /></el-icon>
+              <span>编辑元数据</span>
+            </el-button>
             <!-- 取消（CLERK+）：PENDING/IN_PROCESS 可触发 -->
             <el-button
               v-if="canCancel"
@@ -200,6 +210,92 @@
       </el-table>
     </el-card>
 
+    <!-- 编辑元数据对话框（CLERK + MANAGER） -->
+    <el-dialog
+      v-model="editVisible"
+      title="编辑装配件元数据"
+      width="640px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-form
+        ref="editFormRef"
+        :model="editForm"
+        :rules="editRules"
+        label-width="100px"
+      >
+        <el-form-item label="总图图号" prop="drawing_no">
+          <el-input v-model="editForm.drawing_no" placeholder="例如：E42FX1020107101" />
+        </el-form-item>
+        <el-form-item label="装配体名称" prop="name">
+          <el-input v-model="editForm.name" placeholder="例如：精研挡料座" />
+        </el-form-item>
+        <el-form-item label="客户" prop="customer_id">
+          <el-select
+            v-model="editForm.customer_id"
+            filterable
+            placeholder="选择二级客户"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="c in leafCustomers"
+              :key="c.id"
+              :label="customerOptionLabel(c)"
+              :value="c.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="申请人">
+          <el-autocomplete
+            v-model="editForm.applicant_name"
+            :fetch-suggestions="queryApplicants"
+            placeholder="输入或选择申请人"
+            value-key="name"
+            style="width: 100%"
+            @select="onApplicantSelected"
+          />
+          <!-- applicant_id 留作隐藏 / 调试用；选 applicant 时自动同步 -->
+        </el-form-item>
+        <el-form-item label="请购日期" prop="request_date">
+          <el-date-picker
+            v-model="editForm.request_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="计划交期" prop="planned_delivery_date">
+          <el-date-picker
+            v-model="editForm.planned_delivery_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="实际送货">
+          <el-date-picker
+            v-model="editForm.actual_delivery_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="加急" prop="is_urgent">
+          <el-switch v-model="editForm.is_urgent" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="editSubmitting"
+          @click="onEditSubmit"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 取消 / 删除 共用确认对话框 -->
     <el-dialog
       v-model="confirmVisible"
@@ -276,20 +372,24 @@ import {
   type FormRules,
   type UploadFile,
 } from 'element-plus'
-import { Back, CircleClose, Delete, Plus, Upload } from '@element-plus/icons-vue'
+import { Back, CircleClose, Delete, Edit, Plus, Upload } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
 import {
   addAssemblyChild,
   cancelAssembly,
   getAssembly,
   softDeleteAssembly,
+  updateAssembly,
   uploadAssemblyPdf,
 } from '@/api/assembly'
+import { listCustomers, type Customer } from '@/api/customer'
+import { useApplicantSearch } from '@/composables/useApplicantSearch'
 import {
   ASSEMBLY_STATUS_LABEL,
   ASSEMBLY_STATUS_TAG_TYPE,
   type AssemblyDetail,
   type AssemblyStatus,
+  type AssemblyUpdatePayload,
 } from '@/types/assembly'
 import {
   ORDER_STATUS_LABEL,
@@ -485,6 +585,120 @@ async function onAddChildSubmit(): Promise<void> {
     ElMessage.error((e as Error).message ?? '添加子件失败')
   } finally {
     addChildSubmitting.value = false
+  }
+}
+
+// ===== 编辑元数据对话框（CLERK + MANAGER；仅 PENDING） =====
+const editVisible = ref(false)
+const editSubmitting = ref(false)
+const editFormRef = ref<FormInstance>()
+// 表单本地状态：所有可空字段用空字符串占位，避免与 el-* 组件的 v-model
+// （只接受 string / number / undefined）类型冲突；提交前把空字符串转回 null。
+interface EditFormShape {
+  drawing_no: string
+  name: string
+  customer_id: string
+  applicant_name: string
+  applicant_id: string
+  request_date: string
+  planned_delivery_date: string
+  actual_delivery_date: string
+  is_urgent: boolean
+}
+const editForm = reactive<EditFormShape>({
+  drawing_no: '',
+  name: '',
+  customer_id: '',
+  applicant_name: '',
+  applicant_id: '',
+  request_date: '',
+  planned_delivery_date: '',
+  actual_delivery_date: '',
+  is_urgent: false,
+})
+const editRules: FormRules = {
+  drawing_no: [{ required: true, message: '请输入总图图号', trigger: 'blur' }],
+  name: [{ required: true, message: '请输入装配体名称', trigger: 'blur' }],
+  customer_id: [{ required: true, message: '请选择客户', trigger: 'change' }],
+}
+
+/** 装配体当前一级客户下拉（仅叶子）；从 listCustomers 派生。 */
+const leafCustomers = ref<Array<{ id: string; name: string; parent_name: string | null }>>([])
+async function loadLeafCustomers(): Promise<void> {
+  const all = await listCustomers()
+  leafCustomers.value = all
+    .filter((c) => c.parent_id !== null)
+    .map((c) => ({ id: c.id, name: c.name, parent_name: c.parent_name }))
+}
+function customerOptionLabel(c: { name: string; parent_name: string | null }): string {
+  return c.parent_name ? `${c.parent_name} / ${c.name}` : c.name
+}
+
+/** 申请人搜索：装配体一级客户下全集，按子串过滤。 */
+const { querySearch: queryApplicants } = useApplicantSearch({
+  // 装配体的当前 customer_id 必须先存在（resolve 到一级客户）；但编辑流
+  // 中 customer 也允许改，所以这里 fallback：先用当前客户拉一次，没选好客户
+  // 就返回空列表。详情页加载时已锁定 customer。
+  resolveRootCustomerId: () => null,
+})
+
+function onApplicantSelected(applicant: { id?: string; name?: string }): void {
+  if (applicant?.id != null) {
+    ;(editForm as { applicant_id?: string | null }).applicant_id = String(applicant.id)
+  }
+}
+
+async function openEditDialog(): Promise<void> {
+  if (!detail.value) return
+  const a = detail.value.assembly
+  Object.assign(editForm, {
+    drawing_no: a.drawing_no,
+    name: a.name,
+    customer_id: a.customer_id,
+    applicant_name: a.applicant_name ?? '',
+    applicant_id: '',
+    request_date: a.request_date,
+    planned_delivery_date: a.planned_delivery_date,
+    actual_delivery_date: a.actual_delivery_date ?? '',
+    is_urgent: a.is_urgent,
+  })
+  editVisible.value = true
+  try {
+    await loadLeafCustomers()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载客户列表失败')
+  }
+}
+
+async function onEditSubmit(): Promise<void> {
+  if (!editFormRef.value || !assemblyId.value) return
+  try {
+    await editFormRef.value.validate()
+  } catch {
+    return
+  }
+  editSubmitting.value = true
+  try {
+    // 把表单内部空字符串 / falsy 还原成 payload schema 的 null / undefined 语义。
+    const payload: AssemblyUpdatePayload = {
+      drawing_no: editForm.drawing_no,
+      name: editForm.name,
+      customer_id: editForm.customer_id,
+      applicant_name: editForm.applicant_name || null,
+      applicant_id: editForm.applicant_id || null,
+      request_date: editForm.request_date,
+      planned_delivery_date: editForm.planned_delivery_date,
+      actual_delivery_date: editForm.actual_delivery_date || null,
+      is_urgent: editForm.is_urgent,
+    }
+    const updated = await updateAssembly(assemblyId.value, payload)
+    detail.value = updated
+    ElMessage.success('已保存')
+    editVisible.value = false
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '保存失败')
+  } finally {
+    editSubmitting.value = false
   }
 }
 

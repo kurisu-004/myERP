@@ -9,6 +9,7 @@ import type {
   AssemblyListQuery,
   AssemblyListResult,
   AssemblyItem,
+  AssemblyUpdatePayload,
 } from '@/types/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import type { PartListItem } from '@/types/parts'
@@ -92,6 +93,15 @@ export async function softDeleteAssembly(id: string): Promise<void> {
 /** 取消装配体（CLERK+）。级联取消所有非终态子件。 */
 export async function cancelAssembly(id: string): Promise<AssemblyDetail> {
   const resp = await api.post<AssemblyDetail>(`/assemblies/${id}/cancel`)
+  return resp.data
+}
+
+/** 编辑装配体元数据（MANAGER + CLERK；仅 PENDING 可编辑）。 */
+export async function updateAssembly(
+  id: string,
+  payload: AssemblyUpdatePayload,
+): Promise<AssemblyDetail> {
+  const resp = await api.post<AssemblyDetail>(`/assemblies/${id}/update`, payload)
   return resp.data
 }
 
