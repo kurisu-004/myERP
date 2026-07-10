@@ -69,6 +69,16 @@ class Settings(BaseSettings):
         alias="DELIVERY_NOTE_TEMPLATE_PATH",
     )
 
+    # ---- DELIVERED → COMPLETED 自动完成（PR-D 2026-07-10）----
+    # 最近一次发货事件超过 N 天 且 中间无返修 → 自动 COMPLETED。
+    auto_complete_threshold_days: int = Field(
+        default=7, alias="AUTO_COMPLETE_THRESHOLD_DAYS", ge=1,
+    )
+    # 后台循环间隔（小时）。
+    auto_complete_interval_hours: int = Field(
+        default=24, alias="AUTO_COMPLETE_INTERVAL_HOURS", ge=1,
+    )
+
 
 settings = Settings()
 print(settings)

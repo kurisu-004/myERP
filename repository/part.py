@@ -1,10 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model import TPart
-from model.enums import PartSortKey, PartStatus, SortDir
+from model import TPart, TPartEvent
+from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
 
 
 class PartRepository:
@@ -235,6 +235,75 @@ class PartRepository:
             stmt = stmt.where(TPart.deleted_at.is_(None))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
+
+    # ===== 7 天自动完成（PR-D 2026-07-10）=====
+    async def find_delivered_older_than(
+        self,
+        *,
+        threshold: datetime,
+        limit: int = 200,
+    ) -> list[TPart]:
+        """查找 DELIVERED 状态且"最近一次发货事件"早于 threshold 的零件。
+
+        SQL 谓词（防"返修干扰"用 NOT EXISTS）：
+        - status = 'DELIVERED' AND deleted_at IS NULL
+        - (SELECT MAX(e.created_at) FROM t_part_event e
+             WHERE e.part_id = p.id
+               AND e.event_type = 'STATUS_CHANGED'
+               AND e.from_status = 'READY_TO_SHIP'
+               AND e.to_status = 'DELIVERED') <= threshold
+        - NOT EXISTS (
+            SELECT 1 FROM t_part_event e
+            WHERE e.part_id = p.id
+              AND e.event_type = 'REPAIR_STARTED'
+              AND e.created_at > (
+                  SELECT MAX(e2.created_at) FROM t_part_event e2
+                  WHERE e2.part_id = p.id
+                    AND e2.event_type = 'STATUS_CHANGED'
+                    AND e2.from_status = 'READY_TO_SHIP'
+                    AND e2.to_status = 'DELIVERED'
+              )
+          )
+
+        排序：id ASC（保持稳定）；limit 上限防内存爆。
+        """
+        # 关键：DELIVERED 事件用 from/to_status 复合（state machine 写的 STATUS_CHANGED）
+        delivered_event_filter = and_(
+            TPartEvent.part_id == TPart.id,
+            TPartEvent.event_type == PartEventType.STATUS_CHANGED.value,
+            TPartEvent.from_status == PartStatus.READY_TO_SHIP.value,
+            TPartEvent.to_status == PartStatus.DELIVERED.value,
+        )
+        latest_delivered = (
+            select(func.max(TPartEvent.created_at))
+            .where(delivered_event_filter)
+            .correlate(TPart)
+            .scalar_subquery()
+        )
+        # 返修干扰：是否有 REPAIR_STARTED 在最近一次 DELIVERED 之后
+        repair_after_delivered = (
+            select(TPartEvent.id)
+            .where(
+                TPartEvent.part_id == TPart.id,
+                TPartEvent.event_type == PartEventType.REPAIR_STARTED.value,
+                TPartEvent.created_at > latest_delivered,
+            )
+            .correlate(TPart)
+            .exists()
+        )
+        stmt = (
+            select(TPart)
+            .where(
+                TPart.status == PartStatus.DELIVERED.value,
+                TPart.deleted_at.is_(None),
+                latest_delivered <= threshold,
+                ~repair_after_delivered,
+            )
+            .order_by(TPart.id.asc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     # ===== 在架件数批量统计（共享 HMI picker current_load）=====
     async def get_load_map_by_shelf_ids(
