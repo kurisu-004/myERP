@@ -1,9 +1,8 @@
 """申请人 (Applicant) 数据访问。"""
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TApplicant
 
 
@@ -142,6 +141,6 @@ class ApplicantRepository:
         return applicant
 
     async def soft_delete(self, applicant: TApplicant) -> TApplicant:
-        applicant.deleted_at = datetime.utcnow()
+        applicant.deleted_at = now_naive()
         await self.session.flush()
         return applicant

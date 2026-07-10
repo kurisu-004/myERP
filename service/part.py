@@ -123,6 +123,7 @@ class PartService:
         self.event_broadcaster = event_broadcaster
         self._current_user = current_user
         self._user_id: int | None = current_user.id if current_user else None
+        self._username: str | None = current_user.username if current_user else None
 
     # ============================================================
     # 查询
@@ -197,6 +198,17 @@ class PartService:
                 is_active=None, limit=max(100, len(worker_ids))
             )
             worker_map = {w.id: w for w in workers if w.id in worker_ids}
+        # operator_username：通过 t_user 现算（model 不冗余，避免 N 行事件 N 次 JOIN
+        # 单独建索引的代价；list_events 一次性查整本批 map）。
+        operator_ids = {e.created_by for e in events if e.created_by}
+        user_map: dict[int, str] = {}
+        if operator_ids:
+            from model import TUser
+            from sqlalchemy import select as _sa_select
+            user_rows = await self.workers.session.execute(
+                _sa_select(TUser.id, TUser.username).where(TUser.id.in_(operator_ids))
+            )
+            user_map = {int(uid): uname for uid, uname in user_rows.all()}
         return [
             PartEventOut(
                 id=e.id,
@@ -211,6 +223,8 @@ class PartService:
                 drawing_code=e.drawing_code,
                 badge_code=e.badge_code,
                 note=e.note,
+                created_by=e.created_by,
+                operator_username=user_map.get(e.created_by) if e.created_by else None,
                 created_at=e.created_at,
             )
             for e in events
@@ -227,6 +241,7 @@ class PartService:
         drawing_code: str | None = None,
         badge_code: str | None = None,
         note: str | None = None,
+        created_by: int | None = None,
     ) -> TPartEvent:
         event = TPartEvent(
             id=new_id(),
@@ -238,6 +253,7 @@ class PartService:
             drawing_code=drawing_code,
             badge_code=badge_code,
             note=note,
+            created_by=created_by,
         )
         return await self.events.create(event)
 
@@ -387,6 +403,7 @@ class PartService:
             event_type=PartEventType.CREATED,
             from_status=None,
             to_status=PartStatus.PENDING,
+            created_by=self._user_id,
         )
         items = await self._to_out([part])
         return items[0]
@@ -584,6 +601,7 @@ class PartService:
         # 状态机 on_enter_ON_SHELF 会同时把 next_process_id 设到 model 上。
         part.sm.place_on_shelf(
             shelf=shelf, process=process, event_repo=self.events,
+            created_by=self._user_id,
         )
         part.updated_by = self._user_id
         await self.parts.update(part)
@@ -606,7 +624,9 @@ class PartService:
         上传 G 代码 → 在编程员端调用 `release_from_programming` 下发到货架。
         """
         part = await self._get_part_or_404(part_id)
-        part.sm.send_to_programming(event_repo=self.events)
+        part.sm.send_to_programming(
+            event_repo=self.events, created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -643,6 +663,7 @@ class PartService:
         # 3) 状态机转换
         part.sm.release_from_programming(
             shelf=shelf, process=process, event_repo=self.events,
+            created_by=self._user_id,
         )
         part.updated_by = self._user_id
         await self.parts.update(part)
@@ -820,7 +841,10 @@ class PartService:
             )
 
         # state machine handles holder switch + event creation
-        part.sm.pick_up(worker=worker, shelf=shelf, event_repo=self.events)
+        part.sm.pick_up(
+            worker=worker, shelf=shelf, event_repo=self.events,
+            created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -946,6 +970,7 @@ class PartService:
                 prev_process_code=prev_process_code,
                 worker_work_type_code=worker_work_type_code,
                 event_repo=self.events,
+                created_by=self._user_id,
             )
             part.updated_by = self._user_id
             await self.parts.update(part)
@@ -998,7 +1023,10 @@ class PartService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
 
-            part.sm.inspect(worker=worker, target_shelf=target, event_repo=self.events)
+            part.sm.inspect(
+                worker=worker, target_shelf=target, event_repo=self.events,
+                created_by=self._user_id,
+            )
             part.updated_by = self._user_id
             await self.parts.update(part)
             await self._broadcast()
@@ -1052,13 +1080,20 @@ class PartService:
         return await self._to_out(rows)
 
     async def list_pickable_parts_all_shelves(
-        self, work_type_id: int
+        self,
+        work_type_id: int,
+        *,
+        shelf_ids: list[int] | None = None,
     ) -> list[PartOut]:
-        """共享 HMI PICK_UP 跨架列表：列出**所有**生产货架上、由指定工种
+        """共享 HMI PICK_UP 跨架列表：列出 HMI 货架范围内、由指定工种
         可领的零件。前端按 `current_holder_id` 在卡片网格里分组。
 
-        与 `list_pickable_parts` 差异：去掉 shelf_id 过滤；保留工种过滤。
-        短路逻辑一致。
+        与 `list_pickable_parts` 差异：去掉单架 shelf_id 过滤，改成可选
+        `shelf_ids` 多架过滤（None = 全架；空 list = 永远空——给"非 HMI
+        角色"返回空）。保留工种过滤 + 短路逻辑一致。
+
+        `next_process_id` 条件由 repository 层处理：IN mapped_process_ids
+        OR IS NULL（未指定下一道工序）。
         """
         if work_type_id is None:
             return []
@@ -1069,9 +1104,29 @@ class PartService:
         )
         if not process_ids:
             return []
+        if shelf_ids is not None and not shelf_ids:
+            return []  # 非 HMI 角色 → HMI scope 为空，短路免 DB
         rows = await self.parts.list_for_work_type_all_shelves(
             mapped_process_ids=process_ids,
+            shelf_ids=shelf_ids,
         )
+        return await self._to_out(rows)
+
+    async def list_parts_held_by_worker(
+        self,
+        worker_id: int,
+    ) -> list[PartOut]:
+        """扫码台 RETURN 新流程：列出当前由某工人持有的所有零件。
+
+        短路：worker_id 为 None / 0 → []（避免空指针 DB 查询）。
+
+        返回 [] 时前端提示「您当前没有持有零件 / 请先领取」。
+        service 不校验 worker 存在性（trust 客户端已在 useScanSession 拿到 worker.id）；
+        若 worker_id 不存在就返回空 list，等价于「他没持有任何零件」。
+        """
+        if not worker_id:
+            return []
+        rows = await self.parts.list_held_by_worker(worker_id=worker_id)
         return await self._to_out(rows)
 
     async def pass_inspection(self, part_id: int) -> PartOut:
@@ -1083,7 +1138,9 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        part.sm.pass_inspection(event_repo=self.events)
+        part.sm.pass_inspection(
+            event_repo=self.events, created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -1150,7 +1207,10 @@ class PartService:
             driver = worker
 
         part.actual_delivery_date = actual_delivery_date or date.today()
-        part.sm.deliver(worker=driver, event_repo=self.events)
+        part.sm.deliver(
+            worker=driver, event_repo=self.events,
+            created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -1167,7 +1227,9 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        part.sm.complete(event_repo=self.events)
+        part.sm.complete(
+            event_repo=self.events, created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -1184,7 +1246,9 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        part.sm.start_repair(event_repo=self.events)
+        part.sm.start_repair(
+            event_repo=self.events, created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -1220,7 +1284,10 @@ class PartService:
                 message=f"shelf {shelf.code!r} is zone={shelf.zone!r}; complete_repair requires PRODUCTION",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        part.sm.complete_repair(shelf=shelf, event_repo=self.events)
+        part.sm.complete_repair(
+            shelf=shelf, event_repo=self.events,
+            created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -1273,7 +1340,10 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         part.next_process_id = None  # 清空，由文员重新下发时再选
-        part.sm.fail_inspection(shelf=shelf, event_repo=self.events)
+        part.sm.fail_inspection(
+            shelf=shelf, event_repo=self.events,
+            created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
@@ -1290,7 +1360,9 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        part.sm.cancel(event_repo=self.events)
+        part.sm.cancel(
+            event_repo=self.events, created_by=self._user_id,
+        )
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()

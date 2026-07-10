@@ -36,6 +36,12 @@ class TPartEvent(Base, EventTimestampMixin):
     part_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # 逻辑外键 → t_worker.id；无工人参与的事件（CREATED / RELEASED 等）为 NULL
     worker_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 操作者：调用 service 的登录用户 ID（雪花 ID），NULL = 系统 / 历史数据
+    # 与 t_user.id 是逻辑外键，无 DB FK 约束（CLAUDE.md §1）
+    created_by: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+        comment="操作者 t_user.id（NULL = 系统调度/历史数据）",
+    )
 
     # 事件类型（Python: PartEventType）
     event_type: Mapped[str] = mapped_column(String(30), nullable=False)

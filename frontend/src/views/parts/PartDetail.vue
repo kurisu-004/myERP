@@ -324,6 +324,10 @@
                   <el-icon><User /></el-icon>
                   {{ evt.worker_name }}
                 </span>
+                <span v-if="evt.operator_username" class="operator-name">
+                  <el-icon><Setting /></el-icon>
+                  {{ evt.operator_username }}
+                </span>
               </div>
               <div v-if="evt.from_status || evt.to_status" class="event-line-2">
                 <span v-if="evt.from_status" class="status-pill">
@@ -502,7 +506,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Connection, Cpu, PriceTag, Right, Upload, User } from '@element-plus/icons-vue'
+import { ArrowRight, Connection, Cpu, PriceTag, Right, Setting, Upload, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
 import Barcode from '@/components/Barcode.vue'
 import {
@@ -1142,6 +1146,13 @@ onMounted(() => {
     color: var(--text-primary);
     font-size: 13px;
   }
+  .operator-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
   .event-line-2 {
     display: flex;
     align-items: center;
@@ -1176,9 +1187,7 @@ onMounted(() => {
   .event-note {
     color: var(--text-regular);
     font-size: 13px;
-    background: #fdf6ec;
-    padding: 4px 8px;
-    border-radius: 4px;
+    margin-top: 4px;
   }
 }
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
@@ -20,6 +19,7 @@ from core.database import SessionLocal
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.security import decode_access_token
+from core.time import now_shanghai_iso
 from model import TUser
 from service.dashboard import build_snapshot_with_workers
 from sqlalchemy import select
@@ -87,7 +87,7 @@ def _snapshot_payload(data: dict) -> str:
         {
             "type": "snapshot",
             "data": data,
-            "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "ts": now_shanghai_iso(),
         },
         ensure_ascii=False,
     )
@@ -166,7 +166,7 @@ def _event_payload(event_type: str, data: dict) -> str:
             "type": "event",
             "event_type": event_type,
             "data": data,
-            "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "ts": now_shanghai_iso(),
         },
         ensure_ascii=False,
     )

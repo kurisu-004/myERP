@@ -24,18 +24,24 @@ from schema.shelf import (
     ShelfUpdateRequest,
 )
 from schema.shelf_process import SetShelfProcessRequest, ShelfWithProcessesOut
+from service._id_parse import parse_snowflake_id
 from service.shelf import ShelfService
 from service.shelf_process import ShelfProcessService
 
 # ============================================================
-# 读路由：MANAGER + CLERK + CNC_PROGRAMMER
+# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT
+# （SHELF_ACCOUNT 在 2026-07-10 加入：共享 HMI 扫码台需要拉货架详情来渲染
+#  PICK_UP / RETURN 卡片网格；写入仍由 write_router MANAGER-only 控制）
 # ============================================================
 read_router = APIRouter(
     prefix="/shelves",
     tags=["货架管理(读)"],
     dependencies=[
         Depends(require_roles(
-            UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+            UserRole.MANAGER,
+            UserRole.CLERK,
+            UserRole.CNC_PROGRAMMER,
+            UserRole.SHELF_ACCOUNT,
         ))
     ],
 )
@@ -95,10 +101,16 @@ picker_router = APIRouter(
     ),
 )
 async def list_shelves_for_return(
-    next_process_id: int = Query(..., description="目标工序 id（RETURN 时选定）"),
+    next_process_id: str = Query(
+        ..., description="目标工序 id（雪花 ID 字符串，避免 JS Number 精度丢失）",
+    ),
     svc: ShelfService = Depends(get_shelf_service),
 ) -> ShelfForReturnListOut:
-    return await svc.list_for_return(next_process_id)
+    # 入参是雪花 ID 字符串，转回 int（CLAUDE.md §3）。
+    next_process_id_int = parse_snowflake_id(
+        next_process_id, field_name="next_process_id",
+    )
+    return await svc.list_for_return(next_process_id_int)
 
 
 # ============================================================

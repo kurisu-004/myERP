@@ -119,13 +119,22 @@ const shelfLoading = ref(true)
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
   // 获取当前货架区域，决定可用操作
+  // 三种场景的 shelfZone 派生：
+  //   1) scoped HMI（shelf_ids 非空）  → 查 /shelves 拿该架的 zone
+  //   2) wildcard 共享 HMI（shelf_ids 空）→ 默认 PRODUCTION（共享工控机典型装在生产区）
+  //   3) scoped HMI 但 shelf 找不到 / 403 → 同样默认 PRODUCTION，保证按钮可点
   const sid = activeShelfId()
   if (sid) {
     try {
       const items = (await listShelves({ limit: 200 })).items
       const shelf = items.find((s: Shelf) => String(s.id) === sid)
-      shelfZone.value = shelf?.zone ?? null
-    } catch { shelfZone.value = null }
+      shelfZone.value = shelf?.zone ?? 'PRODUCTION'
+    } catch {
+      shelfZone.value = 'PRODUCTION'
+    }
+  } else {
+    // wildcard 共享 HMI：不绑死单架，按生产区工控机处理
+    shelfZone.value = 'PRODUCTION'
   }
   // 工种决定 DELIVER 入口（PR-C 2026-07-10）
   if (worker.value?.work_type_id) {
@@ -146,10 +155,13 @@ function selectAction(a: WorkAction): void {
   setAction(a)
   ElMessage.success(`已选择: ${ACTION_LABEL[a]}`)
   // PICK_UP 走「按工种选件」新流程 → /scan/pick
-  // RETURN / INSPECT 沿用旧流程 → /scan/parts
+  // RETURN 走「按工人列持有件 → 选件 → 选工序 → 选架」新流程 → /scan/return
+  // INSPECT 沿用旧扫码流程 → /scan/parts
   // DELIVER（PR-C）走司机专属送货单流程 → /scan/deliver
   if (a === 'PICK_UP') {
     void router.push('/scan/pick')
+  } else if (a === 'RETURN') {
+    void router.push('/scan/return')
   } else if (a === 'DELIVER') {
     void router.push('/scan/deliver')
   } else {

@@ -1,8 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TPart, TPartEvent
 from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
 
@@ -110,7 +111,7 @@ class PartRepository:
         return part
 
     async def soft_delete(self, part: TPart) -> TPart:
-        part.deleted_at = datetime.utcnow()
+        part.deleted_at = now_naive()
         await self.session.flush()
         return part
 
@@ -138,6 +139,45 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    # ===== 工人持有件列表（扫码台 RETURN 新流程用，PR-E 2026-07-10）=====
+    async def list_held_by_worker(
+        self,
+        *,
+        worker_id: int,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """扫码台 RETURN：列出当前由某工人持有的零件。
+
+        过滤：
+        - status = 'IN_PROCESS'（DB 共享状态）
+        - location = 'WORKER'（在工人手）
+        - current_holder_id = worker_id
+
+        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
+        （与 list_for_work_type 一致，加急优先 → 临期优先 → 稳定排序）。
+
+        返回空 list 当 worker_id 为空时（让 service 层短路）。
+        """
+        if not worker_id:
+            return []
+        stmt = (
+            select(TPart)
+            .where(
+                TPart.status == "IN_PROCESS",
+                TPart.location == "WORKER",
+                TPart.current_holder_id == worker_id,
+            )
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 工种取件列表（PICK_UP 扫码台热点路径）=====
     async def list_for_work_type(
         self,
@@ -152,8 +192,8 @@ class PartRepository:
         - status = 'IN_PROCESS'
         - location = 'PRODUCTION_SHELF'
         - current_holder_id = shelf_id（该零件当前就在指定货架上）
-        - next_process_id IS NOT NULL（必须有下一道工序）
-        - next_process_id IN mapped_process_ids（被该工种可领）
+        - next_process_id IS NULL（未指定下一道工序）OR
+          next_process_id IN mapped_process_ids（被该工种可领）
 
         排序：is_urgent DESC（加急优先）, planned_delivery_date ASC（临期优先）,
               id DESC（稳定排序）。
@@ -168,7 +208,10 @@ class PartRepository:
                 TPart.status == "IN_PROCESS",
                 TPart.location == "PRODUCTION_SHELF",
                 TPart.current_holder_id == shelf_id,
-                TPart.next_process_id.in_(mapped_process_ids),
+                or_(
+                    TPart.next_process_id.is_(None),
+                    TPart.next_process_id.in_(mapped_process_ids),
+                ),
             )
         )
         if not include_deleted:
@@ -185,24 +228,46 @@ class PartRepository:
         self,
         *,
         mapped_process_ids: list[int],
+        shelf_ids: list[int] | None = None,
         include_deleted: bool = False,
     ) -> list[TPart]:
-        """共享 HMI PICK_UP 跨架列表：列出**所有**生产货架上、由某工种可领的零件。
+        """共享 HMI PICK_UP 跨架列表：列出 HMI 货架范围内、由某工种可领的零件。
 
-        与 `list_for_work_type` 的唯一差异：去掉 `current_holder_id == shelf_id`
-        过滤，前端按 `current_holder_id` 在卡片网格里分组。
-        排序与前者一致。
+        与 `list_for_work_type` 的差异：
+        1. 去掉 `current_holder_id == shelf_id` 单架过滤，改为可选
+           `shelf_ids` 多架过滤（None = 全架；空 list = 永远空）；
+        2. 前端按 `current_holder_id` 在卡片网格里分组。
+
+        过滤条件：
+        - status = 'IN_PROCESS'
+        - location = 'PRODUCTION_SHELF'
+        - shelf_ids 不为空时：current_holder_id IN shelf_ids
+        - next_process_id IS NULL（未指定下一道工序）OR
+          next_process_id IN mapped_process_ids（被该工种可领）
+
+        排序：is_urgent DESC（加急优先）, planned_delivery_date ASC（临期优先）,
+              id DESC（稳定排序）。
+
+        返回空 list 当 mapped_process_ids 为空，或 shelf_ids 显式传空 list 时
+        （让 service 层短路）。
         """
         if not mapped_process_ids:
+            return []
+        if shelf_ids is not None and not shelf_ids:
             return []
         stmt = (
             select(TPart)
             .where(
                 TPart.status == "IN_PROCESS",
                 TPart.location == "PRODUCTION_SHELF",
-                TPart.next_process_id.in_(mapped_process_ids),
+                or_(
+                    TPart.next_process_id.is_(None),
+                    TPart.next_process_id.in_(mapped_process_ids),
+                ),
             )
         )
+        if shelf_ids is not None:
+            stmt = stmt.where(TPart.current_holder_id.in_(shelf_ids))
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
         stmt = stmt.order_by(

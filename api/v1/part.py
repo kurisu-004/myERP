@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from api.deps import get_part_file_repository, get_part_repository, get_part_service
 from core.permission import (
     CurrentUser,
+    get_current_user,
     require_auth,
     require_role,
     require_roles,
@@ -493,23 +494,57 @@ async def list_pickable_parts_by_work_type(
     return await svc.list_pickable_parts(work_type_id, shelf_id)
 
 
-# 共享 HMI PICK_UP 跨架列表（2026-07-10）
+# 共享 HMI PICK_UP 跨架列表（2026-07-10；2026-07-10 加 HMI scope 过滤）
 @router.get(
     "/pickable-by-work-type/{work_type_id}",
     response_model=list[PartOut],
-    summary="共享 HMI PICK_UP 跨架列表：所有生产货架上某工种可领的零件",
+    summary="共享 HMI PICK_UP 跨架列表：HMI 货架范围内某工种可领的零件",
     description=(
-        "按工种 id 列出**所有**生产货架上、下一道工序属于该工种映射的零件。"
-        "前端按 `current_holder_id` 在卡片网格里分组；不传 shelf_id。"
+        "按工种 id 列出 HMI 货架范围内、下一道工序属于该工种映射（或未指定"
+        "下一道工序）的零件。前端按 `current_holder_id` 在卡片网格里分组。"
+        "HMI scope 规则：MANAGER 看全架；SHELF_ACCOUNT@wildcard 看全架；"
+        "SHELF_ACCOUNT@scope 仅看自己绑定的架；其他角色 → []。"
         "用于共享工控机场景：工人刷工牌后看到所有候选架的分组列表。"
     ),
     dependencies=[Depends(require_auth())],
 )
 async def list_pickable_parts_by_work_type_all_shelves(
     work_type_id: int,
+    user: CurrentUser = Depends(get_current_user),
     svc: PartService = Depends(get_part_service),
 ) -> list[PartOut]:
-    return await svc.list_pickable_parts_all_shelves(work_type_id)
+    # HMI scope 过滤：MANAGER 走全架；SHELF_ACCOUNT 走 scope / wildcard；
+    # 其他角色（CLERK / CNC / INSPECTOR 等）→ []（不应调此端点）。
+    shelf_ids: list[int] | None = None
+    if not user.has_role(UserRole.MANAGER):
+        if user.has_role(UserRole.SHELF_ACCOUNT):
+            shelf_ids = None if user.shelf_wildcard else list(user.shelf_ids)
+        else:
+            shelf_ids = []  # 非 HMI 角色 → 空（repository 短路）
+    return await svc.list_pickable_parts_all_shelves(
+        work_type_id, shelf_ids=shelf_ids,
+    )
+
+
+@router.get(
+    "/by-worker/{worker_id}",
+    response_model=list[PartOut],
+    summary="扫码台 RETURN 列表：某工人当前持有的所有零件",
+    description=(
+        "列出当前 location=WORKER 且 current_holder_id=worker_id 的零件。"
+        "排序：加急优先 → 临期优先 → id 降序。"
+        "返回 [] 时前端提示「当前无持有零件」。"
+        "权限：任意已登录用户（扫码台客户端已用 useScanSession 拿到 worker.id）。"
+        "worker_id 入参是雪花 ID 字符串，转 int（CLAUDE.md §3）。"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def list_parts_held_by_worker(
+    worker_id: str,
+    svc: PartService = Depends(get_part_service),
+) -> list[PartOut]:
+    worker_id_int = parse_snowflake_id(worker_id, field_name="worker_id")
+    return await svc.list_parts_held_by_worker(worker_id_int)
 
 # ============================================================
 # 双面打印 PDF（图纸 + 反面条形码）

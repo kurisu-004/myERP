@@ -77,6 +77,7 @@ export type PartEventType =
   | 'PICKED_UP'
   | 'RETURNED'
   | 'INSPECTED'
+  | 'INSPECTION_FAILED'
   | 'STATUS_CHANGED'
   | 'REPAIR_STARTED'
   | 'REPAIR_COMPLETED'
@@ -92,6 +93,7 @@ export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   PICKED_UP: '领取',
   RETURNED: '归还',
   INSPECTED: '送检',
+  INSPECTION_FAILED: '品检打回',
   STATUS_CHANGED: '状态变更',
   REPAIR_STARTED: '开始返修',
   REPAIR_COMPLETED: '返修完成',
@@ -108,6 +110,7 @@ export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 
   PICKED_UP: 'warning',
   RETURNED: 'info',
   INSPECTED: 'primary',
+  INSPECTION_FAILED: 'danger',
   STATUS_CHANGED: 'info',
   REPAIR_STARTED: 'danger',
   REPAIR_COMPLETED: 'success',

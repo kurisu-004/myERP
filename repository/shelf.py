@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TShelf
 
 
@@ -23,7 +22,7 @@ class ShelfRepository:
         return shelf
 
     async def soft_delete(self, shelf: TShelf) -> TShelf:
-        shelf.deleted_at = datetime.utcnow()
+        shelf.deleted_at = now_naive()
         shelf.is_active = False
         await self.session.flush()
         return shelf

@@ -10,6 +10,10 @@ declare module 'vue-router' {
     /** 该路由所需的菜单 code；缺省表示不依赖菜单（公开 / 已登录即可）。
      *  守卫会校验"用户的菜单树中是否包含该 code"，单一权限源。 */
     menuCode?: string
+    /** 该路由的访问条件：用户只要拥有任一列出的角色即可进入，无需 menuCode 命中。
+     *  用例：工位扫码台（/scan/*）—— SHELF_ACCOUNT 业务上必须能进，但 SHELF_ACCOUNT
+     *  的菜单树不含 scan_badge。allowRoles 检查在 menuCode 检查之前触发。 */
+    allowRoles?: string[]
   }
 }
 
@@ -157,12 +161,13 @@ const routes: RouteRecordRaw[] = [
   // 工位扫码台
   {
     path: '/scan',
-    meta: { requireAuth: true, menuCode: 'scan_badge' },
+    meta: { requireAuth: true, allowRoles: ['SHELF_ACCOUNT'] },
     children: [
       { path: '', redirect: '/scan/badge' },
       { path: 'badge', name: 'ScanBadge', component: () => import('@/views/scan/ScanBadgeGate.vue'), meta: { title: '扫码台 · 工牌识别', menuCode: 'scan_badge' } },
       { path: 'action', name: 'ScanAction', component: () => import('@/views/scan/ScanActionPicker.vue'), meta: { title: '扫码台 · 操作选择', menuCode: 'scan_badge' } },
       { path: 'pick', name: 'ScanPick', component: () => import('@/views/scan/ScanPickParts.vue'), meta: { title: '扫码台 · 选件领取', menuCode: 'scan_badge' } },
+      { path: 'return', name: 'ScanReturn', component: () => import('@/views/scan/ScanReturnParts.vue'), meta: { title: '扫码台 · 选件放回', menuCode: 'scan_badge' } },
       { path: 'parts', name: 'ScanParts', component: () => import('@/views/scan/ScanPartsWork.vue'), meta: { title: '扫码台 · 扫码报工', menuCode: 'scan_badge' } },
       { path: 'deliver', name: 'ScanDeliver', component: () => import('@/views/scan/ScanDeliver.vue'), meta: { title: '扫码台 · 司机确认发货', menuCode: 'scan_badge' } },
     ],
@@ -182,6 +187,18 @@ function treeContainsCode(tree: MenuNode[], code: string): boolean {
   return false
 }
 
+/** DFS 在用户的菜单树中找第一个有 path 的节点路径；找不到返回 null。
+ *  用作 menuCode 校验失败时的降级目标：避免再次陷入相同的菜单校验循环。 */
+function findFirstMenuPath(tree: MenuNode[]): string | null {
+  const stack: MenuNode[] = [...tree]
+  while (stack.length > 0) {
+    const n = stack.pop()!
+    if (n.path) return n.path
+    if (n.children.length > 0) stack.push(...n.children)
+  }
+  return null
+}
+
 // 全局前置守卫
 router.beforeEach(async (to, _from, next) => {
   const { useAuthSession } = await import('@/composables/useAuthSession')
@@ -195,12 +212,21 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
-  // 2) menuCode 校验：菜单树中存在对应 code 即放行。
-  //    单一权限源 —— 不再有独立的 allowRoles 白名单。
-  //    登录跳转降级目标按角色定：MANAGER 落 /dashboard，其他角色落 /scan/badge。
+  // 2) allowRoles 短路：用户拥有任一列出的角色则直接放行，不管 menuCode。
+  //    用于 SHELF_ACCOUNT → /scan/* 等"业务上必须能进但 menuCode 校验会卡住"的场景。
+  const allowRoles = to.meta.allowRoles ?? []
+  if (allowRoles.length > 0 && allowRoles.some((r) => hasRole(r))) {
+    return next()
+  }
+
+  // 3) menuCode 校验：菜单树中存在对应 code 即放行。
+  //    单一权限源。降级目标：用户菜单树中第一个可达路径；
+  //    若菜单树为空（极端情况）→ /login。
   const code = to.meta.menuCode
   if (code && !treeContainsCode(menus(), code)) {
-    return next(hasRole('MANAGER') ? '/dashboard' : '/scan/badge')
+    const fallback = findFirstMenuPath(menus()) ?? '/login'
+    if (fallback === to.fullPath) return next()  // 自环保护，防止未来回归
+    return next(fallback)
   }
 
   next()

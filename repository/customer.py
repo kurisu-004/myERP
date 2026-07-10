@@ -21,8 +21,9 @@ class CustomerRepository:
         return customer
 
     async def soft_delete(self, customer: TCustomer) -> TCustomer:
-        from datetime import datetime
-        customer.deleted_at = datetime.utcnow()
+        from core.time import now_naive
+
+        customer.deleted_at = now_naive()
         await self.session.flush()
         return customer
 

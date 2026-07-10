@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from core.config import settings
 from core.database import SessionLocal
+from core.time import now_naive
 from repository.customer import CustomerRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
@@ -46,7 +47,7 @@ async def auto_complete_loop() -> None:
 
 async def _run_once() -> None:
     """单次扫描：找出符合条件的零件，逐个调 PartService.complete。"""
-    threshold = datetime.utcnow() - timedelta(days=settings.auto_complete_threshold_days)
+    threshold = now_naive() - timedelta(days=settings.auto_complete_threshold_days)
     logger.info(
         "auto_complete: scanning DELIVERED parts older than %s",
         threshold.isoformat(timespec="seconds"),

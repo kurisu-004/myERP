@@ -13,12 +13,13 @@ DB 不存 ENUM，所以这里用 `PartStatus.<X>.value` 字面量比较。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_shanghai_iso
 from model import TPart, TPartEvent, TShelf, TWorker
 from model.enums import (
     PartEventType,
@@ -176,7 +177,7 @@ async def build_snapshot(
         "on_inspection_shelves": on_insp_items,
         "in_process": in_process_items,
         "upcoming_delivery": upcoming_delivery,
-        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "ts": now_shanghai_iso(),
     }
     return out
 

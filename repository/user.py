@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TUser, TUserRole
 
 
@@ -26,13 +25,13 @@ class UserRepository:
         return user
 
     async def soft_delete(self, user: TUser) -> TUser:
-        user.deleted_at = datetime.utcnow()
+        user.deleted_at = now_naive()
         user.is_active = False
         await self.session.flush()
         return user
 
     async def touch_login(self, user: TUser) -> TUser:
-        user.last_login_at = datetime.utcnow()
+        user.last_login_at = now_naive()
         await self.session.flush()
         return user
 
@@ -121,7 +120,7 @@ class UserRoleRepository:
         return role
 
     async def soft_delete(self, role: TUserRole) -> TUserRole:
-        role.deleted_at = datetime.utcnow()
+        role.deleted_at = now_naive()
         await self.session.flush()
         return role
 

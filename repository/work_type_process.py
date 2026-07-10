@@ -4,11 +4,10 @@
 - `list_process_ids_by_work_type` — PICK_UP 扫码台过滤要用的纯 ID 集
 - `set_for_work_type` — Manager 维护映射的「整体替换」语义
 """
-from datetime import datetime
-
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TWorkTypeProcess
 
 
@@ -89,7 +88,7 @@ class WorkTypeProcessRepository:
             work_type_id, include_deleted=False,
         )
         for row in rows:
-            row.deleted_at = datetime.utcnow()
+            row.deleted_at = now_naive()
             await self.session.flush()
 
     async def hard_delete_by_work_type(self, work_type_id: int) -> None:
@@ -106,6 +105,6 @@ class WorkTypeProcessRepository:
         return row
 
     async def soft_delete(self, row: TWorkTypeProcess) -> TWorkTypeProcess:
-        row.deleted_at = datetime.utcnow()
+        row.deleted_at = now_naive()
         await self.session.flush()
         return row

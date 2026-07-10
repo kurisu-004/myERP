@@ -1,9 +1,8 @@
 """工种 (WorkType) 数据访问。"""
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TWorkType
 
 
@@ -90,6 +89,6 @@ class WorkTypeRepository:
         return work_type
 
     async def soft_delete(self, work_type: TWorkType) -> TWorkType:
-        work_type.deleted_at = datetime.utcnow()
+        work_type.deleted_at = now_naive()
         await self.session.flush()
         return work_type

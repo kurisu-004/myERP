@@ -122,6 +122,8 @@ export interface PartEvent {
   drawing_code: string | null
   badge_code: string | null
   note: string | null
+  created_by: string | null
+  operator_username: string | null
   created_at: string
 }
 
@@ -378,6 +380,20 @@ export async function listPartsByWorkTypeAllShelves(
 ): Promise<PartItem[]> {
   const resp = await api.get<PartItem[]>(
     `/parts/pickable-by-work-type/${encodeURIComponent(workTypeId)}`,
+  )
+  return resp.data
+}
+
+/**
+ * 扫码台 RETURN 列表：列出某工人当前持有的所有零件（2026-07-10 新流程）。
+ * 排序：加急优先 → 临期优先 → id 降序。
+ * 入参 workerId 是雪花 ID 字符串。
+ */
+export async function listPartsHeldByWorker(
+  workerId: string,
+): Promise<PartItem[]> {
+  const resp = await api.get<PartItem[]>(
+    `/parts/by-worker/${encodeURIComponent(workerId)}`,
   )
   return resp.data
 }

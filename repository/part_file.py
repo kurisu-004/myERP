@@ -15,11 +15,10 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TPartFile
 
 
@@ -149,7 +148,7 @@ class PartFileRepository:
         return file
 
     async def soft_delete(self, file: TPartFile) -> TPartFile:
-        file.deleted_at = datetime.utcnow()
+        file.deleted_at = now_naive()
         await self.session.flush()
         return file
 
@@ -159,7 +158,7 @@ class PartFileRepository:
         """批量软删，返回待 COS 清理的 object_key 列表。"""
         if not files:
             return []
-        now = datetime.utcnow()
+        now = now_naive()
         keys: list[str] = []
         for f in files:
             if f.deleted_at is None:

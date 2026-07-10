@@ -315,4 +315,14 @@ class PartEventOut(BaseModel):
     drawing_code: str | None = None
     badge_code: str | None = None
     note: str | None = None
+    created_by: IdStr = Field(
+        default=None,
+        description="操作者 t_user.id（NULL = 系统/历史）",
+    )
+    operator_username: str | None = Field(
+        default=None,
+        description=(
+            "操作者用户名（list_events 时通过 JOIN t_user 算出，模型不冗余存储）"
+        ),
+    )
     created_at: datetime

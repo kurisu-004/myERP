@@ -316,7 +316,8 @@ class TestPlaceOnShelf:
         mock_shelves.get_by_id.assert_awaited_once_with(1)
         mock_processes.get_by_id.assert_awaited_once_with(42)
         part.sm.place_on_shelf.assert_called_once_with(
-            shelf=shelf, process=process, event_repo=mock_events
+            shelf=shelf, process=process, event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         assert result is mock_out
@@ -446,7 +447,8 @@ class TestPickUpByScan:
         mock_workers.get_by_badge_code.assert_awaited_once_with("W001")
         mock_parts.get_by_serial.assert_awaited_once_with("L0001")
         part.sm.pick_up.assert_called_once_with(
-            worker=worker, shelf=shelf, event_repo=mock_events
+            worker=worker, shelf=shelf, event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         assert result is mock_out
@@ -755,6 +757,7 @@ class TestScanEvent:
             worker=worker, shelf=shelf, process=process,
             prev_process_code=None, worker_work_type_code=None,
             event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         assert result is mock_out
@@ -874,7 +877,8 @@ class TestScanEvent:
         result = await service.scan_event(data)
 
         part.sm.inspect.assert_called_once_with(
-            worker=worker, target_shelf=target, event_repo=mock_events
+            worker=worker, target_shelf=target, event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         assert result is mock_out
@@ -1049,7 +1053,9 @@ class TestPassInspection:
         result = await service.pass_inspection(1001)
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
-        part.sm.pass_inspection.assert_called_once_with(event_repo=mock_events)
+        part.sm.pass_inspection.assert_called_once_with(
+            event_repo=mock_events, created_by=None,
+        )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
         assert result is mock_out
@@ -1106,6 +1112,7 @@ class TestFailInspection:
         assert part.next_process_id is None  # 清空
         part.sm.fail_inspection.assert_called_once_with(
             shelf=shelf, event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
@@ -1232,6 +1239,7 @@ class TestDeliver:
         mock_parts.get_by_id.assert_awaited_once_with(1001)
         part.sm.deliver.assert_called_once_with(
             worker=None, event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
@@ -1277,6 +1285,7 @@ class TestDeliver:
         mock_work_types.get_by_id.assert_awaited_once_with(99)
         part.sm.deliver.assert_called_once_with(
             worker=driver, event_repo=mock_events if False else service.events,
+            created_by=None,
         )
         assert part.actual_delivery_date == date.today()
         assert result is not None
@@ -1366,7 +1375,9 @@ class TestComplete:
         result = await service.complete(1001)
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
-        part.sm.complete.assert_called_once_with(event_repo=mock_events)
+        part.sm.complete.assert_called_once_with(
+            event_repo=mock_events, created_by=None,
+        )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
         assert result is mock_out
@@ -1395,7 +1406,9 @@ class TestStartRepair:
         result = await service.start_repair(1001)
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
-        part.sm.start_repair.assert_called_once_with(event_repo=mock_events)
+        part.sm.start_repair.assert_called_once_with(
+            event_repo=mock_events, created_by=None,
+        )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
         assert result is mock_out
@@ -1429,7 +1442,8 @@ class TestCompleteRepair:
         mock_parts.get_by_id.assert_awaited_once_with(1001)
         mock_shelves.get_by_id.assert_awaited_once_with(1)
         part.sm.complete_repair.assert_called_once_with(
-            shelf=shelf, event_repo=mock_events
+            shelf=shelf, event_repo=mock_events,
+            created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
@@ -1506,7 +1520,9 @@ class TestCancel:
         result = await service.cancel(1001)
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
-        part.sm.cancel.assert_called_once_with(event_repo=mock_events)
+        part.sm.cancel.assert_called_once_with(
+            event_repo=mock_events, created_by=None,
+        )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
         assert result is mock_out

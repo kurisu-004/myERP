@@ -309,14 +309,13 @@ frontend/src/
 
 ## 迁移文件命名
 
-`alembic/versions/` 下的迁移文件使用 **12 位零填充数字** revision id（如 `000000000001_init_schema.py`），不是 hex。
+`alembic/versions/` 下的迁移文件使用 **12 位零填充数字** revision id（如 `000000000001_schema_init.py`），不是 hex。
 
 模块顶部写明 `revision` / `down_revision` / `Create Date`，迁移开头用 docstring 说明要点（如"不使用物理外键"）。
 
-当前迁移：
-- `000000000001_init_schema.py` — 初始 schema（所有表的 DDL）
-- `000000000002_init_seed.py` — 初始种子数据
-- `000000000003_cnc_programming.py` — 新增 `t_cnc_program` 表 + seed 待编程一览菜单 + CLERK / CNC_PROGRAMMER 账号
+**当前迁移（2026-07-10 squash 后，仅 2 个文件；见 §15）**：
+- `schema/000000000001_schema_init.py` — 唯一 schema 迁移（所有表/索引/约束的最终状态）
+- `prod_data/000000000002_data_init.py` — 唯一数据种子（9 工种 / 19 工人 / 6 账号 / 22 菜单 / role_menu / A-Z 流水号计数器；无任何假数据）
 
 ## 已知问题 / 现状注意
 
@@ -1056,82 +1055,39 @@ ON_SHELF 和 WITH_WORKER 共享 DB status="IN_PROCESS"，通过 location 列区�
 
 ---
 
-## 15. Alembic 迁移三层目录（schema / dev_data / prod_data）
+## 15. Alembic 迁移（2026-07-10 squash 为两个文件）
 
-`alembic/versions/` 拆为 3 个子目录，每类文件一个职责；`alembic.ini` 已配 `version_locations` + `recursive_version_locations = true`，env.py 无需改。
+历史上迁移分三层（schema / dev_data / prod_data）共 20 步，其中 dev_data 是假数据种子（50 假零件 / 20 假工人 / 20 假客户 / changeme dev 账号），且后端 `Dockerfile` 启动即跑 `alembic upgrade head`——生产库会被灌进假数据。**2026-07-10 起把整条链 squash 为两个文件**，删除全部 dev 假 seed：
 
-| 目录 | 内容 | 谁会用 |
-|------|------|--------|
-| `schema/`     | 纯 DDL（CREATE TABLE / INDEX / CONSTRAINT / ALTER COLUMN） | dev + prod 都需要 |
-| `dev_data/`   | dev 期种子（20 假工人 W001-W020 / 50 假零件 / 10 假装配 / 20 假客户 / 6 dev users / shelf_process 映射 / customer snowflake 重写） | dev 库（`alembic upgrade head`） |
-| `prod_data/`  | 真实员工生产种子（19 工人 + 4 用户 + 9 工种 + 20 菜单 + role_menu） | dev + prod 都需要 |
+| 文件 | revision | down | 内容 |
+|------|----------|------|------|
+| `schema/000000000001_schema_init.py` | `000000000001` | base | **唯一 DDL 迁移**：一次建全部 17 张表 + 索引 + 约束（等价于旧 001-005/013/015/016/020 叠加后的最终 schema）。文件表已统一为 `t_part_file`（无 `t_drawing_file` / `t_cnc_program`）；`t_customer.id` 用 `autoincrement=False`（不建 sequence，全表雪花 ID）。 |
+| `prod_data/000000000002_data_init.py` | `000000000002` | `000000000001` | **唯一数据种子**：9 工种 / 19 真实工人 / 6 账号（admin·MANAGER + 陈燕·翁美月·CLERK + 童敏华·CNC_PROGRAMMER + 黄道玉·曾学辉·INSPECTOR，密码 changeme）/ 22 菜单 / 35 role_menu / `t_serial_counter` 预置 A-Z 全 26 行。全部 ON CONFLICT 幂等，**无任何假数据**。 |
 
-### 15.1 完整 revision 链（线性，14 步，单 head = 000000000014）
+`alembic.ini` 的 `version_locations` 现为 `schema:prod_data`（已移除 dev_data），`recursive_version_locations = true` 保留。
 
-```
-schema/001 init_schema             → base
-schema/002 cnc_program_table       → 001  (t_cnc_program DDL)
-schema/003 applicant_table         → 002  (t_applicant DDL)
-schema/004 shelf_process_table     → 003  (t_shelf_process DDL)
-schema/005 assembly_serial_no      → 004  (t_assembly.serial_no)
-schema/013 add_customer_serial_prefix → 012 (t_customer.serial_prefix + check + 部分唯一索引 + 历史 F/L/H 回填)
+### 15.1 升级命令（dev / prod 统一）
 
-dev_data/006 dev_seed              → 005  (init seed: work_types/processes/customers/shelves/parts/assemblies/20 假工人/12 base 菜单/4 settings 菜单/admin+proda1+prodb1+inspi1)
-dev_data/007 dev_cnc_seed          → 006  (+1 pending_programming 菜单 + clerk/cncprog 用户)
-dev_data/008 dev_cnc_menu_revoke   → 007  (CNC_PROGRAMMER 改看 parts_list)
-dev_data/009 dev_customer_seed     → 008  (+3 customer 菜单 + MANAGER+CLERK role_menu)
-dev_data/010 dev_customer_snowflake→ 009  (t_customer BigSerial→snowflake，dev seed 历史数据迁移)
-dev_data/011 dev_shelf_process_seed→ 010  (每架 PRODUCTION 货架自动映射全部 INHOUSE 工序)
-
-prod_data/012 prod_seed            → 011  (9 工种幂等 / 19 工人 / 4 用户 / 4 user_role / 20 菜单 / 30 role_menu)
-prod_data/014 seed_serial_counter_a_z → 013 (t_serial_counter 预置 A-Z 全 26 行，counter=0，ON CONFLICT DO NOTHING)
+```bash
+uv run alembic upgrade head      # 2 步：建 schema → 灌必要数据
 ```
 
-`alembic history --rev-range =000000000001:000000000014` 验证。`alembic heads` 应只返回 1 行（`000000000014`）。
+- `alembic heads` 只返回 1 行（`000000000002`）；`alembic history` 只有 2 条。
+- 冷启结果：`t_work_type`=9, `t_worker`=19, `t_user`=6, `t_user_role`=6, `t_menu`=22, `t_role_menu`=35, `t_serial_counter`=26，其余业务表（part/customer/assembly/applicant）=0。
+- 后端容器 `Dockerfile` 的 `CMD alembic upgrade head && uvicorn ...` 无需改，现在自动产出干净 prod 库。
+- **验收门（改 schema_init 时务必复跑）**：全新库 `upgrade head` 后 `pg_dump --schema-only --no-owner --no-privileges`，与「旧链 prod 路径」的 schema dump diff，唯一允许差异是 `t_customer_id_seq` 及其 `DEFAULT nextval(...)` 被移除。
 
-### 15.2 升级命令模板
+### 15.2 已有库怎么办
 
-| 场景 | 命令 | 结果 |
-|------|------|------|
-| **dev 库冷启** | `uv run alembic upgrade head` | 14 步线性跑全：t_user=10, t_worker=39, t_menu=20, t_role_menu=36 + 50 假零件 / 10 假装配 / 20 假客户 / 3 dev 货架 / t_serial_counter=26 行 / t_customer 一级客户带 prefix |
-| **prod 库冷启（推荐）** | `uv run alembic upgrade 000000000005 && uv run alembic stamp 000000000011 && uv run alembic upgrade 000000000012 && uv run alembic upgrade 000000000013 && uv run alembic upgrade 000000000014` | 8 步真跑（schema 6 + prod 2）+ stamp 跳过 dev_data：t_user=4, t_worker=19, t_menu=20, t_role_menu=30（MANAGER×20+CLERK×6+CNC×4），**0 假数据** |
-| **老库升级**（已有 8 个旧迁移 001-008） | `uv run alembic stamp 000000000014` | 一次性 stamp 跳过；新链只走差异部分；旧 dev 假数据保留（schema 已对齐），prod 数据需另写导入 |
+已按旧链迁到 head=`000000000020` 的库（老 dev / 老 prod），新链 revision id 变了，`alembic_version` 指向的 020 不复存在。确认其 schema 与新 `schema_init` 等价后，`alembic stamp 000000000002` 即可对齐；本次改动主要面向**全新 prod 库冷启**。dev 本地若要假数据，另写独立 seed 脚本（不走迁移）。
 
-dev_data 链依赖 schema 末端 005（而不是 base）——这是为了让 dev_seed 的 `DELETE FROM` 顶部清理在已建表的库上跑；prod_seed 在 dev_data 末端 011 之后跑，让 `ON CONFLICT` 兜底合并 dev + prod 的 role_menu/menu/user（dev users / 6 dev users 与 prod 4 users 共存）。
+### 15.3 新 schema 迁移加在 schema/ 子目录
 
-**2026-07-09 追加 013 / 014**：013 给 `t_customer` 加 `serial_prefix` 列 + check + 部分唯一索引 + 历史 F/L/H 回填；014 给 `t_serial_counter` 预置 A-Z 全 26 行（dev / prod 都跑，保证任意字母可立即用，避免再触发 20108 BIZ_SERIAL_PREFIX_UNKNOWN）。两者 down_revision 链路：`013 → 012`（schema），`014 → 013`（prod_data），保持线性单 head。
-
-### 15.3 prod_data 迁移内容（`alembic/versions/prod_data/000000000012_prod_seed.py`）
-
-数据来源：`docs/26洪升宏在职人员统计表.xlsx`（19 名在职员工）。
-
-**阶段 1：9 工种**（与 dev_seed 同步，ON CONFLICT 幂等）
-```
-车床 / 铣床 / 磨床 / 线切割 / CNC操机 / CNC编程 / 品检 / 文员 / 送货司机
-```
-
-**阶段 2：19 工人**（badge_code = 电话，与 user.username 逻辑同源）
-Excel「备注」列 → 9 工种 code 映射：
-- 线割 → 线切割 / 磨床 → 磨床 / 铣床 → 铣床 / NC → CNC操机 / 编程 → CNC编程
-- 车床 → 车床 / 品鉴 → 品检 / 文员 → 文员 / 送货师傅 → 送货司机
-
-**阶段 3：4 用户**（username = 电话，password = `changeme`，bcrypt rounds=12 与 `core.security.hash_password` 默认一致）
-| username | full_name | role | 备注 |
-|----------|-----------|------|------|
-| 15060779955 | 系统管理员 | MANAGER | 不在 19 人里；admin 是虚拟账号，无 worker 记录 |
-| 13359114794 | 陈燕 | CLERK | 同时是工人（badge_code=13359114794, 工种=文员） |
-| 15105972335 | 翁美月 | CLERK | 同时是工人（工种=文员） |
-| 18064554025 | 童敏华 | CNC_PROGRAMMER | 同时是工人（工种=CNC编程） |
-
-**阶段 4：4 user_role**（无 scope；scope_type/scope_id = NULL）
-
-**阶段 5：20 菜单 + 30 role_menu**（ON CONFLICT 幂等）
-- 菜单集：12 base + 4 settings + 1 cnc + 3 customer = 20（与 dev 链全集合一致）
-- MANAGER → 全部 20
-- CLERK → home, order_group, parts_list, parts_new, assemblies_list, assemblies_new（6）
-- CNC_PROGRAMMER → home, parts_list, floor_group, scan_badge（4，与 dev 链 008 revoke 后一致）
-
-**down_revision = `000000000011`**（dev_data 末端），保证 prod_seed 在 dev_seed 的 `DELETE FROM` 之后跑，ON CONFLICT 把 prod 数据追加到 dev 数据之上。
+- revision id 用下一个 12 位零填充数字（如 `003` 在 `001` 之后）。
+- `down_revision` 指向 **schema 层 head**（如 `003 → 001`），不指向 `prod_data/002`。
+- 拓扑：`schema/001 → schema/003` + `schema/001 → prod_data/002` 两条平行 branch；`alembic heads` 返回 003 + 002 两条 head。
+- `alembic upgrade head` 会因多 head 报错，须显式指定：`alembic upgrade 000000000003` + `alembic upgrade 000000000002`（或维护脚本分别跑）。
+- docstring 固定格式：模块 docstring + Revision ID / Revises / Create Date + 简短说明。
 
 ---
 
@@ -1152,7 +1108,7 @@ Excel「备注」列 → 9 工种 code 映射：
 
 | 文件 | 改动 |
 |---|---|
-| `alembic/versions/schema/000000000020_add_user_refresh_token_version.py` | **新**：t_user 加 `refresh_token_version` 列（NOT NULL DEFAULT 0）|
+| `alembic/versions/schema/000000000001_schema_init.py` | t_user 的 `refresh_token_version` 列（NOT NULL DEFAULT 0）已并入 squash 后的唯一 schema 迁移（原 020 迁移文件已删）|
 | `model/user.py` | + `refresh_token_version` 字段 |
 | `repository/user.py` | + `increment_refresh_token_version(user)` |
 | `core/error_code.py` | + `BIZ_AUTH_REFRESH_INVALID = 40103` |
@@ -1206,4 +1162,55 @@ Excel「备注」列 → 9 工种 code 映射：
 - access token TTL **保持 12h / 48h 不动**（dev / prod 各自现有值；零破坏）
 - refresh token TTL = **7 天**（10080 min）
 - **启用 refresh token 轮转**（每次成功 refresh → 旧 refresh 立即失效）
+
+---
+
+17. **2026-07-10 一波整合改动（时间 + 操作者 + 备注 + RETURN 新流程）**：
+
+    **A. 时间统一到 Shanghai**
+    - 新增 `core/time.py::now_naive()` helper：返回 Asia/Shanghai 当前时间的 naive datetime；`SHANGHAI_TZ = timezone(timedelta(hours=8))` 显式构造，**不**依赖环境 TZ。
+    - 新增 `now_shanghai_iso()` helper：WS 推送用，输出 `YYYY-MM-DDTHH:MM:SSZ`。
+    - 18 处 `datetime.utcnow()` / `_dt.utcnow()` 改为 `now_naive()`：`repository/{shelf,applicant,part_file,worker,work_type_process,customer,assembly,user,shelf_process,work_type,process,part}.py`（含 `last_login_at`）、`service/{worker,auto_complete}.py`、`statemachines/part.py:133` (`placed_at`)。
+    - `service/auto_complete.py:49` threshold 改 `now_naive()`（与 DB `now()` 同源，避免自动完成晚 8h 触发）。
+    - `service/dashboard.py:179` + `api/v1/ws.py:90,169` WS `ts` 字段改 `now_shanghai_iso()`。
+    - DB 列保留 `timestamp without time zone`（naive），**不**改 `timestamptz`。
+    - 历史 `deleted_at` / `last_login_at` / `placed_at` 错位 8h **不 backfill**（单条 SQL 修正即可）。
+    - `tests/unit/test_time.py`（新，5 用例）：naive、UTC+8、TZ 独立、SHANGHAI_TZ 常量、ISO 格式。
+
+    **B. 事件操作者字段（沿用 AuditMixin `created_by` 命名）**
+    - `t_part_event` 新增 `created_by` (BigInteger, nullable) — 与 AuditMixin 的 `created_by` 命名对齐；与 `created_at` 形成语义对偶。
+    - **不**冗余 username：list_events 通过 JOIN t_user 现算，避免列表展示 N 次 JOIN 单独建索引的代价。
+    - 迁移：`alembic/versions/schema/000000000003_add_part_event_operator.py`，`revision="000000000003"` + `down_revision="000000000001"`（**schema 层 001**，不指 prod_data/002）。
+    - 多 head 拓扑：`schema/001 → schema/003` + `schema/001 → prod_data/002` 两条平行 branch；`alembic heads` 返回 003 + 002。
+    - 状态机 `statemachines/part.py` 13 个 `on_*` 回调全部加 `created_by: int | None = None,` kwarg 并写入 `TPartEvent`。
+    - `service/part.py::_write_event` 加 `created_by` kwarg；`__init__` 缓存 `self._user_id` + `self._username`；14 处状态机调用点 + `_write_event CREATED` 全部显式传 `created_by=self._user_id`。
+    - `service/assembly.py` 2 处 `TPartEvent`（`create_assembly` 子件 + `_create_single_child`）+ `__init__` 缓存 `_user_id` / `_username` 同步。
+    - `schema/part.py::PartEventOut` 加 `created_by: IdStr` + `operator_username: str | None`（后者是 list_events 通过 `TUser` JOIN 现算的展示字段，不进 model）。
+    - `service/part.py::list_events` 一次性 `select(TUser.id, TUser.username).where(TUser.id.in_(operator_ids))` 拼 `user_map`，构造 PartEventOut 时填 `operator_username=user_map.get(e.created_by)`。
+    - 前端 `PartDetail.vue` `event-line-1` 在 `worker_name` 后加 `v-if="evt.operator_username"` 显示操作者（Setting icon）；`frontend/src/api/parts.ts::PartEvent` interface 加 `created_by` + `operator_username`。
+    - 历史事件 `created_by` 全 NULL（前端兜底不显示）。
+
+    **C. 备注中文化 + 去背景**
+    - `on_place_on_shelf` / `on_release_from_programming` note 模板：`f"shelf={c}; next_process={c}"` → `f"下发货架：{c} 下一工序：{c}"`（空格分隔）。
+    - `on_return_to_shelf` note：`f"from={p}; to={n}; by={w}"` → `f"从工序 {p} 放回到工序 {n}（{w}）"`。
+    - `on_inspect` note：`f"to inspection shelf {c}"` → `f"送检到货架：{c}"`。
+    - `on_fail_inspection` note：`f"back to shelf {c}"` → `f"打回到货架：{c}"`（c 空时显示「打回到原货架」）。
+    - 前端 `.event-note` CSS 去 `background: #fdf6ec` + `padding` + `border-radius`（仅 `color` + `font-size` + `margin-top`）。
+    - 前端 `types/parts.ts::PartEventType` union 补 `'INSPECTION_FAILED'`；`PART_EVENT_LABEL` 加 `INSPECTION_FAILED: '品检打回'`；`PART_EVENT_TAG_TYPE` 加 `INSPECTION_FAILED: 'danger'`。
+    - `PartDetail.vue` icons import 补 `Setting`。
+
+    **D. 扫码台 RETURN 新流程**
+    - 新建 `frontend/src/views/scan/ScanReturnParts.vue`（仿 `ScanPickParts.vue` 范式）：列持有件 → 选件 → 弹工序 picker（el-radio-group）→ 弹 `ShelfPickerDialog` → 提交 `scanPart({event_type:'RETURNED', ...})` → 自动 refresh。
+    - 后端新增：
+      - `repository/part.py::list_held_by_worker(worker_id, include_deleted=False)`：status=IN_PROCESS + location=WORKER + current_holder_id=worker_id，排序 `is_urgent DESC, planned_delivery_date ASC, id DESC`。
+      - `service/part.py::list_parts_held_by_worker(worker_id)`：worker_id=0/None 短路返 []。
+      - `api/v1/part.py::GET /parts/by-worker/{worker_id}`：`require_auth()`，路径参数 `worker_id: str` 用 `parse_snowflake_id` 转 int。
+    - 前端 `api/parts.ts::listPartsHeldByWorker(workerId)` wrapper（URL encode workerId）。
+    - 路由 `frontend/src/router/index.ts` 新增 `/scan/return` → `ScanReturnParts.vue`（继承 `menuCode: 'scan_badge'` 守卫）。
+    - `ScanActionPicker.vue::selectAction` RETURN 跳转 `router.push('/scan/return')`（替换原 `/scan/parts?action=return`）。
+    - 老 `ScanPartsWork.vue` RETURN 流程**替换不保留**；INSPECT 流程仍走 `ScanPartsWork.vue`。
+    - `tests/unit/test_part_service_query_crud.py::TestListPartsHeldByWorker`（新，3 用例）：worker_id=0 短路、worker_id=None 短路、happy path。
+
+    **端到端**：`uv run pytest tests/unit/` → **358 passed**；`cd frontend && npm run build` 通过。
+    **alembic 拓扑**：`schema/001 + schema/003 + prod_data/002` 三文件，多 head；`alembic heads` 返 003 + 002。
 

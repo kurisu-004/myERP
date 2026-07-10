@@ -113,6 +113,7 @@ class AssemblyService:
         self.event_broadcaster = event_broadcaster
         self.broadcaster = broadcaster
         self._user_id: int | None = current_user.id if current_user else None
+        self._username: str | None = current_user.username if current_user else None
 
     # ============================================================
     # 写操作：create
@@ -386,6 +387,7 @@ class AssemblyService:
                     drawing_code=None,
                     badge_code=None,
                     note=None,
+                    created_by=self._user_id,
                 )
                 await self.events.create(part_event)
         except BizError:
@@ -793,6 +795,7 @@ class AssemblyService:
             drawing_code=None,
             badge_code=None,
             note=None,
+            created_by=self._user_id,
         )
         await self.events.create(part_event)
         return tpart

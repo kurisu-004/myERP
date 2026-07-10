@@ -1,9 +1,8 @@
 """工序 (Process) 数据访问。"""
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TProcess
 
 
@@ -96,6 +95,6 @@ class ProcessRepository:
         return process
 
     async def soft_delete(self, process: TProcess) -> TProcess:
-        process.deleted_at = datetime.utcnow()
+        process.deleted_at = now_naive()
         await self.session.flush()
         return process

@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TWorker
 
 
@@ -105,7 +104,7 @@ class WorkerRepository:
         return worker
 
     async def soft_delete(self, worker: TWorker) -> TWorker:
-        worker.deleted_at = datetime.utcnow()
+        worker.deleted_at = now_naive()
         worker.is_active = False
         await self.session.flush()
         return worker

@@ -9,6 +9,8 @@ Tests cover:
 - update_part         (tests 17-19)
 - soft_delete_part    (tests 20-21)
 - _to_out             (tests 22-24)
+- list_pickable_parts / list_pickable_parts_all_shelves
+  (2026-07-10 加：next_process_id IS NULL + shelf_ids 过滤)
 
 Extra edge cases beyond the 24 numbered scenarios: list_events with no worker_ids,
 update_part partial field update, and _to_out shelf location.
@@ -188,6 +190,13 @@ def mock_shelves() -> AsyncMock:
 
 
 @pytest.fixture
+def mock_work_type_process() -> AsyncMock:
+    mock = AsyncMock()
+    mock.list_process_ids_by_work_type = AsyncMock()
+    return mock
+
+
+@pytest.fixture
 def service(
     mock_parts: AsyncMock,
     mock_customers: AsyncMock,
@@ -203,6 +212,28 @@ def service(
         events=mock_events,
         serial_counters=mock_serial_counters,
         shelves=mock_shelves,
+    )
+
+
+@pytest.fixture
+def service_with_wtp(
+    mock_parts: AsyncMock,
+    mock_customers: AsyncMock,
+    mock_workers: AsyncMock,
+    mock_events: AsyncMock,
+    mock_serial_counters: AsyncMock,
+    mock_shelves: AsyncMock,
+    mock_work_type_process: AsyncMock,
+) -> PartService:
+    """PartService 装了 work_type_process 仓储（PICK_UP 列表需要）。"""
+    return PartService(
+        parts=mock_parts,
+        customers=mock_customers,
+        workers=mock_workers,
+        events=mock_events,
+        serial_counters=mock_serial_counters,
+        shelves=mock_shelves,
+        work_type_process=mock_work_type_process,
     )
 
 
@@ -1236,3 +1267,220 @@ class TestToOut:
         assert r.worker_name is None
 
         mock_shelves.list_by_ids.assert_awaited_once()
+
+
+# ======================================================================
+# list_pickable_parts / list_pickable_parts_all_shelves
+# (2026-07-10 加 next_process_id IS NULL + shelf_ids 过滤；
+#  仓库层承担 NULL 条件，业务短路逻辑不变)
+# ======================================================================
+
+
+class TestListPickablePartsSingleShelf:
+    """扫码台 PICK_UP 单架版：/parts/by-work-type/{wt_id}?shelf_id=X。"""
+
+    async def test_work_type_id_none_short_circuits(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+    ) -> None:
+        """work_type_id=None → []，不查 wtp / 不查 parts。"""
+        result = await service_with_wtp.list_pickable_parts(None, shelf_id=1)
+
+        assert result == []
+        mock_work_type_process.list_process_ids_by_work_type.assert_not_called()
+        mock_parts.list_for_work_type.assert_not_called()
+
+    async def test_no_mapped_processes_short_circuits(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+    ) -> None:
+        """工种未映射任何工序 → []，不查 parts（让上层 UI 提示"工种映射为空"）。"""
+        mock_work_type_process.list_process_ids_by_work_type.return_value = []
+
+        result = await service_with_wtp.list_pickable_parts(work_type_id=7, shelf_id=1)
+
+        assert result == []
+        mock_work_type_process.list_process_ids_by_work_type.assert_awaited_once_with(
+            7, include_deleted=False,
+        )
+        mock_parts.list_for_work_type.assert_not_called()
+
+    async def test_happy_path_passes_to_repository(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_shelves: AsyncMock,
+    ) -> None:
+        """正常路径：service 拿到 process_ids 后透传给 repo（含 NULL 过滤由 repo 加）。"""
+        mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20, 30]
+        part = _make_part(id=100, customer_id=1, status=PartStatus.IN_PROCESS.value)
+        mock_parts.list_for_work_type.return_value = [part]
+        mock_customers.list_by_ids.return_value = []
+        mock_shelves.list_by_ids.return_value = []
+
+        result = await service_with_wtp.list_pickable_parts(
+            work_type_id=7, shelf_id=42,
+        )
+
+        # service 必须把 (shelf_id, mapped_process_ids) 原样透传给 repo；
+        # NULL 过滤在 repo 层处理（不在 service 入参里）。
+        mock_parts.list_for_work_type.assert_awaited_once_with(
+            shelf_id=42,
+            mapped_process_ids=[10, 20, 30],
+        )
+        assert len(result) == 1
+        assert result[0].id == 100  # _to_out 已把它包成 PartOut
+
+
+class TestListPickablePartsAllShelves:
+    """共享 HMI PICK_UP 跨架版：/parts/pickable-by-work-type/{wt_id}。
+
+    2026-07-10 加：可选 shelf_ids 过滤（HMI scope），None = 全架。
+    """
+
+    async def test_work_type_id_none_short_circuits(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+    ) -> None:
+        result = await service_with_wtp.list_pickable_parts_all_shelves(
+            work_type_id=None, shelf_ids=[1, 2],
+        )
+
+        assert result == []
+        mock_work_type_process.list_process_ids_by_work_type.assert_not_called()
+        mock_parts.list_for_work_type_all_shelves.assert_not_called()
+
+    async def test_no_mapped_processes_short_circuits(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+    ) -> None:
+        mock_work_type_process.list_process_ids_by_work_type.return_value = []
+
+        result = await service_with_wtp.list_pickable_parts_all_shelves(
+            work_type_id=7, shelf_ids=[1, 2],
+        )
+
+        assert result == []
+        mock_parts.list_for_work_type_all_shelves.assert_not_called()
+
+    async def test_happy_path_without_shelf_filter(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_shelves: AsyncMock,
+    ) -> None:
+        """shelf_ids=None（默认）→ repo 拿到 None，不加 current_holder_id 过滤。"""
+        mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20]
+        mock_parts.list_for_work_type_all_shelves.return_value = []
+        mock_customers.list_by_ids.return_value = []
+        mock_shelves.list_by_ids.return_value = []
+
+        result = await service_with_wtp.list_pickable_parts_all_shelves(
+            work_type_id=7, shelf_ids=None,
+        )
+
+        mock_parts.list_for_work_type_all_shelves.assert_awaited_once_with(
+            mapped_process_ids=[10, 20],
+            shelf_ids=None,
+        )
+        assert result == []
+
+    async def test_explicit_empty_shelf_ids_returns_empty(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+    ) -> None:
+        """shelf_ids=[]（非 HMI 角色场景）→ 短路，repo 不查。"""
+        mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20]
+
+        result = await service_with_wtp.list_pickable_parts_all_shelves(
+            work_type_id=7, shelf_ids=[],
+        )
+
+        # 空 list 必须短路 —— 非 HMI 角色不该看到任何零件
+        assert result == []
+        mock_parts.list_for_work_type_all_shelves.assert_not_called()
+
+    async def test_explicit_shelf_ids_pass_through(
+        self,
+        service_with_wtp: PartService,
+        mock_work_type_process: AsyncMock,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_shelves: AsyncMock,
+    ) -> None:
+        """shelf_ids=[1,2,3] → repo 拿到这个 list（HMI scope 过滤的入口）。"""
+        mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20]
+        part_a = _make_part(id=100, customer_id=1, current_holder_id=1)
+        part_b = _make_part(id=101, customer_id=1, current_holder_id=2)
+        mock_parts.list_for_work_type_all_shelves.return_value = [part_a, part_b]
+        mock_customers.list_by_ids.return_value = []
+        mock_shelves.list_by_ids.return_value = []
+
+        result = await service_with_wtp.list_pickable_parts_all_shelves(
+            work_type_id=7, shelf_ids=[1, 2, 3],
+        )
+
+        mock_parts.list_for_work_type_all_shelves.assert_awaited_once_with(
+            mapped_process_ids=[10, 20],
+            shelf_ids=[1, 2, 3],
+        )
+        assert len(result) == 2
+
+
+class TestListPartsHeldByWorker:
+    """扫码台 RETURN 新流程：/parts/by-worker/{worker_id}。
+
+    2026-07-10 加：列出当前由某工人持有的所有零件（status=IN_PROCESS +
+    location=WORKER + current_holder_id=worker_id）。
+    """
+
+    async def test_worker_id_zero_short_circuits(
+        self,
+        service_with_wtp: PartService,
+        mock_parts: AsyncMock,
+    ) -> None:
+        """worker_id=0 → 返回 []，不查 repo。"""
+        result = await service_with_wtp.list_parts_held_by_worker(worker_id=0)
+        assert result == []
+        mock_parts.list_held_by_worker.assert_not_called()
+
+    async def test_worker_id_none_short_circuits(
+        self,
+        service_with_wtp: PartService,
+        mock_parts: AsyncMock,
+    ) -> None:
+        """worker_id=None → 返回 []，不查 repo。"""
+        result = await service_with_wtp.list_parts_held_by_worker(worker_id=None)  # type: ignore[arg-type]
+        assert result == []
+        mock_parts.list_held_by_worker.assert_not_called()
+
+    async def test_happy_path_passes_worker_id_through(
+        self,
+        service_with_wtp: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_shelves: AsyncMock,
+    ) -> None:
+        """正常路径：worker_id=42 → repo.list_held_by_worker(worker_id=42)。"""
+        mock_parts.list_held_by_worker.return_value = []
+        mock_customers.list_by_ids.return_value = []
+        mock_shelves.list_by_ids.return_value = []
+
+        result = await service_with_wtp.list_parts_held_by_worker(worker_id=42)
+
+        mock_parts.list_held_by_worker.assert_awaited_once_with(worker_id=42)
+        assert result == []

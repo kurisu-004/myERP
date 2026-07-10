@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.time import now_naive
 from model import TAssembly
 
 
@@ -134,7 +134,7 @@ class AssemblyRepository:
         return assembly
 
     async def soft_delete(self, assembly: TAssembly) -> TAssembly:
-        assembly.deleted_at = datetime.utcnow()
+        assembly.deleted_at = now_naive()
         await self.session.flush()
         return assembly
 

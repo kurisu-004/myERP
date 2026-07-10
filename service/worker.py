@@ -1,10 +1,9 @@
-from datetime import datetime
-
 from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
+from core.time import now_naive
 from model import TWorker
 from repository.work_type import WorkTypeRepository
 from repository.worker import WorkerRepository
@@ -172,7 +171,7 @@ class WorkerService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         w.is_active = False
-        w.deleted_at = datetime.utcnow()
+        w.deleted_at = now_naive()
         w.updated_by = self._user_id
         await self.workers.update(w)
         return _worker_to_out(w)
