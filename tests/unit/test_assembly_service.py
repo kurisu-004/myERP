@@ -1217,3 +1217,154 @@ class TestAssemblySerialRelease:
 
         # assert: serial_no still None
         assert asm.serial_no is None
+
+
+# ============================================================
+# update_assembly  (2026-07-11 接入)
+# ============================================================
+
+
+class TestUpdateAssembly:
+    """update_assembly(assembly_id, data) -> AssemblyDetail.
+    
+    field-level partial update；所有字段可选。仅改 payload 非 None 字段。
+    终态（CANCELLED / COMPLETED）拒绝；customer_id 必须叶子节点。
+    """
+
+    async def test_partial_name_only(self, svc):
+        """只传 name -> 只更新 name，其他字段不变。"""
+        asm = make_assembly(id=1001, name="原名", status="PENDING")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        # _build_detail 内部依赖
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
+        svc.parts.list_children = AsyncMock(return_value=[])
+        svc.part_service._to_out = AsyncMock(return_value=[])
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        data = AssemblyUpdateRequest(name="新名")
+        result = await svc.update_assembly(1001, data)
+
+        assert asm.name == "新名"
+        assert asm.drawing_no == "DWG-001"
+        assert asm.is_urgent is False  # 默认值未变
+
+    async def test_all_fields_accepted(self, svc):
+        """传所有字段都生效。customer_id 是叶子节点。"""
+        asm = make_assembly(id=1002, status="PENDING", customer_id=2)
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
+        svc.parts.list_children = AsyncMock(return_value=[])
+        svc.part_service._to_out = AsyncMock(return_value=[])
+        # 叶子客户（有 parent_id）
+        leaf = make_customer(id=2, name="Leaf", parent_id=10)
+        svc.customers.get_by_id = AsyncMock(return_value=leaf)
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        data = AssemblyUpdateRequest(
+            drawing_no="NEW-DRW-001",
+            name="新装配体",
+            customer_id="2",
+            applicant_name="王某",
+            request_date=date(2026, 8, 1),
+            planned_delivery_date=date(2026, 8, 15),
+            actual_delivery_date=date(2026, 8, 14),
+            is_urgent=True,
+        )
+        await svc.update_assembly(1002, data)
+
+        assert asm.drawing_no == "NEW-DRW-001"
+        assert asm.name == "新装配体"
+        assert asm.customer_id == 2
+        assert asm.applicant_name == "王某"
+        assert asm.request_date == date(2026, 8, 1)
+        assert asm.planned_delivery_date == date(2026, 8, 15)
+        assert asm.actual_delivery_date == date(2026, 8, 14)
+        assert asm.is_urgent is True
+
+    async def test_terminal_cancelled_rejected(self, svc):
+        """CANCELLED 状态拒绝 -> BIZ_INVALID_TRANSITION 400。"""
+        asm = make_assembly(status="CANCELLED")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        with pytest.raises(BizError) as exc:
+            await svc.update_assembly(1003, AssemblyUpdateRequest(name="x"))
+        assert exc.value.code == ErrCode.BIZ_INVALID_TRANSITION
+        assert exc.value.http_status == 400
+
+    async def test_terminal_completed_rejected(self, svc):
+        """COMPLETED 状态拒绝 -> BIZ_INVALID_TRANSITION 400。"""
+        asm = make_assembly(status="COMPLETED")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        with pytest.raises(BizError) as exc:
+            await svc.update_assembly(1004, AssemblyUpdateRequest(name="x"))
+        assert exc.value.code == ErrCode.BIZ_INVALID_TRANSITION
+
+    async def test_customer_must_be_leaf(self, svc):
+        """customer_id 是一级客户（parent_id is NULL） -> 400 BAD_CUSTOMER。"""
+        asm = make_assembly(status="PENDING", customer_id=2)
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        # 一级客户，parent_id=None
+        root = make_customer(id=99, name="RootCustomer", parent_id=None)
+        svc.customers.get_by_id = AsyncMock(return_value=root)
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        with pytest.raises(BizError) as exc:
+            await svc.update_assembly(
+                1005, AssemblyUpdateRequest(customer_id="99"),
+            )
+        assert exc.value.code == ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER
+        assert exc.value.http_status == 400
+
+    async def test_invalid_customer_id_string(self, svc):
+        """customer_id 是非数字字符串 -> BIZ_INVALID_VALUE 400。"""
+        asm = make_assembly(status="PENDING")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        with pytest.raises(BizError) as exc:
+            await svc.update_assembly(
+                1006, AssemblyUpdateRequest(customer_id="not-a-number"),
+            )
+        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
+
+    async def test_not_found(self, svc):
+        """装配体不存在 -> 404。"""
+        svc.assemblies.get_by_id = AsyncMock(return_value=None)
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        with pytest.raises(BizError) as exc:
+            await svc.update_assembly(9999, AssemblyUpdateRequest(name="x"))
+        assert exc.value.code == ErrCode.BIZ_ASSEMBLY_NOT_FOUND
+        assert exc.value.http_status == 404
+
+    async def test_strip_whitespace(self, svc):
+        """drawing_no / name / applicant_name 自动 strip 首尾空格。"""
+        asm = make_assembly(status="PENDING")
+        svc.assemblies.get_by_id = AsyncMock(return_value=asm)
+        svc.part_files.list_for_assembly = AsyncMock(return_value=[])
+        svc.parts.list_children = AsyncMock(return_value=[])
+        svc.part_service._to_out = AsyncMock(return_value=[])
+
+        from schema.assembly import AssemblyUpdateRequest
+
+        await svc.update_assembly(
+            1007,
+            AssemblyUpdateRequest(
+                drawing_no="  DRW-XYZ  ",
+                name="\t名称  ",
+                applicant_name=" 申请人 ",
+            ),
+        )
+        assert asm.drawing_no == "DRW-XYZ"
+        assert asm.name == "名称"
+        assert asm.applicant_name == "申请人"

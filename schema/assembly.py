@@ -167,3 +167,32 @@ class AssemblyDetail(BaseModel):
     assembly: AssemblyOut
     children: list[PartOut]
     files: list[PartFileOut]
+
+class AssemblyUpdateRequest(BaseModel):
+    """编辑装配件元数据（field-level partial update；2026-07-11 接入）。
+
+    - 所有字段可选；只更新传入的非 None 字段。
+    - 终态（CANCELLED / COMPLETED）禁止再编辑——service 层校验。
+    - 改变 `customer_id` **不会**重新生成子件流水号（子件创建时已固化）；
+      如确需换 prefix，请取消后重建装配体。
+    - `applicant_id` 解析后回填 `applicant_name`；同时传两个时以 id 为准。
+    """
+
+    drawing_no: str | None = Field(default=None, min_length=1, max_length=100)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    customer_id: str | None = Field(
+        default=None, description="二级叶子客户 id（雪花 ID 字符串）"
+    )
+    applicant_name: str | None = Field(default=None, max_length=50)
+    applicant_id: str | None = Field(
+        default=None, description="申请人 id（雪花 ID 字符串）"
+    )
+    request_date: date | None = None
+    planned_delivery_date: date | None = None
+    actual_delivery_date: date | None = None
+    is_urgent: bool | None = None
+
+    @field_validator("drawing_no", "name", "applicant_name")
+    @classmethod
+    def _strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None

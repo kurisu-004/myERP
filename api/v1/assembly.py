@@ -18,6 +18,7 @@ from schema.assembly import (
     AssemblyDetail,
     AssemblyListOut,
     AssemblyListQuery,
+    AssemblyUpdateRequest,
 )
 from schema.part_file import PartFileOut
 from service._id_parse import parse_snowflake_id
@@ -126,6 +127,19 @@ async def cancel_assembly(
     svc: AssemblyService = Depends(get_assembly_service),
 ) -> AssemblyDetail:
     return await svc.cancel_assembly(assembly_id)
+
+
+@router.post(
+    "/{assembly_id}/update",
+    response_model=AssemblyDetail,
+    summary="编辑装配体元数据（MANAGER + CLERK，field-level partial update）",
+)
+async def update_assembly(
+    assembly_id: int,
+    payload: AssemblyUpdateRequest,
+    svc: AssemblyService = Depends(get_assembly_service),
+) -> AssemblyDetail:
+    return await svc.update_assembly(assembly_id, payload)
 
 
 @router.post(

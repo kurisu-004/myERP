@@ -852,6 +852,126 @@ class AssemblyService:
         return await self._build_detail(asm)
 
     # ============================================================
+    # 字段级 partial update（MANAGER + CLERK；2026-07-11 接入）
+    # ============================================================
+    async def update_assembly(
+        self,
+        assembly_id: int,
+        data: "AssemblyUpdateRequest",
+    ) -> AssemblyDetail:
+        """编辑装配件元数据。
+
+        业务约束：
+        - 终态（CANCELLED / COMPLETED）拒绝 → BIZ_INVALID_TRANSITION 400
+        - customer_id 必须是叶子节点（与 create_assembly 一致）
+        - applicant_id 解析后必须挂在装配体当前一级客户下
+        - 仅更新 payload 非 None 字段；updated_by 由 current_user 注入
+        """
+        from schema.assembly import AssemblyUpdateRequest
+
+        asm = await self.assemblies.get_by_id(assembly_id)
+        if asm is None:
+            raise BizError(
+                code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
+                message=f"assembly {assembly_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if asm.status in ("CANCELLED", "COMPLETED"):
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"assembly {assembly_id} 已处于终态 {asm.status}，不可编辑"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        if data.drawing_no is not None:
+            asm.drawing_no = data.drawing_no.strip()
+        if data.name is not None:
+            asm.name = data.name.strip()
+        if data.applicant_name is not None:
+            asm.applicant_name = data.applicant_name.strip()
+        if data.request_date is not None:
+            asm.request_date = data.request_date
+        if data.planned_delivery_date is not None:
+            asm.planned_delivery_date = data.planned_delivery_date
+        if data.actual_delivery_date is not None:
+            asm.actual_delivery_date = data.actual_delivery_date
+        if data.is_urgent is not None:
+            asm.is_urgent = data.is_urgent
+
+        if data.customer_id is not None:
+            new_cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
+            if new_cid is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=f"customer_id 必须是数字字符串：{data.customer_id!r}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            cust = await self.customers.get_by_id(new_cid)
+            if cust is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"customer {data.customer_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if cust.parent_id is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"customer {data.customer_id} 必须为叶子节点",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            asm.customer_id = new_cid
+
+        if data.applicant_id is not None:
+            if self.applicants is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="server missing applicant repository",
+                    http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            applicant_id_int = parse_snowflake_id(
+                data.applicant_id, field_name="applicant_id"
+            )
+            if applicant_id_int is None:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_BAD_CUSTOMER,
+                    message=f"applicant_id 必须是数字字符串：{data.applicant_id!r}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            applicant = await self.applicants.get_by_id(applicant_id_int)
+            if applicant is None:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_NOT_FOUND,
+                    message=f"applicant {data.applicant_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            # 申请人必须挂在装配体当前一级客户下
+            cust_now = await self.customers.get_by_id(asm.customer_id)
+            if cust_now is None:
+                raise BizError(
+                    code=ErrCode.BIZ_ASSEMBLY_BAD_CUSTOMER,
+                    message=f"customer {asm.customer_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            root_id = cust_now.parent_id or cust_now.id
+            if applicant.customer_id != root_id:
+                raise BizError(
+                    code=ErrCode.BIZ_APPLICANT_BAD_CUSTOMER,
+                    message=(
+                        f"applicant {data.applicant_id} 不属于一级客户 {root_id}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            asm.applicant_name = applicant.name
+
+        asm.updated_by = self._user_id
+        await self.assemblies.update(asm)
+        # 异步刷一次 dashboard（名称 / 加急 / 客户变化影响卡片展示）
+        await self._broadcast()
+        return await self._build_detail(asm)
+
+    # ============================================================
     # 软删（级联）
     # ============================================================
     async def soft_delete_assembly(self, assembly_id: int) -> None:
