@@ -9,11 +9,21 @@
 
 货架本身不带账号；账号与货架的多对多关系通过 t_user_role 维护，
 见 /api/v1/users/{user_id}/roles。
+
+2026-07-13 SHELF_ACCOUNT 多货架改造：
+- /shelves/for-return 增加 user scope 收口（scoped SHELF_ACCOUNT 仅看到自己绑定的架）
+- 新增 /shelves/for-inspection：INSPECT 流程 picker，按 user scope 收口
 """
 from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_shelf_process_service, get_shelf_service
-from core.permission import require_auth, require_role, require_roles
+from core.permission import (
+    CurrentUser,
+    get_current_user,
+    require_auth,
+    require_role,
+    require_roles,
+)
 from model.enums import ShelfZone, UserRole
 from schema.shelf import (
     ShelfCreateRequest,
@@ -98,19 +108,39 @@ picker_router = APIRouter(
         "共享 HMI RETURN 卡片网格 picker：列出可放目标货架 + 系统推荐。"
         "候选 = active PRODUCTION ∩ 映射了 next_process_id；"
         "按 current_load ASC 排序，top-1 标 is_recommended。"
+        "2026-07-13 起 scoped SHELF_ACCOUNT 仅看到自己绑定的架；"
+        "MANAGER / wildcard 不收口。"
     ),
 )
 async def list_shelves_for_return(
     next_process_id: str = Query(
         ..., description="目标工序 id（雪花 ID 字符串，避免 JS Number 精度丢失）",
     ),
+    user: CurrentUser = Depends(get_current_user),
     svc: ShelfService = Depends(get_shelf_service),
 ) -> ShelfForReturnListOut:
     # 入参是雪花 ID 字符串，转回 int（CLAUDE.md §3）。
     next_process_id_int = parse_snowflake_id(
         next_process_id, field_name="next_process_id",
     )
-    return await svc.list_for_return(next_process_id_int)
+    return await svc.list_for_return(next_process_id_int, user=user)
+
+
+@picker_router.get(
+    "/for-inspection",
+    response_model=ShelfForReturnListOut,
+    summary=(
+        "共享 HMI INSPECT 卡片网格 picker（2026-07-13）：列出 HMI 货架范围内 "
+        "active INSPECTION 货架 + 系统推荐。无 next_process_id 限制；"
+        "scoped SHELF_ACCOUNT 仅看到自己绑定的品检架；"
+        "MANAGER / wildcard 不收口。"
+    ),
+)
+async def list_shelves_for_inspection(
+    user: CurrentUser = Depends(get_current_user),
+    svc: ShelfService = Depends(get_shelf_service),
+) -> ShelfForReturnListOut:
+    return await svc.list_for_inspection(user=user)
 
 
 # ============================================================

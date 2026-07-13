@@ -4,6 +4,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
@@ -710,6 +711,117 @@ class TestAddRole:
 
         assert exc.value.code == ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND
         assert exc.value.http_status == 404
+
+    # ===== 2026-07-13: SHELF_ACCOUNT 多货架绑定 + 非 HMI role 无 scope =====
+
+    async def test_add_role_shelf_account_two_shelves_persists_independently(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+        mock_shelves: ShelfRepository,
+    ) -> None:
+        """同一 user 两次 add_role(SHELF_ACCOUNT, shelf, 5001) / (shelf, 5002)：
+        两次 create 都被调，TUserRole 字段独立（DB 唯一约束天然去重）。"""
+        user = _make_user(1001)
+        mock_users.get_by_id.return_value = user
+
+        shelf_a = _make_shelf(5001, code="PROD-A1", zone="PRODUCTION", is_active=True)
+        shelf_b = _make_shelf(5002, code="PROD-A2", zone="PRODUCTION", is_active=True)
+        mock_shelves.get_by_id.side_effect = [shelf_a, shelf_b]
+        mock_shelves.list_by_ids.side_effect = [[shelf_a], [shelf_b]]
+
+        ids = iter([30001, 30002])
+        with patch("service.user.new_id", side_effect=lambda: next(ids)):
+            r1 = await service.add_role(1001, UserRole.SHELF_ACCOUNT, "shelf", 5001)
+            r2 = await service.add_role(1001, UserRole.SHELF_ACCOUNT, "shelf", 5002)
+
+        # 两次都成功，且互不影响
+        assert r1.scope_id == 5001
+        assert r1.shelf_code == "PROD-A1"
+        assert r2.scope_id == 5002
+        assert r2.shelf_code == "PROD-A2"
+
+        # create 被调 2 次，且参数不同
+        assert mock_user_roles.create.await_count == 2
+        first_role: TUserRole = mock_user_roles.create.await_args_list[0][0][0]
+        second_role: TUserRole = mock_user_roles.create.await_args_list[1][0][0]
+        assert first_role.scope_id == 5001
+        assert second_role.scope_id == 5002
+
+    async def test_add_role_shelf_account_duplicate_409(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+        mock_shelves: ShelfRepository,
+    ) -> None:
+        """同样 (user, role, scope_type, scope_id) 二次 add → 模拟 IntegrityError →
+        抛 BIZ_USER_ROLE_DUPLICATE 409。"""
+        user = _make_user(1001)
+        mock_users.get_by_id.return_value = user
+        shelf = _make_shelf(5001, code="PROD-A1", zone="PRODUCTION", is_active=True)
+        mock_shelves.get_by_id.return_value = shelf
+        mock_shelves.list_by_ids.return_value = [shelf]
+
+        # 第一次 create OK；第二次抛 IntegrityError
+        async def _create_once_then_dup(_role: TUserRole) -> TUserRole:
+            if _create_once_then_dup.call_count == 0:
+                _create_once_then_dup.call_count += 1
+                return _role
+            raise RuntimeError(
+                'duplicate key value violates unique constraint "uk_t_user_role"'
+            )
+        _create_once_then_dup.call_count = 0
+        mock_user_roles.create.side_effect = _create_once_then_dup
+
+        await service.add_role(1001, UserRole.SHELF_ACCOUNT, "shelf", 5001)
+        with pytest.raises(BizError) as exc:
+            await service.add_role(1001, UserRole.SHELF_ACCOUNT, "shelf", 5001)
+
+        assert exc.value.code == ErrCode.BIZ_USER_ROLE_DUPLICATE
+        assert exc.value.http_status == http_status.HTTP_409_CONFLICT
+
+    async def test_add_role_inspector_no_scope(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> None:
+        """INSPECTOR 加 role：必须 scope_type=None / scope_id=None（service 接受）。"""
+        user = _make_user(1001)
+        mock_users.get_by_id.return_value = user
+
+        with patch("service.user.new_id", return_value=3001):
+            result = await service.add_role(1001, UserRole.INSPECTOR, None, None)
+
+        mock_user_roles.create.assert_awaited_once()
+        created_role: TUserRole = mock_user_roles.create.call_args[0][0]
+        assert created_role.role == "INSPECTOR"
+        assert created_role.scope_type is None
+        assert created_role.scope_id is None
+        assert result.role == "INSPECTOR"
+        assert result.scope_type is None
+        assert result.scope_id is None
+
+    async def test_add_role_cnc_programmer_no_scope(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> None:
+        """CNC_PROGRAMMER 加 role：必须 scope_type=None / scope_id=None。"""
+        user = _make_user(1001)
+        mock_users.get_by_id.return_value = user
+
+        with patch("service.user.new_id", return_value=3001):
+            result = await service.add_role(1001, UserRole.CNC_PROGRAMMER, None, None)
+
+        mock_user_roles.create.assert_awaited_once()
+        created_role: TUserRole = mock_user_roles.create.call_args[0][0]
+        assert created_role.role == "CNC_PROGRAMMER"
+        assert created_role.scope_type is None
+        assert created_role.scope_id is None
 
 
 # ============================================================

@@ -124,7 +124,7 @@ _MENUS: list[tuple[str, str | None, str, str | None, str, int]] = [
 _MANAGER_MENUS: list[str] = [
     "home", "order_group", "parts_list", "parts_new", "assemblies_list", "assemblies_new",
     "auth_group", "workers_list", "users_list",
-    "floor_group", "shelves_list", "scan_badge",
+    "floor_group", "shelves_list",
     "settings_root", "work_types_list", "processes_list", "work_type_processes_list",
     "pending_programming",
     "customer_management", "customers_list", "applicants_list",
@@ -136,7 +136,15 @@ _CLERK_MENUS: list[str] = [
 ]
 
 _CNC_PROGRAMMER_MENUS: list[str] = [
-    "home", "parts_list", "floor_group", "scan_badge",
+    "home", "parts_list", "floor_group",
+]
+
+# SHELF_ACCOUNT（货架一体机账号）—— 2026-07-13 起扫码台菜单专属：
+# SHELF_ACCOUNT 是车间 HMI 一体机登录账号；业务上唯一进扫码台的角色。
+# MANAGER / CNC_PROGRAMMER 不再挂 scan_badge（编程员用 /cnc/pending 走专属流，
+# 不再走扫码台；MANAGER 通过账号管理 + 货架管理后台处理）。
+_SHELF_ACCOUNT_MENUS: list[str] = [
+    "home", "floor_group", "scan_badge",
 ]
 
 
@@ -298,6 +306,7 @@ def _seed_menus(bind) -> None:
         ("MANAGER", _MANAGER_MENUS),
         ("CLERK", _CLERK_MENUS),
         ("CNC_PROGRAMMER", _CNC_PROGRAMMER_MENUS),
+        ("SHELF_ACCOUNT", _SHELF_ACCOUNT_MENUS),
     ]
     for role, codes in role_menu_seed:
         for code in codes:

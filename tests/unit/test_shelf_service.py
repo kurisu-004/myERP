@@ -648,3 +648,260 @@ def _make_process_obj(id: int, code: str, name: str):
         sort_order=0, description=None,
     )
     return p
+
+
+# =============================================================================
+# 2026-07-13: user scope 收口（list_for_return + 新增 list_for_inspection）
+# =============================================================================
+
+
+def _make_user(
+    id: int = 1,
+    roles: tuple[str, ...] = ("SHELF_ACCOUNT",),
+    shelf_ids: tuple[int, ...] = (),
+    shelf_wildcard: bool = False,
+):
+    """构造轻量 CurrentUser 替身用于 list_for_return/list_for_inspection。"""
+    from core.permission import CurrentUser
+
+    return CurrentUser(
+        id=id, username=f"user{id}", full_name=f"User {id}",
+        is_active=True, roles=roles, shelf_ids=shelf_ids,
+        shelf_wildcard=shelf_wildcard,
+    )
+
+
+class TestListForReturnUserScope:
+    """`ShelfService.list_for_return(next_process_id, user=)`：user scope 收口。
+
+    行为契约（2026-07-13）：
+    - MANAGER / wildcard SHELF_ACCOUNT → 不收口
+    - scoped SHELF_ACCOUNT → 仅看自己绑定的架
+    - 非 HMI 角色（CLERK / INSPECTOR / CNC）→ []
+    - scoped 但无交集 → BIZ_SHELF_NO_MATCH_FOR_PROCESS
+    """
+
+    @pytest.fixture
+    def svc_with_picker(
+        self,
+        mock_shelves: ShelfRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> ShelfService:
+        from repository.part import PartRepository
+        from repository.process import ProcessRepository
+        from repository.shelf_process import ShelfProcessRepository
+
+        parts = PartRepository.__new__(PartRepository)
+        processes = ProcessRepository.__new__(ProcessRepository)
+        shelf_process = ShelfProcessRepository.__new__(ShelfProcessRepository)
+        parts.get_load_map_by_shelf_ids = AsyncMock()
+        processes.get_by_id = AsyncMock()
+        shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock()
+        svc = ShelfService(
+            shelves=mock_shelves,
+            user_roles=mock_user_roles,
+            parts=parts,
+            processes=processes,
+            shelf_process=shelf_process,
+        )
+        svc._account_count_map = AsyncMock(return_value={})
+        return svc
+
+    async def test_manager_sees_all_candidates(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """MANAGER：user scope 不收口 → 全部候选。"""
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={
+            1: ["车"], 2: ["车"],
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0})
+
+        user = _make_user(id=1, roles=("MANAGER",))
+        result = await svc_with_picker.list_for_return(10, user=user)
+
+        assert len(result.items) == 2
+
+    async def test_wildcard_shelf_account_sees_all(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """wildcard SHELF_ACCOUNT（shelf_ids 空 + shelf_wildcard=True）：不收口。"""
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={
+            1: ["车"], 2: ["车"],
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0})
+
+        user = _make_user(id=1, roles=("SHELF_ACCOUNT",), shelf_ids=(), shelf_wildcard=True)
+        result = await svc_with_picker.list_for_return(10, user=user)
+
+        assert len(result.items) == 2
+
+    async def test_scoped_shelf_account_filters_to_bound(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """scoped SHELF_ACCOUNT：只保留自己绑定的架。"""
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+            _make_shelf(id=3, code="PROD-C1", display_order=3),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={
+            1: ["车"], 2: ["车"], 3: ["车"],
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0, 3: 0})
+
+        # 绑了 shelf 1 和 3，期望只剩这两个
+        user = _make_user(id=1, roles=("SHELF_ACCOUNT",), shelf_ids=(1, 3))
+        result = await svc_with_picker.list_for_return(10, user=user)
+
+        assert len(result.items) == 2
+        assert {s.code for s in result.items} == {"PROD-A1", "PROD-C1"}
+
+    async def test_scoped_no_match_raises(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """scoped SHELF_ACCOUNT 绑的架都不在候选里 → 400。"""
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+            _make_shelf(id=2, code="PROD-B1", display_order=2),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={
+            1: ["车"], 2: ["车"],
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0})
+
+        user = _make_user(id=1, roles=("SHELF_ACCOUNT",), shelf_ids=(99, 100))
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_return(10, user=user)
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+
+    async def test_non_hmi_role_returns_empty(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """非 HMI 角色（CLERK）→ 直接 []，不抛错。"""
+        proc = _make_process_obj(id=10, code="车", name="车床")
+        svc_with_picker.processes.get_by_id.return_value = proc
+        svc_with_picker.shelves.list_active_production_ordered = AsyncMock(return_value=[
+            _make_shelf(id=1, code="PROD-A1", display_order=1),
+        ])
+        svc_with_picker.shelf_process.list_mapped_process_codes_by_shelf_ids = AsyncMock(return_value={
+            1: ["车"],
+        })
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0})
+
+        user = _make_user(id=1, roles=("CLERK",))
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_return(10, user=user)
+        # 收口后 candidates=[] → 400 兜底（picker 不应给非 HMI 用）
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+
+
+class TestListForInspection:
+    """`ShelfService.list_for_inspection(user=)`：2026-07-13 新增。
+
+    行为契约：
+    - 候选 = active INSPECTION 架
+    - scoped SHELF_ACCOUNT 仅看自己绑定的品检架
+    - MANAGER / wildcard 不收口
+    - 没有候选 → BIZ_SHELF_NO_MATCH_FOR_PROCESS
+    """
+
+    @pytest.fixture
+    def svc_with_picker(
+        self,
+        mock_shelves: ShelfRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> ShelfService:
+        from repository.part import PartRepository
+
+        parts = PartRepository.__new__(PartRepository)
+        parts.get_load_map_by_shelf_ids = AsyncMock()
+        svc = ShelfService(
+            shelves=mock_shelves,
+            user_roles=mock_user_roles,
+            parts=parts,
+        )
+        svc._account_count_map = AsyncMock(return_value={})
+        return svc
+
+    async def test_manager_returns_all_active_inspection(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """MANAGER：active INSPECTION 架全返回。"""
+        svc_with_picker.shelves.list_active_by_zone = AsyncMock(return_value=[
+            _make_shelf(id=1, code="INSP-C1", zone="INSPECTION", display_order=1),
+            _make_shelf(id=2, code="INSP-C2", zone="INSPECTION", display_order=2),
+        ])
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0})
+
+        user = _make_user(id=1, roles=("MANAGER",))
+        result = await svc_with_picker.list_for_inspection(user=user)
+
+        assert len(result.items) == 2
+        assert all(s.mapped_process_codes == [] for s in result.items)
+
+    async def test_scoped_filters_to_bound(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """scoped SHELF_ACCOUNT 仅看自己绑定的品检架。"""
+        svc_with_picker.shelves.list_active_by_zone = AsyncMock(return_value=[
+            _make_shelf(id=1, code="INSP-C1", zone="INSPECTION", display_order=1),
+            _make_shelf(id=2, code="INSP-C2", zone="INSPECTION", display_order=2),
+            _make_shelf(id=3, code="INSP-C3", zone="INSPECTION", display_order=3),
+        ])
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0, 2: 0, 3: 0})
+
+        user = _make_user(id=1, roles=("SHELF_ACCOUNT",), shelf_ids=(1, 3))
+        result = await svc_with_picker.list_for_inspection(user=user)
+
+        assert len(result.items) == 2
+        assert {s.code for s in result.items} == {"INSP-C1", "INSP-C3"}
+
+    async def test_no_active_inspection_raises(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """没有任何 active INSPECTION 架 → 400。"""
+        svc_with_picker.shelves.list_active_by_zone = AsyncMock(return_value=[])
+
+        user = _make_user(id=1, roles=("MANAGER",))
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_inspection(user=user)
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+
+    async def test_scoped_no_match_raises(
+        self,
+        svc_with_picker: ShelfService,
+    ) -> None:
+        """scoped SHELF_ACCOUNT 绑的架都不在 INSPECTION 候选里 → 400。"""
+        svc_with_picker.shelves.list_active_by_zone = AsyncMock(return_value=[
+            _make_shelf(id=1, code="INSP-C1", zone="INSPECTION", display_order=1),
+        ])
+        svc_with_picker.parts.get_load_map_by_shelf_ids = AsyncMock(return_value={1: 0})
+
+        user = _make_user(id=1, roles=("SHELF_ACCOUNT",), shelf_ids=(99,))
+        with pytest.raises(BizError) as exc:
+            await svc_with_picker.list_for_inspection(user=user)
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS

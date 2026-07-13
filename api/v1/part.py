@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile,
 from pydantic import BaseModel, Field
 
 from api.deps import get_part_file_repository, get_part_repository, get_part_service
+from core.error_code import ErrCode
+from core.exception import BizError
 from core.permission import (
     CurrentUser,
     get_current_user,
@@ -10,7 +12,7 @@ from core.permission import (
     require_roles,
     require_shelf_account_from_body,
 )
-from model.enums import UserRole
+from model.enums import PartEventType, UserRole
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
 from schema.part import (
@@ -436,6 +438,11 @@ async def pick_up_part(
     "/scan",
     response_model=PartOut,
     summary="工人扫图纸归还 / 送检（SHELF_ACCOUNT @ 该 shelf）",
+    description=(
+        "2026-07-13 起：对 INSPECTED 事件 + `target_inspection_shelf_id`，"
+        "做 user scope 校验（can_operate_shelf）—— SHELF_ACCOUNT 只能送"
+        "到自己绑定的品检架；MANAGER / wildcard 放行。"
+    ),
 )
 async def scan_part(
     payload: PartScanRequest,
@@ -444,7 +451,19 @@ async def scan_part(
     ),
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    _user, _shelf_id = ctx
+    _ctx_user, _shelf_id = ctx
+    # 2026-07-13: 补 target_inspection_shelf_id 的 user scope 校验
+    if (
+        payload.event_type == PartEventType.INSPECTED
+        and payload.target_inspection_shelf_id is not None
+    ):
+        tid = int(payload.target_inspection_shelf_id)
+        if not _ctx_user.can_operate_shelf(tid):
+            raise BizError(
+                code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
+                message="target inspection shelf not in user's scope",
+                http_status=http_status.HTTP_403_FORBIDDEN,
+            )
     return await svc.scan_event(payload)
 
 
@@ -461,9 +480,6 @@ async def get_part_by_serial(
     serial_no: str,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    from core.error_code import ErrCode
-    from core.exception import BizError
-
     part = await svc.parts.get_by_serial(serial_no)
     if part is None:
         raise BizError(
@@ -483,14 +499,23 @@ async def get_part_by_serial(
         "按工种 id 列出生产货架上、下一道工序属于该工种映射的零件。"
         "排序：加急优先 → 临期优先 → id 降序。"
         "返回 [] 时前端提示「无可领件 / 工种未映射 / 未分配工种」。"
+        "2026-07-13 起：scoped SHELF_ACCOUNT 越权 shelf_id → 短路空（防越权）。"
     ),
     dependencies=[Depends(require_auth())],
 )
 async def list_pickable_parts_by_work_type(
     work_type_id: int,
     shelf_id: int = Query(..., description="当前操作的生产货架 id"),
+    user: CurrentUser = Depends(get_current_user),
     svc: PartService = Depends(get_part_service),
 ) -> list[PartOut]:
+    # 2026-07-13: 越权 shelf_id 短路（非 HMI 角色或不在 scope 内）
+    if not user.has_role(UserRole.MANAGER) and not user.shelf_wildcard:
+        if (
+            not user.has_role(UserRole.SHELF_ACCOUNT)
+            or shelf_id not in user.shelf_ids
+        ):
+            return []
     return await svc.list_pickable_parts(work_type_id, shelf_id)
 
 

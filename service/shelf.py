@@ -20,7 +20,7 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from model import TPart
-from model.enums import PartStatus, ShelfZone
+from model.enums import PartStatus, ShelfZone, UserRole
 from model.shelf import TShelf
 from repository.part import PartRepository
 from repository.shelf import ShelfRepository
@@ -196,7 +196,8 @@ class ShelfService:
     # 共享 HMI：RETURN 卡片网格 picker 数据源
     # ============================================================
     async def list_for_return(
-        self, next_process_id: int
+        self, next_process_id: int, *,
+        user: CurrentUser | None = None,
     ) -> ShelfForReturnListOut:
         """列出 RETURN 流程可选的 PRODUCTION 货架 + 系统推荐。
 
@@ -204,13 +205,15 @@ class ShelfService:
         1. `zone == PRODUCTION` 且 `is_active=True` 且未软删
         2. `next_process_id ∈ shelf.assigned_processes`（即映射的工序 code 与
            next_process.code 一致）
+        3. 2026-07-13 起：scoped SHELF_ACCOUNT 仅看到自己绑定的架
+           （MANAGER / wildcard SHELF_ACCOUNT 不收口）
 
         排序：`current_load ASC, display_order ASC, code ASC`（最空的优先）。
         标记：top-1 标 `is_recommended=True` 并写入 `recommended_shelf_id`，
         前端 picker 默认高亮 + 「完成」一键接受。
 
         错误：没有候选架 → `BIZ_SHELF_NO_MATCH_FOR_PROCESS 400`（明确告诉
-        工人/经理要先去 ShelfList 给某架配这个工序）。
+        工人/经理要先去 ShelfList 给某架配这个工序，或该账号没绑对应架）。
         """
         if self.processes is None or self.parts is None or self.shelf_process is None:
             raise BizError(
@@ -269,27 +272,114 @@ class ShelfService:
                 )
             )
 
+        # 5) 2026-07-13 user scope 收口：scoped SHELF_ACCOUNT 只能选绑定的架
+        if user is not None and not user.has_role(UserRole.MANAGER) and not user.shelf_wildcard:
+            if not user.has_role(UserRole.SHELF_ACCOUNT):
+                # 非 HMI 角色（CLERK / INSPECTOR / CNC）调用 picker → 空
+                candidates = []
+            else:
+                allowed = set(user.shelf_ids)
+                candidates = [c for c in candidates if int(c.id) in allowed]
+
         if not candidates:
             raise BizError(
                 code=ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS,
                 message=(
-                    f"no active shelf mapped to process {target_code!r}; "
-                    "configure shelf→process mapping in /shelves/{id}/processes first"
+                    f"no active shelf mapped to process {target_code!r} "
+                    f"in current user's scope; "
+                    "configure shelf→process mapping in /shelves/{id}/processes, "
+                    "or bind more shelves to this SHELF_ACCOUNT user"
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 5) 排序：current_load ASC, display_order ASC, code ASC
+        # 6) 排序：current_load ASC, display_order ASC, code ASC
         candidates.sort(
             key=lambda x: (x.current_load, x.display_order, x.code)
         )
 
-        # 6) 标推荐
+        # 7) 标推荐
         candidates[0].is_recommended = True
 
         return ShelfForReturnListOut(
             items=candidates,
             recommended_shelf_id=str(candidates[0].id),
+        )
+
+    # ============================================================
+    # 共享 HMI：INSPECT 卡片网格 picker 数据源（2026-07-13）
+    # ============================================================
+    async def list_for_inspection(
+        self, *, user: CurrentUser | None = None,
+    ) -> ShelfForReturnListOut:
+        """列出 INSPECT 流程可选的 INSPECTION 货架 + 系统推荐。
+
+        候选条件：
+        1. `zone == INSPECTION` 且 `is_active=True` 且未软删
+        2. scoped SHELF_ACCOUNT 仅看到自己绑定的品检架
+           （MANAGER / wildcard SHELF_ACCOUNT 不收口）
+
+        排序 + 推荐标记同 `list_for_return`。
+
+        错误：没有候选架 → `BIZ_SHELF_NO_MATCH_FOR_PROCESS 400`。
+        """
+        if self.parts is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    "list_for_inspection requires parts repo; "
+                    "service not configured for HMI picker"
+                ),
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        rows = await self.shelves.list_active_by_zone(ShelfZone.INSPECTION.value)
+        if not rows:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS,
+                message="no active INSPECTION shelf exists",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2026-07-13 user scope 收口（同 list_for_return）
+        if user is not None and not user.has_role(UserRole.MANAGER) and not user.shelf_wildcard:
+            if not user.has_role(UserRole.SHELF_ACCOUNT):
+                rows = []
+            else:
+                allowed = set(user.shelf_ids)
+                rows = [s for s in rows if s.id in allowed]
+
+        if not rows:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS,
+                message=(
+                    "no INSPECTION shelf in current user's scope; "
+                    "bind an INSPECTION shelf to this SHELF_ACCOUNT user"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # load map（不查 mapped_process_codes：品检架无 process 概念）
+        load_map = await self.parts.get_load_map_by_shelf_ids([s.id for s in rows])
+        items: list[ShelfForReturnOut] = [
+            ShelfForReturnOut(
+                id=str(s.id),
+                code=s.code,
+                name=s.name,
+                location=s.location,
+                display_order=s.display_order,
+                current_load=load_map.get(s.id, 0),
+                mapped_process_codes=[],
+                is_recommended=False,
+            )
+            for s in rows
+        ]
+        items.sort(key=lambda x: (x.current_load, x.display_order, x.code))
+        if items:
+            items[0].is_recommended = True
+        return ShelfForReturnListOut(
+            items=items,
+            recommended_shelf_id=str(items[0].id) if items else "",
         )
 
     # ============================================================
