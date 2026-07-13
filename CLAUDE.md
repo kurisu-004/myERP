@@ -1089,6 +1089,12 @@ uv run alembic upgrade head      # 2 步：建 schema → 灌必要数据
 - `alembic upgrade head` 会因多 head 报错，须显式指定：`alembic upgrade 000000000003` + `alembic upgrade 000000000002`（或维护脚本分别跑）。
 - docstring 固定格式：模块 docstring + Revision ID / Revises / Create Date + 简短说明。
 
+> **2026-07-11 修订**：squash 到 `000000000001_schema_init.py`（commit `14b0e5f`）时，
+> 原 §17.B 描述的 `000000000003_add_part_event_operator.py`（事件表加 `created_by` 列）
+> **已直接合入 schema/001**，所以当前 `alembic versions/schema/` 只有 `000000000001_schema_init.py`
+> 一个文件，`alembic heads` 只返回 `000000000002`（prod_data）。§17.B 的「多 head 拓扑」是
+> squash 前的历史描述，与当前磁盘状态不符；如未来真的新增 003 迁移，再恢复上文多 head 写法。
+
 ---
 
 ## 16. JWT 双 token 自动刷新（2026-07-10 接入）

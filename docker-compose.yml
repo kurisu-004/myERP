@@ -67,17 +67,14 @@ services:
     depends_on:
       - backend
     ports:
-      # 备案期间 / 测试阶段：用 80 端口 HTTP 访问（nginx.conf 已配置 HTTP 块也 serve 资源）。
-      # 备案通过后加 443:443 映射 + 把 cert/key 拷到宿主机对应路径。
+      # 备案完成后：HTTP :80 仅做 301 → HTTPS；HTTPS :443 是主入口（承载静态资源 + API 反代）。
       - "${FRONTEND_PORT:-80}:80"
-      # HTTPS 端口：备案通过且证书上传到 /home/ubuntu/hsh-erp/ssl/ 后打开下行注释。
-      # - "${FRONTEND_HTTPS_PORT:-443}:443"
-    # volumes:
-      # 备案通过后启用 bind mount 把 SSL 证书挂进 frontend：
-      # - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud_bundle.crt:/etc/nginx/ssl/hsh-erp.cloud_bundle.crt:ro
-      # - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud.key:/etc/nginx/ssl/hsh-erp.cloud.key:ro
-      # 没挂证书时 nginx.conf 的 HTTPS server 块会在启动时探测不到证书文件自动失败；
-      # 当前 nginx.conf 的 HTTP 块直接 serve 资源，不依赖证书。
+      - "${FRONTEND_HTTPS_PORT:-443}:443"
+    volumes:
+      # 备案后 SSL 证书挂进 frontend 容器（绑定到 nginx 期望的路径）。
+      # 腾讯云合并证书（含中间 CA）+ 私钥；证书缺失时 entrypoint.sh 会自动 sed 删 HTTPS 块。
+      - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud_bundle.crt:/etc/nginx/ssl/hsh-erp.cloud_bundle.crt:ro
+      - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud.key:/etc/nginx/ssl/hsh-erp.cloud.key:ro
     # frontend/nginx.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
 
 # 注：nanobot 服务已于 2026-07-11 暂时下线。
