@@ -49,7 +49,7 @@
     </el-dialog>
 
     <!-- role dialog -->
-    <el-dialog v-model="showRoles" title="角色管理" width="500px">
+    <el-dialog v-model="showRoles" title="角色管理" width="560px">
       <p style="margin-bottom:8px">当前角色（{{ roleUser?.username }}）：</p>
       <div v-for="r in roleList" :key="r.id" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <el-tag size="small">{{ r.role }}{{ r.shelf_code ? ` @${r.shelf_code}` : '' }}</el-tag>
@@ -58,19 +58,39 @@
       <el-divider />
       <el-form inline>
         <el-form-item label="加角色">
-          <el-select v-model="addRoleForm.role" placeholder="选角色" style="width:140px">
-            <el-option label="MANAGER" value="MANAGER" />
-            <el-option label="SHELF_ACCOUNT" value="SHELF_ACCOUNT" />
+          <el-select v-model="addRoleForm.role" placeholder="选角色" style="width:160px" clearable>
+            <el-option
+              v-for="o in ROLE_OPTIONS"
+              :key="o.value"
+              :label="o.label"
+              :value="o.value"
+            />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="addRoleForm.role === 'SHELF_ACCOUNT'" label="货架">
-          <el-select v-model="addRoleForm.shelfId" placeholder="选货架（留空=共享 HMI 通行）" style="width:240px" clearable>
-            <el-option v-for="s in shelfOptions" :key="s.id" :label="`${s.code} (${s.zone === 'PRODUCTION' ? '生产' : '品检'})`" :value="s.id" />
+        <el-form-item v-if="addRoleForm.role === 'SHELF_ACCOUNT'" label="货架（可多选）">
+          <el-select
+            v-model="addRoleForm.shelfIds"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            :max-collapse-tags="3"
+            placeholder="选 1+ 个货架；留空 = 共享 HMI 通行"
+            style="width:340px"
+            clearable
+          >
+            <el-option
+              v-for="s in shelfOptions"
+              :key="s.id"
+              :disabled="boundShelfIds.has(String(s.id))"
+              :label="`${s.code} (${s.zone === 'PRODUCTION' ? '生产' : '品检'})`"
+              :value="String(s.id)"
+            />
           </el-select>
         </el-form-item>
         <el-form-item><el-button @click="doAddRole" :disabled="!addRoleForm.role">添加</el-button></el-form-item>
       </el-form>
-      <p v-if="addRoleForm.role === 'SHELF_ACCOUNT' && !addRoleForm.shelfId" class="scope-hint">
+      <p v-if="addRoleForm.role === 'SHELF_ACCOUNT' && addRoleForm.shelfIds.length === 0" class="scope-hint">
         <el-icon><InfoFilled /></el-icon>
         <span>货架留空 = 共享工控机（HMI）通行：该账号意图覆盖车间所有 PRODUCTION 架，不绑死单架。</span>
       </p>
@@ -79,8 +99,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { listUsers, createUser, updateUser, deactivateUser, listUserRoles, addUserRole, removeUserRole } from '@/api/users'
 import { listShelves } from '@/api/shelves'
 import type { UserOut, UserRoleOut } from '@/types/user'
@@ -107,8 +127,23 @@ const showRoles = ref(false)
 const roleUser = ref<UserOut | null>(null)
 const roleList = ref<UserRoleOut[]>([])
 const shelfOptions = ref<Shelf[]>([])
-// shelfId 在前端保持字符串：雪花 ID 长度 > 2^53，Number() 会丢精度。
-const addRoleForm = reactive<{ role: string; shelfId: string | null }>({ role: '', shelfId: null })
+// 2026-07-13：5 个 role 全量暴露；shelfIds 多选。
+// shelfIds 在前端保持字符串：雪花 ID 长度 > 2^53，Number() 会丢精度。
+const ROLE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'MANAGER', label: '管理员' },
+  { value: 'CLERK', label: '文员' },
+  { value: 'SHELF_ACCOUNT', label: '货架一体机账号' },
+  { value: 'INSPECTOR', label: '品检员' },
+  { value: 'CNC_PROGRAMMER', label: 'CNC 编程员' },
+]
+const addRoleForm = reactive<{ role: string; shelfIds: string[] }>({ role: '', shelfIds: [] })
+
+// 当前账号已绑的 SHELF_ACCOUNT 货架 id 集合（多选下拉 disabled 防重复绑）
+const boundShelfIds = computed<Set<string>>(() => new Set(
+  roleList.value
+    .filter((r) => r.role === 'SHELF_ACCOUNT' && r.scope_id)
+    .map((r) => String(r.scope_id)),
+))
 
 async function fetchData() {
   loading.value = true
@@ -146,20 +181,45 @@ async function openRoles(obj: any) { const u = obj as UserOut;
   roleUser.value = u
   roleList.value = await listUserRoles(String(u.id))
   shelfOptions.value = (await listShelves({ is_active: true, limit: 200 })).items
-  addRoleForm.role = ''; addRoleForm.shelfId = null
+  addRoleForm.role = ''; addRoleForm.shelfIds = []
   showRoles.value = true
 }
 
 async function doAddRole() {
   if (!roleUser.value || !addRoleForm.role) return
-  const scopeType = addRoleForm.role === 'SHELF_ACCOUNT' ? 'shelf' : null
-  const scopeId = addRoleForm.role === 'SHELF_ACCOUNT' ? addRoleForm.shelfId : null
-  // 共享 HMI 场景：SHELF_ACCOUNT 留空 shelfId = scope_id NULL = 通配所有架
-  // （与 can_operate_shelf shelf_wildcard 配合），不再阻断。
+  const targetRole = addRoleForm.role  // 捕获，下面的异步调用之后用
   try {
-    await addUserRole(String(roleUser.value.id), { role: addRoleForm.role, scope_type: scopeType, scope_id: scopeId })
+    if (targetRole === 'SHELF_ACCOUNT') {
+      // 多货架绑定：循环 N 次 addUserRole（DB 唯一约束天然去重 → 409 提示）
+      // 空数组 → 走 scope_id=NULL 通配（共享 HMI 场景）
+      if (addRoleForm.shelfIds.length === 0) {
+        await addUserRole(String(roleUser.value.id), {
+          role: 'SHELF_ACCOUNT', scope_type: 'shelf', scope_id: null,
+        })
+      } else {
+        for (const sid of addRoleForm.shelfIds) {
+          await addUserRole(String(roleUser.value.id), {
+            role: 'SHELF_ACCOUNT', scope_type: 'shelf', scope_id: sid,
+          })
+        }
+      }
+    } else {
+      // 非 SHELF_ACCOUNT role（MANAGER/CLERK/INSPECTOR/CNC_PROGRAMMER）：scope 必须 NULL
+      await addUserRole(String(roleUser.value.id), {
+        role: targetRole, scope_type: null, scope_id: null,
+      })
+    }
     roleList.value = await listUserRoles(String(roleUser.value.id))
+    addRoleForm.shelfIds = []
     ElMessage.success('已添加')
+    // 提示 SHELF_ACCOUNT：绑定变更要等 token 自动刷新（最多 12h）或重新登录
+    if (targetRole === 'SHELF_ACCOUNT') {
+      ElMessageBox.alert(
+        '绑定变更已写入。关联 SHELF_ACCOUNT 账号需重新登录或等待 access token 自动刷新（最多 12h）后才能看到新货架范围。',
+        '提示',
+        { type: 'info' },
+      ).catch(() => { /* 用户关掉提示，忽略 */ })
+    }
   } catch (e: any) { ElMessage.error(e?.message || '添加失败') }
 }
 

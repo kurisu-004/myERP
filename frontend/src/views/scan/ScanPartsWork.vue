@@ -236,19 +236,6 @@
         <el-button type="primary" size="large" @click="onAgain">再来一组</el-button>
       </div>
     </div>
-    <!-- 品检货架选择对话框 -->
-    <el-dialog v-model="showInspDialog" title="选择目标品检货架" width="360px" :close-on-click-modal="false">
-      <el-radio-group v-model="targetInspectionShelfId">
-        <el-radio v-for="s in inspShelves" :key="s.id" :value="Number(s.id)" style="display:block;margin-bottom:8px">
-          {{ s.code }} — {{ s.name }}
-        </el-radio>
-      </el-radio-group>
-      <template #footer>
-        <el-button @click="showInspDialog = false">取消</el-button>
-        <el-button type="primary" @click="inspectorConfirm">确认送检</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 下一道工序选择对话框（RETURN 时）-->
     <el-dialog v-model="showNextProcessDialog" title="选择下一道工序" width="420px" :close-on-click-modal="false">
       <el-radio-group v-model="selectedNextProcessId" style="display: flex; flex-direction: column; gap: 8px">
@@ -271,9 +258,19 @@
     <ShelfPickerDialog
       v-if="showShelfPicker"
       v-model="showShelfPicker"
+      kind="return"
       :next-process-id="selectedNextProcessId || ''"
       @confirm="onShelfPicked"
       @cancel="onShelfPickerCancel"
+    />
+
+    <!-- 共享 HMI INSPECT 品检货架 picker（2026-07-13 新增） -->
+    <ShelfPickerDialog
+      v-if="showInspPicker"
+      v-model="showInspPicker"
+      kind="inspection"
+      @confirm="onInspShelfPicked"
+      @cancel="onInspPickerCancel"
     />
   </div>
 </template>
@@ -298,8 +295,7 @@ import { ACTION_LABEL, ACTION_TAG_TYPE, useScanSession } from '@/composables/use
 import { usePartsScanQueue } from '@/composables/usePartsScanQueue'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useAuthSession } from '@/composables/useAuthSession'
-import { getShelfProcesses, listShelves } from '@/api/shelves'
-import type { Shelf } from '@/types/shelf'
+import { getShelfProcesses } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
 import { PROCESS_CATEGORY_LABEL } from '@/types/process'
@@ -312,15 +308,15 @@ const router = useRouter()
 const { worker, action, setAction, requireWorkerAndAction, slugToAction } = useScanSession()
 const queue = usePartsScanQueue()
 const { onScan } = useBarcodeScanner()
-const { isAuthenticated, refreshOrLogout, user, activeShelfId } = useAuthSession()
+const { isAuthenticated, refreshOrLogout, activeShelfId } = useAuthSession()
 
 const state = ref<PageState>('scanning')
 // shelf_id 在前端保持字符串：雪花 ID 长度 > 2^53，Number() 会丢精度。
 // 后端 Pydantic v2 默认接受 JSON string → int。
 const shelfId = ref<string>('')
-const showInspDialog = ref(false)
-const inspShelves = ref<Shelf[]>([])
-const targetInspectionShelfId = ref<string>()
+// 2026-07-13：INSPECT 改用 ShelfPickerDialog（kind=inspection）按 user scope 收口
+const showInspPicker = ref(false)
+const pendingInspShelfId = ref<string | null>(null)
 // RETURN 时的「下一道工序」选择
 const showNextProcessDialog = ref(false)
 const processes = ref<Process[]>([])
@@ -365,11 +361,10 @@ async function onSubmit(): Promise<void> {
   if (!worker.value || !action.value) return
   if (parts.value.length === 0) return
 
-  // INSPECT 需要先弹窗选目标品检货架（picker 流程；wildcard HMI 也走这里）
+  // 2026-07-13：INSPECT 改用 ShelfPickerDialog (kind='inspection')，后端按 user scope 收口
   if (action.value === 'INSPECT') {
-    inspShelves.value = (await listShelves({ zone: 'INSPECTION', is_active: true })).items
-    targetInspectionShelfId.value = undefined
-    showInspDialog.value = true
+    pendingInspShelfId.value = null
+    showInspPicker.value = true
     return
   }
 
@@ -402,25 +397,39 @@ async function onSubmit(): Promise<void> {
   // 其它路径（实际不会被触发，ScanPartsWork 只处理 RETURN / INSPECT）
   if (!shelfId.value) { ElMessage.warning('未找到当前货架信息，请重新登录'); return }
 
-  await doSubmit(undefined)
+  await doSubmit(undefined, undefined)
 }
 
-async function doSubmit(targetShelfId?: string | null, nextProcessId?: string | null): Promise<void> {
+async function doSubmit(
+  targetShelfId?: string | null,
+  nextProcessId?: string | null,
+  inspectionShelfId?: string | null,
+): Promise<void> {
   state.value = 'submitting'
   // 共享 HMI（2026-07-10）：RETURN 时使用 picker 选的目标架（targetShelfId）；
   // 若无则降级到当前 activeShelfId（兼容旧 SHELF_ACCOUNT 单架模型）。
   const useShelfId = targetShelfId || shelfId.value
-  await submit(useShelfId, worker.value!.badge_code, action.value!, targetInspectionShelfId.value, nextProcessId)
+  const inspShelfId = inspectionShelfId ?? pendingInspShelfId.value
+  await submit(useShelfId, worker.value!.badge_code, action.value!, inspShelfId, nextProcessId)
+  pendingInspShelfId.value = null
   state.value = 'done'
 }
 
 function onAgain(): void { reset(); state.value = 'scanning'; ElMessage.info('请继续扫码') }
 function backToAction(): void { void router.replace('/scan/action') }
-function inspectorConfirm(): void {
-  if (!targetInspectionShelfId.value) { ElMessage.warning('请选择目标品检货架'); return }
-  showInspDialog.value = false
-  void doSubmit(undefined, undefined)
+
+function onInspShelfPicked(shelfIdPicked: string): void {
+  pendingInspShelfId.value = shelfIdPicked
+  showInspPicker.value = false
+  void doSubmit(undefined, undefined, shelfIdPicked)
 }
+
+function onInspPickerCancel(): void {
+  pendingInspShelfId.value = null
+  showInspPicker.value = false
+  ElMessage.info('已取消送检')
+}
+
 function confirmNextProcess(): void {
   if (!selectedNextProcessId.value) { ElMessage.warning('请选择下一道工序'); return }
   const nextProcessId = selectedNextProcessId.value

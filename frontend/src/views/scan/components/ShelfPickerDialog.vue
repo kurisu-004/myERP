@@ -1,15 +1,16 @@
 <!--
   ShelfPickerDialog.vue
 
-  共享 HMI RETURN 卡片网格 picker 弹窗（2026-07-10）。
+  共享 HMI 卡片网格 picker 弹窗（2026-07-10 创建，2026-07-13 扩展为 RETURN + INSPECT 两用）。
   - 卡片网格（auto-fit, 220-280px 列宽）
   - 默认高亮 + 自动选中推荐架
   - 「完成」直接接受当前选中架；点其他卡片切换选中
-  - 取消按钮保留（工人可放弃放回）
+  - 取消按钮保留（工人可放弃放回/送检）
 
   props:
-    modelValue: boolean     // 弹窗可见
-    nextProcessId: string   // 必填（用于查 /shelves/for-return）
+    modelValue: boolean                       // 弹窗可见
+    nextProcessId: string                     // RETURN 必填（用于查 /shelves/for-return）
+    kind?: 'return' | 'inspection' = 'return' // picker 用途（INSPECT 走 /shelves/for-inspection）
   emits:
     update:modelValue(v: boolean)
     confirm(shelfId: string)
@@ -18,7 +19,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="选择放回货架"
+    :title="kind === 'inspection' ? '选择送检货架' : '选择放回货架'"
     width="800px"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
@@ -31,7 +32,11 @@
     <div v-else-if="errorMessage" class="error-state">
       <el-icon :size="36" color="#f56c6c"><CircleCloseFilled /></el-icon>
       <p class="error-text">{{ errorMessage }}</p>
-      <p class="error-hint">请联系管理员在「货架管理」给某架配置该工序</p>
+      <p class="error-hint">
+        {{ kind === 'inspection'
+            ? '请联系管理员在「账号管理」给本 SHELF_ACCOUNT 账号绑定品检货架'
+            : '请联系管理员在「货架管理」给某架配置该工序' }}
+      </p>
     </div>
     <div v-else-if="shelves.length === 0" class="empty-state">
       <el-icon :size="36" color="#c0c4cc"><Box /></el-icon>
@@ -56,7 +61,7 @@
         @click="onConfirm"
       >
         <el-icon><Select /></el-icon>
-        <span>完成 · 放到该架</span>
+        <span>{{ kind === 'inspection' ? '完成 · 送检到该架' : '完成 · 放到该架' }}</span>
       </el-button>
     </template>
   </el-dialog>
@@ -72,13 +77,18 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ShelfPickerCard from '@/components/ShelfPickerCard.vue'
-import { listShelvesForReturn } from '@/api/shelves'
+import { listShelvesForReturn, listShelvesForInspection } from '@/api/shelves'
 import type { ShelfForReturn } from '@/types/shelf'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: boolean
-  nextProcessId: string
-}>()
+  /** RETURN 必填（用于查 /shelves/for-return）；INSPECT 时可省略。 */
+  nextProcessId?: string
+  kind?: 'return' | 'inspection'
+}>(), {
+  kind: 'return',
+  nextProcessId: '',
+})
 
 const emit = defineEmits<{
   'update:modelValue': [v: boolean]
@@ -92,15 +102,19 @@ const shelves = ref<ShelfForReturn[]>([])
 const selectedId = ref<string | null>(null)
 
 watch(
-  () => [props.modelValue, props.nextProcessId] as const,
-  async ([visible, pid]) => {
-    if (!visible || !pid) return
-    await load(pid)
+  () => [props.modelValue, props.nextProcessId, props.kind] as const,
+  async ([visible, pid, k]) => {
+    if (!visible) return
+    if (k === 'inspection') {
+      await loadInspection()
+    } else if (pid) {
+      await loadReturn(pid)
+    }
   },
   { immediate: true },
 )
 
-async function load(nextProcessId: string): Promise<void> {
+async function loadReturn(nextProcessId: string): Promise<void> {
   loading.value = true
   errorMessage.value = null
   shelves.value = []
@@ -127,13 +141,37 @@ async function load(nextProcessId: string): Promise<void> {
   }
 }
 
+async function loadInspection(): Promise<void> {
+  loading.value = true
+  errorMessage.value = null
+  shelves.value = []
+  selectedId.value = null
+  try {
+    const result = await listShelvesForInspection()
+    shelves.value = result.items
+    const recommended = result.items.find((s) => s.is_recommended)
+    if (recommended) {
+      selectedId.value = recommended.id
+    } else {
+      selectedId.value = result.recommended_shelf_id || result.items[0]?.id || null
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    errorMessage.value = msg || '加载失败'
+    selectedId.value = null
+    ElMessage.error(errorMessage.value)
+  } finally {
+    loading.value = false
+  }
+}
+
 function onSelect(shelfId: string): void {
   selectedId.value = shelfId
 }
 
 function onConfirm(): void {
   if (!selectedId.value) {
-    ElMessage.warning('请先选择放回货架')
+    ElMessage.warning(props.kind === 'inspection' ? '请先选择送检货架' : '请先选择放回货架')
     return
   }
   emit('confirm', selectedId.value)

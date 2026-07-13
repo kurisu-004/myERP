@@ -1,8 +1,18 @@
 <!--
   ScanActionPicker.vue
 
-  /scan/action：选择报工操作（取件 / 放回 / 送检）。
+  /scan/action：选择报工操作（取件 / 放回 / 送检 / 送货）。
   入口守卫：worker 缺失则跳回 /scan/badge。
+
+  2026-07-13 多架 SHELF_ACCOUNT 改造：
+  - 按钮按「绑定架 zone 并集」显示（不是 shelf_ids[0] 推 zone）：
+    * 绑了任意 PRODUCTION 架 → PICK_UP + RETURN
+    * 绑了任意 INSPECTION 架 → INSPECT
+    * 两种 zone 都绑了 → 三个按钮全显示
+  - 当同一 zone 绑了 ≥ 2 架（showShelfSelector=true）时，顶部出现
+    「当前货架」el-select 让工人显式选一架；未选完之前 PICK/RETURN/INSPECT
+    按钮会先提醒选完才跳走。
+  - 单架 / 通配场景：行为与改造前一致（无顶部选择器）。
 -->
 
 <template>
@@ -29,12 +39,37 @@
       </div>
     </div>
 
+    <!-- 2026-07-13：多架 SHELF_ACCOUNT 时显示「当前货架」选择器 -->
+    <div v-if="shelfSel.showShelfSelector.value" class="shelf-selector">
+      <el-icon :size="18"><Platform /></el-icon>
+      <span class="label">当前货架：</span>
+      <el-select
+        :model-value="shelfSel.selectedShelfId.value"
+        placeholder="请选择当前作业的货架"
+        size="default"
+        style="width:280px"
+        filterable
+        @update:model-value="(v: string) => shelfSel.selectedShelfId.value = v"
+      >
+        <el-option
+          v-for="o in shelfSel.options.value"
+          :key="o.id"
+          :value="o.id"
+          :label="`${o.code} (${o.zone === 'PRODUCTION' ? '生产' : '品检'})`"
+        />
+      </el-select>
+      <span v-if="!shelfSel.selectedShelfId.value" class="hint">
+        <el-icon><InfoFilled /></el-icon>
+        需先选架才能报工
+      </span>
+    </div>
+
     <div class="content">
       <h2 class="state-title">请选择报工操作</h2>
       <div v-if="shelfLoading" style="text-align:center;padding:40px 0;color:#909399">加载货架信息...</div>
-      <div v-else class="action-grid" :class="{ 'action-grid--two': shelfZone === 'PRODUCTION' }">
+      <div v-else class="action-grid" :class="{ 'action-grid--two': !showInspect }">
         <el-button
-          v-if="shelfZone === 'PRODUCTION'"
+          v-if="showPickUp"
           type="primary"
           size="large"
           class="action-btn"
@@ -45,7 +80,7 @@
           <span class="action-desc">扫码领取，开始加工</span>
         </el-button>
         <el-button
-          v-if="shelfZone === 'PRODUCTION'"
+          v-if="showReturn"
           type="warning"
           size="large"
           class="action-btn"
@@ -56,7 +91,7 @@
           <span class="action-desc">加工完一道工序放回待加工区</span>
         </el-button>
         <el-button
-          v-if="shelfZone === 'INSPECTION'"
+          v-if="showInspect"
           type="success"
           size="large"
           class="action-btn"
@@ -85,7 +120,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeMount, ref } from 'vue'
+import { computed, onBeforeMount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -94,6 +129,8 @@ import {
   Box,
   Check,
   HomeFilled,
+  InfoFilled,
+  Platform,
   Refresh,
   Van,
 } from '@element-plus/icons-vue'
@@ -102,40 +139,37 @@ import {
   useScanSession,
   type WorkAction,
 } from '@/composables/useScanSession'
-import { useAuthSession } from '@/composables/useAuthSession'
-import { listShelves } from '@/api/shelves'
-import type { Shelf } from '@/types/shelf'
+import { useActiveShelfSelection } from '@/composables/useActiveShelfSelection'
 import { listWorkTypes } from '@/api/workType'
 import type { WorkType } from '@/types/workType'
 
 const router = useRouter()
 const { worker, setAction, reset, requireWorker } = useScanSession()
-const { activeShelfId } = useAuthSession()
+const shelfSel = useActiveShelfSelection()
 
-const shelfZone = ref<string | null>(null) // 'PRODUCTION' | 'INSPECTION' | null
 const workerWorkTypeCode = ref<string | null>(null) // '送货司机' 等
 const shelfLoading = ref(true)
 
+// 2026-07-13：boundZones = 绑定架 zone 的并集，决定按钮显隐
+// - 含 PRODUCTION → PICK_UP + RETURN
+// - 含 INSPECTION → INSPECT
+const boundZones = computed<Set<string>>(() => {
+  const s = new Set<string>()
+  for (const o of shelfSel.options.value) {
+    if (o.zone === 'PRODUCTION' || o.zone === 'INSPECTION') {
+      s.add(o.zone)
+    }
+  }
+  return s
+})
+const showPickUp = computed<boolean>(() => boundZones.value.has('PRODUCTION'))
+const showReturn = computed<boolean>(() => boundZones.value.has('PRODUCTION'))
+const showInspect = computed<boolean>(() => boundZones.value.has('INSPECTION'))
+
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
-  // 获取当前货架区域，决定可用操作
-  // 三种场景的 shelfZone 派生：
-  //   1) scoped HMI（shelf_ids 非空）  → 查 /shelves 拿该架的 zone
-  //   2) wildcard 共享 HMI（shelf_ids 空）→ 默认 PRODUCTION（共享工控机典型装在生产区）
-  //   3) scoped HMI 但 shelf 找不到 / 403 → 同样默认 PRODUCTION，保证按钮可点
-  const sid = activeShelfId()
-  if (sid) {
-    try {
-      const items = (await listShelves({ limit: 200 })).items
-      const shelf = items.find((s: Shelf) => String(s.id) === sid)
-      shelfZone.value = shelf?.zone ?? 'PRODUCTION'
-    } catch {
-      shelfZone.value = 'PRODUCTION'
-    }
-  } else {
-    // wildcard 共享 HMI：不绑死单架，按生产区工控机处理
-    shelfZone.value = 'PRODUCTION'
-  }
+  // 拉候选架（绑定架详情；wildcard → 空；多架 → 等用户选）
+  await shelfSel.initShelves()
   // 工种决定 DELIVER 入口（PR-C 2026-07-10）
   if (worker.value?.work_type_id) {
     try {
@@ -152,6 +186,12 @@ onBeforeMount(async () => {
 })
 
 function selectAction(a: WorkAction): void {
+  // 多架 SHELF_ACCOUNT：用户必须在选择器先选架才能走 PICK/RETURN/INSPECT
+  // （DELIVER 走司机专属流程，不依赖货架）
+  if (a !== 'DELIVER' && shelfSel.showShelfSelector.value && !shelfSel.selectedShelfId.value) {
+    ElMessage.warning('请先在顶部选择当前作业的货架')
+    return
+  }
   setAction(a)
   ElMessage.success(`已选择: ${ACTION_LABEL[a]}`)
   // PICK_UP 走「按工种选件」新流程 → /scan/pick
@@ -227,6 +267,29 @@ function goHome(): void {
 }
 .badge-tag {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* 2026-07-13：多架 SHELF_ACCOUNT 顶部货架选择器 */
+.shelf-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  background: #fff7e6;          /* 暖色背景提示「要选」 */
+  border-bottom: 2px solid #ffd591;
+  color: #874d00;
+  font-size: 15px;
+  .label {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #d4691a;
+    font-size: 13px;
+  }
 }
 
 .content {

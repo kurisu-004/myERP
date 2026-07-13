@@ -89,6 +89,9 @@ export function useAuthSession() {
   function canOperateShelf(shelfId: string): boolean {
     if (hasRole('MANAGER')) return true
     if (!hasRole('SHELF_ACCOUNT')) return false
+    // 2026-07-13：与后端 CurrentUser.can_operate_shelf 对齐，补 wildcard 兜底
+    // （SHELF_ACCOUNT 且未绑任何 active 架 → 视为共享 HMI 通行）。
+    if (isWildcardShelfAccount()) return true
     return (user.value?.shelf_ids ?? []).includes(shelfId)
   }
 
@@ -102,6 +105,28 @@ export function useAuthSession() {
   function activeShelfId(): string | null {
     const ids = user.value?.shelf_ids ?? []
     return ids.length > 0 ? ids[0] : null
+  }
+
+  /**
+   * 2026-07-13 新增：当前账号 scope 到的所有货架 id（字符串列表）。
+   * SHELF_ACCOUNT 多货架场景用；与后端 user.shelf_ids 一一对应。
+   */
+  function boundShelves(): string[] {
+    return user.value?.shelf_ids ?? []
+  }
+
+  /**
+   * 2026-07-13 新增：当前账号是否是「共享 HMI 通配」SHELF_ACCOUNT。
+   *
+   * 判定方式：当前 user SHELF_ACCOUNT 角色 + 未绑任何 active 架
+   * （shelf_ids 为空）。后端在 JWT 里也带 `shelf_wildcard`，但 API 响应
+   * 没透出；用这个启发式等价于「可对任意 PRODUCTION/INSPECTION 架放行」。
+   *
+   * 注：边界场景 —— 绑了架但全部被停用 → shelf_ids 也为空，按通配处理。
+   * 退化为「按钮可见但提交时被后端 403」，可接受。
+   */
+  function isWildcardShelfAccount(): boolean {
+    return hasRole('SHELF_ACCOUNT') && boundShelves().length === 0
   }
 
   /** 当前可见菜单树（顶层列表；children 在节点里）。 */
@@ -168,6 +193,8 @@ export function useAuthSession() {
     hasRole,
     canOperateShelf,
     activeShelfId,
+    boundShelves,
+    isWildcardShelfAccount,
     menus,
     hasMenuCode,
     getAuthHeader,

@@ -100,3 +100,16 @@ export async function listShelvesForReturn(
   })
   return resp.data
 }
+
+/**
+ * 2026-07-13 新增：共享 HMI INSPECT 卡片网格 picker 数据源。
+ * 后端 `GET /shelves/for-inspection`
+ * 返回 active INSPECTION 货架列表（按 current_load ASC 排序）+ 推荐架。
+ *
+ * 错误：20506 BIZ_SHELF_NO_MATCH_FOR_PROCESS（没有 INSPECTION 架或用户
+ * scope 内无 INSPECTION 架）。
+ */
+export async function listShelvesForInspection(): Promise<ShelfForReturnResult> {
+  const resp = await api.get<ShelfForReturnResult>('/shelves/for-inspection')
+  return resp.data
+}

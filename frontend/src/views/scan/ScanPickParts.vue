@@ -194,15 +194,16 @@ import {
 import Barcode from '@/components/Barcode.vue'
 import { useScanSession } from '@/composables/useScanSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
-import { useAuthSession } from '@/composables/useAuthSession'
+import { useActiveShelfSelection } from '@/composables/useActiveShelfSelection'
 import { listPartsByWorkTypeAllShelves, pickUpPart, type PartItem } from '@/api/parts'
 
 const router = useRouter()
 const { worker, requireWorker } = useScanSession()
 const { onScan } = useBarcodeScanner()
-// 共享 HMI（2026-07-10）：activeShelfId 仅用于 pick-up 提交时确定 shelf_id 入参；
-// 列表展示已切到 listPartsByWorkTypeAllShelves（不绑架）。
-const { activeShelfId } = useAuthSession()
+// 2026-07-13：跨架列表展示用 listPartsByWorkTypeAllShelves（后端按 user.shelf_ids 收口）；
+// shelfId 提交兜底用 useActiveShelfSelection.selectedShelfId（多架场景工人已在 action picker
+// 顶部选好当前作业架；单架时直接 = 唯一架 id；wildcard 时为 null）。
+const shelfSel = useActiveShelfSelection()
 
 const shelfId = ref<string>('')
 const parts = ref<PartItem[]>([])
@@ -277,11 +278,9 @@ function deliveryUrgencyTag(s: string): 'danger' | 'warning' | 'info' {
 
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
-  // 共享 HMI（wildcard，activeShelfId=null）：不绑死单架，列表走
-  // listPartsByWorkTypeAllShelves 跨架取；shelfId 仅在 pick-up 提交时作 fallback
-  // （由选中件 current_holder_id 兜底，见 onScanCode line 332）。
-  // 老 scoped HMI：shelfId 直接 = activeShelfId()。
-  shelfId.value = activeShelfId() ?? ''
+  // 多架 SHELF_ACCOUNT：worker 已在 ScanActionPicker 顶部选好当前作业架；
+  // 单架时直接 = shelfSel.selectedShelfId（唯一架）；wildcard 时为 null（兜底到 current_holder_id）
+  shelfId.value = shelfSel.selectedShelfId.value ?? ''
   await refresh()
 })
 
@@ -289,7 +288,8 @@ async function refresh(): Promise<void> {
   if (!worker.value?.work_type_id) return
   loadingList.value = true
   try {
-    // 共享 HMI（2026-07-10）：跨架列表，按 current_holder_id 在前端分组
+    // 跨架列表（后端 api/v1/part.py::list_pickable_parts_by_work_type_all_shelves
+    // 已按 user.shelf_ids 收口；scoped SHELF_ACCOUNT 只看到自己绑定的架上的件）
     parts.value = await listPartsByWorkTypeAllShelves(worker.value.work_type_id)
   } catch (e) {
     ElMessage.error((e as Error).message ?? '加载列表失败')
@@ -325,8 +325,9 @@ async function onScanCode(rawCode: string): Promise<void> {
     return
   }
   if (!worker.value) return
-  // 共享 HMI：用选中件的实际 current_holder_id（来自跨架列表）作为 pick-up 提交 shelf_id；
-  // 老 SHELF_ACCOUNT 模型下若没选过件 → 走 activeShelfId 兜底。
+  // 多架/单架/wildcard 三态统一：选中件的实际 current_holder_id（来自后端
+  // 收口后的列表）作 shelf_id 主路径；兜底用 shelfSel.selectedShelfId（单架时
+  // = 唯一架 id；wildcard 时为 null）。
   const useShelfId = selectedPart.value.current_holder_id || shelfId.value
   if (!useShelfId) {
     ElMessage.error('未找到零件所在货架信息')
