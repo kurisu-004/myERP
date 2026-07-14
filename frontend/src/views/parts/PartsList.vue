@@ -31,6 +31,11 @@
           <span>重置</span>
         </el-button>
 
+        <el-button @click="router.push('/parts/new/bid-import')">
+          <el-icon><Document /></el-icon>
+          <span>从应标 Excel 导入</span>
+        </el-button>
+
         <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
           编程员视图：默认查看「编程中」零件
         </el-tag>
@@ -332,9 +337,9 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { Document, Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import {
   listParts,
   placeOnShelf,
@@ -359,6 +364,7 @@ const { hasRole } = useAuthSession()
 const isCncProgrammer = hasRole('CNC_PROGRAMMER')
 const { tree: customerTree } = useCustomerTree()
 const route = useRoute()
+const router = useRouter()
 
 interface SearchState {
   keyword: string

@@ -26,10 +26,16 @@
           <h3 class="staging-title">待新增零件</h3>
           <span class="staging-count">共 {{ staged.length }} 条</span>
         </div>
-        <el-button type="primary" @click="openAddDialog">
-          <el-icon><Plus /></el-icon>
-          <span>添加零件</span>
-        </el-button>
+        <div class="staging-header-actions">
+          <el-button @click="router.push('/parts/new/bid-import')">
+            <el-icon><Document /></el-icon>
+            <span>从应标 Excel 导入</span>
+          </el-button>
+          <el-button type="primary" @click="openAddDialog">
+            <el-icon><Plus /></el-icon>
+            <span>添加零件</span>
+          </el-button>
+        </div>
       </div>
 
       <!-- 空态：点空白处打开 dialog -->
@@ -802,6 +808,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+.staging-header-actions {
+  display: flex;
+  gap: 8px;
 }
 .staging-title-wrap {
   display: flex;

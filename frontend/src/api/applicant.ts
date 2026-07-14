@@ -46,6 +46,32 @@ export async function searchApplicants(
   return resp.data
 }
 
+export interface BulkApplicantItemPayload {
+  name: string
+  customer_id: string
+}
+
+export interface BulkApplicantResult {
+  name: string
+  customer_id: string
+  applicant_id: string
+}
+
+/**
+ * 批量 get-or-create 申请人（应标 Excel 导入用）。
+ * 后端内部按 (name, l1_root_id) 去重并幂等创建；customer_id 允许传 L1 或 L2。
+ * 返回的 customer_id 是 L1 根 id（applicant 实际存储位置）。
+ */
+export async function bulkGetOrCreateApplicants(
+  items: BulkApplicantItemPayload[],
+): Promise<BulkApplicantResult[]> {
+  const resp = await api.post<BulkApplicantResult[]>(
+    '/applicants/bulk-get-or-create',
+    { items },
+  )
+  return resp.data
+}
+
 export async function getApplicant(id: string): Promise<Applicant> {
   const resp = await api.get<Applicant>(`/applicants/${id}`)
   return resp.data
