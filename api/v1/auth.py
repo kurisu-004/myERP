@@ -8,10 +8,16 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from api.deps import get_auth_service
+from api.deps import get_auth_service, get_user_service
 from core.permission import CurrentUser, get_current_user
-from schema.user import CurrentUserOut, LoginRequest, LoginResponse
+from schema.user import (
+    ChangePasswordRequest,
+    CurrentUserOut,
+    LoginRequest,
+    LoginResponse,
+)
 from service.auth import AuthService
+from service.user import UserService
 
 
 router = APIRouter(prefix="/auth", tags=["账号登录"])
@@ -39,6 +45,26 @@ async def me(
 
 @router.post("/logout", summary="登出（no-op，客户端丢 token 即可）")
 async def logout() -> dict:
+    return {"ok": True}
+
+
+@router.post(
+    "/change-password",
+    summary="修改自己的密码（校验旧密码 + 轮转 refresh token）",
+)
+async def change_password(
+    payload: ChangePasswordRequest,
+    user: CurrentUser = Depends(get_current_user),
+    svc: UserService = Depends(get_user_service),
+) -> dict:
+    """校验旧密码后写入新密码；成功后轮转 refresh token，
+    其他设备的旧 refresh token 立即失效。旧密码错误 → 401 (code=40104)。
+    """
+    await svc.change_own_password(
+        user_id=user.id,
+        old_password=payload.old_password,
+        new_password=payload.new_password,
+    )
     return {"ok": True}
 
 

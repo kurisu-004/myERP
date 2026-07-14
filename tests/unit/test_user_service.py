@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -55,6 +56,10 @@ def mock_users() -> UserRepository:
     repo.update = AsyncMock(side_effect=_update)
     repo.soft_delete = AsyncMock()
     repo.touch_login = AsyncMock()
+    repo.increment_refresh_token_version = AsyncMock()
+    # service 在 update / soft_delete / reset 后调 self.users.session.refresh(u)
+    # 回填 onupdate 过期列；mock 成 no-op（无真实 session）。
+    repo.session = SimpleNamespace(refresh=AsyncMock())
     return repo
 
 
@@ -909,3 +914,129 @@ class TestRemoveRole:
         assert exc.value.code == ErrCode.BIZ_USER_ROLE_NOT_FOUND
         assert exc.value.http_status == 404
         mock_user_roles.soft_delete.assert_not_awaited()
+
+
+# ============================================================
+# change_own_password
+# ============================================================
+
+
+class TestChangeOwnPassword:
+    async def test_change_own_password_success(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+    ) -> None:
+        """旧密码正确 → 写新哈希 + 轮转 refresh token（单次 update）。"""
+        user = _make_user(1001, password_hash="old_hash", is_active=True)
+        user.refresh_token_version = 3
+        mock_users.get_by_id.return_value = user
+
+        with (
+            patch("service.user.verify_password", return_value=True) as vp,
+            patch("service.user.hash_password", return_value="new_hash") as hp,
+        ):
+            await service.change_own_password(
+                user_id=1001, old_password="old_pw", new_password="new_secret"
+            )
+
+        vp.assert_called_once_with("old_pw", "old_hash")
+        hp.assert_called_once_with("new_secret")
+        assert user.password_hash == "new_hash"
+        assert user.refresh_token_version == 4  # 轮转 +1，同一次 update 内
+        mock_users.update.assert_awaited_once_with(user)
+
+    async def test_change_own_password_wrong_old_401(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+    ) -> None:
+        """旧密码错 → BIZ_AUTH_OLD_PASSWORD_MISMATCH 401，不写库、不轮转。"""
+        user = _make_user(1001, password_hash="old_hash", is_active=True)
+        mock_users.get_by_id.return_value = user
+
+        with patch("service.user.verify_password", return_value=False):
+            with pytest.raises(BizError) as exc:
+                await service.change_own_password(
+                    user_id=1001, old_password="wrong", new_password="new_secret"
+                )
+
+        assert exc.value.code == ErrCode.BIZ_AUTH_OLD_PASSWORD_MISMATCH
+        assert exc.value.http_status == 401
+        mock_users.update.assert_not_awaited()
+
+    async def test_change_own_password_user_not_found_404(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+    ) -> None:
+        """用户不存在 → BIZ_USER_ACCOUNT_NOT_FOUND 404。"""
+        mock_users.get_by_id.return_value = None
+
+        with pytest.raises(BizError) as exc:
+            await service.change_own_password(
+                user_id=999, old_password="x", new_password="new_secret"
+            )
+
+        assert exc.value.code == ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND
+        assert exc.value.http_status == 404
+        mock_users.update.assert_not_awaited()
+
+    async def test_change_own_password_inactive_404(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+    ) -> None:
+        """已停用账号 → 视为不存在，404。"""
+        user = _make_user(1001, is_active=False)
+        mock_users.get_by_id.return_value = user
+
+        with pytest.raises(BizError) as exc:
+            await service.change_own_password(
+                user_id=1001, old_password="x", new_password="new_secret"
+            )
+
+        assert exc.value.code == ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND
+        assert exc.value.http_status == 404
+
+
+# ============================================================
+# admin_reset_password
+# ============================================================
+
+
+class TestAdminResetPassword:
+    async def test_admin_reset_password_success(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+        mock_user_roles: UserRoleRepository,
+    ) -> None:
+        """重置为默认口令 changeme + 轮转 refresh token（单次 update），返回 UserOut。"""
+        user = _make_user(1001, password_hash="old_hash")
+        user.refresh_token_version = 7
+        mock_users.get_by_id.return_value = user
+
+        with patch("service.user.hash_password", return_value="hashed_changeme") as hp:
+            result = await service.admin_reset_password(1001)
+
+        hp.assert_called_once_with("changeme")
+        assert user.password_hash == "hashed_changeme"
+        assert user.refresh_token_version == 8  # 轮转 +1，同一次 update 内
+        mock_users.update.assert_awaited_once_with(user)
+        assert result.id == 1001
+
+    async def test_admin_reset_password_not_found_404(
+        self,
+        service: UserService,
+        mock_users: UserRepository,
+    ) -> None:
+        """用户不存在 → BIZ_USER_ACCOUNT_NOT_FOUND 404。"""
+        mock_users.get_by_id.return_value = None
+
+        with pytest.raises(BizError) as exc:
+            await service.admin_reset_password(999)
+
+        assert exc.value.code == ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND
+        assert exc.value.http_status == 404
+        mock_users.update.assert_not_awaited()

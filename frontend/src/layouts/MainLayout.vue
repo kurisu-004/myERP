@@ -68,11 +68,8 @@
             </div>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="profile">
-                  <el-icon><User /></el-icon>个人信息
-                </el-dropdown-item>
-                <el-dropdown-item command="settings">
-                  <el-icon><Setting /></el-icon>系统设置
+                <el-dropdown-item command="change-password">
+                  <el-icon><Lock /></el-icon>修改密码
                 </el-dropdown-item>
                 <el-dropdown-item divided command="logout">
                   <el-icon><SwitchButton /></el-icon>退出登录
@@ -93,24 +90,44 @@
       </el-main>
     </el-container>
 
+    <!-- 修改密码弹窗 -->
+    <el-dialog v-model="showChangePwd" title="修改密码" width="420px" @closed="resetPwdForm">
+      <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="90px">
+        <el-form-item label="原密码" prop="oldPassword">
+          <el-input v-model="pwdForm.oldPassword" type="password" show-password placeholder="请输入原密码" />
+        </el-form-item>
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input v-model="pwdForm.newPassword" type="password" show-password placeholder="至少 6 位" />
+        </el-form-item>
+        <el-form-item label="确认新密码" prop="confirmPassword">
+          <el-input v-model="pwdForm.confirmPassword" type="password" show-password placeholder="再次输入新密码" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showChangePwd = false">取消</el-button>
+        <el-button type="primary" :loading="pwdSaving" @click="submitChangePwd">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 全局业务事件横幅：Teleport 到 body，右上角浮层 -->
     <NotificationBanner />
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
-  Box, Fold, Expand, Refresh, ArrowDown, User, Setting, SwitchButton, House,
+  Box, Fold, Expand, Refresh, ArrowDown, Lock, SwitchButton,
 } from '@element-plus/icons-vue'
 import { useAuthSession } from '@/composables/useAuthSession'
-import { me as apiMe } from '@/api/auth'
+import { me as apiMe, changeMyPassword } from '@/api/auth'
 import MenuTreeItem from '@/layouts/components/MenuTreeItem.vue'
 import type { CurrentUser } from '@/types/user'
 
-type UserCmd = 'profile' | 'settings' | 'logout'
+type UserCmd = 'change-password' | 'logout'
 
 const route = useRoute()
 const router = useRouter()
@@ -147,10 +164,57 @@ const handleUserCmd = async (cmd: string | number | object): Promise<void> => {
       ElMessage.success('已退出登录')
       router.replace('/login')
     } catch { /* cancelled */ }
-  } else if (command === 'profile') {
-    ElMessage.info('个人信息')
-  } else if (command === 'settings') {
-    ElMessage.info('系统设置')
+  } else if (command === 'change-password') {
+    showChangePwd.value = true
+  }
+}
+
+// ---- 修改密码 ----
+const showChangePwd = ref(false)
+const pwdSaving = ref(false)
+const pwdFormRef = ref<FormInstance>()
+const pwdForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
+
+const validateNewPwd = (_rule: unknown, value: string, callback: (err?: Error) => void): void => {
+  if (!value) return callback(new Error('请输入新密码'))
+  if (value.length < 6) return callback(new Error('新密码至少 6 位'))
+  if (value === pwdForm.oldPassword) return callback(new Error('新密码不能与原密码相同'))
+  // 新密码变化时，若确认框已填，重新触发确认框校验
+  if (pwdForm.confirmPassword) pwdFormRef.value?.validateField('confirmPassword')
+  callback()
+}
+const validateConfirmPwd = (_rule: unknown, value: string, callback: (err?: Error) => void): void => {
+  if (!value) return callback(new Error('请再次输入新密码'))
+  if (value !== pwdForm.newPassword) return callback(new Error('两次输入的新密码不一致'))
+  callback()
+}
+const pwdRules: FormRules = {
+  oldPassword: [{ required: true, message: '请输入原密码', trigger: 'blur' }],
+  newPassword: [{ validator: validateNewPwd, trigger: 'blur' }],
+  confirmPassword: [{ validator: validateConfirmPwd, trigger: 'blur' }],
+}
+
+function resetPwdForm(): void {
+  pwdForm.oldPassword = ''
+  pwdForm.newPassword = ''
+  pwdForm.confirmPassword = ''
+  pwdFormRef.value?.clearValidate()
+}
+
+async function submitChangePwd(): Promise<void> {
+  const valid = await pwdFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  pwdSaving.value = true
+  try {
+    await changeMyPassword({ old_password: pwdForm.oldPassword, new_password: pwdForm.newPassword })
+    showChangePwd.value = false
+    ElMessage.success('密码已修改，请重新登录')
+    await logout()
+    router.replace('/login')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '修改密码失败')
+  } finally {
+    pwdSaving.value = false
   }
 }
 

@@ -58,6 +58,12 @@ export async function deactivateUser(id: string): Promise<UserOut> {
   return resp.data
 }
 
+/** 管理员重置指定账号密码为默认口令 changeme（后端会轮转其 refresh token）。 */
+export async function resetUserPassword(id: string): Promise<UserOut> {
+  const resp = await api.post<UserOut>(`/users/${id}/reset-password`)
+  return resp.data
+}
+
 export async function listUserRoles(userId: string): Promise<UserRoleOut[]> {
   const resp = await api.get<UserRoleOut[]>(`/users/${userId}/roles`)
   return resp.data

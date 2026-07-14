@@ -12,7 +12,7 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
-from core.security import hash_password
+from core.security import hash_password, verify_password
 from model import TShelf, TUser, TUserRole
 from model.enums import ShelfZone, UserRole
 from repository.shelf import ShelfRepository
@@ -26,6 +26,10 @@ from schema.user import (
     UserUpdateRequest,
 )
 from utils.id_gen import new_id
+
+
+# 管理员重置密码时写入的默认口令。
+DEFAULT_RESET_PASSWORD = "changeme"
 
 
 class UserService:
@@ -116,6 +120,9 @@ class UserService:
             u.is_active = data.is_active
         u.updated_by = self._user_id
         await self.users.update(u)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh 在 async
+        # 上下文里回填，避免 _to_out 同步读 updated_at 触发 MissingGreenlet。
+        await self.users.session.refresh(u)
         return await self._to_out(u)
 
     async def soft_delete_user(self, user_id: int) -> UserOut:
@@ -128,7 +135,63 @@ class UserService:
             )
         u.updated_by = self._user_id
         await self.users.soft_delete(u)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh 在 async
+        # 上下文里回填，避免 _to_out 同步读 updated_at 触发 MissingGreenlet。
+        await self.users.session.refresh(u)
         return await self._to_out(u, include_deleted=True)
+
+    # ============================================================
+    # 密码
+    # ============================================================
+    async def change_own_password(
+        self, *, user_id: int, old_password: str, new_password: str
+    ) -> None:
+        """用户修改自己的密码：校验旧密码，写新哈希，并轮转 refresh token
+        （让其他设备的旧 refresh token 立即失效）。
+
+        密码哈希与 refresh_token_version 在同一次 UPDATE 内写完（单 flush），
+        避免「先 update 再 increment」两阶段写触发 onupdate=updated_at 过期后
+        的 lazy load → MissingGreenlet（见 CLAUDE.md item 13/15）。
+        """
+        u = await self.users.get_by_id(user_id)
+        if u is None or u.deleted_at is not None or not u.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not verify_password(old_password, u.password_hash):
+            raise BizError(
+                code=ErrCode.BIZ_AUTH_OLD_PASSWORD_MISMATCH,
+                message="旧密码不正确",
+                http_status=http_status.HTTP_401_UNAUTHORIZED,
+            )
+        u.password_hash = hash_password(new_password)
+        u.updated_by = self._user_id
+        u.refresh_token_version = int(u.refresh_token_version) + 1  # 轮转，让旧 refresh 失效
+        await self.users.update(u)
+
+    async def admin_reset_password(self, user_id: int) -> UserOut:
+        """管理员把指定账号密码重置为默认口令 changeme，并轮转 refresh token。
+
+        密码哈希与 refresh_token_version 在同一次 UPDATE 内写完（单 flush），
+        避免两阶段写触发 MissingGreenlet（见 CLAUDE.md item 13/15）。
+        """
+        u = await self.users.get_by_id(user_id)
+        if u is None:
+            raise BizError(
+                code=ErrCode.BIZ_USER_ACCOUNT_NOT_FOUND,
+                message=f"user {user_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        u.password_hash = hash_password(DEFAULT_RESET_PASSWORD)
+        u.updated_by = self._user_id
+        u.refresh_token_version = int(u.refresh_token_version) + 1  # 轮转，让旧 refresh 失效
+        await self.users.update(u)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh 在 async
+        # 上下文里回填，避免 _to_out 同步读 updated_at 触发 MissingGreenlet。
+        await self.users.session.refresh(u)
+        return await self._to_out(u)
 
     # ============================================================
     # 角色管理

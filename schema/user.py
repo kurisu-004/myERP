@@ -72,6 +72,12 @@ class UserUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
+class ChangePasswordRequest(BaseModel):
+    """POST /auth/change-password 请求体：修改自己的密码。"""
+    old_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
 class UserListQuery(BaseModel):
     username_like: str | None = None
     is_active: bool | None = None

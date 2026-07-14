@@ -37,6 +37,23 @@ export async function logout(): Promise<void> {
   }
 }
 
+export interface ChangePasswordPayload {
+  old_password: string
+  new_password: string
+}
+
+/**
+ * 修改自己的密码：校验旧密码后写新密码。
+ *
+ * 成功后后端会轮转 refresh token（其他设备旧 refresh 立即失效），
+ * 调用方应清 session 并跳登录页。
+ *
+ * 失败抛 ApiError：code === 40104 (BIZ_AUTH_OLD_PASSWORD_MISMATCH) → 旧密码错误。
+ */
+export async function changeMyPassword(payload: ChangePasswordPayload): Promise<void> {
+  await api.post('/auth/change-password', payload)
+}
+
 /**
  * 用 refresh token 换新一对 token。
  *

@@ -20,10 +20,13 @@
           <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button link size="small" @click="openRoles(row)">角色</el-button>
           <el-button link size="small" @click="editUser(row)">编辑</el-button>
+          <el-popconfirm title="确认重置为默认密码 changeme？" width="240" @confirm="doReset(String(row.id))">
+            <template #reference><el-button link size="small" type="warning">重置密码</el-button></template>
+          </el-popconfirm>
           <el-popconfirm v-if="row.is_active" title="确认停用？" @confirm="doDeactivate(String(row.id))">
             <template #reference><el-button link size="small" type="danger">停用</el-button></template>
           </el-popconfirm>
@@ -101,7 +104,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listUsers, createUser, updateUser, deactivateUser, listUserRoles, addUserRole, removeUserRole } from '@/api/users'
+import { listUsers, createUser, updateUser, deactivateUser, resetUserPassword, listUserRoles, addUserRole, removeUserRole } from '@/api/users'
 import { listShelves } from '@/api/shelves'
 import type { UserOut, UserRoleOut } from '@/types/user'
 import type { Shelf } from '@/types/shelf'
@@ -176,6 +179,13 @@ async function saveUser() {
 }
 
 async function doDeactivate(id: string) { await deactivateUser(id); await fetchData(); ElMessage.success('已停用') }
+
+async function doReset(id: string) {
+  try {
+    await resetUserPassword(id)
+    ElMessage.success('已重置为默认密码 changeme')
+  } catch (e: any) { ElMessage.error(e?.message || '重置失败') }
+}
 
 async function openRoles(obj: any) { const u = obj as UserOut;
   roleUser.value = u

@@ -76,6 +76,18 @@ async def update_user(
 
 
 @router.post(
+    "/{user_id}/reset-password",
+    response_model=UserOut,
+    summary="管理员重置账号密码为默认口令 changeme（并轮转 refresh token）",
+)
+async def reset_user_password(
+    user_id: int,
+    svc: UserService = Depends(get_user_service),
+) -> UserOut:
+    return await svc.admin_reset_password(user_id)
+
+
+@router.post(
     "/{user_id}/deactivate",
     response_model=UserOut,
     summary="停用账号（软删）",
