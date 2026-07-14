@@ -69,6 +69,19 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-14：待编程一览（status=PROGRAMMING），CNC 编程员专属页。
+        // 侧栏作为顶级菜单渲染（t_menu.parent_id IS NULL）；权限通过 menuCode 守卫。
+        path: 'cnc/pending',
+        name: 'PendingProgramming',
+        component: () => import('@/views/cnc/PendingProgrammingList.vue'),
+        meta: {
+          title: '待编程一览',
+          icon: 'Cpu',
+          menuCode: 'pending_programming',
+          breadcrumb: [{ label: '待编程一览' }],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
