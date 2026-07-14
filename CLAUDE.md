@@ -12,7 +12,7 @@ myERP —— 零件加工订单管理系统。覆盖法拉电子、路达两家�
 - 包管理：uv（依赖在 `pyproject.toml` / `uv.lock`）
 - 文件存储：腾讯云 COS（`core/cos.py`，后端上传模式）
 - ID 方案：`utils/id_gen.py` 生成的雪花 ID；`t_customer` 用自增
-- CI/CD：GitHub Actions → GHCR → SSH 部署（`.github/workflows/deploy.yml`）
+- CI/CD：本地 `./scripts/push-images.sh` → 腾讯云 TCR（`ccr.ccs.tencentyun.com/hsh-erp`） → CVM（`scripts/deploy.sh` 走 `docker compose pull && up -d`）。已无 GHCR / GitHub Actions。
 
 ## 架构总览
 
@@ -793,11 +793,13 @@ myERP/
 
 | 方法 | 路径 | Handler | 权限 | 说明 |
 |------|------|---------|------|------|
-| POST | /parts/{id}/files | upload_part_file | M,C | 为零件上传附件 |
-| GET | /parts/{id}/files | list_part_files | M,C,CNC | 列出零件文件 |
-| GET | /drawings/{id}/download-url | get_download_url | M,C,CNC | 签发临时下载 URL |
-| GET | /drawings/{id}/content | get_file_content | M,C,CNC | 后端代理预览/下载 |
-| POST | /drawings/{id}/delete | delete_file | M,C,CNC | 软删+COS 异步清理 |
+| POST | /parts/{id}/drawings | upload_part_drawing | M,C | 上传图纸（PDF + 9 种图片，2026-07-14 扩）|
+| POST | /parts/{id}/3d-models | upload_part_3d_model | M,C | 上传 3D 模型（STEP/STP/IGES/IGS/STL/OBJ/3MF）|
+| POST | /parts/{id}/cad-files | upload_part_cad_file | M,C | 上传 CAD 源文件（DWG/DXF，2026-07-14 新增）|
+| GET | /parts/{id}/files | list_part_files | M,C,CNC | 列出文件（kind 可选过滤）|
+| GET | /files/{id}/download-url | get_download_url | M,C,CNC | 签发临时下载 URL |
+| GET | /files/{id}/content | get_file_content | M,C,CNC | 后端代理预览/下载 |
+| POST | /files/{id}/delete | delete_file | 按 file.kind 自动派 | 软删+COS 异步清理 |
 
 ### CNC 程序 endpoint（api/v1/cnc_program.py）— 2 个 router
 
@@ -940,8 +942,9 @@ myERP/
 
 | ORM | 表名 | 关键列 |
 |-----|------|--------|
-| **TDrawingFile** | t_drawing_file | part_id(XOR assembly_id), assembly_id(XOR part_id), file_type, object_key(COS key), original_filename, file_size, content_type, page_index, upload_status(READY) |
-| **TCncProgram** | t_cnc_program | part_id, file_type, object_key, original_filename, file_size, content_type, upload_status |
+| **TPartFile** | t_part_file | polymorphic `part_id`(=t_part.id 或 t_assembly.id)；kind(DRAWING/3D_MODEL/G_CODE/SETUP_SHEET/ASSEMBLY_MASTER/CAD_2D)；file_type, object_key(COS CAS key), original_filename, file_size, content_type, content_sha256(CHAR(64) NULL, 2026-07-14), upload_status(READY) |
+| ~~TDrawingFile~~ | ~~t_drawing_file~~ | 2026-07-10 起合并到 t_part_file；旧表保留但无 writer |
+| ~~TCncProgram~~ | ~~t_cnc_program~~ | 同上 |
 | **TWorkTypeProcess** | t_work_type_process | work_type_id, process_id, sort_order |
 | **TUserRole** | t_user_role | user_id, role(MANAGER/SHELF_ACCOUNT/CLERK/INSPECTOR/CNC_PROGRAMMER), scope_type, scope_id |
 | **TSerialCounter** | t_serial_counter | prefix: str(1) PK, counter: int |
@@ -1219,4 +1222,144 @@ uv run alembic upgrade head      # 2 步：建 schema → 灌必要数据
 
     **端到端**：`uv run pytest tests/unit/` → **358 passed**；`cd frontend && npm run build` 通过。
     **alembic 拓扑**：`schema/001 + schema/003 + prod_data/002` 三文件，多 head；`alembic heads` 返 003 + 002。
+
+18. **2026-07-14 COS 命名 + 内容去重 + 文件格式扩展（PDF + 9 种图片 + 3D 6 种 + CAD 2D）**：
+
+    **A. COS 命名（CAS + 文件名内嵌，便于 DB 丢失时人工恢复）**
+    - 新模板：`{prefix}{owner_kind}/{owner_id}/{KIND}/{sha16}_{safe_filename}`，例如
+      `drawings/part/199852260920918016/DRAWING/3a7f4b2c9e1d8f06_pulley_bracket_v2.pdf`
+      `drawings/assembly/199852260920918017/ASSEMBLY_MASTER/2d8e1c4f9a3b7056_master_v1.pdf`
+      - `sha16` = SHA-256 前 16 个 hex 字符（64 位，用于人眼识别；DB 存完整 64 字符做精确去重）
+      - `safe_filename` = ASCII 折叠（中文 / 特殊字符 → `_`）+ 保留扩展名
+      - DB `original_filename` 仍保留完整 UTF-8 给 UI 显示
+    - 新增 `core/file_hash.py`：`compute_sha256_hex(data)` / `safe_filename(name, max_len=80)` /
+      `make_object_key(owner_id, owner_kind, kind, content_sha256, original_filename, ext)`
+    - 历史 `object_key`（`drawings/part/{pid}/{file_id}.{ext}`）继续可用 —— service 直读
+      DB `object_key` 直传 COS SDK，不解析格式。**项目未上线，无需做兼容代码**。
+
+    **B. 内容去重（SHA-256）**
+    - `t_part_file` 加 `content_sha256 CHAR(64) NULL` 列 + 部分唯一索引
+      `uk_t_part_file_part_kind_sha`（`WHERE deleted_at IS NULL AND content_sha256 IS NOT NULL`）。
+    - 上传流程：`hash → 查 (part_id, kind, sha) 活跃行 → 命中则复用（单文件 kind 改
+      original_filename/updated_*/updated_by，跳过 COS PUT；G_CODE 多版本 no-op）→ 未命中走
+      COS PUT + insert`。
+    - **跨 part 不共享**：唯一索引在 `(part_id, kind, content_sha256)` 上；跨 part 同字节
+      上传 → service 捕获 `IntegrityError` → 转 `BIZ_PART_FILE_DUPLICATE 409`。
+    - 新增错误码 `BIZ_PART_FILE_DUPLICATE = 21108`。
+    - 新增 `repository/part_file.py::find_active_by_part_kind_sha(...)`。
+
+    **C. 文件格式扩展（与 §11 PartFileKind 表对应）**
+    - **DRAWING** 加 9 种图片格式：PNG / JPG / JPEG / GIF / BMP / TIF / TIFF / WEBP / HEIC。
+      **图片与 PDF 同槽**（用户确认：「一个零件可能用不同形式的文件，但同一种类型应该唯一」），
+      单文件覆盖语义。**图片打印背面也要打序列号**（沿用 `service/printing.py` 双面 PDF）。
+    - **THREE_D_MODEL** 加 5 种：IGES / IGS / STL / OBJ / 3MF（保留 STEP / STP）。
+    - **新增 kind `CAD_2D`**：DWG / DXF 源文件单文件 kind，与 DRAWING PDF 图纸生命周期分离。
+      WRITE roles：MANAGER + CLERK。
+    - `core/_file_kind_policy.py::ALLOWED_EXTS_BY_KIND` 集中维护扩展名白名单；
+      `core/config.py::cos_allowed_types` 失效（保留字段向下兼容）。
+    - `service/part_file.py::_EXT_TO_CONTENT_TYPE` 同步扩所有新扩展名（MIME）。
+
+    **D. 打印服务（service/printing.py）扩图片格式支持**
+    - `_detect_image_orientation` 对 PNG/JPG/GIF/BMP/TIFF/WEBP 全部由 pillow 原生支持；
+      HEIC 走 `pillow_heif.register_heif_opener()` 运行时 try，缺失则降级到信息卡占位。
+    - 信息卡占位提示文案更新为「PDF / PNG / JPG / GIF / BMP / TIFF / WEBP / HEIC 任一格式」。
+    - `tests/unit/test_printing_service.py` 新增：每种图片格式 → 双面 PDF；PDF 走原路径；无图纸
+      走信息卡；竖图保持 portrait 朝向。
+
+    **E. 前端**
+    - `frontend/src/types/part_file.ts::PartFileKind` union 加 `CAD_2D`；
+      `PartFileItem` 加 `content_sha256: string | null`。
+    - `frontend/src/api/assembly.ts` 加 `uploadPartCadFile(partId, file)`；
+      `listPartFiles` kind union 同步。
+    - `frontend/src/components/FileListCard.vue`：
+      - `ACCEPT_BY_KIND` 扩 DRAWING（加 9 种图片）+ 3D_MODEL（加 5 种）+ CAD_2D；
+      - `TITLE_BY_KIND` / `EMPTY_TEXT_BY_KIND` / `UPLOAD_LABEL_BY_KIND` 加 CAD_2D；
+      - 新增 `isImage(t)` / `isHeic(t)` helpers + `IMAGE_TYPES` 集合；
+      - 预览弹窗加图片分支：HEIC 走下载，其它图片走 `<el-image :preview-src-list>`；
+      - 颜色：图片用绿色 `#67c23a`；3D 模型 / STEP/IGES 用蓝色 `#3a7bd5`；DWG/DXF 用橙色 `#ff9800`。
+    - `frontend/src/views/parts/PartDetail.vue`：
+      - 修 `.txt` bug（line 282 移除；后端拒收）；
+      - 加 CAD_2D `FileListCard` 实例；
+      - 新增 `cadFiles` ref + `fetchCadFiles()` + `uploadPartCadFile` 绑定。
+
+    **F. 端点**
+    - `api/v1/drawing.py` 加 `POST /parts/{part_id}/cad-files`（kind=CAD_2D，
+      MANAGER + CLERK）。DRAWING 端点本身扩白名单接受 9 种图片格式即可，
+      不再单建 IMAGE 端点。
+
+    **G. 数据库迁移**
+    - `alembic/versions/schema/000000000004_part_file_sha_and_kinds.py`：
+      DDL 加 `content_sha256 CHAR(64) NULL` + 改 ck constraint（+CAD_2D）+ 新增
+      `uk_t_part_file_part_kind_sha` + 重做 `uk_t_part_file_single`（+CAD_2D）。
+      `down_revision = "000000000001"`（schema 层 head）。
+
+    **端到端**：`uv run pytest tests/unit/` → **426 passed**（baseline 358 + 新 68 用例）；
+    `cd frontend && npm run build` 通过。
+    **alembic 拓扑**：`schema/001 + schema/004 + schema/003 + prod_data/002` 四文件，
+    多 head（004 新分支 001 + 003）；`alembic heads` 返 004 + 003 + 002。
+
+19. **2026-07-14 菜单权限重整 + 待编程一览页面**：
+
+    **角色菜单改动**
+    - **CLERK（文员）**：从「首页 + 订单管理组（5 子项）+ 待品检 + 生成送货单」扩到「首页 + 订单管理组 + 客户管理组（3 个）= 11 个 code」。此前 backend customer/applicant API 早已允许 CLERK，仅前端侧栏入口缺失。
+    - **CNC_PROGRAMMER（编程员）**：从「首页 + 零件一览 + 车间」缩到「首页 + 待编程一览 = 2 个 code」（**严格**移除 parts_list / floor_group / shelves_list；scan_badge 在 003 已删）。
+    - **MANAGER / INSPECTOR / SHELF_ACCOUNT**：未变（MANAGER 21 个 = 全部菜单）。
+
+    **种子改动**
+    - `alembic/versions/prod_data/000000000002_data_init.py` 同步更新 `_CLERK_MENUS` / `_CNC_PROGRAMMER_MENUS` 常量（让全新冷启库开箱即用）。
+    - **新建 `alembic/versions/prod_data/000000000005_role_menu_refine.py`**：
+      * `revision = "000000000005"`，`down_revision = "000000000003"`。
+      * 注意：原计划用 004，与既有的 `schema/000000000004_part_file_sha_and_kinds.py` 撞号 → 改 005。
+      * upgrade()：CLERK 增 3 个客户管理 code（INSERT … ON CONFLICT DO NOTHING，按 code 反查 menu_id）+ CNC_PROGRAMMER 真删 3 个越权 code（DELETE FROM t_role_menu WHERE role='CNC_PROGRAMMER' AND menu_id IN :mids — 用 `IN` + `bindparam(..., expanding=True)` 模板，不是 `ANY(:mids)`）+ CNC 新增 pending_programming。
+      * downgrade()：反向 CLERK 删 3 行 + CNC 删 1 行 + CNC 还原 3 行。
+      * `_load_menu_ids(bind, codes)` helper：批量 SELECT id, code FROM t_menu WHERE code IN :codes AND deleted_at IS NULL。
+
+    **前端改动**
+    - `frontend/src/router/index.ts` 加 `/cnc/pending` 路由（`name: 'PendingProgramming'`，`menuCode: 'pending_programming'`，`icon: 'Cpu'`，`breadcrumb: [{ label: '待编程一览' }]`）。挂 MainLayout children 内。
+    - **新建 `frontend/src/views/cnc/PendingProgrammingList.vue`**（首次引入 `cnc/` 目录；仿 `inspection/InspectionPending.vue` 范式）：
+      * 顶部 filter-card：图号/名称 keyword + 手动刷新 + 自动刷新（10s，可选）+ 共 N 条。
+      * el-table 列：serial_no / drawing_no / name（router-link 到详情）/ quantity / planned_delivery_date / customer_path / 操作。
+      * 行操作三件套：详情（跳 `/parts/{id}`）/ 下发（弹 dialog）/ 文件（弹 drawer）。
+      * 「下发到生产」el-dialog 同时选 PRODUCTION 货架（`listShelves({ zone: 'PRODUCTION', is_active: true })`）+ 下一道工序（`listProcesses({ limit: 200 })`）→ `releaseFromProgramming(partId, shelfId, processId)`。ElMessageBox.confirm 二次确认；后端 400 时 catch 显示。
+      * 「文件」el-drawer（size 520px）并发拉 5 类文件（`listPartFiles(partId, kind)`：`DRAWING / 3D_MODEL / CAD_2D / G_CODE / SETUP_SHEET`），按 kind 分组渲染，每行一个「下载」按钮直接 `window.open(file.download_url)`（后端在 list 响应里同步签发 900s 临时 URL）。
+      * 加急行整行红底 `#fde2e2`（与 PartsList / InspectionPending 同款 `:deep(.row-urgent)`）。
+      * 复用：`listPendingProgramming` / `releaseFromProgramming` / `listPartFiles`（注：在 `@/api/assembly` 不在 `@/api/parts`）/ `listShelves` / `listProcesses` / `PartListItem` / `PartFileItem` / `Shelf` / `Process`。
+      * 用到的 Element Plus 组件（**v2.14.2，与文档基准 2.14.1 一致**）：el-card / el-input / el-button / el-checkbox / el-tag / el-table / el-pagination / el-form / el-form-item / el-radio-group / el-radio / el-dialog / el-drawer / el-icon / el-empty / ElMessage / ElMessageBox。
+
+    **端到端验证**
+    - 冷启库（全新走 002 种子）：`uv run alembic upgrade 000000000002` → 已包含新映射。
+    - 回填（已有 003 stamped 库）：`uv run alembic upgrade 000000000005` → 4 个新 INSERT + 3 个真删 CNC 越权，幂等。
+    - **降级 + 重新升级 round-trip 已测**：downgrade 003 → upgrade 005 后，CLERK=11 / CNC=2（仅 home + pending_programming）/ MANAGER=21 / INSPECTOR=1 / SHELF_ACCOUNT=1，结果与首次一致。
+    - `uv run pytest tests/unit` → **426 passed**（无新增测试；纯菜单/路由改动）。
+    - `cd frontend && npm run build` → ✓ built in 5.45s（TS 0 错；仅 `@vueuse/core` 的 `/* #__PURE__ */` annotation 警告，与本改动无关）。
+    - **手动验证（部署后）**：登录陈燕 / 翁美月（CLERK）→ 侧栏出现首页 / 订单管理（含 6 子项）/ 客户管理（含 2 子项），**无「权限管理」「设置」「车间」「待编程一览」**；登录童敏华（CNC）→ 侧栏**仅** 首页 + 待编程一览；CNC 进 `/cnc/pending` → 列表 / 详情 / 下发 / 文件 4 个动作全部可用。
+
+    **注意事项**
+    - alembic 单 head：2026-07-14 重新 squash 后 `alembic heads` 只返 `000000000002`；Dockerfile 的 `alembic upgrade head` 单数命令可直接跑。已不存在多 head 部署问题。
+    - 缓存陈旧：用户改完菜单后未重新登录前，侧栏仍是旧菜单；接口调用权限本就 OK（backend 早已允许），重新登录即同步。
+    - `listPartFiles` 的 import path：`@/api/assembly`（不是 `@/api/parts`，与 `uploadPartDrawing` / `uploadPart3DModel` / `uploadPartCadFile` 同模块）。
+
+---
+
+20. **2026-07-14 累计 push 整合（squash 后的落地）**：
+
+    把 §18 的 part_file SHA/CAD_2D/格式扩展 + §19 的菜单重整 + 这一轮的
+    其他零散改动（应标 Excel 导入、扫码台卡片化、vitest 接入）按 10 个
+    atomic commit 推到 master：
+
+    1. `chore(alembic): 重新 squash 迁移为 schema_init + data_init 两文件`
+       — 把 003/004/005 全部合回 001/002，删 3 个独立文件；回到 CLAUDE.md §15 的两文件结构。
+    2. `feat(backend): part file SHA-256 dedup + CAS object_key + CAD_2D + 图片格式扩展`
+    3. `feat(backend): bulk-get-or-create 申请人（应标 Excel 导入后端）`
+    4. `test(backend): part_file dedup + CAD_2D + 打印图 + file_hash + applicant bulk`
+    5. `chore(frontend): vitest 配置 + 包优化 + ElImage 全局类型`
+    6. `feat(frontend): FileListCard 扩图片预览 + CAD_2D kind + 详情页集成`
+    7. `feat(cnc): 待编程一览页 + 路由 /cnc/pending（CNC 编程员专属）`
+    8. `feat(parts): 应标 Excel 批量导入零件（bid 解析 + bulk applicant + 上传页）`
+    9. `refactor(scan): 扫码台卡片布局统一 + 图纸/图片全屏预览弹窗`
+    10. `docs: CLAUDE.md 同步 7-14 改动 + 部署路径修正`（本 commit）
+
+    + 已知遗留 bug（不动）：`service/applicant.py::get_or_create` 在
+    `IntegrityError` 后没用 `SAVEPOINT` / `begin_nested()`，并发 race 会
+    `PendingRollbackError`。记入 follow-up，不在本 push 范围。
 
