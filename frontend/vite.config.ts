@@ -22,6 +22,19 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
     },
   },
+  // 显式 include 重依赖：避免 vite 进入 dep discover 模式 → 浏览器点新页面时不再触发
+  // "[optimizer] bundling dependencies..." + full-reload。
+  optimizeDeps: {
+    include: [
+      'vue',
+      'vue-router',
+      'pinia',
+      'axios',
+      'element-plus',
+      '@element-plus/icons-vue',
+      'xlsx',
+    ],
+  },
   css: {
     preprocessorOptions: {
       scss: { api: 'modern-compiler' },
