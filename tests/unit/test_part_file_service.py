@@ -37,6 +37,7 @@ def make_part_file(**kwargs):
         file_size=1024,
         content_type="application/pdf",
         upload_status="READY",
+        content_sha256=None,  # 2026-07-14：默认 None（未计算 / 历史记录）
         created_at=datetime(2026, 7, 10, 10, 0, 0),
         updated_at=datetime(2026, 7, 10, 10, 0, 0),
     )
@@ -55,6 +56,8 @@ def mock_files():
     m.list_by_part = AsyncMock(return_value=[])
     m.soft_delete_by_part_and_kind = AsyncMock(return_value=[])
     m.soft_delete = AsyncMock()
+    # 2026-07-14 去重检查：默认返回 None（无 dedup 命中），单测要触发命中时显式覆盖
+    m.find_active_by_part_kind_sha = AsyncMock(return_value=None)
     # 模拟 flush 后 server_default 字段被填回
     async def _simulate_flush(row):
         from datetime import datetime
@@ -70,11 +73,18 @@ def mock_files():
 @pytest.fixture
 def svc(mock_files):
     s = PartFileService(files=mock_files)
-    # 屏蔽真实的 cos.upload_object 调用
+    # 屏蔽真实的 cos.upload_object / presigned_get_url 调用
     from unittest.mock import patch
     import service.part_file
-    patcher = patch.object(service.part_file.cos_mod, "upload_object", new=AsyncMock())
-    patcher.start()
+    upload_patcher = patch.object(
+        service.part_file.cos_mod, "upload_object", new=AsyncMock()
+    )
+    presign_patcher = patch.object(
+        service.part_file.cos_mod, "presigned_get_url",
+        new=AsyncMock(return_value="https://test.example/x"),
+    )
+    upload_patcher.start()
+    presign_patcher.start()
     return s
 
 
@@ -271,3 +281,147 @@ class TestListForPart:
         mock_files.list_by_part.assert_awaited_once_with(1001, kind="G_CODE")
         assert len(out) == 1
         assert out[0].kind == "G_CODE"
+
+
+# ============================================================
+# 2026-07-14 新增：内容去重（SHA-256）
+# ============================================================
+
+
+class TestUploadDedup:
+    """同 (part_id, kind, content_sha256) 已存在时复用现有行，不重传 COS。"""
+
+    async def test_same_content_dedup_hit_no_new_row(self, svc, mock_files):
+        """单文件 kind：命中时复用现有行，只更新 original_filename/updated_by。"""
+        existing = make_part_file(
+            id=9001,
+            part_id=1001,
+            kind="DRAWING",
+            original_filename="old.pdf",
+            content_sha256="a" * 64,
+        )
+        mock_files.find_active_by_part_kind_sha = AsyncMock(return_value=existing)
+
+        # 上传同字节 + 新文件名
+        out = await svc.upload(
+            owner_id=1001, kind=PartFileKind.DRAWING, data=b"hello",
+            original_filename="new.pdf", content_type=None,
+        )
+        # DB 行未新建
+        assert mock_files.create.await_count == 0
+        # 单文件 kind 命中：仅更新 filename，不调 soft_delete
+        assert mock_files.soft_delete_by_part_and_kind.await_count == 0
+        # 文件名已更新
+        assert existing.original_filename == "new.pdf"
+        # id 是 int（Pydantic 序列化时转 str，但 Python 内部仍是 int）
+        assert out.id == 9001
+
+    async def test_same_content_g_code_noop(self, svc, mock_files):
+        """G_CODE 多版本：同内容再传 no-op，不动任何字段。"""
+        existing = make_part_file(
+            id=9001,
+            part_id=1001,
+            kind="G_CODE",
+            original_filename="prog.nc",
+            content_sha256="b" * 64,
+        )
+        mock_files.find_active_by_part_kind_sha = AsyncMock(return_value=existing)
+
+        out = await svc.upload(
+            owner_id=1001, kind=PartFileKind.G_CODE, data=b"hello",
+            original_filename="prog_renamed.nc", content_type=None,
+        )
+        # DB 行未新建
+        assert mock_files.create.await_count == 0
+        # G_CODE 命中：文件名保持原值（no-op）
+        assert existing.original_filename == "prog.nc"
+        assert out.id == 9001
+
+    async def test_different_content_creates_new_row(self, svc, mock_files):
+        """不同字节 → 新建行（CAS key 派生 sha16）。"""
+        mock_files.find_active_by_part_kind_sha = AsyncMock(return_value=None)
+        await svc.upload(
+            owner_id=1001, kind=PartFileKind.DRAWING, data=b"hello",
+            original_filename="foo.pdf", content_type=None,
+        )
+        assert mock_files.create.await_count == 1
+        created = mock_files.create.await_args[0][0]
+        # sha 写入
+        assert created.content_sha256 is not None
+        assert len(created.content_sha256) == 64
+        # COS key 用新模板（含 sha16 + safe_filename）
+        assert created.object_key.startswith(
+            f"drawings/part/1001/DRAWING/"
+        )
+        assert created.original_filename == "foo.pdf"
+
+    async def test_dedup_skips_cos_put(self, svc, mock_files):
+        """命中时完全跳过 cos.upload_object。"""
+        existing = make_part_file(
+            id=9001, part_id=1001, kind="DRAWING", content_sha256="c" * 64,
+        )
+        mock_files.find_active_by_part_kind_sha = AsyncMock(return_value=existing)
+        with patch("service.part_file.cos_mod.upload_object",
+                    new=AsyncMock()) as upload_mock:
+            await svc.upload(
+                owner_id=1001, kind=PartFileKind.DRAWING, data=b"hello",
+                original_filename="x.pdf", content_type=None,
+            )
+        assert upload_mock.await_count == 0
+
+    async def test_dedup_uses_cas_key_with_sha16(self, svc, mock_files):
+        """CAS key 模板包含 sha16 前缀 + safe_filename。"""
+        mock_files.find_active_by_part_kind_sha = AsyncMock(return_value=None)
+        await svc.upload(
+            owner_id=1001, kind=PartFileKind.DRAWING, data=b"hello world",
+            original_filename="foo bar.pdf", content_type=None,
+        )
+        created = mock_files.create.await_args[0][0]
+        # sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+        sha16 = "b94d27b9934d3e08"
+        assert sha16 in created.object_key
+        # 中文 / 特殊字符折叠成 _
+        assert "foo_bar.pdf" in created.object_key
+
+
+class TestUploadNewKindsAndFormats:
+    """2026-07-14 扩展：CAD_2D kind + DRAWING 加图片格式 + 3D_MODEL 扩 IGES/STL/OBJ/3MF。"""
+
+    @pytest.mark.parametrize("kind,filename", [
+        (PartFileKind.DRAWING, "photo.png"),
+        (PartFileKind.DRAWING, "scan.jpg"),
+        (PartFileKind.DRAWING, "blueprint.tiff"),
+        (PartFileKind.DRAWING, "iphone.heic"),
+        (PartFileKind.THREE_D_MODEL, "model.iges"),
+        (PartFileKind.THREE_D_MODEL, "model.igs"),
+        (PartFileKind.THREE_D_MODEL, "mesh.stl"),
+        (PartFileKind.THREE_D_MODEL, "wave.obj"),
+        (PartFileKind.THREE_D_MODEL, "print.3mf"),
+        (PartFileKind.CAD_2D, "source.dwg"),
+        (PartFileKind.CAD_2D, "source.dxf"),
+    ])
+    async def test_new_ext_round_trips(
+        self, svc, mock_files, kind, filename,
+    ):
+        await svc.upload(
+            owner_id=1001, kind=kind, data=b"x",
+            original_filename=filename, content_type=None,
+        )
+        assert mock_files.create.await_count == 1
+        created = mock_files.create.await_args[0][0]
+        # 扩展名转大写（file_type 字段约定）
+        ext = filename.rsplit(".", 1)[-1].upper()
+        assert created.file_type == ext
+
+    async def test_drawing_png_replaces_pdf(self, svc, mock_files):
+        """DRAWING 单文件 kind：上传新格式自动 soft_delete 旧行（覆盖语义）。"""
+        await svc.upload(
+            owner_id=1001, kind=PartFileKind.DRAWING, data=b"x",
+            original_filename="x.png", content_type=None,
+        )
+        # 单文件 kind：先 soft_delete 旧 (1001, DRAWING)，再 create
+        assert mock_files.soft_delete_by_part_and_kind.await_count == 1
+        assert mock_files.create.await_count == 1
+        # key 路径含 /DRAWING/（图片和 PDF 同 kind）
+        created = mock_files.create.await_args[0][0]
+        assert "/DRAWING/" in created.object_key
