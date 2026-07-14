@@ -8,7 +8,10 @@ Create Date: 2026-07-10
 - 本文件是 myERP 的**唯一 schema 迁移**，把历史上分散的所有 DDL 迁移
   （init_schema / cnc_program / applicant / shelf_process / assembly_serial_no /
   customer_serial_prefix / unify_part_files / shelf_display_order /
-  user_refresh_token_version）合并为一份「最终 schema」。
+  user_refresh_token_version / part_event_operator / part_file_sha_and_kinds）
+  合并为一份「最终 schema」。
+- 2026-07-14 重新 squash：把 14b0e5f 之后的 003 (event_operator) + 004
+  (file_sha+kinds) 合并进来；data_init (002) 已含新菜单映射。
 - **fresh-install only**：假定数据库为空。
 - **不使用物理外键**（CLAUDE.md §1）：所有跨表引用都是普通列 + 普通索引。
 - **不使用 DB ENUM**：status 等一律 varchar，合法性由 Python Enum 在 service 层校验。
@@ -497,7 +500,8 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 10) t_part_file：统一文件表（polymorphic kind）
+    # 10) t_part_file：统一文件表（polymorphic kind；2026-07-14 加 content_sha256
+    #     + kind CAD_2D）
     # =================================================================
     op.create_table(
         "t_part_file",
@@ -508,7 +512,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "kind", sa.String(length=20), nullable=False,
-            comment="DRAWING / 3D_MODEL / G_CODE / SETUP_SHEET / ASSEMBLY_MASTER",
+            comment="DRAWING / 3D_MODEL / G_CODE / SETUP_SHEET / ASSEMBLY_MASTER / CAD_2D",
         ),
         sa.Column(
             "file_type", sa.String(length=20), nullable=False,
@@ -526,6 +530,11 @@ def upgrade() -> None:
             server_default="READY",
             comment="PENDING / READY / FAILED",
         ),
+        # 2026-07-14：内容去重（同一 part_id + kind + sha 仅 1 行活跃）
+        sa.Column(
+            "content_sha256", sa.CHAR(length=64), nullable=True,
+            comment="SHA-256 hex of file bytes（去重用）；NULL = 未计算 / 历史记录",
+        ),
         # AuditMixin
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -539,7 +548,8 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.BigInteger(), nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.CheckConstraint(
-            "kind IN ('DRAWING','3D_MODEL','G_CODE','SETUP_SHEET','ASSEMBLY_MASTER')",
+            "kind IN ('DRAWING','3D_MODEL','G_CODE','SETUP_SHEET',"
+            "'ASSEMBLY_MASTER','CAD_2D')",
             name="ck_t_part_file_kind",
         ),
     )
@@ -555,7 +565,19 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text(
             "deleted_at IS NULL AND "
-            "kind IN ('DRAWING','3D_MODEL','SETUP_SHEET','ASSEMBLY_MASTER')"
+            "kind IN ('DRAWING','3D_MODEL','SETUP_SHEET',"
+            "'ASSEMBLY_MASTER','CAD_2D')"
+        ),
+    )
+    # 2026-07-14：内容去重部分唯一索引
+    #   (part_id, kind, content_sha256) WHERE deleted_at IS NULL AND sha NOT NULL
+    op.create_index(
+        "uk_t_part_file_part_kind_sha",
+        "t_part_file",
+        ["part_id", "kind", "content_sha256"],
+        unique=True,
+        postgresql_where=sa.text(
+            "deleted_at IS NULL AND content_sha256 IS NOT NULL"
         ),
     )
 

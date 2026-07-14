@@ -133,10 +133,17 @@ _MANAGER_MENUS: list[str] = [
 _CLERK_MENUS: list[str] = [
     "home", "order_group", "parts_list", "parts_new",
     "assemblies_list", "assemblies_new",
+    # 2026-07-14：补客户管理组入口（backend customer/applicant API 早已允许 CLERK，
+    # 此前仅前端侧栏入口缺失）。inspection_pending / delivery_notes_new 仍由
+    # 各 seed 函数单独授予，无需在此列出。
+    "customer_management", "customers_list", "applicants_list",
 ]
 
 _CNC_PROGRAMMER_MENUS: list[str] = [
-    "home", "parts_list", "floor_group",
+    # 2026-07-14：缩到首页 + 待编程一览（严格）。
+    # 移除 floor_group（含 shelves_list 子项）与 parts_list（订单管理子项），
+    # 编程员只走 /cnc/pending 专属流程，不再暴露车间/扫码台/零件一览。
+    "home", "pending_programming",
 ]
 
 # SHELF_ACCOUNT（货架一体机账号）—— 2026-07-13 起扫码台菜单专属：
