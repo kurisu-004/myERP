@@ -32,10 +32,6 @@
           <el-icon><Refresh /></el-icon>
           <span>重新扫工牌</span>
         </el-button>
-        <el-button type="info" plain @click="goHome">
-          <el-icon><HomeFilled /></el-icon>
-          <span>返回首页</span>
-        </el-button>
       </div>
     </div>
 
@@ -128,7 +124,6 @@ import {
   Back,
   Box,
   Check,
-  HomeFilled,
   InfoFilled,
   Platform,
   Refresh,
@@ -213,10 +208,6 @@ function rescanBadge(): void {
   // 不再需要清客户端缓存：findWorkerByBadge 直接打后端，结果强一致。
   reset()
   void router.replace('/scan/badge')
-}
-
-function goHome(): void {
-  void router.push('/dashboard')
 }
 </script>
 

@@ -86,7 +86,7 @@
 
         <div class="parts-list">
           <el-card
-            v-for="(p, idx) in parts"
+            v-for="p in parts"
             :key="p.id"
             shadow="hover"
             class="part-row"
@@ -96,43 +96,56 @@
             }"
             @click="onSelect(p)"
           >
-            <div class="part-row-left">
-              <span class="part-index">{{ idx + 1 }}</span>
-              <div class="part-info">
-                <div class="part-line-1">
-                  <span class="serial-no">{{ p.serial_no || p.drawing_no }}</span>
-                  <el-tag
-                    v-if="p.is_urgent"
-                    type="danger"
-                    size="small"
-                    effect="dark"
-                    class="urgent-pulse"
-                  >加急</el-tag>
-                  <el-tag :type="deliveryUrgencyTag(p.planned_delivery_date)" size="small" effect="plain">
-                    {{ formatDate(p.planned_delivery_date) }}
-                  </el-tag>
-                  <span
-                    class="days-left"
-                    :class="deliveryUrgencyClass(p.planned_delivery_date)"
-                  >
-                    {{ daysLeftText(p.planned_delivery_date) }}
+            <div class="part-row-main">
+              <!-- 右上角预览按钮（@click.stop 阻止冒泡触发选中） -->
+              <el-button
+                text
+                size="small"
+                type="info"
+                class="preview-btn"
+                :loading="previewLoading && previewPart?.id === p.id"
+                @click.stop="onPreview(p)"
+              >
+                <el-icon><View /></el-icon>
+                <span>预览</span>
+              </el-button>
+
+              <!-- 1) 序列号 + 交期 高优行 -->
+              <div class="part-line-top">
+                <span class="serial-no">{{ p.serial_no || p.drawing_no }}</span>
+                <el-tag
+                  v-if="p.is_urgent"
+                  type="danger"
+                  size="small"
+                  effect="dark"
+                  class="urgent-pulse"
+                >加急</el-tag>
+                <span class="delivery-date" :class="deliveryUrgencyClass(p.planned_delivery_date)">
+                  <el-icon><Calendar /></el-icon>
+                  {{ formatDate(p.planned_delivery_date) }}
+                  <span v-if="daysLeftText(p.planned_delivery_date)" class="days-left">
+                    · {{ daysLeftText(p.planned_delivery_date) }}
                   </span>
-                </div>
-                <div class="part-line-2">
-                  <span class="part-name">{{ p.name }}</span>
-                  <span v-if="p.customer_path" class="customer">· {{ p.customer_path }}</span>
-                </div>
-                <div class="part-line-3">
-                  <span class="qty">× {{ p.quantity }}</span>
-                  <span class="drawing">· 图号 {{ p.drawing_no }}</span>
-                  <span v-if="p.next_process_name" class="next-process">
-                    · 当前下一工序：{{ p.next_process_name }}
-                  </span>
-                </div>
+                </span>
               </div>
-            </div>
-            <div class="part-row-right">
-              <el-button type="warning" plain size="small">选 中</el-button>
+
+              <!-- 2) 名称 + 客户 -->
+              <div class="part-line-name">
+                <span class="part-name">{{ p.name }}</span>
+                <span v-if="p.customer_path" class="customer">· {{ p.customer_path }}</span>
+              </div>
+
+              <!-- 3) 数量 + 货架码 + 下一工序 -->
+              <div class="part-line-bottom">
+                <span class="qty">× {{ p.quantity }}</span>
+                <span class="shelf-code-wrap">
+                  <el-icon><Box /></el-icon>
+                  <span>{{ p.shelf_code || '未上架' }}</span>
+                </span>
+                <span v-if="p.next_process_name" class="next-process">
+                  · 下一工序：{{ p.next_process_name }}
+                </span>
+              </div>
             </div>
           </el-card>
         </div>
@@ -180,22 +193,85 @@
       @confirm="onShelfConfirm"
       @cancel="onShelfCancel"
     />
+
+    <!-- 图纸 / 图片 全屏预览 -->
+    <el-dialog
+      v-model="showPreview"
+      :title="previewTitle"
+      fullscreen
+      :close-on-click-modal="false"
+      destroy-on-close
+      @closed="onPreviewClosed"
+    >
+      <div v-if="previewLoading" class="preview-loading">
+        <el-icon :size="32" class="is-loading"><Loading /></el-icon>
+        <span>加载图纸中…</span>
+      </div>
+
+      <PdfViewer
+        v-else-if="previewFile && isPdf(previewFile.file_type)"
+        :url="previewBlobUrl"
+        :initial-scale="1.4"
+      />
+
+      <div
+        v-else-if="previewFile && isImage(previewFile.file_type)"
+        class="image-preview-wrap"
+      >
+        <el-image
+          v-if="!isHeic(previewFile.file_type)"
+          :src="previewBlobUrl"
+          :preview-src-list="[previewBlobUrl]"
+          :initial-index="0"
+          fit="contain"
+          style="max-width: 100%; max-height: calc(100vh - 80px);"
+        />
+        <div v-else class="non-pdf-preview">
+          <el-icon :size="48" color="#67c23a"><Picture /></el-icon>
+          <p class="non-pdf-name">{{ previewFile.original_filename }}</p>
+          <p class="non-pdf-hint">HEIC 格式浏览器不直接支持预览，请下载后查看。</p>
+          <el-button type="primary" @click="downloadPreview">
+            <el-icon><Download /></el-icon><span>下载文件</span>
+          </el-button>
+        </div>
+      </div>
+
+      <div v-else class="non-pdf-preview">
+        <el-icon :size="48" color="#909399"><Files /></el-icon>
+        <p class="non-pdf-name">{{ previewFile?.original_filename || '该零件暂无图纸' }}</p>
+        <p class="non-pdf-hint">
+          {{ previewFile ? `${previewFile.file_type} 文件不支持浏览器内嵌预览，请下载后查看。` : '请上传图纸后再预览。' }}
+        </p>
+        <el-button v-if="previewFile" type="primary" @click="downloadPreview">
+          <el-icon><Download /></el-icon><span>下载文件</span>
+        </el-button>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, ref } from 'vue'
+import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Avatar,
   Back,
   Box,
+  Calendar,
   CircleCheckFilled,
+  Download,
+  Files,
   Loading,
+  Picture,
   Refresh,
+  View,
   Warning,
 } from '@element-plus/icons-vue'
+import { api } from '@/api/http'
+import PdfViewer from '@/components/PdfViewer.vue'
+import { getDownloadUrl, listPartFiles } from '@/api/assembly'
+import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import { listProcesses } from '@/api/process'
@@ -209,6 +285,25 @@ const parts = ref<PartItem[]>([])
 const loadingList = ref(false)
 const selectedPart = ref<PartItem | null>(null)
 const submitting = ref(false)
+
+// --- 预览状态 ---
+const showPreview = ref(false)
+const previewLoading = ref(false)
+const previewPart = ref<PartItem | null>(null)
+const previewFile = ref<PartFileItem | null>(null)
+const previewBlobUrl = ref<string>('')
+// 防竞态：每次开预览自增，老请求响应直接丢弃
+let previewToken = 0
+
+const previewTitle = computed<string>(
+  () => `预览 — ${previewPart.value?.serial_no || previewPart.value?.drawing_no || ''}`,
+)
+
+// --- 类型判定（与 FileListCard.vue 295-302 同步） ---
+function isPdf(t: string): boolean { return t.toUpperCase() === 'PDF' }
+const IMAGE_TYPES = new Set(['PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'TIF', 'TIFF', 'WEBP'])
+function isImage(t: string): boolean { return IMAGE_TYPES.has(t.toUpperCase()) }
+function isHeic(t: string): boolean { return t.toUpperCase() === 'HEIC' }
 
 // 工序选择
 const processes = ref<Process[]>([])
@@ -227,6 +322,10 @@ const showShelfPicker = ref(false)
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
   await Promise.all([refresh(), loadProcesses()])
+})
+
+onBeforeUnmount(() => {
+  if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
 })
 
 async function refresh(): Promise<void> {
@@ -258,9 +357,71 @@ async function loadProcesses(): Promise<void> {
 // --- 选件 → 工序 → 货架 → 提交 ---
 function onSelect(p: PartItem): void {
   if (submitting.value) return
+  // 取消选中（已选同一件 → 反选）
+  if (selectedPart.value?.id === p.id) {
+    cancelSelect()
+    return
+  }
   selectedPart.value = p
   selectedNextProcessId.value = p.next_process_id ?? ''
   showProcessDialog.value = true
+}
+
+// --- 预览 ---
+async function onPreview(p: PartItem): Promise<void> {
+  previewPart.value = p
+  showPreview.value = true
+  previewLoading.value = true
+  const myToken = ++previewToken
+  try {
+    const files = await listPartFiles(String(p.id), 'DRAWING')
+    if (myToken !== previewToken) return
+    if (!files.length) {
+      ElMessage.warning('暂无图纸')
+      showPreview.value = false
+      return
+    }
+    const f = files[0]
+    previewFile.value = f
+    if (isPdf(f.file_type) || isImage(f.file_type)) {
+      const resp = await api.get(`/files/${f.id}/content`, { responseType: 'blob' })
+      if (myToken !== previewToken) return
+      if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
+      previewBlobUrl.value = URL.createObjectURL(resp.data)
+    }
+  } catch (e) {
+    if (myToken !== previewToken) return
+    ElMessage.error((e as Error).message ?? '加载图纸失败')
+    showPreview.value = false
+  } finally {
+    if (myToken === previewToken) previewLoading.value = false
+  }
+}
+
+function onPreviewClosed(): void {
+  if (previewBlobUrl.value) {
+    URL.revokeObjectURL(previewBlobUrl.value)
+    previewBlobUrl.value = ''
+  }
+  previewPart.value = null
+  previewFile.value = null
+}
+
+async function downloadPreview(): Promise<void> {
+  if (!previewFile.value) return
+  try {
+    const url = await getDownloadUrl(previewFile.value.id)
+    const a = document.createElement('a')
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener'
+    a.download = ''
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '下载失败')
+  }
 }
 
 function onProcessConfirm(): void {
@@ -422,52 +583,67 @@ function deliveryUrgencyTag(s: string | null | undefined): 'danger' | 'warning' 
 
 .part-row {
   display: flex !important;
-  align-items: center;
-  justify-content: space-between;
+  align-items: stretch;
   padding: 14px 18px !important;
+  border: 1px solid #e4e7ed;
   border-left: 4px solid #e6a23c;  // 放回流程强调橙黄（与取件蓝区分）
+  border-radius: 8px;
   cursor: pointer;
-  transition: border-color .15s, background .15s;
+  position: relative;
+  background: #fff;
+  transition: border-color .15s, background .15s, box-shadow .15s;
 }
-.part-row:hover { background: #f5f7fa; }
-.part-row.is-selected { border-left-color: #67c23a; background: #f0f9eb; }
+.part-row:hover {
+  box-shadow: 0 2px 12px rgba(230, 162, 60, .08);
+}
 
-.part-row-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.part-row-left { display: flex; align-items: center; gap: 14px; flex: 1; }
-.part-index {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px;
-  background: #e6a23c; color: #fff; border-radius: 50%;
-  font-weight: 600; font-size: 14px; flex-shrink: 0;
+/* 非加急选中 → 加深绿底 */
+.part-row.is-selected {
+  background: #e1f3d8;
+  border-color: #67c23a;
 }
-.part-info { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
-.part-line-1 { display: flex; align-items: center; gap: 10px; }
+/* 加急未选中 → 原红底 */
+.part-row.is-urgent {
+  background: #fef0f0;
+  border-color: #f56c6c;
+  border-left-color: #f56c6c;
+}
+/* 加急选中 → 保持红底，绿色边框 + inset 阴影表示选中 */
+.part-row.is-urgent.is-selected {
+  background: #fef0f0;
+  border-color: #67c23a;
+  box-shadow: 0 0 0 2px #67c23a inset;
+}
+
+.part-row-main { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
+.preview-btn { position: absolute !important; top: 8px; right: 10px; z-index: 1; }
+
+.part-line-top { display: flex; align-items: center; gap: 12px; padding-right: 64px; flex-wrap: wrap; }
 .serial-no {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 18px; font-weight: 700; color: #303133;
+  font-size: 22px; font-weight: 700; color: #303133; letter-spacing: 0.5px;
 }
-.part-line-2 { display: flex; align-items: center; gap: 6px; font-size: 14px; color: #606266; }
-.part-name { color: #303133; font-weight: 500; }
-.customer { color: #909399; }
-.part-line-3 { font-size: 13px; color: #909399; }
-.qty { color: #e6a23c; font-weight: 600; margin-right: 6px; }
-.drawing { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+.delivery-date {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 16px; font-weight: 600;
+  padding: 2px 10px; border-radius: 4px;
+  background: #f5f7fa; color: #606266;
+}
+.delivery-date.overdue { color: #f56c6c; background: #fef0f0; }
+.delivery-date.due-soon { color: #e6a23c; background: #fdf6ec; }
+.days-left { font-weight: 500; font-size: 13px; margin-left: 2px; }
+
+.part-line-name { display: flex; align-items: center; gap: 10px; font-size: 15px; color: #303133; }
+.part-name { font-weight: 500; color: #303133; }
+.customer { color: #909399; font-size: 13px; }
+
+.part-line-bottom { display: flex; align-items: center; gap: 16px; font-size: 14px; color: #606266; flex-wrap: wrap; }
+.qty { color: #e6a23c; font-weight: 700; font-size: 15px; }
+.shelf-code-wrap { display: inline-flex; align-items: center; gap: 4px; color: #909399; }
 .next-process { color: #67c23a; }
 
 .is-loading { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-.part-row.is-urgent {
-  border-left-color: #f56c6c;
-  background: #fef0f0;
-}
-.days-left {
-  font-size: 12px;
-  font-weight: 600;
-  margin-left: 4px;
-}
-.days-left.overdue { color: #f56c6c; }
-.days-left.due-soon { color: #e6a23c; }
 
 @keyframes urgentPulse {
   0%, 100% { opacity: 1; }
@@ -475,5 +651,24 @@ function deliveryUrgencyTag(s: string | null | undefined): 'danger' | 'warning' 
 }
 .urgent-pulse {
   animation: urgentPulse 1.2s ease-in-out infinite;
+}
+
+.preview-loading {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  min-height: 60vh; color: #606266; font-size: 16px;
+}
+.image-preview-wrap {
+  display: flex; align-items: center; justify-content: center;
+  min-height: calc(100vh - 80px); padding: 24px; background: #1e1e1e;
+}
+.non-pdf-preview {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 80px 32px;
+}
+.non-pdf-name {
+  margin: 0; font-size: 16px; font-weight: 600; color: #303133;
+}
+.non-pdf-hint {
+  margin: 0; color: #606266; font-size: 14px;
 }
 </style>
