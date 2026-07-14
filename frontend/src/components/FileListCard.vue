@@ -1,14 +1,18 @@
 <!--
   FileListCard.vue
 
-  通用「文件列表 + 上传/删除/预览」卡片组件（2026-07-10 重写）。
+  通用「文件列表 + 上传/删除/预览」卡片组件（2026-07-10 重写，2026-07-14 扩展）。
 
   用 kind 字段区分文件类型：
-  - DRAWING           零件 / 子件 PDF 图纸
-  - 3D_MODEL          零件 3D 模型（STEP / STP）
+  - DRAWING           零件 / 子件 图纸
+                        (PDF + 9 种图片：PNG/JPG/JPEG/GIF/BMP/TIF/TIFF/WEBP/HEIC)
+                        图片与 PDF 同槽（单文件覆盖语义），打印背面要打条码
+  - 3D_MODEL          零件 3D 模型
+                        (STEP/STP/IGES/IGS/STL/OBJ/3MF)
   - G_CODE            零件 CNC G 代码（NC / TAP / CNC / MPF / NGC）
   - SETUP_SHEET       零件 CNC 设定单（PDF）
   - ASSEMBLY_MASTER   装配体总装图（PDF）
+  - CAD_2D            零件 CAD 源文件（DWG / DXF）——2026-07-14 新增
 
   Props：
   - files:               PartFileItem[]
@@ -101,7 +105,7 @@
       </div>
     </div>
 
-    <!-- PDF 预览弹窗（全屏） -->
+    <!-- 预览弹窗（全屏）：PDF 用 PdfViewer；图片用 el-image；其它走下载提示 -->
     <el-dialog
       v-model="previewVisible"
       :title="previewTitle"
@@ -116,6 +120,33 @@
         :page="defaultPage"
         :initial-scale="1.4"
       />
+      <div
+        v-else-if="previewFile && isImage(previewFile.file_type)"
+        class="image-preview-wrap"
+      >
+        <!-- 2026-07-14：HEIC 不被浏览器支持 → 走下载；其它图片走 el-image 全屏预览 -->
+        <el-image
+          v-if="!isHeic(previewFile.file_type)"
+          :src="previewBlobUrl"
+          :preview-src-list="[previewBlobUrl]"
+          :initial-index="0"
+          fit="contain"
+          style="max-width: 100%; max-height: calc(100vh - 80px);"
+        />
+        <div v-else class="non-pdf-preview">
+          <el-icon :size="48" :color="iconColor(previewFile.file_type)">
+            <component :is="iconOf(previewFile.file_type)" />
+          </el-icon>
+          <p class="non-pdf-name">{{ previewFile.original_filename }}</p>
+          <p class="non-pdf-hint">
+            HEIC 格式浏览器不直接支持预览，请下载后查看。
+          </p>
+          <el-button type="primary" @click="downloadCurrent">
+            <el-icon><Download /></el-icon>
+            <span>下载文件</span>
+          </el-button>
+        </div>
+      </div>
       <div v-else class="non-pdf-preview">
         <el-icon :size="48" :color="iconColor(previewFile?.file_type || '')">
           <component :is="iconOf(previewFile?.file_type || '')" />
@@ -160,12 +191,16 @@ import { printPartDrawing } from '@/api/parts'
 import type { PartFileItem, PartFileKind } from '@/types/part_file'
 
 // ----- ACCEPT 与 title 按 kind 自动派生 -----
+// 2026-07-14：DRAWING 加 9 种图片（PNG/JPG/.../HEIC，与 PDF 同槽）；
+// 3D_MODEL 加 IGES/STL/OBJ/3MF；新增 CAD_2D (DWG/DXF)
 const ACCEPT_BY_KIND: Record<PartFileKind, string> = {
-  DRAWING: '.pdf',
-  '3D_MODEL': '.step,.stp',
+  DRAWING:
+    '.pdf,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp,.heic',
+  '3D_MODEL': '.step,.stp,.iges,.igs,.stl,.obj,.3mf',
   G_CODE: '.nc,.tap,.cnc,.mpf,.ngc',
   SETUP_SHEET: '.pdf',
   ASSEMBLY_MASTER: '.pdf',
+  CAD_2D: '.dwg,.dxf',
 }
 
 const TITLE_BY_KIND: Record<PartFileKind, string> = {
@@ -174,6 +209,7 @@ const TITLE_BY_KIND: Record<PartFileKind, string> = {
   G_CODE: 'G 代码',
   SETUP_SHEET: 'CNC 设定单',
   ASSEMBLY_MASTER: '总装图',
+  CAD_2D: 'CAD 源文件',
 }
 
 const EMPTY_TEXT_BY_KIND: Record<PartFileKind, string> = {
@@ -182,6 +218,7 @@ const EMPTY_TEXT_BY_KIND: Record<PartFileKind, string> = {
   G_CODE: '暂无 G 代码',
   SETUP_SHEET: '暂无 CNC 设定单',
   ASSEMBLY_MASTER: '暂无总装图',
+  CAD_2D: '暂无 CAD 源文件',
 }
 
 const UPLOAD_LABEL_BY_KIND: Record<PartFileKind, string> = {
@@ -190,6 +227,7 @@ const UPLOAD_LABEL_BY_KIND: Record<PartFileKind, string> = {
   G_CODE: 'G 代码',
   SETUP_SHEET: '设定单',
   ASSEMBLY_MASTER: '总装图',
+  CAD_2D: 'CAD 源文件',
 }
 
 interface Props {
@@ -253,15 +291,28 @@ const previewTitle = computed<string>(
 function isPdf(t: string): boolean {
   return t.toUpperCase() === 'PDF'
 }
+// 2026-07-14：DRAWING 扩 9 种图片格式
+const IMAGE_TYPES = new Set([
+  'PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'TIF', 'TIFF', 'WEBP',
+])
+function isImage(t: string): boolean {
+  return IMAGE_TYPES.has(t.toUpperCase())
+}
+function isHeic(t: string): boolean {
+  return t.toUpperCase() === 'HEIC'
+}
 function iconOf(t: string) {
   const up = t.toUpperCase()
   if (up === 'PDF') return Picture
+  if (IMAGE_TYPES.has(up)) return Picture
   return Files
 }
 function iconColor(t: string): string {
   const up = t.toUpperCase()
   if (up === 'PDF') return '#e15c5c'
-  if (up === 'STEP' || up === 'STP') return '#3a7bd5'
+  if (IMAGE_TYPES.has(up)) return '#67c23a'  // 图片：绿色
+  if (up === 'STEP' || up === 'STP' || up === 'IGES' || up === 'IGS') return '#3a7bd5'
+  if (up === 'STL' || up === 'OBJ' || up === '3MF') return '#3a7bd5'
   if (up === 'DWG' || up === 'DXF') return '#ff9800'
   return '#909399'
 }
@@ -485,6 +536,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 32px;
+}
+.image-preview-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 80px);
+  padding: 24px;
+  background: #1e1e1e;
 }
 .non-pdf-name {
   margin: 0;

@@ -116,7 +116,13 @@ export async function listAssemblyFiles(id: string): Promise<PartFileItem[]> {
 
 export async function listPartFiles(
   partId: string,
-  kind?: 'DRAWING' | '3D_MODEL' | 'G_CODE' | 'SETUP_SHEET' | 'ASSEMBLY_MASTER',
+  kind?:
+    | 'DRAWING'
+    | '3D_MODEL'
+    | 'G_CODE'
+    | 'SETUP_SHEET'
+    | 'ASSEMBLY_MASTER'
+    | 'CAD_2D',
 ): Promise<PartFileItem[]> {
   const resp = await api.get<PartFileItem[]>(`/parts/${partId}/files`, {
     params: kind ? { kind } : {},
@@ -124,7 +130,11 @@ export async function listPartFiles(
   return resp.data
 }
 
-/** 上传零件图纸 PDF（走新的 /drawings 端点）。 */
+/**
+ * 上传零件图纸。2026-07-14 起 DRAWING 同时接受 PDF + 8 种图片格式
+ * （PNG/JPG/JPEG/GIF/BMP/TIF/TIFF/WEBP/HEIC），后端 /drawings 端点统一处理。
+ * 图片与 PDF 同槽（单文件覆盖语义）。
+ */
 export async function uploadPartDrawing(
   partId: string,
   file: File,
@@ -135,7 +145,7 @@ export async function uploadPartDrawing(
   return resp.data
 }
 
-/** 上传零件 3D 模型（STEP / STP）。 */
+/** 上传零件 3D 模型（STEP / STP / IGES / IGS / STL / OBJ / 3MF）。 */
 export async function uploadPart3DModel(
   partId: string,
   file: File,
@@ -143,6 +153,20 @@ export async function uploadPart3DModel(
   const form = new FormData()
   form.append('file', file)
   const resp = await api.post<PartFileItem>(`/parts/${partId}/3d-models`, form)
+  return resp.data
+}
+
+/**
+ * 上传零件 CAD 源文件（DWG / DXF）。2026-07-14 新增 kind=CAD_2D：
+ * 与 PDF 图纸生命周期分离，删除 CAD 源不影响打印用 PDF。
+ */
+export async function uploadPartCadFile(
+  partId: string,
+  file: File,
+): Promise<PartFileItem> {
+  const form = new FormData()
+  form.append('file', file)
+  const resp = await api.post<PartFileItem>(`/parts/${partId}/cad-files`, form)
   return resp.data
 }
 

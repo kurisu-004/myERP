@@ -206,6 +206,18 @@
       @refresh="fetch3DModels"
     />
 
+    <!-- CAD 源文件（DWG/DXF，2026-07-14 新增）-->
+    <FileListCard
+      :files="cadFiles"
+      owner-type="part"
+      :owner-id="partId"
+      kind="CAD_2D"
+      :show-upload="canManageDrawings"
+      :show-delete="canManageDrawings"
+      :api-upload="uploadPartCadFile"
+      @refresh="fetchCadFiles"
+    />
+
     <!-- CNC 文件（G 代码 + 设定单）合并到 el-tabs -->
     <el-card shadow="never" class="cnc-card" v-loading="cncLoading">
       <template #header>
@@ -267,7 +279,7 @@
           v-if="canManageCncFiles"
           :http-request="onUploadCnc"
           :show-file-list="false"
-          accept=".nc,.tap,.cnc,.mpf,.ngc,.txt"
+          accept=".nc,.tap,.cnc,.mpf,.ngc"
           :before-upload="beforeCncUpload"
         >
           <el-button type="primary" plain>
@@ -549,6 +561,7 @@ import {
   listPartFiles,
   uploadPartDrawing,
   uploadPart3DModel,
+  uploadPartCadFile,
 } from '@/api/assembly'
 import { useAuthSession } from '@/composables/useAuthSession'
 
@@ -561,6 +574,7 @@ const part = ref<PartItem | null>(null)
 const events = ref<PartEvent[] | null>(null)
 const drawings = ref<PartFileItem[]>([])
 const models3d = ref<PartFileItem[]>([])
+const cadFiles = ref<PartFileItem[]>([])
 const cncPrograms = ref<PartFileItem[]>([])
 const setupSheets = ref<PartFileItem[]>([])
 const assemblyDetail = ref<AssemblyDetail | null>(null)
@@ -749,6 +763,15 @@ async function fetch3DModels(): Promise<void> {
   }
 }
 
+async function fetchCadFiles(): Promise<void> {
+  try {
+    cadFiles.value = await listPartFiles(partId.value, 'CAD_2D')
+  } catch (e) {
+    cadFiles.value = []
+    ElMessage.error((e as Error).message ?? '加载 CAD 源文件失败')
+  }
+}
+
 async function fetchCncPrograms(): Promise<void> {
   cncLoading.value = true
   try {
@@ -789,12 +812,14 @@ watch(
     assemblyDetail.value = null
     drawings.value = []
     models3d.value = []
+    cadFiles.value = []
     cncPrograms.value = []
     setupSheets.value = []
     await fetchPart()
     void fetchEvents()
     void fetchDrawings()
     void fetch3DModels()
+    void fetchCadFiles()
     void fetchCncPrograms()
     void fetchAssembly()
   },
@@ -1004,6 +1029,7 @@ onMounted(() => {
   void fetchEvents()
   void fetchDrawings()
   void fetch3DModels()
+  void fetchCadFiles()
   void fetchCncPrograms()
 })
 </script>
