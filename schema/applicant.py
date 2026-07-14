@@ -72,3 +72,34 @@ class ApplicantSearchQuery(BaseModel):
     customer_id: str = Field(..., description="一级客户 id（雪花 ID 字符串）")
     name_prefix: str | None = Field(default=None, max_length=50)
     limit: int = Field(default=20, ge=1, le=100)
+
+
+class BulkApplicantItem(BaseModel):
+    """批量 get-or-create 的入参单条。
+
+    `customer_id` 允许传该申请人实际挂载的 L2 客户 id（应标 Excel 解析后
+    每行的 deptName → L2 客户）；service 层会沿 `parent_id` 上溯到 L1 根再
+    走 `get_or_create`。
+    """
+
+    name: str = Field(min_length=1, max_length=50)
+    customer_id: str = Field(description="客户 id（雪花 ID 字符串；L1/L2 均可，service 内部上溯到 L1 根）")
+
+    @field_validator("name")
+    @classmethod
+    def strip(cls, v: str) -> str:
+        return v.strip()
+
+
+class BulkApplicantOut(BaseModel):
+    """批量 get-or-create 的出参单条。"""
+
+    name: str
+    customer_id: IdStrNonNull
+    applicant_id: IdStrNonNull
+
+
+class BulkApplicantRequest(BaseModel):
+    """批量 get-or-create 的请求体。"""
+
+    items: list[BulkApplicantItem] = Field(min_length=1, max_length=500)

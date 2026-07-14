@@ -31,6 +31,8 @@ from schema.applicant import (
     ApplicantListQuery,
     ApplicantOut,
     ApplicantUpdateRequest,
+    BulkApplicantItem,
+    BulkApplicantOut,
 )
 from service._id_parse import parse_snowflake_id
 from utils.id_gen import new_id
@@ -246,6 +248,63 @@ class ApplicantService:
             return items[0]
         items = await self._to_outs([a])
         return items[0]
+
+    # ===== 批量 get-or-create（应标 Excel 导入用） =====
+    async def bulk_get_or_create(
+        self, items: list[BulkApplicantItem],
+    ) -> list[BulkApplicantOut]:
+        """批量按 (name, customer_id) 找或创建申请人。
+
+        - `customer_id` 允许 L1 / L2；service 内部沿 `parent_id` 上溯到 L1 根
+          再走 `get_or_create`（与单条逻辑保持一致）；
+        - 内部按 (cleaned_name, l1_root_id) 去重后逐条幂等创建；遇 race
+          走 `get_or_create` 自带的 IntegrityError 回查；
+        - 返回列表里 `customer_id` 字段统一是 L1 根 id，调用方拿到后
+          与自己持有的 L1 根一起即可索引到 `applicant_id`。
+        - 入参空列表短路返回 []，不报错。
+        """
+        if not items:
+            return []
+
+        # 解析 + 上溯 L1 根 + dedupe
+        seen: dict[tuple[str, int], int] = {}  # (name, l1_root_id) -> l1_root_id
+        for item in items:
+            cleaned = item.name.strip()
+            if not cleaned:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="applicant name 不能为空",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            cid_int = parse_snowflake_id(item.customer_id, field_name="customer_id")
+            if cid_int is None:
+                raise BizError(
+                    code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                    message=f"customer {item.customer_id!r} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            cust = await self.customers.get_by_id(cid_int)
+            if cust is None:
+                raise BizError(
+                    code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                    message=f"customer {item.customer_id} not found",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            l1_root_id = cust.parent_id if cust.parent_id is not None else cust.id
+            seen[(cleaned, l1_root_id)] = l1_root_id
+
+        # 逐条幂等创建/获取
+        results: list[BulkApplicantOut] = []
+        for (name, l1_root_id) in seen.keys():
+            a = await self.get_or_create(name=name, customer_id=l1_root_id)
+            results.append(
+                BulkApplicantOut(
+                    name=name,
+                    customer_id=str(l1_root_id),
+                    applicant_id=a.id,
+                )
+            )
+        return results
 
     # ===== 内部 =====
     async def _assert_root_customer(self, customer_id: int) -> None:

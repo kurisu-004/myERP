@@ -10,6 +10,8 @@ from schema.applicant import (
     ApplicantListQuery,
     ApplicantOut,
     ApplicantUpdateRequest,
+    BulkApplicantOut,
+    BulkApplicantRequest,
 )
 from service import ApplicantService
 
@@ -70,6 +72,23 @@ async def create_applicant(
     svc: ApplicantService = Depends(get_applicant_service),
 ) -> ApplicantOut:
     return await svc.create_applicant(payload)
+
+
+@router.post(
+    "/bulk-get-or-create",
+    response_model=list[BulkApplicantOut],
+    summary="批量 get-or-create 申请人（应标 Excel 导入用）",
+    description=(
+        "按 (name, customer_id) 找或创建申请人；customer_id 允许 L1/L2，"
+        "service 内部上溯到 L1 根。返回的 customer_id 是 L1 根 id。"
+    ),
+    dependencies=_role_dep,
+)
+async def bulk_get_or_create_applicants(
+    payload: BulkApplicantRequest,
+    svc: ApplicantService = Depends(get_applicant_service),
+) -> list[BulkApplicantOut]:
+    return await svc.bulk_get_or_create(payload.items)
 
 
 @router.get(
