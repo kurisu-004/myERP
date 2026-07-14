@@ -205,7 +205,8 @@ def _build_info_card_page(
         y += body_font.size + 28
 
     note = ("提示：本零件尚未上传图纸，此页面为信息卡占位。"
-            "如需打印图纸正文，请先在「图纸/文件」中上传 PDF/PNG/JPG 图纸。")
+            "如需打印图纸正文，请先在「图纸/文件」中上传 PDF / PNG / JPG / "
+            "GIF / BMP / TIFF / WEBP / HEIC 任一格式图纸。")
     max_chars_per_line = (page_w - 240) // small_font.size
     chunks = [note[i : i + max_chars_per_line] for i in range(0, len(note), max_chars_per_line)]
     ny = page_h - 180
@@ -287,7 +288,12 @@ async def build_part_print_pdf(
             if ext == "PDF":
                 front_pdf_bytes = await _download_drawing_bytes(master)
                 orientation = _detect_pdf_orientation(front_pdf_bytes)
-            elif ext in {"PNG", "JPG", "JPEG"}:
+            elif ext in {
+                "PNG", "JPG", "JPEG", "GIF", "BMP",
+                "TIF", "TIFF", "WEBP",
+            }:
+                # 2026-07-14：扩所有 DRAWING 接受的图片格式
+                # pillow 原生支持 PNG/JPEG/GIF/BMP/TIFF/WEBP；HEIC 走单独 try 分支
                 raw = await _download_drawing_bytes(master)
                 img = Image.open(io.BytesIO(raw)).convert("RGB")
                 orientation = _detect_image_orientation(img)
@@ -299,6 +305,27 @@ async def build_part_print_pdf(
                 canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
                 canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
                 front_pdf_bytes = _image_to_a4_pdf_bytes(canvas)
+            elif ext == "HEIC":
+                # HEIC 需 pillow-heif；运行时 try，缺失则降级到信息卡
+                raw = await _download_drawing_bytes(master)
+                try:
+                    from pillow_heif import register_heif_opener  # noqa: WPS433
+                    register_heif_opener()
+                    img = Image.open(io.BytesIO(raw)).convert("RGB")
+                    orientation = _detect_image_orientation(img)
+                    page_w_px, page_h_px = _a4_px(orientation)
+                    ratio = min(page_w_px / img.width, page_h_px / img.height)
+                    new_w = int(img.width * ratio)
+                    new_h = int(img.height * ratio)
+                    img = img.resize((new_w, new_h), Image.LANCZOS)
+                    canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
+                    canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
+                    front_pdf_bytes = _image_to_a4_pdf_bytes(canvas)
+                except ImportError:
+                    _logger.warning(
+                        "pillow-heif not installed; HEIC drawing falls back to info card"
+                    )
+                    front_pdf_bytes = None
             else:
                 # STEP / DWG / DXF：纸面不可直接渲染 → 信息卡占位
                 front_pdf_bytes = None

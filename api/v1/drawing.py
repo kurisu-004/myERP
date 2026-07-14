@@ -1,8 +1,11 @@
 """零件文件 API（2026-07-10 起：图纸 + 3D 模型，合并为单 router）。
 
 端点：
-- POST /parts/{part_id}/drawings         MANAGER + CLERK   kind=DRAWING (PDF)
-- POST /parts/{part_id}/3d-models        MANAGER + CLERK   kind=3D_MODEL (STEP/STP)
+- POST /parts/{part_id}/drawings         MANAGER + CLERK   kind=DRAWING
+                                            (PDF + PNG/JPG/GIF/BMP/TIFF/WEBP/HEIC 共 9 种)
+- POST /parts/{part_id}/3d-models        MANAGER + CLERK   kind=3D_MODEL
+                                            (STEP/STP/IGES/IGS/STL/OBJ/3MF)
+- POST /parts/{part_id}/cad-files        MANAGER + CLERK   kind=CAD_2D (DWG/DXF)
 - GET  /parts/{part_id}/files            任意已登录       (kind 可选过滤)
 - GET  /files/{file_id}/download-url     任意已登录
 - GET  /files/{file_id}/content          任意已登录
@@ -63,7 +66,7 @@ async def upload_part_drawing(
     "/{part_id}/3d-models",
     response_model=PartFileOut,
     status_code=http_status.HTTP_201_CREATED,
-    summary="为零件上传 3D 模型（STEP/STP，MANAGER + CLERK；自动覆盖旧文件）",
+    summary="为零件上传 3D 模型（STEP/STP/IGES/IGS/STL/OBJ/3MF，MANAGER + CLERK；自动覆盖旧文件）",
     dependencies=[Depends(require_part_file_role(PartFileKind.THREE_D_MODEL))],
 )
 async def upload_part_3d_model(
@@ -77,6 +80,32 @@ async def upload_part_3d_model(
         kind=PartFileKind.THREE_D_MODEL,
         data=data,
         original_filename=file.filename or "model.stp",
+        content_type=file.content_type,
+    )
+
+
+@part_file_router.post(
+    "/{part_id}/cad-files",
+    response_model=PartFileOut,
+    status_code=http_status.HTTP_201_CREATED,
+    summary=(
+        "为零件上传 CAD 源文件（DWG/DXF，MANAGER + CLERK；自动覆盖旧文件）。"
+        "2026-07-14 新增 kind=CAD_2D：与 PDF 图纸生命周期分离，"
+        "删除 CAD 源不影响打印用 PDF。"
+    ),
+    dependencies=[Depends(require_part_file_role(PartFileKind.CAD_2D))],
+)
+async def upload_part_cad_file(
+    part_id: int,
+    file: UploadFile = File(...),
+    svc: PartFileService = Depends(get_part_file_service),
+) -> PartFileOut:
+    data = await file.read()
+    return await svc.upload(
+        owner_id=part_id,
+        kind=PartFileKind.CAD_2D,
+        data=data,
+        original_filename=file.filename or "source.dwg",
         content_type=file.content_type,
     )
 

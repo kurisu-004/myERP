@@ -174,6 +174,34 @@ class PartFileRepository:
         existing = await self.list_by_part(part_id, kind=kind)
         return await self.soft_delete_many(existing)
 
+    # ===== 去重查询（2026-07-14 新增）=====
+    async def find_active_by_part_kind_sha(
+        self,
+        part_id: int,
+        kind: str,
+        content_sha256: str,
+    ) -> TPartFile | None:
+        """按 (part_id, kind, content_sha256) 找一条活跃行（用于去重命中检查）。
+
+        仅匹配 `deleted_at IS NULL` 的活跃行；部分唯一索引
+        `uk_t_part_file_part_kind_sha` 在 DB 层保证最多 1 条。
+        """
+        stmt = (
+            select(TPartFile)
+            .where(
+                and_(
+                    TPartFile.part_id == part_id,
+                    TPartFile.kind == kind,
+                    TPartFile.content_sha256 == content_sha256,
+                    TPartFile.deleted_at.is_(None),
+                )
+            )
+            .order_by(TPartFile.id.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     # ===== 装配体文件聚合（master + 子件 drawings）=====
     async def list_for_assembly(
         self,

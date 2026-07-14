@@ -60,10 +60,10 @@ class Settings(BaseSettings):
     cos_max_file_size_bytes: int = Field(
         default=100 * 1024 * 1024, alias="COS_MAX_FILE_SIZE", ge=1
     )
-    # 允许的扩展名（逗号分隔）。service 层做白名单校验。
-    # 含图纸类（pdf/step/stp/dwg/dxf）与 CNC G 代码类（nc/tap/cnc/mpf/ngc）。
+    # 注：扩展名白名单自 2026-07-14 起由 `core/_file_kind_policy.py::ALLOWED_EXTS_BY_KIND`
+    # 统一管控（kind → set of exts），不再用逗号分隔 env；本字段保留仅做向后兼容。
     cos_allowed_types: str = Field(
-        default="pdf,step,stp,dwg,dxf,nc,tap,cnc,mpf,ngc", alias="COS_ALLOWED_TYPES"
+        default="", alias="COS_ALLOWED_TYPES"
     )
 
     # ---- 送货单 Excel 模板（PR-B 2026-07-10）----

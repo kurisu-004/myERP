@@ -3,7 +3,7 @@
 
 提供：
 - `upload(*, owner_id, kind, ...)`：上传 + 写 t_part_file；按 kind 分发白名单
-  与单文件 / 多版本语义。
+  与单文件 / 多版本语义；**带内容去重（SHA-256）**。
 - `list_for_part` / `list_for_owner` / `list_for_assembly`：列文件
   （带即时签名 URL）。
 - `get_download_url` / `get_file_content`：单文件下载 / 预览。
@@ -11,13 +11,19 @@
 
 所有 COS 调用都用 `core.cos` 提供的 async 包装。
 
-设计要点：
-- 单文件 kind（DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER）：上传前
-  先 `soft_delete_by_part_and_kind` 旧的，收集旧 COS object_key 用于
-  后续 fire-and-forget 清理；新行在 commit 后清理旧 COS。
-- 多版本 kind（G_CODE）：直接 `create` 新行，不删旧的。
-- 装配体的总装图（kind=ASSEMBLY_MASTER）由 `AssemblyService.create_assembly`
-  在同一事务里写入，调用方负责校验 assembly 存在。
+设计要点（2026-07-14 整合）：
+- **内容去重**：上传时算 SHA-256，先查 `(part_id, kind, content_sha256)` 是否有
+  活跃行 → 有则复用（单文件 kind 改 `original_filename`/`updated_at`/`updated_by`，
+  G_CODE 多版本直接 no-op 返回）；无则走 COS PUT + insert。
+- **CAS key**：`core.file_hash.make_object_key` 派生
+  `{prefix}{owner_kind}/{owner_id}/{KIND}/{sha16}_{safe_filename}`。DB 丢失时
+  从桶扫描即可知 owner/kind/内容指纹/原始文件名。
+- **单文件 kind**（DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER / CAD_2D）：
+  命中复用时跳过 COS PUT；未命中时上传前 soft_delete 同 (owner, kind) 旧行。
+- **多版本 kind**（G_CODE）：命中 no-op；未命中直接 create。
+- 跨 part 不共享：DB 部分唯一索引 `uk_t_part_file_part_kind_sha` 在
+  `(part_id, kind, content_sha256)` 上。跨 part 上传相同字节理论上仍走
+  「不同 owner_id → 不同 sha16 → 不同 key」自然不共享，DB 索引是兜底。
 """
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ import logging
 from typing import Iterable
 
 from fastapi import status as http_status
+from sqlalchemy.exc import IntegrityError
 
 from core import cos as cos_mod
 from core._file_kind_policy import (
@@ -35,6 +42,7 @@ from core._file_kind_policy import (
 from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.file_hash import compute_sha256_hex, make_object_key
 from core.permission import CurrentUser
 from model import TPartFile
 from model.enums import PartFileKind
@@ -46,12 +54,32 @@ _logger = logging.getLogger(__name__)
 
 
 # ----- 工具函数（inline 在这里，原本在 service/drawing.py）-----
+# 2026-07-14 扩展：DRAWING 加 8 种图片格式 / 3D_MODEL 加 IGES/STL/OBJ/3MF /
+# 新增 CAD_2D 的 dwg/dxf。service 层不再依赖 core.config.cos_allowed_types。
 _EXT_TO_CONTENT_TYPE = {
-    "pdf": "application/pdf",
+    # 图纸（PDF + 图片）
+    "pdf":  "application/pdf",
+    "png":  "image/png",
+    "jpg":  "image/jpeg", "jpeg": "image/jpeg",
+    "gif":  "image/gif",
+    "bmp":  "image/bmp",
+    "tif":  "image/tiff", "tiff": "image/tiff",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    # 3D 模型
     "step": "application/step",
-    "stp": "application/step",
-    "dwg": "application/acad",
-    "dxf": "application/dxf",
+    "stp":  "application/step",
+    "iges": "application/iges",
+    "igs":  "application/iges",
+    "stl":  "model/stl",
+    "obj":  "model/obj",
+    "3mf":  "model/3mf",
+    # CAD 2D
+    "dwg":  "application/acad",
+    "dxf":  "application/dxf",
+    # G 代码（SETUP_SHEET 仍是 PDF，G_CODE 多版本）
+    "nc":   "text/plain", "tap": "text/plain",
+    "cnc":  "text/plain", "mpf": "text/plain", "ngc": "text/plain",
 }
 
 
@@ -87,16 +115,6 @@ def _check_size(size: int) -> None:
         )
 
 
-def _make_key_for_part(part_id: int, file_id: int, ext: str) -> str:
-    """零件 / 装配体的子件文件 COS key。"""
-    return f"{settings.cos_upload_prefix}part/{part_id}/{file_id}.{ext}"
-
-
-def _make_key_for_assembly_master(assembly_id: int, file_id: int, ext: str) -> str:
-    """装配体总装图 COS key（与 part key 共享 prefix，但目录名不同）。"""
-    return f"{settings.cos_upload_prefix}assembly/{assembly_id}/{file_id}.{ext}"
-
-
 async def _safe_delete_cos(key: str) -> None:
     """fire-and-forget COS 清理（异常吞掉，仅 log）。"""
     try:
@@ -121,6 +139,11 @@ def _check_allowed_for_kind(filename: str, kind: PartFileKind) -> str:
     return ext
 
 
+def _owner_kind_for(kind: PartFileKind) -> str:
+    """根据 kind 决定 COS key 中的 owner_kind 段（part 或 assembly）。"""
+    return "assembly" if kind == PartFileKind.ASSEMBLY_MASTER else "part"
+
+
 class PartFileService:
     def __init__(
         self,
@@ -131,7 +154,7 @@ class PartFileService:
         self.files = files
         self._user_id: int | None = current_user.id if current_user else None
 
-    # ===== 上传 =====
+    # ===== 上传（含去重）=====
     async def upload(
         self,
         *,
@@ -141,14 +164,20 @@ class PartFileService:
         original_filename: str,
         content_type: str | None,
     ) -> PartFileOut:
-        """上传文件到 COS + 写 t_part_file。
+        """上传文件到 COS + 写 t_part_file，带 SHA-256 内容去重。
 
-        `owner_id` 是 polymorphic owner：
-        - 大多数 kind：真实 t_part.id
-        - kind == ASSEMBLY_MASTER：t_assembly.id（装配体总图）
+        流程：
+        1. 校验 size + ext 白名单
+        2. 算 SHA-256
+        3. 查 (part_id, kind, sha) 是否有活跃行 → 命中：
+           - 单文件 kind：更新 existing.original_filename/updated_*/updated_by，
+             跳过 COS PUT，复用 object_key，返回现有行
+           - G_CODE 多版本：直接 no-op 返回（不改任何字段）
+        4. 未命中：单文件 kind 先 soft_delete 旧 (owner, kind) 行；构造
+           CAS key；COS PUT；写新行；异步清理旧 COS 对象
+        5. 跨 part 撞唯一索引 → 捕获 IntegrityError → 重生 key 重试
 
-        单文件 kind（DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER）会在
-        上传前先 soft_delete 同一 (owner_id, kind) 的旧行；G_CODE 直接 create。
+        `owner_id` polymorphic：ASSEMBLY_MASTER 用 t_assembly.id，其它用 t_part.id。
         """
         if isinstance(kind, str):
             kind = PartFileKind(kind)
@@ -156,49 +185,99 @@ class PartFileService:
         ext = _check_allowed_for_kind(original_filename, kind)
         ct = _guess_content_type(original_filename, content_type)
 
-        # 单文件 kind：上传前先软删同 owner+kind 的旧行。
+        # 1) 计算 SHA-256（内存中，开销 ~150ms / 100MB）
+        sha = compute_sha256_hex(data)
+
+        # 2) 去重检查
+        existing = await self.files.find_active_by_part_kind_sha(
+            owner_id, kind.value, sha
+        )
+        if existing is not None:
+            if kind in SINGLE_FILE_KINDS:
+                # 覆盖文件名/timestamp；不改 object_key / sha
+                existing.original_filename = original_filename
+                existing.updated_by = self._user_id
+                await self.files.update(existing)
+                _logger.info(
+                    "part_file dedup hit: part_id=%s kind=%s sha=%s "
+                    "object_key=%s (filename updated)",
+                    owner_id, kind.value, sha[:16], existing.object_key,
+                )
+            else:
+                # G_CODE 多版本：no-op
+                _logger.info(
+                    "part_file dedup noop: part_id=%s kind=%s sha=%s "
+                    "(g_code multi-version)",
+                    owner_id, kind.value, sha[:16],
+                )
+            return await self._to_out(existing)
+
+        # 3) 单文件 kind：上传前先软删同 (owner, kind) 旧行
         old_keys: list[str] = []
         if kind in SINGLE_FILE_KINDS:
             old_keys = await self.files.soft_delete_by_part_and_kind(
                 owner_id, kind.value
             )
 
-        file_id = new_id()
-        if kind == PartFileKind.ASSEMBLY_MASTER:
-            key = _make_key_for_assembly_master(owner_id, file_id, ext)
-        else:
-            key = _make_key_for_part(owner_id, file_id, ext)
+        # 4) 派生 CAS key（含 sha16 + safe_filename）
+        new_key = make_object_key(
+            owner_id=owner_id,
+            owner_kind=_owner_kind_for(kind),
+            kind=kind,
+            content_sha256=sha,
+            original_filename=original_filename,
+            ext=ext,
+        )
 
+        # 5) COS PUT（失败则异步清孤儿）
         try:
-            await cos_mod.upload_object(key, data, ct)
+            await cos_mod.upload_object(new_key, data, ct)
         except BizError:
             asyncio.create_task(
-                cos_mod.delete_object(key),
-                name=f"cos-cleanup-{key}",
+                cos_mod.delete_object(new_key),
+                name=f"cos-cleanup-{new_key}",
             )
             raise
 
+        # 6) insert 新行（防御：跨 part 撞唯一索引 → 重生 key 重试一次）
+        file_id = new_id()
         file_row = TPartFile(
             id=file_id,
             part_id=owner_id,
             kind=kind.value,
             file_type=ext.upper(),
-            object_key=key,
+            object_key=new_key,
             original_filename=original_filename,
             file_size=len(data),
             content_type=ct,
             upload_status="READY",
+            content_sha256=sha,
         )
         file_row.created_by = self._user_id
         file_row.updated_by = self._user_id
-        await self.files.create(file_row)
+        try:
+            await self.files.create(file_row)
+        except IntegrityError as exc:
+            # uk_t_part_file_part_kind_sha 撞（理论上 owner_id 不同 → sha16
+            # 不同 → key 不同，不会撞；唯一可能：重试时同一毫秒同一 part 同
+            # 一 sha 撞了并发去重漏检）。把已上传的 COS 对象清掉，抛 BizError。
+            asyncio.create_task(_safe_delete_cos(new_key))
+            raise BizError(
+                code=ErrCode.BIZ_PART_FILE_DUPLICATE,
+                message=(
+                    f"file content sha256={sha[:16]} already exists for "
+                    f"part_id={owner_id} kind={kind.value}"
+                ),
+                http_status=http_status.HTTP_409_CONFLICT,
+            ) from exc
 
-        # 旧 COS 对象异步清理（不在事务关键路径上）
+        # 7) 异步清理旧 COS 对象（old_key == new_key 时跳过，dedup 防御）
         for old_key in old_keys:
-            asyncio.create_task(
-                _safe_delete_cos(old_key),
-                name=f"cos-cleanup-{old_key}",
-            )
+            if old_key != new_key:
+                asyncio.create_task(
+                    _safe_delete_cos(old_key),
+                    name=f"cos-cleanup-{old_key}",
+                )
 
         return await self._to_out(file_row)
 
@@ -274,6 +353,7 @@ class PartFileService:
             file_size=f.file_size,
             content_type=f.content_type,
             upload_status=f.upload_status,
+            content_sha256=f.content_sha256,
             created_at=f.created_at,
             download_url=download_url,
         )

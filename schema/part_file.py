@@ -23,12 +23,19 @@ class PartFileOut(BaseModel):
     id: IdStrNonNull
     owner_id: IdStrNonNull
     kind: str = Field(
-        description="DRAWING / 3D_MODEL / G_CODE / SETUP_SHEET / ASSEMBLY_MASTER",
+        description="DRAWING / 3D_MODEL / G_CODE / SETUP_SHEET / ASSEMBLY_MASTER / CAD_2D",
     )
     file_type: str = Field(description="PDF / STEP / NC / ...")
     original_filename: str
     file_size: int
     content_type: str
     upload_status: str
+    content_sha256: str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 hex (64 chars)；NULL = 历史记录未计算。"
+            "前端可基于此判断是否已存在去重命中。"
+        ),
+    )
     created_at: datetime
     download_url: str = Field(description="COS 临时签名 URL，默认 15 分钟有效")

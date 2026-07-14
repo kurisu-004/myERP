@@ -162,17 +162,21 @@ class ProcessCategory(str, enum.Enum):
 class PartFileKind(str, enum.Enum):
     """零件 / 装配体的统一文件类型。
 
-    DB 存 `varchar(20)` (`t_part_file.kind`)，check 约束限定在 5 个取值。
+    DB 存 `varchar(20)` (`t_part_file.kind`)，check 约束限定在 6 个取值。
 
-    - DRAWING          零件 / 装配体子件的图纸 (PDF)
-    - THREE_D_MODEL    零件 3D 模型 (STEP / STP)
+    - DRAWING          零件 / 装配体子件的图纸 (PDF / PNG / JPG / JPEG / GIF /
+                       BMP / TIF / TIFF / WEBP / HEIC) — 单文件约束
+    - THREE_D_MODEL    零件 3D 模型 (STEP / STP / IGES / IGS / STL / OBJ / 3MF) — 单文件约束
     - G_CODE           零件的 CNC G 代码 (NC / TAP / CNC / MPF / NGC) — 多版本
-    - SETUP_SHEET      零件的 CNC 设定单 (PDF)
-    - ASSEMBLY_MASTER  装配体的总装图 (PDF)，polymorphic part_id = assembly.id
+    - SETUP_SHEET      零件的 CNC 设定单 (PDF) — 单文件约束
+    - ASSEMBLY_MASTER  装配体的总装图 (PDF)，polymorphic part_id = assembly.id — 单文件约束
+    - CAD_2D           零件 CAD 源文件 (DWG / DXF) — 单文件约束（2026-07-14 新增）
 
-    单文件约束 (DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER)：每 part
-    每 kind 最多 1 份；G_CODE 允许多版本。索引 `uk_t_part_file_single` 在
-    DB 层强制。
+    单文件约束 (除 G_CODE 外)：每 part 每 kind 最多 1 份；索引
+    `uk_t_part_file_single` 在 DB 层强制。
+
+    DRAWING 与图片格式（PNG/JPG/...）共用同一槽位：上传 PDF 时如果已有 PNG
+    图纸，旧行 soft_delete、COS 旧对象异步清，新 PDF 行创建（覆盖语义）。
     """
 
     DRAWING = "DRAWING"
@@ -180,3 +184,4 @@ class PartFileKind(str, enum.Enum):
     G_CODE = "G_CODE"
     SETUP_SHEET = "SETUP_SHEET"
     ASSEMBLY_MASTER = "ASSEMBLY_MASTER"
+    CAD_2D = "CAD_2D"

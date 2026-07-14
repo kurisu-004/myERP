@@ -52,6 +52,7 @@ class ErrCode(IntEnum):
     BIZ_PART_FILE_OWNER_NOT_FOUND = 21105  # polymorphic owner (part/assembly) 不存在
     BIZ_CNC_PROGRAM_REQUIRED = 21106     # 下发前必须上传 G 代码
     BIZ_CNC_SETUP_SHEET_REQUIRED = 21107 # 下发前必须上传设定单
+    BIZ_PART_FILE_DUPLICATE = 21108      # 2026-07-14：同 part+kind+content_sha256 撞唯一索引（并发兜底）
 
     # ---- 货架（t_shelf）----
     # 205xx：货架相关
