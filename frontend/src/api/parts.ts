@@ -445,6 +445,12 @@ export interface ReceiveFromOutsourcePayload {
   next_process_id: string
 }
 
+export interface ReceiveToInspectionPayload {
+  shelf_id: string
+  /** True: 自动通过品检 → READY_TO_SHIP（"送货流程"快捷分支，2026-07-16 加） */
+  auto_pass_inspection?: boolean
+}
+
 /**
  * OUTSOURCE → IN_PROCESS：从外协回收，下发到生产货架继续加工。
  */
@@ -454,6 +460,21 @@ export async function receiveFromOutsource(
 ): Promise<PartItem> {
   const resp = await api.post<PartItem>(
     `/parts/${encodeURIComponent(partId)}/receive-from-outsource`,
+    payload,
+  )
+  return resp.data
+}
+/**
+ * 2026-07-16：OUTSOURCE → INSPECTION：外协件直接送检（跳过生产货架）。
+ * auto_pass_inspection=True 时连发 pass_inspection 一次推到 READY_TO_SHIP
+ * （"送货流程" 快捷分支 = OUTSOURCE → INSPECTION → READY_TO_SHIP）。
+ */
+export async function receiveFromOutsourceToInspection(
+  partId: string,
+  payload: ReceiveToInspectionPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${encodeURIComponent(partId)}/receive-from-outsource-to-inspection`,
     payload,
   )
   return resp.data

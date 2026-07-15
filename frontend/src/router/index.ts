@@ -134,6 +134,18 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-16：外协接收（MANAGER + CLERK）。
+        path: 'outsource/receive',
+        name: 'OutsourceReceiveList',
+        component: () => import('@/views/outsource/OutsourceReceiveList.vue'),
+        meta: {
+          title: '外协接收',
+          icon: 'Box',
+          menuCode: 'outsource_list',  // placeholder：commit 8 升级为 outsource_receive_list
+          breadcrumb: [{ label: '外协管理' }, { label: '外协接收' }],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
