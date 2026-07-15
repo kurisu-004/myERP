@@ -25,9 +25,11 @@ export interface PartItem {
   customer_path: string | null
   assembly_id: string | null
   current_holder_id: string | null
-  current_holder_kind: 'shelf' | 'worker' | null
+  current_holder_kind: 'shelf' | 'worker' | 'outsource_company' | null
   shelf_code: string | null
   worker_name: string | null
+  /** holder 是外协公司时的公司名（2026-07-15 接入） */
+  outsource_company_name: string | null
   location: string | null
   placed_at: string | null
   /** 下一道工序 id（NULL = 未设置） */
@@ -408,6 +410,51 @@ export async function printPartDrawing(partId: string): Promise<Blob> {
   const resp = await api.get<Blob>(
     `/parts/${encodeURIComponent(partId)}/print-drawing`,
     { responseType: 'blob' },
+  )
+  return resp.data
+}
+
+// ============================================================
+// 外协流程（2026-07-15 新增）
+// ============================================================
+export interface SendToOutsourcePayload {
+  /** 外协公司 id（雪花 ID 字符串） */
+  outsource_company_id: string
+  /** 外协工序 id（雪花 ID 字符串；JS Number 会丢精度） */
+  next_process_id: string
+}
+
+/**
+ * PENDING / IN_PROCESS → OUTSOURCE：把零件发送给外协公司。
+ * 后端会校验公司存在 + 启用 + 工序 OUTSOURCE + 公司映射了该工序。
+ */
+export async function sendToOutsource(
+  partId: string,
+  payload: SendToOutsourcePayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${encodeURIComponent(partId)}/send-to-outsource`,
+    payload,
+  )
+  return resp.data
+}
+
+export interface ReceiveFromOutsourcePayload {
+  shelf_id: string
+  /** 下一道工序 id（雪花 ID 字符串；JS Number 会丢精度） */
+  next_process_id: string
+}
+
+/**
+ * OUTSOURCE → IN_PROCESS：从外协回收，下发到生产货架继续加工。
+ */
+export async function receiveFromOutsource(
+  partId: string,
+  payload: ReceiveFromOutsourcePayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${encodeURIComponent(partId)}/receive-from-outsource`,
+    payload,
   )
   return resp.data
 }

@@ -383,6 +383,18 @@
             @click="openFailInspectionDialog"
           >品检打回</el-button>
         </template>
+        <!-- 外协：PENDING/IN_PROCESS 可见（MANAGER + CLERK） -->
+        <el-button
+          v-if="canSendToOutsource && canBeSentToOutsource"
+          type="primary"
+          @click="openSendOutsourceDialog"
+        >发送至外协</el-button>
+        <!-- 外协回收：OUTSOURCE 状态可见（MANAGER + CLERK） -->
+        <el-button
+          v-if="canReceiveFromOutsource && part.status === 'OUTSOURCE'"
+          type="success"
+          @click="openReceiveOutsourceDialog"
+        >外协回收</el-button>
         <el-button
           v-if="canCancelPart && part.status !== 'CANCELLED' && part.status !== 'COMPLETED'"
           type="warning"
@@ -395,6 +407,136 @@
         >删除</el-button>
       </div>
     </el-card>
+
+    <!-- 发送至外协 对话框（2026-07-15 新增） -->
+    <el-dialog
+      v-model="sendOutsourceDialogVisible"
+      title="发送至外协 — 选择外协工序与外协公司"
+      width="560px"
+      :close-on-click-modal="false"
+      @closed="onSendOutsourceDialogClosed"
+    >
+      <el-form label-width="110px">
+        <el-form-item label="外协工序" required>
+          <el-radio-group
+            v-model="sendOutsourceProcessId"
+            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"
+            @change="onSendOutsourceProcessChange"
+          >
+            <el-radio
+              v-for="p in outsourceProcesses"
+              :key="p.id"
+              :value="String(p.id)"
+            >
+              {{ p.code }} — {{ p.name }}
+            </el-radio>
+            <span v-if="outsourceProcesses.length === 0" class="muted">
+              没有 OUTSOURCE 工序，请先在「设置 → 工序管理」中新增
+            </span>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="外协公司" required>
+          <el-radio-group
+            v-model="sendOutsourceCompanyId"
+            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"
+            :disabled="!sendOutsourceProcessId"
+          >
+            <el-radio
+              v-for="c in filteredOutsourceCompanies"
+              :key="c.id"
+              :value="String(c.id)"
+              :disabled="!c.is_active"
+            >
+              {{ c.name }}
+              <span v-if="!c.is_active" class="muted">（已停用）</span>
+            </el-radio>
+            <span v-if="sendOutsourceProcessId && filteredOutsourceCompanies.length === 0" class="muted">
+              没有公司映射此工序，请先在外协管理中维护
+            </span>
+            <span v-if="!sendOutsourceProcessId" class="muted">
+              请先选择外协工序
+            </span>
+          </el-radio-group>
+        </el-form-item>
+        <el-alert
+          v-if="part"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="`当前状态：${part.status}；发送后状态将变为 OUTSOURCE。`"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="sendOutsourceDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="sendOutsourceSubmitting"
+          :disabled="!sendOutsourceProcessId || !sendOutsourceCompanyId"
+          @click="onSendOutsourceConfirm"
+        >确认发送</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 外协回收 对话框（2026-07-15 新增） -->
+    <el-dialog
+      v-model="receiveOutsourceDialogVisible"
+      title="外协回收 — 选择目标生产货架与下一道工序"
+      width="560px"
+      :close-on-click-modal="false"
+      @closed="onReceiveOutsourceDialogClosed"
+    >
+      <el-form label-width="110px">
+        <el-form-item label="目标生产货架" required>
+          <el-radio-group
+            v-model="receiveShelfId"
+            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"
+          >
+            <el-radio
+              v-for="s in productionShelves"
+              :key="s.id"
+              :value="String(s.id)"
+              :disabled="!s.is_active"
+            >
+              {{ s.code }} — {{ s.name }}
+              <span v-if="!s.is_active" class="muted">（已停用）</span>
+            </el-radio>
+            <span v-if="productionShelves.length === 0" class="muted">没有可用生产货架</span>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="下一道工序" required>
+          <el-radio-group
+            v-model="receiveProcessId"
+            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"
+          >
+            <el-radio
+              v-for="p in inhouseProcesses"
+              :key="p.id"
+              :value="String(p.id)"
+            >
+              {{ p.code }} — {{ p.name }}
+            </el-radio>
+            <span v-if="inhouseProcesses.length === 0" class="muted">
+              没有 INHOUSE 工序
+            </span>
+          </el-radio-group>
+        </el-form-item>
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          title="回收后零件回到 IN_PROCESS / ON_SHELF 状态，可继续车间加工。"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="receiveOutsourceDialogVisible = false">取消</el-button>
+        <el-button
+          type="success"
+          :loading="receiveSubmitting"
+          :disabled="!receiveShelfId || !receiveProcessId"
+          @click="onReceiveConfirm"
+        >确认回收</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 品检打回对话框（PartDetail 用，复用 releaseVisible 之外的独立状态） -->
     <el-dialog
@@ -527,7 +669,9 @@ import {
   getPart,
   listPartEvents,
   passInspection,
+  receiveFromOutsource,
   releaseFromProgramming,
+  sendToOutsource,
   softDeletePart,
   updatePart,
   type PartItem,
@@ -547,6 +691,8 @@ import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
+import { listCompaniesByProcess } from '@/api/outsource'
+import type { OutsourceCompany } from '@/types/outsource'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
@@ -1021,6 +1167,128 @@ async function onFailInspectionConfirm(): Promise<void> {
     ElMessage.error(`品检打回失败：${(e as Error).message}`)
   } finally {
     failInspSubmitting.value = false
+  }
+}
+
+// ============ 发送至外协（2026-07-15 新增）============
+const canSendToOutsource = computed(() => isManager.value || isClerk.value)
+const canReceiveFromOutsource = computed(() => isManager.value || isClerk.value)
+const canBeSentToOutsource = computed(() => {
+  if (!part.value) return false
+  const s = part.value.status
+  // PENDING / IN_PROCESS（ON_SHELF/WITH_WORKER）可发送
+  // 终态 + PROGRAMMING + INSPECTION + READY_TO_SHIP + DELIVERED + REPAIRING + OUTSOURCE 不可
+  return s === 'PENDING' || s === 'IN_PROCESS'
+})
+
+const sendOutsourceDialogVisible = ref(false)
+const sendOutsourceProcessId = ref<string>('')
+const sendOutsourceCompanyId = ref<string>('')
+const sendOutsourceSubmitting = ref(false)
+const outsourceProcesses = ref<Process[]>([])
+const filteredOutsourceCompanies = ref<OutsourceCompany[]>([])
+
+async function openSendOutsourceDialog(): Promise<void> {
+  sendOutsourceProcessId.value = ''
+  sendOutsourceCompanyId.value = ''
+  filteredOutsourceCompanies.value = []
+  try {
+    if (outsourceProcesses.value.length === 0) {
+      const all = await listProcesses({ limit: 200 })
+      outsourceProcesses.value = all.items.filter((p) => p.category === 'OUTSOURCE')
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载工序失败')
+  }
+  sendOutsourceDialogVisible.value = true
+}
+
+function onSendOutsourceDialogClosed(): void {
+  sendOutsourceProcessId.value = ''
+  sendOutsourceCompanyId.value = ''
+  filteredOutsourceCompanies.value = []
+}
+
+async function onSendOutsourceProcessChange(): Promise<void> {
+  sendOutsourceCompanyId.value = ''
+  filteredOutsourceCompanies.value = []
+  if (!sendOutsourceProcessId.value) return
+  try {
+    filteredOutsourceCompanies.value = await listCompaniesByProcess(
+      sendOutsourceProcessId.value,
+    )
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载外协公司失败')
+  }
+}
+
+async function onSendOutsourceConfirm(): Promise<void> {
+  if (!sendOutsourceProcessId.value || !sendOutsourceCompanyId.value) return
+  sendOutsourceSubmitting.value = true
+  try {
+    await sendToOutsource(partId.value, {
+      outsource_company_id: sendOutsourceCompanyId.value,
+      next_process_id: sendOutsourceProcessId.value,
+    })
+    ElMessage.success('已发送至外协')
+    sendOutsourceDialogVisible.value = false
+    await fetchPart()
+    void fetchEvents()
+  } catch (e) {
+    ElMessage.error(`发送外协失败：${(e as Error).message}`)
+  } finally {
+    sendOutsourceSubmitting.value = false
+  }
+}
+
+// ============ 外协回收（2026-07-15 新增）============
+const receiveOutsourceDialogVisible = ref(false)
+const receiveShelfId = ref<string>('')
+const receiveProcessId = ref<string>('')
+const receiveSubmitting = ref(false)
+const inhouseProcesses = computed(() =>
+  processes.value.filter((p) => p.category === 'INHOUSE'),
+)
+
+async function openReceiveOutsourceDialog(): Promise<void> {
+  receiveShelfId.value = ''
+  receiveProcessId.value = ''
+  try {
+    if (productionShelves.value.length === 0) {
+      const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
+      productionShelves.value = resp.items
+    }
+    if (processes.value.length === 0) {
+      const resp = await listProcesses({ limit: 200 })
+      processes.value = resp.items
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载失败')
+  }
+  receiveOutsourceDialogVisible.value = true
+}
+
+function onReceiveOutsourceDialogClosed(): void {
+  receiveShelfId.value = ''
+  receiveProcessId.value = ''
+}
+
+async function onReceiveConfirm(): Promise<void> {
+  if (!receiveShelfId.value || !receiveProcessId.value) return
+  receiveSubmitting.value = true
+  try {
+    await receiveFromOutsource(partId.value, {
+      shelf_id: receiveShelfId.value,
+      next_process_id: receiveProcessId.value,
+    })
+    ElMessage.success('外协已回收')
+    receiveOutsourceDialogVisible.value = false
+    await fetchPart()
+    void fetchEvents()
+  } catch (e) {
+    ElMessage.error(`外协回收失败：${(e as Error).message}`)
+  } finally {
+    receiveSubmitting.value = false
   }
 }
 

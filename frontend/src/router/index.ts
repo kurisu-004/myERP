@@ -96,6 +96,18 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-15：外协管理（顶级菜单；MANAGER + CLERK）。
+        path: 'outsource',
+        name: 'OutsourceList',
+        component: () => import('@/views/outsource/OutsourceList.vue'),
+        meta: {
+          title: '外协管理',
+          icon: 'Promotion',
+          menuCode: 'outsource_list',
+          breadcrumb: [{ label: '外协管理' }],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
