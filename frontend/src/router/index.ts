@@ -96,52 +96,55 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
-        // 2026-07-15：外协管理（顶级菜单；MANAGER + CLERK）。
-        path: 'outsource',
-        name: 'OutsourceList',
+        // 2026-07-16：commit 8 — /outsource 老入口重定向到 /outsource/companies
+        path: '/outsource',
+        redirect: '/outsource/companies',
+      },
+      {
+        // 2026-07-16：外协厂一览（MANAGER + CLERK，commit 8 后叶子挂分组）
+        path: 'outsource/companies',
+        name: 'OutsourceCompaniesList',
         component: () => import('@/views/outsource/OutsourceList.vue'),
         meta: {
-          title: '外协管理',
-          icon: 'Promotion',
-          menuCode: 'outsource_list',
-          breadcrumb: [{ label: '外协管理' }],
+          title: '外协厂一览',
+          icon: 'OfficeBuilding',
+          menuCode: 'outsource_companies_list',
+          breadcrumb: [{ label: '外协管理' }, { label: '外协厂一览' }],
         },
       },
       {
-        // 2026-07-16：报价一览（MANAGER + CLERK）。
-        // 注意：现阶段 menuCode 还是 outsource_list 因为 commit 8 之前菜单种子还是顶层。
-        // 等 commit 8 把 outsource_list 转为分组后，menuCode 改成 outsource_quotes_list。
+        // 2026-07-16：报价一览（MANAGER + CLERK）
         path: 'outsource/quotes',
         name: 'OutsourceQuoteList',
         component: () => import('@/views/outsource/OutsourceQuoteList.vue'),
         meta: {
           title: '报价一览',
           icon: 'Document',
-          menuCode: 'outsource_list',  // placeholder：commit 8 升级为 outsource_quotes_list
+          menuCode: 'outsource_quotes_list',
           breadcrumb: [{ label: '外协管理' }, { label: '报价一览' }],
         },
       },
       {
-        // 2026-07-16：外协发送（MANAGER + CLERK）。
+        // 2026-07-16：外协发送（MANAGER + CLERK）
         path: 'outsource/send',
         name: 'OutsourceSendList',
         component: () => import('@/views/outsource/OutsourceSendList.vue'),
         meta: {
           title: '外协发送',
           icon: 'Promotion',
-          menuCode: 'outsource_list',  // placeholder：commit 8 升级为 outsource_send_list
+          menuCode: 'outsource_send_list',
           breadcrumb: [{ label: '外协管理' }, { label: '外协发送' }],
         },
       },
       {
-        // 2026-07-16：外协接收（MANAGER + CLERK）。
+        // 2026-07-16：外协接收（MANAGER + CLERK）
         path: 'outsource/receive',
         name: 'OutsourceReceiveList',
         component: () => import('@/views/outsource/OutsourceReceiveList.vue'),
         meta: {
           title: '外协接收',
           icon: 'Box',
-          menuCode: 'outsource_list',  // placeholder：commit 8 升级为 outsource_receive_list
+          menuCode: 'outsource_receive_list',
           breadcrumb: [{ label: '外协管理' }, { label: '外协接收' }],
         },
       },
