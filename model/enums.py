@@ -100,6 +100,7 @@ class PartEventType(str, enum.Enum):
     REPAIR_COMPLETED = "REPAIR_COMPLETED"
     SENT_TO_OUTSOURCE = "SENT_TO_OUTSOURCE"           # → OUTSOURCE（2026-07-15 新增）
     RECEIVED_FROM_OUTSOURCE = "RECEIVED_FROM_OUTSOURCE"  # OUTSOURCE → IN_PROCESS（2026-07-15 新增）
+    RECEIVED_FROM_OUTSOURCE_INSPECTED = "RECEIVED_FROM_OUTSOURCE_INSPECTED"  # OUTSOURCE → INSPECTION（2026-07-16 新增）
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
 
@@ -189,3 +190,45 @@ class PartFileKind(str, enum.Enum):
     SETUP_SHEET = "SETUP_SHEET"
     ASSEMBLY_MASTER = "ASSEMBLY_MASTER"
     CAD_2D = "CAD_2D"
+
+
+class OutsourceQuoteStatus(str, enum.Enum):
+    """外协报价单状态机（2026-07-16 新增）。
+
+    DB 存 `varchar(16)` (`t_outsource_quote.status`)。
+
+    流转：
+        DRAFT ──submit──▶ SUBMITTED ──approve──▶ APPROVED ──mark_used──▶ USED
+                                          ╰──reject───▶ REJECTED（终态）
+
+    - DRAFT     CLERK 录入未提交
+    - SUBMITTED CLERK 已提交，待 MANAGER 审核
+    - APPROVED  MANAGER 通过；零件可发送外协（前置校验）
+    - REJECTED  MANAGER 拒绝（终态）
+    - USED      零件已成功发送外协后由 service 自动 mark_used（终态）
+    """
+
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    USED = "USED"
+
+
+class OutsourceQuoteEventType(str, enum.Enum):
+    """外协报价事件类型（2026-07-16 新增）。"""
+
+    CREATED = "CREATED"      # 新建 DRAFT
+    EDITED = "EDITED"        # 在 DRAFT 状态修改字段
+    SUBMITTED = "SUBMITTED"  # DRAFT → SUBMITTED
+    APPROVED = "APPROVED"    # SUBMITTED → APPROVED
+    REJECTED = "REJECTED"    # SUBMITTED → REJECTED
+    USED = "USED"            # APPROVED → USED（自动）
+
+
+class OutsourceQuoteSortKey(str, enum.Enum):
+    """外协报价列表支持的排序字段。"""
+
+    CREATED_AT = "CREATED_AT"
+    PRICE = "PRICE"
+    REVIEWED_AT = "REVIEWED_AT"

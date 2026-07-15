@@ -12,6 +12,8 @@ from repository import (
     MenuRepository,
     OutsourceCompanyProcessRepository,
     OutsourceCompanyRepository,
+    OutsourceQuoteEventRepository,
+    OutsourceQuoteRepository,
     PartEventRepository,
     PartFileRepository,
     PartRepository,
@@ -32,6 +34,7 @@ from service import (
     CustomerService,
     DeliveryNoteService,
     OutsourceCompanyService,
+    OutsourceQuoteService,
     PartFileService,
     PartService,
     ProcessService,
@@ -445,5 +448,42 @@ def get_outsource_company_service(
 ) -> OutsourceCompanyService:
     return OutsourceCompanyService(
         companies=companies, junction=junction, processes=processes,
+        current_user=user,
+    )
+
+
+# ============================================================
+# 外协报价 DI（2026-07-16 新增）
+# ============================================================
+def get_outsource_quote_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceQuoteRepository:
+    return OutsourceQuoteRepository(session)
+
+
+def get_outsource_quote_event_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceQuoteEventRepository:
+    return OutsourceQuoteEventRepository(session)
+
+
+def get_outsource_quote_service(
+    quotes: OutsourceQuoteRepository = Depends(get_outsource_quote_repo),
+    quote_events: OutsourceQuoteEventRepository = Depends(
+        get_outsource_quote_event_repo,
+    ),
+    parts: PartRepository = Depends(get_part_repository),
+    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
+    processes: ProcessRepository = Depends(get_process_repo),
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> OutsourceQuoteService:
+    return OutsourceQuoteService(
+        quotes=quotes,
+        quote_events=quote_events,
+        parts=parts,
+        companies=companies,
+        processes=processes,
+        customers=CustomerRepository(session),
         current_user=user,
     )

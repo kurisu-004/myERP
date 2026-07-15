@@ -9,6 +9,7 @@ from . import (
     delivery_note,
     drawing,
     outsource_company,
+    outsource_quote,
     part,
     process,
     shelf,
@@ -58,3 +59,6 @@ api_router.include_router(process.write_router)
 # 外协公司：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER+CLERK）两个并列 router（2026-07-15）
 api_router.include_router(outsource_company.read_router)
 api_router.include_router(outsource_company.write_router)
+# 外协报价：读（MANAGER+CLERK）+ 写（MANAGER+CLERK；approve/reject 是 MANAGER-only）两个并列 router（2026-07-16）
+api_router.include_router(outsource_quote.read_router)
+api_router.include_router(outsource_quote.write_router)

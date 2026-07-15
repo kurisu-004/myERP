@@ -4,6 +4,8 @@ from .customer import CustomerRepository
 from .menu import MenuRepository
 from .outsource_company import OutsourceCompanyRepository
 from .outsource_company_process import OutsourceCompanyProcessRepository
+from .outsource_quote import OutsourceQuoteRepository
+from .outsource_quote_event import OutsourceQuoteEventRepository
 from .part import PartRepository
 from .part_event import PartEventRepository
 from .part_file import PartFileRepository
@@ -23,6 +25,8 @@ __all__ = [
     "MenuRepository",
     "OutsourceCompanyProcessRepository",
     "OutsourceCompanyRepository",
+    "OutsourceQuoteEventRepository",
+    "OutsourceQuoteRepository",
     "PartEventRepository",
     "PartFileRepository",
     "PartRepository",

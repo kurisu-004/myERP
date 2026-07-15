@@ -111,3 +111,10 @@ class ErrCode(IntEnum):
     BIZ_OUTSOURCE_PROCESS_NOT_MAPPED = 21204   # 公司未映射该 OUTSOURCE 工序
     BIZ_OUTSOURCE_COMPANY_IN_USE = 21205       # 被 part OUTSOURCE 引用 / 仍映射工序
     BIZ_PART_NOT_OUTSOURCEABLE = 21206         # 当前状态不允许发送外协（兜底，正常流不该撞）
+
+    # ---- 外协报价（t_outsource_quote，2026-07-16 新增）----
+    # 213xx：外协报价相关
+    BIZ_OUTSOURCE_QUOTE_NOT_FOUND = 21301
+    BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION = 21302  # 当前状态不允许此操作
+    BIZ_OUTSOURCE_QUOTE_DUPLICATE = 21303           # 同 (part,company,process) 已存在活跃报价
+    BIZ_OUTSOURCE_QUOTE_NOT_APPROVED = 21307        # send_to_outsource 找不到该 tuple 的 APPROVED 报价

@@ -5,6 +5,9 @@ from .base import Base
 from .customer import TCustomer
 from .enums import (
     AssemblyStatus,
+    OutsourceQuoteEventType,
+    OutsourceQuoteSortKey,
+    OutsourceQuoteStatus,
     PartEventType,
     PartFileKind,
     PartLocation,
@@ -19,6 +22,8 @@ from .enums import (
 from .menu import TMenu, TRoleMenu
 from .outsource_company import TOutsourceCompany
 from .outsource_company_process import TOutsourceCompanyProcess
+from .outsource_quote import TOutsourceQuote
+from .outsource_quote_event import TOutsourceQuoteEvent
 from .part import TPart
 from .part_event import TPartEvent
 from .part_file import TPartFile
@@ -42,6 +47,8 @@ __all__ = [
     "TMenu",
     "TOutsourceCompany",
     "TOutsourceCompanyProcess",
+    "TOutsourceQuote",
+    "TOutsourceQuoteEvent",
     "TPart",
     "TPartEvent",
     "TPartFile",
@@ -56,6 +63,9 @@ __all__ = [
     "TWorkType",
     "TWorkTypeProcess",
     "AssemblyStatus",
+    "OutsourceQuoteEventType",
+    "OutsourceQuoteSortKey",
+    "OutsourceQuoteStatus",
     "PartEventType",
     "PartFileKind",
     "PartLocation",
