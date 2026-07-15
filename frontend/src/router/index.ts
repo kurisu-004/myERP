@@ -108,6 +108,20 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-16：报价一览（MANAGER + CLERK）。
+        // 注意：现阶段 menuCode 还是 outsource_list 因为 commit 8 之前菜单种子还是顶层。
+        // 等 commit 8 把 outsource_list 转为分组后，menuCode 改成 outsource_quotes_list。
+        path: 'outsource/quotes',
+        name: 'OutsourceQuoteList',
+        component: () => import('@/views/outsource/OutsourceQuoteList.vue'),
+        meta: {
+          title: '报价一览',
+          icon: 'Document',
+          menuCode: 'outsource_list',  // placeholder：commit 8 升级为 outsource_quotes_list
+          breadcrumb: [{ label: '外协管理' }, { label: '报价一览' }],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
