@@ -5,6 +5,7 @@ from .customer import CustomerService
 from .dashboard import build_snapshot_with_workers
 from .delivery_note import DeliveryNoteService
 from .menu import build_menu_tree
+from .outsource_company import OutsourceCompanyService
 from .part import PartService
 from .part_file import PartFileService
 from .process import ProcessService
@@ -21,6 +22,7 @@ __all__ = [
     "AuthService",
     "CustomerService",
     "DeliveryNoteService",
+    "OutsourceCompanyService",
     "PartFileService",
     "PartService",
     "ProcessService",

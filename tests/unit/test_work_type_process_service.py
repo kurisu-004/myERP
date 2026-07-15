@@ -29,7 +29,7 @@ def _wt(id: int = 1) -> TWorkType:
 def _p(id: int, code: str) -> TProcess:
     p = TProcess(
         id=id, code=code, name=code, category="INHOUSE",
-        is_inspection=False, sort_order=0,
+        sort_order=0,
     )
     p.created_at = _now()
     p.updated_at = _now()

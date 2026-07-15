@@ -27,6 +27,7 @@ from schema.part import (
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
+    SendToOutsourceRequest,
 )
 from service import PartService
 from service._id_parse import parse_snowflake_id
@@ -260,6 +261,49 @@ async def release_part_from_programming(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.release_from_programming(part_id, payload)
+
+
+# ============================================================
+# 外协流程（2026-07-15 新增）
+# ============================================================
+@router.post(
+    "/{part_id}/send-to-outsource",
+    response_model=PartOut,
+    summary=(
+        "PENDING / IN_PROCESS → OUTSOURCE：发送零件到外协公司（MANAGER / CLERK）"
+    ),
+    description=(
+        "body: outsource_company_id (雪花 ID 字符串) + next_process_id (OUTSOURCE 类别)。"
+        "支持来源：PENDING / ON_SHELF / WITH_WORKER。"
+        "后端严格校验公司存在 + 启用 + 工序 OUTSOURCE + 公司映射了该工序。"
+    ),
+    dependencies=_office_dep,
+)
+async def send_part_to_outsource(
+    part_id: int,
+    payload: SendToOutsourceRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.send_to_outsource(part_id, payload)
+
+
+@router.post(
+    "/{part_id}/receive-from-outsource",
+    response_model=PartOut,
+    summary=(
+        "OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架（MANAGER / CLERK）"
+    ),
+    description=(
+        "body 同下发：shelf_id (PRODUCTION 区 active) + next_process_id (必须 INHOUSE)。"
+    ),
+    dependencies=_office_dep,
+)
+async def receive_part_from_outsource(
+    part_id: int,
+    payload: PlaceOnShelfRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.receive_from_outsource(part_id, payload)
 
 
 @router.post(

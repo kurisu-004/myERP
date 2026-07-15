@@ -10,6 +10,8 @@ from repository import (
     AssemblyRepository,
     CustomerRepository,
     MenuRepository,
+    OutsourceCompanyProcessRepository,
+    OutsourceCompanyRepository,
     PartEventRepository,
     PartFileRepository,
     PartRepository,
@@ -29,6 +31,7 @@ from service import (
     AuthService,
     CustomerService,
     DeliveryNoteService,
+    OutsourceCompanyService,
     PartFileService,
     PartService,
     ProcessService,
@@ -195,6 +198,8 @@ def get_part_service(
         applicants=ApplicantRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         files=PartFileRepository(session),
+        outsource_companies=OutsourceCompanyRepository(session),
+        outsource_company_process=OutsourceCompanyProcessRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,
@@ -368,6 +373,8 @@ def get_assembly_service(
         processes=ProcessRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         files=files_repo,
+        outsource_companies=OutsourceCompanyRepository(session),
+        outsource_company_process=OutsourceCompanyProcessRepository(session),
         current_user=user,
     )
     part_files = PartFileService(
@@ -410,4 +417,33 @@ def get_delivery_note_service(
     return DeliveryNoteService(
         parts=PartRepository(session),
         customers=CustomerRepository(session),
+    )
+
+
+# ============================================================
+# 外协公司 DI（2026-07-15 新增）
+# ============================================================
+def get_outsource_company_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceCompanyRepository:
+    return OutsourceCompanyRepository(session)
+
+
+def get_outsource_company_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceCompanyProcessRepository:
+    return OutsourceCompanyProcessRepository(session)
+
+
+def get_outsource_company_service(
+    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
+    junction: OutsourceCompanyProcessRepository = Depends(
+        get_outsource_company_process_repo,
+    ),
+    processes: ProcessRepository = Depends(get_process_repo),
+    user: CurrentUser = Depends(get_current_user),
+) -> OutsourceCompanyService:
+    return OutsourceCompanyService(
+        companies=companies, junction=junction, processes=processes,
+        current_user=user,
     )

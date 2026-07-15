@@ -196,7 +196,7 @@ class TestProcessAudit:
             await svc.create_process(
                 ProcessCreateRequest(
                     code="P1", name="Process1", category=ProcessCategory.INHOUSE,
-                    is_inspection=False, sort_order=0,
+                    sort_order=0,
                 )
             )
         created = processes.create.await_args.args[0]
@@ -455,7 +455,7 @@ def _shelf(id: int, code: str) -> TShelf:
 def _process(id: int, code: str) -> TProcess:
     return TProcess(
         id=id, code=code, name=code, category="INHOUSE",
-        is_inspection=False, sort_order=0, description=None,
+        sort_order=0, description=None,
         created_at=datetime(2025, 1, 1), updated_at=datetime(2025, 1, 1),
     )
 

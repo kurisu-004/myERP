@@ -645,7 +645,8 @@ class TestCreateAssemblyErrors:
         from schema.assembly import AssemblyOut
         async def fake_asm_out(asm, child_count):
             return AssemblyOut(
-                id=str(asm.id), serial_no=asm.serial_no,
+                id=str(asm.id), version=getattr(asm, "version", 0),
+                serial_no=asm.serial_no,
                 drawing_no=asm.drawing_no, name=asm.name,
                 applicant_name=asm.applicant_name, customer_id=str(asm.customer_id),
                 customer_name=None, parent_customer_name=None, customer_path=None,
@@ -828,7 +829,7 @@ class TestCreateAssemblySplit:
             mock_parts.create.side_effect = mock_create_part
 
             stub_file = DrawingFileOut(
-                id="1", owner_id="1",
+                id="1", version=0, owner_id="1",
                 file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
                 content_type="application/pdf", 
                 download_url="https://example.com/x", upload_status="READY",
@@ -906,7 +907,7 @@ class TestCreateAssemblySplit:
                 return stub_file  # 给上层 part_files.upload 返回 stub_file
 
             stub_file = DrawingFileOut(
-                id="1", owner_id="1",
+                id="1", version=0, owner_id="1",
                 file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
                 content_type="application/pdf",
                 download_url="https://example.com/x", upload_status="READY",
@@ -962,7 +963,7 @@ class TestCreateAssemblySplit:
             mock_parts.create.side_effect = mock_create_part
 
             stub_file = DrawingFileOut(
-                id="1", owner_id="1",
+                id="1", version=0, owner_id="1",
                 file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
                 content_type="application/pdf", 
                 download_url="https://example.com/x", upload_status="READY",
@@ -1082,6 +1083,7 @@ class TestAssemblySerialAllocation:
             # Stub heavy conversion with stub schema instance
             stub_file = DrawingFileOut(
                 id="1",
+                version=0,
                 owner_id="1",
                 kind="ASSEMBLY_MASTER",
                 file_type="PDF",

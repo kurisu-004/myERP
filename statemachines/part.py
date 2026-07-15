@@ -38,6 +38,7 @@ class PartStateMachine(StateChart):
     READY_TO_SHIP = State("READY_TO_SHIP", value="READY_TO_SHIP")
     DELIVERED = State("DELIVERED", value="DELIVERED")
     REPAIRING = State("REPAIRING", value="REPAIRING")
+    OUTSOURCE = State("OUTSOURCE", value="OUTSOURCE")   # 2026-07-15 新增：外协公司
     COMPLETED = State("COMPLETED", value="COMPLETED", final=True)
     CANCELLED = State("CANCELLED", value="CANCELLED", final=True)
 
@@ -61,6 +62,19 @@ class PartStateMachine(StateChart):
         | DELIVERED.to(REPAIRING)
     )
     complete_repair = REPAIRING.to(ON_SHELF)
+
+    # 2026-07-15 外协流程：
+    # - send_to_outsource：PENDING / ON_SHELF / WITH_WORKER → OUTSOURCE
+    #   （文员可把待生产或工人加工几道后的零件送给外协）
+    # - receive_from_outsource：OUTSOURCE → ON_SHELF
+    #   （外协回收，下发回生产货架继续加工）
+    send_to_outsource = (
+        PENDING.to(OUTSOURCE)
+        | ON_SHELF.to(OUTSOURCE)
+        | WITH_WORKER.to(OUTSOURCE)
+    )
+    receive_from_outsource = OUTSOURCE.to(ON_SHELF)
+
     cancel = (
         PENDING.to(CANCELLED)
         | PROGRAMMING.to(CANCELLED)
@@ -70,6 +84,7 @@ class PartStateMachine(StateChart):
         | READY_TO_SHIP.to(CANCELLED)
         | DELIVERED.to(CANCELLED)
         | REPAIRING.to(CANCELLED)
+        | OUTSOURCE.to(CANCELLED)   # 2026-07-15 新增
     )
 
     # ============================================================
@@ -88,7 +103,7 @@ class PartStateMachine(StateChart):
             elif status == "PROGRAMMING":
                 start_value = "PROGRAMMING"
             else:
-                start_value = status  # INSPECTION, READY_TO_SHIP, etc.
+                start_value = status  # INSPECTION, READY_TO_SHIP, OUTSOURCE, etc.
         super().__init__(
             model=model, start_value=start_value, **kwargs,
         )
@@ -161,6 +176,20 @@ class PartStateMachine(StateChart):
             self.model.status = "REPAIRING"
             self.model.location = None
             self.model.current_holder_id = None
+
+    def on_enter_OUTSOURCE(self, outsource_company=None, process=None, **_):
+        """进入 OUTSOURCE：DB status='OUTSOURCE', location='OUTSOURCE_COMPANY'，
+        holder 指向外协公司 id；next_process_id 保持（就是外协工序 id）。
+        """
+        if self.model:
+            self.model.status = "OUTSOURCE"
+            self.model.location = "OUTSOURCE_COMPANY"
+            if outsource_company is not None:
+                self.model.current_holder_id = outsource_company.id
+            if process is not None:
+                self.model.next_process_id = process.id
+            # placed_at 保留陈旧值（前端展示时自行处理语义）；
+            # 不在这里清空是为了保留「首次进入流程的时间」参考。
 
     def on_enter_COMPLETED(self, **_):
         if self.model:
@@ -460,5 +489,67 @@ class PartStateMachine(StateChart):
                 event_type=PartEventType.CANCELLED,
                 from_status=from_status,
                 to_status=PartStatus.CANCELLED,
+                created_by=created_by,
+            ))
+
+    def on_send_to_outsource(
+        self,
+        outsource_company=None,
+        process=None,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """→ OUTSOURCE：文员把零件发送给外协公司。
+
+        note 模板: "外协公司：{name} 外协工序：{code}"
+        """
+        if event_repo and self.model:
+            parts = []
+            if outsource_company is not None and hasattr(outsource_company, "name"):
+                parts.append(f"外协公司：{outsource_company.name}")
+            if process is not None and hasattr(process, "code"):
+                parts.append(f"外协工序：{process.code}")
+            from_status = (
+                PartStatus(self._from_status) if self._from_status else None
+            )
+            event_repo.add(TPartEvent(
+                part_id=self.model.id,
+                event_type=PartEventType.SENT_TO_OUTSOURCE,
+                from_status=from_status,
+                to_status=PartStatus.OUTSOURCE,
+                note=" ".join(parts) or None,
+                created_by=created_by,
+            ))
+
+    def on_receive_from_outsource(
+        self,
+        shelf=None,
+        process=None,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架。
+
+        落到 ON_SHELF 状态（location=PRODUCTION_SHELF, holder=shelf.id, placed_at=now），
+        由 on_enter_ON_SHELF 设置；本回调只写事件。
+
+        note 模板: "外协回收 下发货架：{shelf} 下一工序：{process}"
+        """
+        if event_repo and self.model:
+            parts = ["外协回收"]
+            if shelf is not None and hasattr(shelf, "code"):
+                parts.append(f"下发货架：{shelf.code}")
+            if process is not None and hasattr(process, "code"):
+                parts.append(f"下一工序：{process.code}")
+            event_repo.add(TPartEvent(
+                part_id=self.model.id,
+                event_type=PartEventType.RECEIVED_FROM_OUTSOURCE,
+                from_status=PartStatus.OUTSOURCE,
+                to_status=PartStatus.IN_PROCESS,
+                note=" ".join(parts),
                 created_by=created_by,
             ))

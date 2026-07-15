@@ -17,6 +17,8 @@ from .enums import (
     UserRole,
 )
 from .menu import TMenu, TRoleMenu
+from .outsource_company import TOutsourceCompany
+from .outsource_company_process import TOutsourceCompanyProcess
 from .part import TPart
 from .part_event import TPartEvent
 from .part_file import TPartFile
@@ -38,6 +40,8 @@ __all__ = [
     "TAssembly",
     "TCustomer",
     "TMenu",
+    "TOutsourceCompany",
+    "TOutsourceCompanyProcess",
     "TPart",
     "TPartEvent",
     "TPartFile",

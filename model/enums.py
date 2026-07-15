@@ -23,6 +23,7 @@ class PartStatus(str, enum.Enum):
     READY_TO_SHIP = "READY_TO_SHIP"   # 待送货
     DELIVERED = "DELIVERED"           # 已送货
     REPAIRING = "REPAIRING"           # 返修中
+    OUTSOURCE = "OUTSOURCE"           # 在外协公司加工中（2026-07-15 新增）
     COMPLETED = "COMPLETED"           # 已完成
     CANCELLED = "CANCELLED"           # 已取消
 
@@ -36,6 +37,7 @@ class PartLocation(str, enum.Enum):
     PRODUCTION_SHELF = "PRODUCTION_SHELF"   # 生产货架（IN_PROCESS 状态）
     WORKER = "WORKER"                       # 工人手中（IN_PROCESS 状态）
     INSPECTION_SHELF = "INSPECTION_SHELF"   # 品检货架（INSPECTION 状态）
+    OUTSOURCE_COMPANY = "OUTSOURCE_COMPANY" # 外协公司（OUTSOURCE 状态，2026-07-15 新增）
 
 
 class AssemblyStatus(str, enum.Enum):
@@ -96,6 +98,8 @@ class PartEventType(str, enum.Enum):
     STATUS_CHANGED = "STATUS_CHANGED"
     REPAIR_STARTED = "REPAIR_STARTED"
     REPAIR_COMPLETED = "REPAIR_COMPLETED"
+    SENT_TO_OUTSOURCE = "SENT_TO_OUTSOURCE"           # → OUTSOURCE（2026-07-15 新增）
+    RECEIVED_FROM_OUTSOURCE = "RECEIVED_FROM_OUTSOURCE"  # OUTSOURCE → IN_PROCESS（2026-07-15 新增）
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
 
