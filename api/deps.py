@@ -179,6 +179,9 @@ def get_part_service(
     2026-07-10 起：注入 `PartFileRepository` 以支持
     `POST /parts/batch` multipart 端点的 PDF 上传 + 下发前置校验
     (≥1 G_CODE + ≥1 SETUP_SHEET)。
+
+    2026-07-16 起：注入 `OutsourceQuoteRepository` + `OutsourceQuoteEventRepository`
+    以支持 send_to_outsource 防御闸 + APPROVED→USED 自动 mark。
     """
     from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
@@ -203,6 +206,8 @@ def get_part_service(
         files=PartFileRepository(session),
         outsource_companies=OutsourceCompanyRepository(session),
         outsource_company_process=OutsourceCompanyProcessRepository(session),
+        outsource_quotes=OutsourceQuoteRepository(session),
+        quote_events=OutsourceQuoteEventRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,

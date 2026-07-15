@@ -20,7 +20,7 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from model.assembly import TAssembly
-from model.enums import PartEventType, PartStatus, ShelfZone
+from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone
 from model.part import TPart
 from model.shelf import TShelf
 from model.worker import TWorker
@@ -55,6 +55,7 @@ def _make_part(
     current_holder_id: int | None = None,
     assembly_id: int | None = None,
     customer_id: int = 1,
+    next_process_id: int | None = None,
 ) -> MagicMock:
     """Build a mock TPart with the given attribute values.
 
@@ -82,6 +83,7 @@ def _make_part(
     part.current_holder_id = current_holder_id
     part.assembly_id = assembly_id
     part.placed_at = None
+    part.next_process_id = next_process_id
     part.sm = MagicMock()
     return part
 
@@ -257,6 +259,24 @@ def mock_outsource_company_process():
 
 
 @pytest.fixture
+def mock_outsource_quotes():
+    from repository.outsource_quote import OutsourceQuoteRepository
+    repo = OutsourceQuoteRepository.__new__(OutsourceQuoteRepository)
+    repo.get_one_approved = AsyncMock(return_value=None)
+    repo.update = AsyncMock(side_effect=lambda q: q)
+    return repo
+
+
+@pytest.fixture
+def mock_quote_events():
+    from repository.outsource_quote_event import OutsourceQuoteEventRepository
+    repo = OutsourceQuoteEventRepository.__new__(OutsourceQuoteEventRepository)
+    repo.add = MagicMock(side_effect=lambda ev: ev)
+    repo.create = AsyncMock(side_effect=lambda ev: ev)
+    return repo
+
+
+@pytest.fixture
 def service(
     mock_parts: PartRepository,
     mock_customers: CustomerRepository,
@@ -269,6 +289,8 @@ def service(
     mock_work_type_process,
     mock_outsource_companies,
     mock_outsource_company_process,
+    mock_outsource_quotes,
+    mock_quote_events,
 ) -> PartService:
     """PartService wired to mock repositories.
 
@@ -288,6 +310,8 @@ def service(
         work_type_process=mock_work_type_process,
         outsource_companies=mock_outsource_companies,
         outsource_company_process=mock_outsource_company_process,
+        outsource_quotes=mock_outsource_quotes,
+        quote_events=mock_quote_events,
         broadcaster=None,
         event_broadcaster=None,
     )
@@ -1728,7 +1752,7 @@ class TestSendToOutsource:
 
     async def test_pending_to_outsource_happy(
         self, service, mock_parts, mock_outsource_companies, mock_outsource_company_process,
-        mock_processes,
+        mock_processes, mock_outsource_quotes, mock_quote_events,
     ) -> None:
         part = _make_part(status=PartStatus.PENDING.value, location="OFFICE")
         mock_parts.get_by_id = AsyncMock(return_value=part)
@@ -1752,6 +1776,12 @@ class TestSendToOutsource:
             return_value=[99],
         )
 
+        # 2026-07-16：必须有一份 APPROVED 报价（防御闸）
+        approved_quote = MagicMock()
+        approved_quote.id = 800
+        approved_quote.sm = MagicMock()  # state machine 用 mark_used
+        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=approved_quote)
+
         mock_out = _make_part_out()
         service._to_out = AsyncMock(return_value=[mock_out])
 
@@ -1763,6 +1793,9 @@ class TestSendToOutsource:
         )
         assert result == mock_out
         part.sm.send_to_outsource.assert_called_once()
+        # 2026-07-16：发送成功会 mark_used 该报价
+        approved_quote.sm.mark_used.assert_called_once()
+        mock_outsource_quotes.update.assert_awaited_with(approved_quote)
 
     async def test_company_not_found(
         self, service, mock_parts, mock_outsource_companies, mock_processes,
@@ -1959,3 +1992,120 @@ class TestReceiveFromOutsourceToInspection:
                 1001, ReceiveToInspectionRequest(shelf_id="999"),
             )
         assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
+
+
+class TestSendToOutsourceDefenseGate:
+    """2026-07-16：send_to_outsource 防御性扩展（状态资格 + 已批报价）。"""
+
+    async def test_no_approved_quote(
+        self, service, mock_parts, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+    ) -> None:
+        """无 APPROVED 报价 → BIZ_OUTSOURCE_QUOTE_NOT_APPROVED 400。"""
+        part = _make_part(status=PartStatus.PENDING.value, location="OFFICE")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=500, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车",
+                        category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[99],
+        )
+        # 没有 APPROVED 报价
+        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=None)
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="99",
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED
+
+    async def test_status_not_eligible(
+        self, service, mock_parts, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+    ) -> None:
+        """IN_PROCESS + 工人手中（location=WORKER） → 拒绝发送外协。"""
+        # worker 持有 → location=WORKER → 不在 PRODUCTION_SHELF
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location="WORKER",
+            current_holder_id=42,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=500, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车",
+                        category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[99],
+        )
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="99",
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_PART_NOT_OUTSOURCEABLE
+
+    async def test_inprocess_outsource_process_eligible(
+        self, service, mock_parts, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+        mock_quote_events,
+    ) -> None:
+        """IN_PROCESS + PRODUCTION_SHELF + 下一道 OUTSOURCE + 有报价 → 成功。
+
+        PENDING 之外唯一允许的状态资格组合。
+        """
+        # 准备 OUTSOURCE 工序对象用于读取 next_process.category
+        from model.process import TProcess
+        out_proc = TProcess(id=200, code="外工序",
+                            category=ProcessCategory.OUTSOURCE.value,
+                            sort_order=0, name="下道")
+        out_proc.created_at = datetime(2025, 1, 1)
+        out_proc.updated_at = datetime(2025, 1, 1)
+        out_proc.description = None
+        out_proc.deleted_at = None
+        # mock_processes.get_by_id 在校验 send proc 时返这个 OUTSOURCE 工序
+        # 在校验 next_process_id 时也返这个 OUTSOURCE 工序
+        mock_processes.get_by_id = AsyncMock(return_value=out_proc)
+
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            next_process_id=200,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=500, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[200],
+        )
+        approved_quote = MagicMock()
+        approved_quote.id = 800
+        approved_quote.sm = MagicMock()
+        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=approved_quote)
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        from schema.part import SendToOutsourceRequest
+        result = await service.send_to_outsource(
+            1001, SendToOutsourceRequest(
+                outsource_company_id="500", next_process_id="200",
+            ),
+        )
+        assert result == mock_out
+        part.sm.send_to_outsource.assert_called_once()
+        approved_quote.sm.mark_used.assert_called_once()

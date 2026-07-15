@@ -23,11 +23,13 @@ from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
-from model.enums import PartEventType, PartStatus, ProcessCategory, ShelfZone
+from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone
 from repository.applicant import ApplicantRepository
 from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
+from repository.outsource_quote import OutsourceQuoteRepository
+from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
@@ -108,6 +110,8 @@ class PartService:
         files: PartFileRepository | None = None,
         outsource_companies: OutsourceCompanyRepository | None = None,
         outsource_company_process: OutsourceCompanyProcessRepository | None = None,
+        outsource_quotes: OutsourceQuoteRepository | None = None,
+        quote_events: OutsourceQuoteEventRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
@@ -127,6 +131,8 @@ class PartService:
         self.files = files  # 可选：批量新建零件时上传 PDF 图纸
         self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
         self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
+        self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御 + mark_used）
+        self.quote_events = quote_events  # 2026-07-16：外协报价事件（mark_used 写 USED 事件）
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
         self._current_user = current_user
@@ -729,13 +735,69 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 5. 状态机转换
+        # 5. [2026-07-16] 状态资格防御闸：UI 按钮也会校验，这里兜底
+        next_process_obj = (
+            await self._get_process(part.next_process_id)
+            if part.next_process_id else None
+        )
+        next_cat = next_process_obj.category if next_process_obj else None
+        allowed = (
+            part.status == PartStatus.PENDING.value
+            or (
+                part.status == PartStatus.IN_PROCESS.value
+                and part.location == PartLocation.PRODUCTION_SHELF.value
+                and next_cat == ProcessCategory.OUTSOURCE.value
+            )
+        )
+        if not allowed:
+            raise BizError(
+                code=ErrCode.BIZ_PART_NOT_OUTSOURCEABLE,
+                message=(
+                    f"零件状态 status={part.status} location={part.location} "
+                    f"next_process.category={next_cat}，"
+                    "不符合发送外协条件（仅 PENDING 或 IN_PROCESS + PRODUCTION_SHELF "
+                    "+ 下一道=OUTSOURCE）"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 6. [2026-07-16] 已批报价防御闸
+        if self.outsource_quotes is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing outsource quote repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        approved_quote = await self.outsource_quotes.get_one_approved(
+            part_id=part.id,
+            outsource_company_id=company_id_int,
+            process_id=process_id_int,
+        )
+        if approved_quote is None:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
+                message=(
+                    f"未找到「{company.name} / {process.code}」的已批准报价，"
+                    "请先在「报价一览」中提交并由 MANAGER 审核通过"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 7. 状态机转换
         part.sm.send_to_outsource(
             outsource_company=company, process=process,
             event_repo=self.events, created_by=self._user_id,
         )
         part.updated_by = self._user_id
         await self.parts.update(part)
+
+        # 8. [2026-07-16] 把 APPROVED 报价 mark_used → USED + 写事件
+        approved_quote.sm.mark_used(
+            event_repo=self.quote_events, created_by=self._user_id,
+        )
+        approved_quote.updated_by = self._user_id
+        await self.outsource_quotes.update(approved_quote)
+
         await self._broadcast()
         items = await self._to_out([part])
         await self._broadcast_event(
