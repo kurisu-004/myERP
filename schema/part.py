@@ -355,6 +355,24 @@ class SendToOutsourceRequest(BaseModel):
         return v
 
 
+class ReceiveToInspectionRequest(BaseModel):
+    """2026-07-16 新增：OUTSOURCE → INSPECTION「外协回收送检」分支。
+
+    - shelf_id 必须是 INSPECTION 区 active 货架
+    - auto_pass_inspection=True：一次性走「外协→品检→自动通过品检→待送货」三步压缩流程
+      （信任外协质量时用；audit 链仍保留 OUTSOURCE→INSPECTION→READY_TO_SHIP 两条事件）
+    """
+
+    shelf_id: str = Field(
+        min_length=1,
+        description="品检货架雪花 ID 字符串；service 端 parse_snowflake_id 转 int",
+    )
+    auto_pass_inspection: bool = Field(
+        default=False,
+        description="True 时连发 pass_inspection 一次性推到 READY_TO_SHIP",
+    )
+
+
 class PartEventOut(BaseModel):
     """零件事件流条目。"""
 

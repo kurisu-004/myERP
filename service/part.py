@@ -52,6 +52,7 @@ from schema.part import (
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
+    ReceiveToInspectionRequest,
     SendToOutsourceRequest,
 )
 from service._id_parse import parse_snowflake_id
@@ -785,6 +786,83 @@ class PartService:
             ),
         )
         return items[0]
+
+    async def receive_from_outsource_to_inspection(
+        self, part_id: int, data: ReceiveToInspectionRequest,
+    ) -> PartOut:
+        """2026-07-16：OUTSOURCE → INSPECTION：外协件直接送检（跳过生产货架）。
+
+        body:
+        - shelf_id（必须 INSPECTION 区 active）
+        - auto_pass_inspection：True 时一次性把状态推到 READY_TO_SHIP
+          （相当于「外协 → 品检 → 通过品检 → 待送货」两步压缩为一次操作；
+          用于信任外协质量的快捷流程）。
+
+        复用现有 pass_inspection 实现二次转换（同一事务连续两次状态机调用）。
+        """
+        part = await self._get_part_or_404(part_id)
+        target_shelf = await self._validate_inspection_shelf(data.shelf_id)
+
+        # 第一次转换：OUTSOURCE → INSPECTION
+        part.sm.inspect_from_outsource(
+            target_shelf=target_shelf,
+            event_repo=self.events, created_by=self._user_id,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "RECEIVED_FROM_OUTSOURCE_INSPECTED",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+                shelf_code=target_shelf.code,
+            ),
+        )
+
+        # auto_pass_inspection=True：再触发 INSPECTION → READY_TO_SHIP（品检通过）
+        if data.auto_pass_inspection:
+            return await self.pass_inspection(part.id)
+        return items[0]
+
+    async def _validate_inspection_shelf(self, shelf_id: str) -> TShelf:
+        """校验品检货架存在 + 启用 + zone=INSPECTION。"""
+        if not shelf_id:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="shelf_id 必填",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        shelf_id_int = parse_snowflake_id(shelf_id, field_name="shelf_id")
+        if shelf_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"shelf_id 不是合法的雪花 ID：{shelf_id!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        shelf = await self.shelves.get_by_id(shelf_id_int)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {shelf_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not shelf.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message=f"shelf「{shelf.code}」已停用",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if shelf.zone != ShelfZone.INSPECTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS,
+                message=(
+                    f"货架「{shelf.code}」不是品检区(INSPECTION)，"
+                    "外协回收送检请选用 INSPECTION 货架"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return shelf
 
     async def release_from_programming(
         self, part_id: int, data: PlaceOnShelfRequest

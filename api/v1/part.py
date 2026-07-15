@@ -27,6 +27,7 @@ from schema.part import (
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
+    ReceiveToInspectionRequest,
     SendToOutsourceRequest,
 )
 from service import PartService
@@ -304,6 +305,26 @@ async def receive_part_from_outsource(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.receive_from_outsource(part_id, payload)
+
+
+@router.post(
+    "/{part_id}/receive-from-outsource-to-inspection",
+    response_model=PartOut,
+    summary=(
+        "OUTSOURCE → INSPECTION：外协件直接送检（MANAGER / CLERK，2026-07-16 新增）"
+    ),
+    description=(
+        "body: shelf_id (INSPECTION 区 active 货架) + auto_pass_inspection (可选)。"
+        "auto_pass_inspection=true 时一次性 OUTSOURCE → INSPECTION → READY_TO_SHIP。"
+    ),
+    dependencies=_office_dep,
+)
+async def receive_part_from_outsource_to_inspection(
+    part_id: int,
+    payload: ReceiveToInspectionRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.receive_from_outsource_to_inspection(part_id, payload)
 
 
 @router.post(

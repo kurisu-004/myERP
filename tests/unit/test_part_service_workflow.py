@@ -1903,3 +1903,59 @@ class TestReceiveFromOutsource:
                 1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=99),
             )
         assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS
+
+
+class TestReceiveFromOutsourceToInspection:
+    """2026-07-16：OUTSOURCE → INSPECTION：外协回收直接送检。"""
+
+    async def test_outsource_to_inspection_happy(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        """外协件送品检货架（auto_pass_inspection=False）。"""
+        from schema.part import ReceiveToInspectionRequest
+
+        part = _make_part(
+            status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY",
+            current_holder_id=500,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        shelf = _make_shelf(shelf_id=2, code="INSP-1", zone=ShelfZone.INSPECTION.value)
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        result = await service.receive_from_outsource_to_inspection(
+            1001, ReceiveToInspectionRequest(shelf_id="2", auto_pass_inspection=False),
+        )
+        assert result == mock_out
+        part.sm.inspect_from_outsource.assert_called_once()
+
+    async def test_outsource_to_inspection_production_shelf_rejected(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        """PRODUCTION 货架被拒（zone 错）。"""
+        from schema.part import ReceiveToInspectionRequest
+
+        part = _make_part(status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        shelf = _make_shelf(shelf_id=3, code="P1", zone=ShelfZone.PRODUCTION.value)
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+
+        with pytest.raises(BizError) as exc:
+            await service.receive_from_outsource_to_inspection(
+                1001, ReceiveToInspectionRequest(shelf_id="3"),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+
+    async def test_outsource_to_inspection_shelf_not_found(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        from schema.part import ReceiveToInspectionRequest
+        part = _make_part(status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_shelves.get_by_id = AsyncMock(return_value=None)
+        with pytest.raises(BizError) as exc:
+            await service.receive_from_outsource_to_inspection(
+                1001, ReceiveToInspectionRequest(shelf_id="999"),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND

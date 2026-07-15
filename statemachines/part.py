@@ -74,6 +74,8 @@ class PartStateMachine(StateChart):
         | WITH_WORKER.to(OUTSOURCE)
     )
     receive_from_outsource = OUTSOURCE.to(ON_SHELF)
+    # 2026-07-16：外协回收「直接进品检」分支（跳过生产货架）。
+    inspect_from_outsource = OUTSOURCE.to(INSPECTION)
 
     cancel = (
         PENDING.to(CANCELLED)
@@ -551,5 +553,34 @@ class PartStateMachine(StateChart):
                 from_status=PartStatus.OUTSOURCE,
                 to_status=PartStatus.IN_PROCESS,
                 note=" ".join(parts),
+                created_by=created_by,
+            ))
+
+    def on_inspect_from_outsource(
+        self,
+        target_shelf=None,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """2026-07-16：OUTSOURCE → INSPECTION：外协件直接送检（跳过生产货架）。
+
+        shelf/process 由 on_enter_INSPECTION 设置（location=INSPECTION_SHELF,
+        holder=shelf.id）；本回调只写事件。
+
+        note 模板: "外协回收送检：{shelf}"
+        """
+        if event_repo and self.model:
+            shelf_code = (
+                target_shelf.code
+                if target_shelf and hasattr(target_shelf, "code") else ""
+            )
+            event_repo.add(TPartEvent(
+                part_id=self.model.id,
+                event_type=PartEventType.RECEIVED_FROM_OUTSOURCE_INSPECTED,
+                from_status=PartStatus.OUTSOURCE,
+                to_status=PartStatus.INSPECTION,
+                note=f"外协回收送检：{shelf_code}" if shelf_code else "外协回收送检",
                 created_by=created_by,
             ))
