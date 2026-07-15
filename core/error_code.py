@@ -10,6 +10,7 @@ class ErrCode(IntEnum):
     FORBIDDEN = 40300
     NOT_FOUND = 40400
     CONFLICT = 40900
+    BIZ_VERSION_CONFLICT = 40901   # 乐观锁冲突：当前 version 与 DB 不一致
 
     INTERNAL_ERROR = 50000
     DATABASE_ERROR = 50001
@@ -101,3 +102,12 @@ class ErrCode(IntEnum):
     BIZ_APPLICANT_DUPLICATE_NAME = 21002   # 同一一级客户下重名（DB partial unique 兜底）
     BIZ_APPLICANT_BAD_CUSTOMER = 21003     # customer 不存在或不是一级
     BIZ_APPLICANT_IN_USE = 21004           # 被未软删 part.applicant_name 引用 → 拒软删
+
+    # ---- 外协公司（t_outsource_company + t_outsource_company_process）----
+    # 212xx：外协公司相关（2026-07-15 新增）
+    BIZ_OUTSOURCE_COMPANY_NOT_FOUND = 21201
+    BIZ_OUTSOURCE_COMPANY_DUPLICATE = 21202    # uk_t_outsource_company_name 部分唯一兜底
+    BIZ_OUTSOURCE_COMPANY_BAD_PROCESS = 21203  # 工序不存在 / 不是 OUTSOURCE/INHOUSE 类别
+    BIZ_OUTSOURCE_PROCESS_NOT_MAPPED = 21204   # 公司未映射该 OUTSOURCE 工序
+    BIZ_OUTSOURCE_COMPANY_IN_USE = 21205       # 被 part OUTSOURCE 引用 / 仍映射工序
+    BIZ_PART_NOT_OUTSOURCEABLE = 21206         # 当前状态不允许发送外协（兜底，正常流不该撞）

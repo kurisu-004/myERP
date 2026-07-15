@@ -23,9 +23,11 @@ from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
-from model.enums import PartEventType, PartStatus, ShelfZone
+from model.enums import PartEventType, PartStatus, ProcessCategory, ShelfZone
 from repository.applicant import ApplicantRepository
 from repository.customer import CustomerRepository
+from repository.outsource_company import OutsourceCompanyRepository
+from repository.outsource_company_process import OutsourceCompanyProcessRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
@@ -50,6 +52,7 @@ from schema.part import (
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
+    SendToOutsourceRequest,
 )
 from service._id_parse import parse_snowflake_id
 from service.part_file import PartFileService
@@ -102,6 +105,8 @@ class PartService:
         applicants: ApplicantRepository | None = None,
         shelf_process_repo: ShelfProcessRepository | None = None,
         files: PartFileRepository | None = None,
+        outsource_companies: OutsourceCompanyRepository | None = None,
+        outsource_company_process: OutsourceCompanyProcessRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
@@ -119,6 +124,8 @@ class PartService:
         self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
         self.shelf_process_repo = shelf_process_repo  # 可选：用于放回时校验工序属于货架
         self.files = files  # 可选：批量新建零件时上传 PDF 图纸
+        self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
+        self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
         self._current_user = current_user
@@ -635,6 +642,146 @@ class PartService:
             "SENT_TO_PROGRAMMING",
             self._banner_payload(
                 part, customer_path=items[0].customer_path,
+            ),
+        )
+        return items[0]
+
+    async def send_to_outsource(
+        self, part_id: int, data: SendToOutsourceRequest,
+    ) -> PartOut:
+        """PENDING / ON_SHELF / WITH_WORKER → OUTSOURCE：把零件发送给外协公司。
+
+        校验：
+        - outsource_company_id 存在 + 未软删 + is_active=True
+        - next_process_id 存在 + category=OUTSOURCE
+        - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
+
+        note by design：当前实现与 place_on_shelf / pick_up_by_scan 同款风险——
+        不带行锁、不带版本号。两位 CLERK 同时发送同一零件到不同公司时，
+        可能产生双重 SENT_TO_OUTSOURCE 事件；与既有代码风险等级一致。
+        """
+        if self.outsource_companies is None or self.outsource_company_process is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing outsource repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        part = await self._get_part_or_404(part_id)
+
+        # 1. parse_snowflake_id(company_id) → int
+        company_id_int = parse_snowflake_id(
+            data.outsource_company_id, field_name="outsource_company_id",
+        )
+        if company_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND,
+                message=(
+                    f"outsource company {data.outsource_company_id!r} not found"
+                ),
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # 2. 公司存在 + 未软删 + 启用
+        company = await self.outsource_companies.get_by_id(company_id_int)
+        if company is None or not company.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND,
+                message=(
+                    f"outsource company {data.outsource_company_id} not found"
+                ),
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # 3. 工序存在 + OUTSOURCE 类别
+        process_id_int = parse_snowflake_id(
+            data.next_process_id, field_name="next_process_id",
+        )
+        if process_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"next_process_id 不是合法的雪花 ID 字符串："
+                    f"{data.next_process_id!r}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        process = await self._get_process(process_id_int)
+        if process.category != ProcessCategory.OUTSOURCE.value:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS,
+                message=(
+                    f"工序「{process.code}」不是 OUTSOURCE 类别，"
+                    "无法用于发送外协"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        # 4. 公司映射了该工序
+        mapped = await self.outsource_company_process.list_process_ids_by_outsource_company(
+            company_id_int, include_deleted=False,
+        )
+        if process.id not in mapped:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_PROCESS_NOT_MAPPED,
+                message=(
+                    f"外协公司「{company.name}」未映射工序「{process.code}」，"
+                    "请先在外协管理中维护工序能力清单"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 5. 状态机转换
+        part.sm.send_to_outsource(
+            outsource_company=company, process=process,
+            event_repo=self.events, created_by=self._user_id,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "SENT_TO_OUTSOURCE",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+                shelf_code=None,
+            ),
+        )
+        return items[0]
+
+    async def receive_from_outsource(
+        self, part_id: int, data: PlaceOnShelfRequest,
+    ) -> PartOut:
+        """OUTSOURCE → IN_PROCESS：从外协回收，下发到生产货架继续加工。
+
+        body 复用 PlaceOnShelfRequest（shelf_id + next_process_id）；
+        额外校验：next_process_id 必须是 INHOUSE（外协回来后通常进车间）。
+        """
+        part = await self._get_part_or_404(part_id)
+        shelf, process = await self._validate_production_shelf_and_process(
+            data.shelf_id, data.next_process_id,
+        )
+        if process.category != ProcessCategory.INHOUSE.value:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS,
+                message=(
+                    f"工序「{process.code}」不是 INHOUSE 类别，"
+                    "外协回收后必须回到车间自产工序"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
+        part.sm.receive_from_outsource(
+            shelf=shelf, process=process,
+            event_repo=self.events, created_by=self._user_id,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "RECEIVED_FROM_OUTSOURCE",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+                shelf_code=shelf.code,
             ),
         )
         return items[0]
@@ -1433,6 +1580,19 @@ class PartService:
             workers = await self.workers.list_by_ids(worker_ids)
             worker_map = {w.id: w.name for w in workers}
 
+        # 批查外协公司名（location=OUTSOURCE_COMPANY 的行，2026-07-15）
+        outsource_company_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location == "OUTSOURCE_COMPANY" and p.current_holder_id
+        ]
+        outsource_company_map: dict[int, str] = {}
+        if outsource_company_ids and self.outsource_companies is not None:
+            companies = await self.outsource_companies.list_by_ids(
+                outsource_company_ids,
+            )
+            outsource_company_map = {c.id: c.name for c in companies}
+
         # 批查下一道工序名称（避免前端为「下一道工序列」再发一次 /processes 请求）
         process_ids = {
             int(p.next_process_id)
@@ -1466,6 +1626,7 @@ class PartService:
             holder_kind: str | None = None
             shelf_code: str | None = None
             worker_name: str | None = None
+            outsource_company_name: str | None = None
             if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and p.current_holder_id:
                 holder_kind = "shelf"
                 shelf_id = int(p.current_holder_id)
@@ -1475,6 +1636,11 @@ class PartService:
             elif p.location == "WORKER" and p.current_holder_id:
                 holder_kind = "worker"
                 worker_name = worker_map.get(int(p.current_holder_id))
+            elif p.location == "OUTSOURCE_COMPANY" and p.current_holder_id:
+                holder_kind = "outsource_company"
+                outsource_company_name = outsource_company_map.get(
+                    int(p.current_holder_id),
+                )
 
             # 所在位置的人类可读描述（2026-07-11 装配体子件表使用）
             holder_display: str | None = None
@@ -1483,12 +1649,15 @@ class PartService:
                 holder_display = f"货架 {prefix}{shelf_code}"
             elif worker_name is not None:
                 holder_display = f"工人 {worker_name}"
+            elif outsource_company_name is not None:
+                holder_display = f"外协 {outsource_company_name}"
             elif p.location == "OFFICE":
                 holder_display = "编程员持有"
 
             out.append(
                 PartOut(
                     id=p.id,
+                    version=p.version,
                     serial_no=p.serial_no,
                     name=p.name,
                     drawing_no=p.drawing_no,
@@ -1507,6 +1676,7 @@ class PartService:
                     placed_at=getattr(p, "placed_at", None),
                     location=p.location,
                     worker_name=worker_name,
+                    outsource_company_name=outsource_company_name,
                     current_holder_display=holder_display,
                     next_process_id=p.next_process_id,
                     next_process_name=process_map.get(int(p.next_process_id))
@@ -1593,6 +1763,7 @@ class PartService:
             out.append(
                 PartListItem(
                     id=p.id,
+                    version=p.version,
                     serial_no=p.serial_no,
                     name=p.name,
                     drawing_no=p.drawing_no,

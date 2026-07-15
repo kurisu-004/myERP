@@ -1,21 +1,23 @@
-"""data_init: 生产必要初始数据（工种/工人/账号/菜单/角色菜单/流水号计数器）
+"""data_init: 生产必要初始数据（工种/工人/账号/菜单/角色菜单/流水号计数器/工序/外协菜单）
 
 Revision ID: 000000000002
 Revises: 000000000001
-Create Date: 2026-07-10
+Create Date: 2026-07-10（多次 squash）
 
 说明（squash 合并 —— 生产必要种子）：
 - 本文件是 myERP 的**唯一数据种子迁移**，把历史 prod_data 类别的所有必要种子
-  （prod_seed / inspection_seed / delivery_note_menu / seed_serial_counter_a_z）
-  合并为一份「必要初始数据」。**不含任何 dev 假数据**（假零件/假客户/假工人/
+  （prod_seed / inspection_seed / delivery_note_menu / seed_serial_counter_a_z /
+  seed_outsource）合并为一份「必要初始数据」。**不含任何 dev 假数据**（假零件/假客户/假工人/
   changeme dev 账号等已全部剔除）。
 - 数据来源：docs/26洪升宏在职人员统计表.xlsx（19 名在职员工）。
 - 写入内容：
   * 9 工种
+  * 10 工序（5 INHOUSE：车/铣/磨/CNC/线切割；5 OUTSOURCE：数控车/慢走丝/外圆磨/热处理/深孔钻）
+  * 5 条 工种↔工序 映射（车床→车 / 铣床→铣 / 磨床→磨 / 线切割→线切割 / CNC操机→CNC）
   * 19 真实工人（badge_code=phone）
   * 6 账号：admin(MANAGER) + 陈燕/翁美月(CLERK) + 童敏华(CNC_PROGRAMMER)
     + 黄道玉/曾学辉(INSPECTOR)，密码 changeme（bcrypt rounds=12）
-  * 22 菜单（20 base + inspection_pending + delivery_notes_new）+ 角色菜单关联
+  * 23 菜单（22 base + 外协管理「outsource_list」）+ 角色菜单关联
   * t_serial_counter 预置 A-Z 全 26 行（counter=0）
 - 所有 INSERT 走 ON CONFLICT，幂等可重跑。
 """
@@ -47,6 +49,39 @@ _WORK_TYPES: list[tuple[str, str, int]] = [
     ("文员",     "文员",     80),
     ("送货司机", "送货司机", 90),
 ]
+
+
+# =============================================================================
+# 工序（10 条：5 INHOUSE + 5 OUTSOURCE；2026-07-15 第四次 squash 合并自
+# prod_data/005_seed_outsource）
+# =============================================================================
+_PROCESSES: list[tuple[str, str, str, int]] = [
+    # INHOUSE 5 — 与既有工种名匹配（见下方 _WORK_TYPE_PROCESS_MAP）
+    ("车",      "车床加工",   "INHOUSE",   10),
+    ("铣",      "铣床加工",   "INHOUSE",   20),
+    ("磨",      "磨床加工",   "INHOUSE",   30),
+    ("CNC",     "CNC加工",    "INHOUSE",   40),
+    ("线切割",  "线切割",     "INHOUSE",   50),
+    # OUTSOURCE 5 — 数控车 / 慢走丝 / 外圆磨 / 热处理 / 深孔钻
+    ("数控车",  "数控车外协", "OUTSOURCE", 110),
+    ("慢走丝",  "慢走丝外协", "OUTSOURCE", 120),
+    ("外圆磨",  "外圆磨外协", "OUTSOURCE", 130),
+    ("热处理",  "热处理外协", "OUTSOURCE", 140),
+    ("深孔钻",  "深孔钻外协", "OUTSOURCE", 150),
+]
+
+
+# =============================================================================
+# 工种 ↔ 工序 映射（按 name 匹配，5 条；2026-07-15 第四次 squash 合并自
+# prod_data/005_seed_outsource）
+# =============================================================================
+_WORK_TYPE_PROCESS_MAP: dict[str, list[str]] = {
+    "车床":   ["车"],
+    "铣床":   ["铣"],
+    "磨床":   ["磨"],
+    "线切割": ["线切割"],
+    "CNC操机": ["CNC"],
+}
 
 
 # =============================================================================
@@ -119,6 +154,7 @@ _MENUS: list[tuple[str, str | None, str, str | None, str, int]] = [
     ("customer_management", None,             "客户管理",   None,          "OfficeBuilding", 15),
     ("customers_list",      "customer_management", "客户一览", "/customers", "Connection", 10),
     ("applicants_list",     "customer_management", "申请人一览", "/applicants", "User",      20),
+    ("outsource_list",      None,             "外协管理",   "/outsource",  "Promotion",    35),
 ]
 
 _MANAGER_MENUS: list[str] = [
@@ -128,6 +164,7 @@ _MANAGER_MENUS: list[str] = [
     "settings_root", "work_types_list", "processes_list", "work_type_processes_list",
     "pending_programming",
     "customer_management", "customers_list", "applicants_list",
+    "outsource_list",
 ]
 
 _CLERK_MENUS: list[str] = [
@@ -137,6 +174,8 @@ _CLERK_MENUS: list[str] = [
     # 此前仅前端侧栏入口缺失）。inspection_pending / delivery_notes_new 仍由
     # 各 seed 函数单独授予，无需在此列出。
     "customer_management", "customers_list", "applicants_list",
+    # 2026-07-15：CLERK 也能进外协管理（与 MANAGER 同款权限）。
+    "outsource_list",
 ]
 
 _CNC_PROGRAMMER_MENUS: list[str] = [
@@ -161,6 +200,8 @@ _SHELF_ACCOUNT_MENUS: list[str] = [
 def upgrade() -> None:
     bind = op.get_bind()
     _seed_work_types(bind)
+    _seed_processes(bind)
+    _seed_work_type_process_map(bind)
     _seed_workers(bind)
     _seed_users(bind)
     _seed_menus(bind)
@@ -183,6 +224,75 @@ def _seed_work_types(bind) -> None:
             ),
             {"id": new_id(), "code": code, "name": name, "sort_order": sort_order},
         )
+
+
+def _seed_processes(bind) -> None:
+    """灌入 10 条 t_process（5 INHOUSE + 5 OUTSOURCE；2026-07-15 第四次 squash 合并）。"""
+    for code, name, category, sort_order in _PROCESSES:
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_process
+                  (id, code, name, category, sort_order, description,
+                   created_at, updated_at)
+                VALUES
+                  (:id, :code, :name, :category, :sort_order, NULL,
+                   now(), now())
+                ON CONFLICT (code) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {
+                "id": new_id(),
+                "code": code,
+                "name": name,
+                "category": category,
+                "sort_order": sort_order,
+            },
+        )
+
+
+def _seed_work_type_process_map(bind) -> None:
+    """按 _WORK_TYPE_PROCESS_MAP 灌入 5 条工种-工序映射（2026-07-15 squash 合并）。"""
+    # 1. 解析 work_type_code → id
+    rows = bind.execute(
+        sa.text("SELECT code, id FROM t_work_type WHERE deleted_at IS NULL")
+    ).fetchall()
+    wt_id_by_code: dict[str, int] = {code: int(wid) for code, wid in rows}
+
+    # 2. 解析 process_code → id
+    rows = bind.execute(
+        sa.text("SELECT code, id FROM t_process WHERE deleted_at IS NULL")
+    ).fetchall()
+    proc_id_by_code: dict[str, int] = {code: int(pid) for code, pid in rows}
+
+    # 3. 灌入
+    for wt_code, proc_codes in _WORK_TYPE_PROCESS_MAP.items():
+        wt_id = wt_id_by_code.get(wt_code)
+        if wt_id is None:
+            continue
+        for idx, proc_code in enumerate(proc_codes):
+            proc_id = proc_id_by_code.get(proc_code)
+            if proc_id is None:
+                continue
+            bind.execute(
+                sa.text(
+                    """
+                    INSERT INTO t_work_type_process
+                      (id, work_type_id, process_id, sort_order,
+                       created_at, updated_at)
+                    VALUES
+                      (:id, :wt, :proc, :ord, now(), now())
+                    ON CONFLICT (work_type_id, process_id)
+                      WHERE deleted_at IS NULL DO NOTHING
+                    """
+                ),
+                {
+                    "id": new_id(),
+                    "wt": wt_id,
+                    "proc": proc_id,
+                    "ord": idx,
+                },
+            )
 
 
 def _seed_workers(bind) -> None:

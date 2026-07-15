@@ -19,6 +19,7 @@ from schema.menu import MenuNodeOut  # noqa: E402
 # ============================================================
 class UserRoleOut(BaseModel):
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     role: str                 # UserRole.value
     scope_type: str | None = None
     scope_id: IdStr | None = None
@@ -46,6 +47,7 @@ class UserAddRoleRequest(BaseModel):
 # ============================================================
 class UserOut(BaseModel):
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     username: str
     full_name: str
     phone: str | None = None

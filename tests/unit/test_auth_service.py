@@ -15,9 +15,12 @@ from repository.menu import MenuRepository
 from repository.shelf import ShelfRepository
 from repository.user import UserRepository, UserRoleRepository
 from schema.user import LoginRequest
-from service.auth import AuthService
 
-pytestmark = pytest.mark.asyncio
+# 2026-07-15 修复 PytestWarning：pytest-asyncio `asyncio_mode=auto`（pytest.ini）
+# 已自动把 `async def test_*` 跑成 async 测试；显式 `pytestmark = pytest.mark.asyncio`
+# 是冗余的，且会污染同文件下的 `def test_*`（被加上 asyncio 标记导致 pytest 警告）。
+# 删掉全局 pytestmark 即可：async 测试靠 auto 模式自动识别。
+from service.auth import AuthService
 
 
 # ======================================================================

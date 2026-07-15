@@ -2,6 +2,8 @@ from .applicant import ApplicantRepository
 from .assembly import AssemblyRepository
 from .customer import CustomerRepository
 from .menu import MenuRepository
+from .outsource_company import OutsourceCompanyRepository
+from .outsource_company_process import OutsourceCompanyProcessRepository
 from .part import PartRepository
 from .part_event import PartEventRepository
 from .part_file import PartFileRepository
@@ -19,6 +21,8 @@ __all__ = [
     "AssemblyRepository",
     "CustomerRepository",
     "MenuRepository",
+    "OutsourceCompanyProcessRepository",
+    "OutsourceCompanyRepository",
     "PartEventRepository",
     "PartFileRepository",
     "PartRepository",

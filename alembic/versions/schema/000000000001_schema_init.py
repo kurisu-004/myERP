@@ -1,30 +1,37 @@
-"""schema_init: 一次性建全部表/索引/约束（squash 合并）
+"""schema_init: 一次性建全部表/索引/约束（squash 合并，2026-07-15 第四次 squash）
 
 Revision ID: 000000000001
 Revises:
-Create Date: 2026-07-10
+Create Date: 2026-07-10（多次 squash）
 
 说明：
 - 本文件是 myERP 的**唯一 schema 迁移**，把历史上分散的所有 DDL 迁移
   （init_schema / cnc_program / applicant / shelf_process / assembly_serial_no /
   customer_serial_prefix / unify_part_files / shelf_display_order /
-  user_refresh_token_version / part_event_operator / part_file_sha_and_kinds）
-  合并为一份「最终 schema」。
-- 2026-07-14 重新 squash：把 14b0e5f 之后的 003 (event_operator) + 004
-  (file_sha+kinds) 合并进来；data_init (002) 已含新菜单映射。
-- **fresh-install only**：假定数据库为空。
+  user_refresh_token_version / part_event_operator / part_file_sha_and_kinds /
+  drop_process_is_inspection / outsource_company）合并为一份「最终 schema」。
+- **fresh-install only**：假定数据库为空。已有库需 `alembic stamp 000000000002` 对齐。
+- 2026-07-15 第四次 squash 增：
+  - 删 t_process.is_inspection 列（2026-07-15 dead 字段清理）
+  - 新增 t_outsource_company + t_outsource_company_process 两张表（外协管理）
+  - **所有 AuditMixin 表加 `version Integer NOT NULL DEFAULT 0` 列**；
+    SQLAlchemy `version_id_col` 自动给每条 UPDATE 加 `WHERE version=?`，
+    并在冲突时抛 `StaleDataError`（→ BizError `BIZ_VERSION_CONFLICT` 409）。
 - **不使用物理外键**（CLAUDE.md §1）：所有跨表引用都是普通列 + 普通索引。
 - **不使用 DB ENUM**：status 等一律 varchar，合法性由 Python Enum 在 service 层校验。
-- 审计字段列顺序与 model/audit.py:AuditMixin 严格对齐。
+- 审计字段列顺序与 model/audit.py:AuditMixin 严格对齐
+  （`version → created_at → created_by → updated_at → updated_by → deleted_at`）。
 - t_customer.id 用 autoincrement=False（不建 sequence）：全表统一雪花 ID，
   App 侧 default=new_id 显式传入。
 - 文件表已统一为 t_part_file（polymorphic kind），不再有 t_drawing_file /
   t_cnc_program。
 
-表清单（共 17 张）：
+表清单（共 19 张，含两张 legacy 死表）：
   t_customer / t_part / t_worker / t_work_type_process / t_process / t_work_type /
   t_part_event / t_serial_counter / t_assembly / t_part_file / t_user /
-  t_user_role / t_shelf / t_menu / t_role_menu / t_applicant / t_shelf_process
+  t_user_role / t_shelf / t_menu / t_role_menu / t_applicant / t_shelf_process /
+  t_outsource_company / t_outsource_company_process
+  + t_drawing_file（legacy 死表，仅保留 schema） / t_cnc_program（同）
 """
 from typing import Sequence, Union
 
@@ -37,6 +44,15 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# 乐观锁 version 列的工厂函数（避免每张表都重复整段 server_default + comment）
+def _version_col() -> sa.Column:
+    return sa.Column(
+        "version", sa.Integer(), nullable=False,
+        server_default=sa.text("0"),
+        comment="乐观锁版本号；每次 UPDATE 自增；冲突抛 BIZ_VERSION_CONFLICT 409",
+    )
+
+
 def upgrade() -> None:
     # =================================================================
     # 1) t_customer：邻接表，1 级 / 2 级客户
@@ -46,6 +62,8 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=False),
         sa.Column("name", sa.String(length=100), nullable=False),
         sa.Column("parent_id", sa.BigInteger, nullable=True),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -135,11 +153,13 @@ def upgrade() -> None:
             "next_process_id", sa.BigInteger(), nullable=True,
             comment="逻辑外键 → t_process.id；place_on_shelf / RETURNED 时更新",
         ),
-        sa.Column("customer_id", sa.BigInteger, nullable=False),
+        sa.Column("customer_id", sa.BigInteger(), nullable=False),
         sa.Column(
             "assembly_id", sa.BigInteger(), nullable=True,
             comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -223,6 +243,8 @@ def upgrade() -> None:
             "work_type_id", sa.BigInteger(), nullable=True,
             comment="逻辑外键 → t_work_type.id；NULL = 未分配工种",
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -269,6 +291,8 @@ def upgrade() -> None:
             server_default=sa.text("0"),
             comment="工序在工种映射内的显示顺序",
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column("created_at", sa.DateTime(), nullable=False,
                   server_default=sa.text("now()")),
@@ -300,7 +324,7 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 5) t_process：工序
+    # 5) t_process：工序（is_inspection 列已移除，2026-07-15 第四次 squash）
     # =================================================================
     op.create_table(
         "t_process",
@@ -311,17 +335,17 @@ def upgrade() -> None:
                   comment="工序名称（前端显示）"),
         sa.Column("category", sa.String(length=16), nullable=False,
                   comment="INHOUSE 自产 / OUTSOURCE 外协"),
-        sa.Column(
-            "is_inspection", sa.Boolean(), nullable=False,
-            server_default=sa.text("false"),
-            comment="是否品检工序",
-        ),
+        # 2026-07-15 删除 is_inspection 列：自始至终是「UI 提示」死字段，
+        # model / schema / service / 前端类型已同步清理；状态机 / 取件 / 品检
+        # 流程不依赖该列。
         sa.Column(
             "sort_order", sa.Integer(), nullable=False,
             server_default=sa.text("0"),
             comment="显示顺序",
         ),
         sa.Column("description", sa.String(length=200), nullable=True),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column("created_at", sa.DateTime(), nullable=False,
                   server_default=sa.text("now()")),
@@ -362,6 +386,8 @@ def upgrade() -> None:
             server_default=sa.text("0"),
             comment="显示顺序",
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column("created_at", sa.DateTime(), nullable=False,
                   server_default=sa.text("now()")),
@@ -382,7 +408,7 @@ def upgrade() -> None:
     op.create_index("ix_t_work_type_deleted_at", "t_work_type", ["deleted_at"])
 
     # =================================================================
-    # 7) t_part_event：订单全生命周期事件流（append-only）
+    # 7) t_part_event：订单全生命周期事件流（append-only，无 version）
     # =================================================================
     op.create_table(
         "t_part_event",
@@ -395,12 +421,13 @@ def upgrade() -> None:
         sa.Column("drawing_code", sa.String(length=100), nullable=True),
         sa.Column("badge_code", sa.String(length=50), nullable=True),
         sa.Column("note", sa.String(length=500), nullable=True),
+        # EventTimestampMixin（append-only，无 version / updated_at / soft delete）
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
         sa.Column(
-            "created_by", sa.BigInteger, nullable=True,
+            "created_by", sa.BigInteger(), nullable=True,
             comment="操作者 t_user.id（NULL = 系统调度/历史数据）",
         ),
     )
@@ -419,6 +446,8 @@ def upgrade() -> None:
             "counter", sa.BigInteger, nullable=False,
             server_default=sa.text("0"),
         ),
+        # AuditMixin（counter 行由 acquire_serial 写一次就稳定，version 自增无害）
+        _version_col(),
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
@@ -448,7 +477,7 @@ def upgrade() -> None:
         ),
         sa.Column("applicant_name", sa.String(length=50), nullable=True),
         sa.Column(
-            "customer_id", sa.BigInteger, nullable=False,
+            "customer_id", sa.BigInteger(), nullable=False,
             comment="逻辑外键 → t_customer.id 叶子节点",
         ),
         sa.Column("request_date", sa.Date(), nullable=False),
@@ -463,17 +492,19 @@ def upgrade() -> None:
             server_default=sa.text("'PENDING'"),
             comment="PENDING（默认）/ IN_PROCESS / COMPLETED / CANCELLED",
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("created_by", sa.BigInteger, nullable=True),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
         sa.Column(
             "updated_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("updated_by", sa.BigInteger, nullable=True),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.Column(
             "serial_no", sa.String(length=8), nullable=True,
@@ -500,8 +531,7 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 10) t_part_file：统一文件表（polymorphic kind；2026-07-14 加 content_sha256
-    #     + kind CAD_2D）
+    # 10) t_part_file：统一文件表（polymorphic kind；含 content_sha256 + CAD_2D）
     # =================================================================
     op.create_table(
         "t_part_file",
@@ -530,11 +560,13 @@ def upgrade() -> None:
             server_default="READY",
             comment="PENDING / READY / FAILED",
         ),
-        # 2026-07-14：内容去重（同一 part_id + kind + sha 仅 1 行活跃）
+        # 内容去重（同一 part_id + kind + sha 仅 1 行活跃）
         sa.Column(
             "content_sha256", sa.CHAR(length=64), nullable=True,
             comment="SHA-256 hex of file bytes（去重用）；NULL = 未计算 / 历史记录",
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # AuditMixin
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -569,8 +601,7 @@ def upgrade() -> None:
             "'ASSEMBLY_MASTER','CAD_2D')"
         ),
     )
-    # 2026-07-14：内容去重部分唯一索引
-    #   (part_id, kind, content_sha256) WHERE deleted_at IS NULL AND sha NOT NULL
+    # 内容去重部分唯一索引（part_id, kind, content_sha256）WHERE deleted_at IS NULL AND sha NOT NULL
     op.create_index(
         "uk_t_part_file_part_kind_sha",
         "t_part_file",
@@ -596,6 +627,8 @@ def upgrade() -> None:
             server_default=sa.text("true"),
         ),
         sa.Column("last_login_at", sa.DateTime(), nullable=True),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -633,6 +666,8 @@ def upgrade() -> None:
         sa.Column("role", sa.String(length=20), nullable=False),
         sa.Column("scope_type", sa.String(length=20), nullable=True),
         sa.Column("scope_id", sa.BigInteger(), nullable=True),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -672,6 +707,8 @@ def upgrade() -> None:
             "is_active", sa.Boolean(), nullable=False,
             server_default=sa.text("true"),
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
@@ -711,31 +748,33 @@ def upgrade() -> None:
     # =================================================================
     op.create_table(
         "t_menu",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("parent_id", sa.BigInteger(), nullable=True),
+        sa.Column("id", sa.BigInteger, primary_key=True),
+        sa.Column("parent_id", sa.BigInteger, nullable=True),
         sa.Column("code", sa.String(length=64), nullable=False),
         sa.Column("title", sa.String(length=50), nullable=False),
         sa.Column("path", sa.String(length=200), nullable=True),
         sa.Column("icon", sa.String(length=50), nullable=True),
         sa.Column(
-            "sort_order", sa.Integer(), nullable=False,
+            "sort_order", sa.Integer, nullable=False,
             server_default=sa.text("0"),
         ),
         sa.Column(
-            "is_active", sa.Boolean(), nullable=False,
+            "is_active", sa.Boolean, nullable=False,
             server_default=sa.text("true"),
         ),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("created_by", sa.BigInteger, nullable=True),
         sa.Column(
             "updated_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.CheckConstraint(
             "parent_id IS NULL OR parent_id <> id",
@@ -757,20 +796,22 @@ def upgrade() -> None:
     # =================================================================
     op.create_table(
         "t_role_menu",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("id", sa.BigInteger, primary_key=True),
         sa.Column("role", sa.String(length=20), nullable=False),
-        sa.Column("menu_id", sa.BigInteger(), nullable=False),
+        sa.Column("menu_id", sa.BigInteger, nullable=False),
+        # —— 乐观锁 version ——
+        _version_col(),
         # —— 审计字段 ——
         sa.Column(
             "created_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("created_by", sa.BigInteger, nullable=True),
         sa.Column(
             "updated_at", sa.DateTime(), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_by", sa.BigInteger, nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
     op.create_index(
@@ -789,11 +830,13 @@ def upgrade() -> None:
     # =================================================================
     op.create_table(
         "t_applicant",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("id", sa.BigInteger, primary_key=True),
         sa.Column("name", sa.String(length=50), nullable=False,
                   comment="申请人姓名"),
         sa.Column("customer_id", sa.BigInteger(), nullable=False,
                   comment="逻辑外键 → t_customer.id（一级客户）"),
+        # —— 乐观锁 version ——
+        _version_col(),
         # AuditMixin
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
         sa.Column("created_by", sa.BigInteger(), nullable=True),
@@ -819,7 +862,7 @@ def upgrade() -> None:
     # =================================================================
     op.create_table(
         "t_shelf_process",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("id", sa.BigInteger, primary_key=True),
         sa.Column("shelf_id", sa.BigInteger(), nullable=False,
                   comment="逻辑外键 → t_shelf.id"),
         sa.Column("process_id", sa.BigInteger(), nullable=False,
@@ -827,6 +870,8 @@ def upgrade() -> None:
         sa.Column("sort_order", sa.Integer(), nullable=False,
                   server_default=sa.text("0"),
                   comment="工序在货架映射内的显示顺序"),
+        # —— 乐观锁 version ——
+        _version_col(),
         # AuditMixin
         sa.Column("created_at", sa.DateTime(), nullable=False,
                   server_default=sa.text("now()")),
@@ -854,10 +899,168 @@ def upgrade() -> None:
         "shelf_id <> process_id",
     )
 
+    # =================================================================
+    # 18) t_outsource_company：外协公司（2026-07-15 新增）
+    # =================================================================
+    op.create_table(
+        "t_outsource_company",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("name", sa.String(100), nullable=False, comment="外协公司名"),
+        sa.Column(
+            "contact_name", sa.String(50), nullable=True, comment="联系人",
+        ),
+        sa.Column(
+            "contact_phone", sa.String(50), nullable=True, comment="联系电话",
+        ),
+        sa.Column("address", sa.String(200), nullable=True, comment="地址"),
+        sa.Column(
+            "is_active", sa.Boolean(), nullable=False,
+            server_default=sa.text("true"),
+            comment="是否启用（停用后下拉不再展示）",
+        ),
+        # —— 乐观锁 version ——
+        _version_col(),
+        # 审计字段（顺序与 AuditMixin 一致）
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+    op.create_index(
+        "ix_t_outsource_company_name", "t_outsource_company", ["name"],
+    )
+    op.create_index(
+        "ix_t_outsource_company_deleted_at",
+        "t_outsource_company", ["deleted_at"],
+    )
+    # 同一公司名在未软删行内不允许重复（DB 层兜底）
+    op.create_index(
+        "uk_t_outsource_company_name", "t_outsource_company",
+        ["name"], unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+
+    # =================================================================
+    # 19) t_outsource_company_process：外协公司 ↔ 工序 N:M
+    # =================================================================
+    op.create_table(
+        "t_outsource_company_process",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column(
+            "outsource_company_id", sa.BigInteger(), nullable=False,
+            comment="逻辑外键 → t_outsource_company.id",
+        ),
+        sa.Column(
+            "process_id", sa.BigInteger(), nullable=False,
+            comment="逻辑外键 → t_process.id（通常 category=OUTSOURCE）",
+        ),
+        sa.Column(
+            "sort_order", sa.Integer(), nullable=False,
+            server_default=sa.text("0"),
+            comment="工序在该公司能力清单内的显示顺序",
+        ),
+        # —— 乐观锁 version ——
+        _version_col(),
+        # 审计字段
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint(
+            "outsource_company_id <> process_id",
+            name="ck_t_outsource_company_process_no_self_loop",
+        ),
+    )
+    op.create_index(
+        "uk_t_outsource_company_process", "t_outsource_company_process",
+        ["outsource_company_id", "process_id"], unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
+    op.create_index(
+        "ix_t_outsource_company_process_company",
+        "t_outsource_company_process", ["outsource_company_id"],
+    )
+    op.create_index(
+        "ix_t_outsource_company_process_process",
+        "t_outsource_company_process", ["process_id"],
+    )
+    op.create_index(
+        "ix_t_outsource_company_process_deleted_at",
+        "t_outsource_company_process", ["deleted_at"],
+    )
+
+    # =================================================================
+    # 20) t_drawing_file（LEGACY 死表；2026-07-10 起合并到 t_part_file）
+    #     保留 schema 是为了支持旧库 pg_dump 比对；新库无 writer。
+    # =================================================================
+    op.create_table(
+        "t_drawing_file",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("part_id", sa.BigInteger(), nullable=False),
+        sa.Column("object_key", sa.String(length=500), nullable=False),
+        sa.Column("original_filename", sa.String(length=255), nullable=False),
+        sa.Column("file_size", sa.BigInteger(), nullable=False),
+        sa.Column("content_type", sa.String(length=100), nullable=False),
+        sa.Column("upload_status", sa.String(length=20), nullable=False,
+                  server_default="READY"),
+        # —— 乐观锁 version（一致地加上，未来若复活也立即受益）——
+        _version_col(),
+        # AuditMixin（顺序保持）
+        sa.Column("created_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+
+    # =================================================================
+    # 21) t_cnc_program（LEGACY 死表；同 t_drawing_file）
+    # =================================================================
+    op.create_table(
+        "t_cnc_program",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("part_id", sa.BigInteger(), nullable=False),
+        sa.Column("object_key", sa.String(length=500), nullable=False),
+        sa.Column("original_filename", sa.String(length=255), nullable=False),
+        sa.Column("file_size", sa.BigInteger(), nullable=False),
+        sa.Column("content_type", sa.String(length=100), nullable=False),
+        sa.Column("upload_status", sa.String(length=20), nullable=False,
+                  server_default="READY"),
+        # —— 乐观锁 version ——
+        _version_col(),
+        sa.Column("created_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
+
 
 def downgrade() -> None:
     # 无物理外键，drop 顺序无所谓；drop_table 自动清掉自身索引/约束。
     for table in (
+        "t_cnc_program",
+        "t_drawing_file",
+        "t_outsource_company_process",
+        "t_outsource_company",
         "t_shelf_process",
         "t_applicant",
         "t_role_menu",

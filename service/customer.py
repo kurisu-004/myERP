@@ -53,6 +53,7 @@ class CustomerService:
         return [
             CustomerOut(
                 id=c.id,
+                version=c.version,
                 name=c.name,
                 parent_id=c.parent_id,
                 parent_name=parents.get(c.parent_id) if c.parent_id else None,
@@ -83,6 +84,7 @@ class CustomerService:
             parent_name = parent.name if parent else None
         return CustomerOut(
             id=cust.id,
+            version=cust.version,
             name=cust.name,
             parent_id=cust.parent_id,
             parent_name=parent_name,
@@ -139,6 +141,7 @@ class CustomerService:
             parent_name = parent.name if parent else None
         return CustomerOut(
             id=cust.id,
+            version=cust.version,
             name=cust.name,
             parent_id=cust.parent_id,
             parent_name=parent_name,

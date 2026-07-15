@@ -346,6 +346,7 @@ class PartFileService:
         download_url = await cos_mod.presigned_get_url(f.object_key)
         return PartFileOut(
             id=f.id,
+            version=f.version,
             owner_id=f.part_id,                # polymorphic
             kind=f.kind,
             file_type=f.file_type,

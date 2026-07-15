@@ -194,6 +194,7 @@ class WorkerService:
 def _worker_to_out(w: TWorker) -> WorkerOut:
     return WorkerOut(
         id=w.id,
+        version=w.version,
         badge_code=w.badge_code,
         name=w.name,
         id_card_no=w.id_card_no,

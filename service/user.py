@@ -210,6 +210,7 @@ class UserService:
         return [
             UserRoleOut(
                 id=r.id,
+                version=r.version,
                 role=r.role,
                 scope_type=r.scope_type,
                 scope_id=r.scope_id,
@@ -263,6 +264,7 @@ class UserService:
             shelf_map = await self._shelf_map([scope_id])
         return UserRoleOut(
             id=r.id,
+            version=r.version,
             role=r.role,
             scope_type=r.scope_type,
             scope_id=r.scope_id,
@@ -347,6 +349,7 @@ class UserService:
         role_outs = [
             UserRoleOut(
                 id=r.id,
+                version=r.version,
                 role=r.role,
                 scope_type=r.scope_type,
                 scope_id=r.scope_id,
@@ -357,6 +360,7 @@ class UserService:
         ]
         return UserOut(
             id=u.id,
+            version=u.version,
             username=u.username,
             full_name=u.full_name,
             phone=u.phone,

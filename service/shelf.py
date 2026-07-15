@@ -75,6 +75,7 @@ class ShelfService:
         items = [
             ShelfOut(
                 id=s.id,
+                version=s.version,
                 code=s.code,
                 name=s.name,
                 zone=s.zone,
@@ -433,6 +434,7 @@ class ShelfService:
     ) -> ShelfOut:
         return ShelfOut(
             id=s.id,
+            version=s.version,
             code=s.code,
             name=s.name,
             zone=s.zone,

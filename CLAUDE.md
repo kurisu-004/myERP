@@ -590,7 +590,7 @@ myERP/
 │   ├── user.py                    # TUser：账号（username, password_hash, ...）
 │   ├── user_role.py               # TUserRole：角色绑定（user_id, role, scope_type/id）
 │   ├── shelf.py                   # TShelf：货架（code, name, zone, location）
-│   ├── process.py                 # TProcess：工序（code unique, category, is_inspection）
+│   ├── process.py                 # TProcess：工序（code unique, category）
 │   ├── work_type.py               # TWorkType：工种（code unique, name）
 │   ├── work_type_process.py       # TWorkTypeProcess：工种-工序映射（junction）
 │   ├── drawing_file.py            # TDrawingFile：图纸文件元数据（XOR part/assembly）
@@ -935,7 +935,7 @@ myERP/
 | **TWorker** | t_worker | badge_code, name, id_card_no, phone, is_active, work_type_id |
 | **TUser** | t_user | username, password_hash, full_name, phone, is_active, last_login_at |
 | **TShelf** | t_shelf | code, name, zone(PRODUCTION/INSPECTION), location, is_active |
-| **TProcess** | t_process | code(unique), name, category(INHOUSE/OUTSOURCE), is_inspection, sort_order, description |
+| **TProcess** | t_process | code(unique), name, category(INHOUSE/OUTSOURCE), sort_order, description |
 | **TWorkType** | t_work_type | code(unique), name, description, sort_order |
 
 ### 关联/文件表
@@ -1058,14 +1058,14 @@ ON_SHELF 和 WITH_WORKER 共享 DB status="IN_PROCESS"，通过 location 列区�
 
 ---
 
-## 15. Alembic 迁移（2026-07-10 squash 为两个文件）
+## 15. Alembic 迁移（2026-07-15 第四次 squash）
 
-历史上迁移分三层（schema / dev_data / prod_data）共 20 步，其中 dev_data 是假数据种子（50 假零件 / 20 假工人 / 20 假客户 / changeme dev 账号），且后端 `Dockerfile` 启动即跑 `alembic upgrade head`——生产库会被灌进假数据。**2026-07-10 起把整条链 squash 为两个文件**，删除全部 dev 假 seed：
+历史上迁移分三层（schema / dev_data / prod_data）共 20 步，其中 dev_data 是假数据种子（50 假零件 / 20 假工人 / 20 假客户 / changeme dev 账号），且后端 `Dockerfile` 启动即跑 `alembic upgrade head`——生产库会被灌进假数据。**2026-07-10 起把整条链 squash 为两个文件**，删除全部 dev 假 seed。**2026-07-15 第四次 squash** 把后续的 schema/003/004 与 prod_data/005 合并（外协管理 + `version` 列 + `t_process.is_inspection` 移除）回单文件：
 
 | 文件 | revision | down | 内容 |
 |------|----------|------|------|
-| `schema/000000000001_schema_init.py` | `000000000001` | base | **唯一 DDL 迁移**：一次建全部 17 张表 + 索引 + 约束（等价于旧 001-005/013/015/016/020 叠加后的最终 schema）。文件表已统一为 `t_part_file`（无 `t_drawing_file` / `t_cnc_program`）；`t_customer.id` 用 `autoincrement=False`（不建 sequence，全表雪花 ID）。 |
-| `prod_data/000000000002_data_init.py` | `000000000002` | `000000000001` | **唯一数据种子**：9 工种 / 19 真实工人 / 6 账号（admin·MANAGER + 陈燕·翁美月·CLERK + 童敏华·CNC_PROGRAMMER + 黄道玉·曾学辉·INSPECTOR，密码 changeme）/ 22 菜单 / 35 role_menu / `t_serial_counter` 预置 A-Z 全 26 行。全部 ON CONFLICT 幂等，**无任何假数据**。 |
+| `schema/000000000001_schema_init.py` | `000000000001` | base | **唯一 DDL 迁移**：一次建全部 21 张表（含 2 张 legacy 死表）+ 索引 + 约束。文件表统一为 `t_part_file`（无 `t_drawing_file` / `t_cnc_program`）；`t_customer.id` 用 `autoincrement=False`（不建 sequence，全表雪花 ID）；**所有 19 张 AuditMixin 表加 `version Integer NOT NULL DEFAULT 0` 列**（乐观锁，见 §21）。 |
+| `prod_data/000000000002_data_init.py` | `000000000002` | `000000000001` | **唯一数据种子**：9 工种 / 10 工序 / 5 工种↔工序映射 / 19 真实工人 / 6 账号（admin·MANAGER + 陈燕/翁美月·CLERK + 童敏华·CNC_PROGRAMMER + 黄道玉/曾学辉·INSPECTOR，密码 changeme）/ 23 菜单（含外协管理「outsource_list」） / 40 role_menu / `t_serial_counter` 预置 A-Z 全 26 行。全部 ON CONFLICT 幂等，**无任何假数据**。 |
 
 `alembic.ini` 的 `version_locations` 现为 `schema:prod_data`（已移除 dev_data），`recursive_version_locations = true` 保留。
 
@@ -1363,3 +1363,115 @@ uv run alembic upgrade head      # 2 步：建 schema → 灌必要数据
     `IntegrityError` 后没用 `SAVEPOINT` / `begin_nested()`，并发 race 会
     `PendingRollbackError`。记入 follow-up，不在本 push 范围。
 
+---
+
+## 21. 乐观锁改造（2026-07-15）
+
+历史问题：后端所有 `Repository.update()` / `Repository.soft_delete()`
+都是「调用方已就地修改 ORM 字段 → `await session.flush()`」的单步写，
+无任何并发防护。`service/part.py:659-661` 注释已承认 `send_to_outsource`
+两 CLERK 同时发送会双重 SENT_TO_OUTSOURCE；`service/part.py:930`
+docstring 声称 `pick_up_by_scan` 有 `with_for_update()` 但实际是普通
+SELECT；`release_from_programming` 两编程员同时点「下发」会用过期
+`status=PROGRAMMING` 快照通过状态机守卫，UPDATE 静默覆盖第一人的
+`next_process_id` / `current_holder_id`。
+
+### 21.1 技术路线：SQLAlchemy 内置 `version_id_col`
+
+- 所有 19 张 `AuditMixin` 表加 `version Integer NOT NULL DEFAULT 0` 列（来自 schema/001）。
+- `model/audit.py::AuditMixin.__init_subclass__` 用 `declared_attr.directive`
+  注入 `__mapper_args__ = {"version_id_col": cls.version}`，所有继承
+  AuditMixin 的 ORM 自动获得 OCC 行为，**无需修改业务代码**。
+- SQLAlchemy 每次 dirty UPDATE 自动加 `WHERE id=? AND version=?` 并
+  `SET version=version+1`；0 行更新 → `sqlalchemy.orm.exc.StaleDataError`。
+- `core/exception_handler.py` 注册 `StaleDataError` 全局 handler →
+  HTTP 409 + `R.fail(BIZ_VERSION_CONFLICT, "该记录已被其他用户修改，请刷新后重试")`。
+- `version_id_generator` 保持默认 True：Python 端同步 `model.version += 1`，
+  flush 后**不触发 expire / refresh** → 不会重现 CLAUDE.md §13 / §15
+  警示的 MissingGreenlet。
+
+### 21.2 Python-side default
+
+SQLAlchemy 2.0 `Mapped_column(default=...)` 仅影响 INSERT SQL 表达式，
+**不会**在 ORM 实例构造时自动填充。`model/audit.py` 用
+`@event.listens_for(DeclarativeBase, "init", propagate=True)` 监听器
+兜底：所有 AuditMixin 子类若构造时未传 `version` → 自动填 0。现有
+测试 fixture 不需要改。
+
+### 21.3 API 契约变更（响应 schema 加 `version: int`）
+
+| Schema | 文件 | 加 `version: int` |
+|--------|------|-------------------|
+| `PartOut` / `PartListItem` | `schema/part.py` | ✓ |
+| `PartEventOut` | `schema/part.py` | ✗（append-only） |
+| `AssemblyOut` / `AssemblyListItem` | `schema/assembly.py` | ✓ |
+| `CustomerOut` | `schema/customer.py` | ✓ |
+| `WorkerOut` | `schema/worker.py` | ✓ |
+| `ShelfOut` | `schema/shelf.py` | ✓ |
+| `ProcessOut` | `schema/process.py` | ✓ |
+| `WorkTypeOut` | `schema/work_type.py` | ✓ |
+| `OutsourceCompanyOut` | `schema/outsource_company.py` | ✓ |
+| `PartFileOut` | `schema/part_file.py` | ✓ |
+| `UserOut` / `UserRoleOut` | `schema/user.py` | ✓ |
+| `MenuNodeOut` | `schema/menu.py` | ✓ |
+| `ApplicantOut` | `schema/applicant.py` | ✓ |
+
+前端 `frontend/src/types/*.ts` 同步加 `version: number`。V1 暂不消费该字段
+（仅暴露，便于后续做乐观 UI「您编辑的版本已被其他人修改」）；API 入参
+仍**不**强制客户端传 version。
+
+### 21.4 Service 层改造
+
+service 层 `_to_out` / `_to_list_out` / `_assembly_to_out_obj` 等所有
+组装响应对象的方法显式传 `version=row.version`（约 8-10 处）。无需改
+写入路径——OCC 由 SQLAlchemy 自动接管，state machine callback 内的
+字段修改 + `repo.update()` / `session.flush()` 都不需要改。
+
+### 21.5 真实并发风险（OCC 修复）
+
+| 场景 | 修复前 | 修复后 |
+|------|--------|--------|
+| 两 tab 同时取消同 part | 第二 tab 静默覆盖第一人的 `updated_by` / `updated_at` | 第二 tab flush 抛 `StaleDataError` → 409，前端弹「请刷新」 |
+| 两编程员同时「下发到生产」同 PROGRAMMING 零件 | 第二人 UPDATE 静默覆盖 `next_process_id` / `current_holder_id` | 第二人 409 |
+| 工人 A、B 同时扫同 serial 领件 | 双重 PICKED_UP 事件 | 第二人 409 |
+| `cancel_assembly` 循环里两 child 并发被 cancel | 同上静默覆盖 | OCC 拦截 |
+| `_check_parent_assembly` 自动维护父装配体状态 | 同上 | OCC 拦截 |
+
+### 21.6 关键不变量
+
+- `t_user.refresh_token_version`（refresh token 轮转）与新加的 `version`（行 OCC）
+  是**不同语义**，保留两个字段。`refresh_token_version` 仍由
+  `UserRepository.increment_refresh_token_version` 维护。
+- `TPartEvent`（事件表）继承 `EventTimestampMixin`（append-only），不加
+  `version`——事件一旦写入永不修改。
+- `t_serial_counter`（流水号计数器）虽然继承 AuditMixin 也加了
+  `version`，但实际上由 `SELECT FOR UPDATE` 悲观锁保护；OCC 是冗余
+  防护，不改变行为。
+
+### 21.7 测试覆盖
+
+- `tests/unit/test_version_conflict.py`（新增 3 用例）：
+  - `test_handler_returns_409_envelope`：直接调 FastAPI `StaleDataError`
+    handler 验证 409 + `R.fail` 信封 + 中文文案。
+  - `test_update_part_stale_propagates`：mock repo.update 抛 StaleDataError，
+    验证 service 层不吞。
+  - `test_soft_delete_stale_propagates`：同上 soft_delete 路径。
+- `tests/test_version_concurrency.py`（新增 4 用例，跑真实 PG）：
+  - `test_concurrent_update_second_session_stale`：两 AsyncSession 各自
+    加载同 part，session A commit 后 session B flush → StaleDataError。
+  - `test_occ_with_onupdate_updated_at_no_missing_greenlet`：CLAUDE.md
+    §13 警示的「`onupdate=updated_at` expire → async session 同步 IO →
+    MissingGreenlet」被 `version_id_generator=True` 默认行为规避——访问
+    `updated_at` / `version` / `deleted_at` 都不抛。
+  - `test_concurrent_soft_delete_second_session_stale`：两 session 同
+    时软删同 part → 第二人 StaleDataError。
+  - `test_pick_up_double_scan_returns_409`：两工人扫同 serial → 第二
+    人 StaleDataError（消除 §11 / §21.5 的真实风险）。
+
+### 21.8 端到端验证数据
+
+- `uv run pytest tests/unit/` → 458 passed（含新 3 用例）。
+- `uv run pytest tests/` → **481 passed**（含新 4 用例）。
+- `cd frontend && npm run build` → ✓ built in 4.84s（类型扩展无错）。
+- 冷启库：`uv run alembic upgrade head` 2 步线性成功；
+  `\d t_part` 等 19 张表都有 `version | integer | not null default 0`。
