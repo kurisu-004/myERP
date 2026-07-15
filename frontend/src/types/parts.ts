@@ -11,6 +11,7 @@ export type OrderStatus =
   | 'READY_TO_SHIP'
   | 'DELIVERED'
   | 'REPAIRING'
+  | 'OUTSOURCE'
   | 'COMPLETED'
   | 'CANCELLED'
 
@@ -22,6 +23,7 @@ export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   READY_TO_SHIP: '待送货',
   DELIVERED: '已送货',
   REPAIRING: '返修中',
+  OUTSOURCE: '外协中',
   COMPLETED: '已完成',
   CANCELLED: '已取消',
 }
@@ -34,6 +36,7 @@ export const ORDER_STATUS_TAG_TYPE: Record<OrderStatus, 'info' | 'warning' | 'su
   READY_TO_SHIP: 'warning',
   DELIVERED: 'success',
   REPAIRING: 'danger',
+  OUTSOURCE: 'warning',
   COMPLETED: 'success',
   CANCELLED: 'info',
 }
@@ -51,6 +54,9 @@ export type SortDir = 'ASC' | 'DESC'
 /** 列表展示用窄出参（与 PartItem 不同，无 holder/next_process/assembly_id）。 */
 export interface PartListItem {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增（后端 SQLAlchemy version_id_col）；
+   *  当前端暂不消费，后续可用于冲突检测。 */
+  version: number
   serial_no: string | null
   name: string
   drawing_no: string
@@ -84,6 +90,8 @@ export type PartEventType =
   | 'STATUS_CHANGED'
   | 'REPAIR_STARTED'
   | 'REPAIR_COMPLETED'
+  | 'SENT_TO_OUTSOURCE'
+  | 'RECEIVED_FROM_OUTSOURCE'
   | 'CANCELLED'
   | 'COMPLETED'
 
@@ -100,6 +108,8 @@ export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   STATUS_CHANGED: '状态变更',
   REPAIR_STARTED: '开始返修',
   REPAIR_COMPLETED: '返修完成',
+  SENT_TO_OUTSOURCE: '发送至外协',
+  RECEIVED_FROM_OUTSOURCE: '外协回收',
   CANCELLED: '取消',
   COMPLETED: '完成',
 }
@@ -117,6 +127,8 @@ export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 
   STATUS_CHANGED: 'info',
   REPAIR_STARTED: 'danger',
   REPAIR_COMPLETED: 'success',
+  SENT_TO_OUTSOURCE: 'warning',
+  RECEIVED_FROM_OUTSOURCE: 'success',
   CANCELLED: 'danger',
   COMPLETED: 'success',
 }

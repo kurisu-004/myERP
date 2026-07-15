@@ -2,6 +2,8 @@
 
 export interface Applicant {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   name: string
   customer_id: string
   customer_name: string | null

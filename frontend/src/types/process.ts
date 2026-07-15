@@ -9,10 +9,11 @@ export const PROCESS_CATEGORY_LABEL: Record<ProcessCategory, string> = {
 
 export interface Process {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   code: string
   name: string
   category: ProcessCategory
-  is_inspection: boolean
   sort_order: number
   description: string | null
   created_at: string
@@ -30,7 +31,6 @@ export interface ProcessCreatePayload {
   code: string
   name: string
   category: ProcessCategory
-  is_inspection?: boolean
   sort_order?: number
   description?: string | null
 }
@@ -38,7 +38,6 @@ export interface ProcessCreatePayload {
 export interface ProcessUpdatePayload {
   name?: string
   category?: ProcessCategory
-  is_inspection?: boolean
   sort_order?: number
   description?: string | null
 }

@@ -38,6 +38,9 @@ export const ASSEMBLY_STATUS_TAG_TYPE: Record<AssemblyStatus,
 /** 装配件（与后端 TAssembly 对齐） */
 export interface AssemblyItem {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增（后端 SQLAlchemy version_id_col）；
+   *  当前端暂不消费，后续可用于冲突检测。 */
+  version: number
   /** 装配件流水号；老装配件为 null */
   serial_no: string | null
   drawing_no: string
