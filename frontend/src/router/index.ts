@@ -122,6 +122,18 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-16：外协发送（MANAGER + CLERK）。
+        path: 'outsource/send',
+        name: 'OutsourceSendList',
+        component: () => import('@/views/outsource/OutsourceSendList.vue'),
+        meta: {
+          title: '外协发送',
+          icon: 'Promotion',
+          menuCode: 'outsource_list',  // placeholder：commit 8 升级为 outsource_send_list
+          breadcrumb: [{ label: '外协管理' }, { label: '外协发送' }],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
