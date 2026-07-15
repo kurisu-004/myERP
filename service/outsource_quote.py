@@ -46,6 +46,7 @@ from schema.outsource_quote import (
     OutsourceQuoteUpdateRequest,
 )
 from service._id_parse import parse_snowflake_id
+from service._session_refresh import refresh_for_state_machine
 from utils.id_gen import new_id
 
 
@@ -218,6 +219,9 @@ class OutsourceQuoteService:
         quote = await self.quotes.get_by_id(qid)
         if quote is None:
             raise self._not_found(quote_id)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("status", "version"),
+        )
         if quote.status != OutsourceQuoteStatus.DRAFT.value:
             raise BizError(
                 code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
@@ -242,6 +246,9 @@ class OutsourceQuoteService:
 
         quote.updated_by = self._user_id
         await self.quotes.update(quote)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("updated_at",),
+        )
 
         await self.quote_events.create(TOutsourceQuoteEvent(
             id=new_id(),
@@ -261,6 +268,9 @@ class OutsourceQuoteService:
         quote = await self.quotes.get_by_id(qid)
         if quote is None:
             raise self._not_found(quote_id)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("status", "version"),
+        )
         if quote.status != OutsourceQuoteStatus.DRAFT.value:
             raise BizError(
                 code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
@@ -270,6 +280,9 @@ class OutsourceQuoteService:
         quote.sm.submit(event_repo=self.quote_events, created_by=self._user_id)
         quote.updated_by = self._user_id
         await self.quotes.update(quote)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("updated_at",),
+        )
         return await self._to_out(quote)
 
     async def approve_quote(
@@ -282,6 +295,9 @@ class OutsourceQuoteService:
         quote = await self.quotes.get_by_id(qid)
         if quote is None:
             raise self._not_found(quote_id)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("status", "version"),
+        )
         if quote.status != OutsourceQuoteStatus.SUBMITTED.value:
             raise BizError(
                 code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
@@ -302,6 +318,9 @@ class OutsourceQuoteService:
         )
         quote.updated_by = self._user_id
         await self.quotes.update(quote)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("updated_at",),
+        )
         return await self._to_out(quote)
 
     async def reject_quote(
@@ -314,6 +333,9 @@ class OutsourceQuoteService:
         quote = await self.quotes.get_by_id(qid)
         if quote is None:
             raise self._not_found(quote_id)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("status", "version"),
+        )
         if quote.status != OutsourceQuoteStatus.SUBMITTED.value:
             raise BizError(
                 code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
@@ -334,6 +356,9 @@ class OutsourceQuoteService:
         )
         quote.updated_by = self._user_id
         await self.quotes.update(quote)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("updated_at",),
+        )
         return await self._to_out(quote)
 
     async def soft_delete_quote(self, quote_id: str) -> None:
@@ -344,6 +369,9 @@ class OutsourceQuoteService:
         quote = await self.quotes.get_by_id(qid)
         if quote is None:
             raise self._not_found(quote_id)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("status",),
+        )
         if quote.status not in (
             OutsourceQuoteStatus.DRAFT.value,
             OutsourceQuoteStatus.REJECTED.value,

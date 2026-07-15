@@ -578,7 +578,9 @@ class PartStateMachine(StateChart):
             )
             event_repo.add(TPartEvent(
                 part_id=self.model.id,
-                event_type=PartEventType.RECEIVED_FROM_OUTSOURCE_INSPECTED,
+                # t_part_event.event_type is VARCHAR(30); reuse the existing
+                # inspection event and keep the outsource origin in note/from_status.
+                event_type=PartEventType.INSPECTED,
                 from_status=PartStatus.OUTSOURCE,
                 to_status=PartStatus.INSPECTION,
                 note=f"外协回收送检：{shelf_code}" if shelf_code else "外协回收送检",

@@ -58,6 +58,7 @@ from schema.part import (
     SendToOutsourceRequest,
 )
 from service._id_parse import parse_snowflake_id
+from service._session_refresh import refresh_for_state_machine
 from service.part_file import PartFileService
 from utils.id_gen import new_id
 
@@ -675,6 +676,11 @@ class PartService:
             )
 
         part = await self._get_part_or_404(part_id)
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
 
         # 1. parse_snowflake_id(company_id) → int
         company_id_int = parse_snowflake_id(
@@ -783,6 +789,10 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        await refresh_for_state_machine(
+            self.parts.session, approved_quote, attrs=("status",),
+        )
+
         # 7. 状态机转换
         part.sm.send_to_outsource(
             outsource_company=company, process=process,
@@ -818,6 +828,11 @@ class PartService:
         额外校验：next_process_id 必须是 INHOUSE（外协回来后通常进车间）。
         """
         part = await self._get_part_or_404(part_id)
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
         )
@@ -863,6 +878,11 @@ class PartService:
         复用现有 pass_inspection 实现二次转换（同一事务连续两次状态机调用）。
         """
         part = await self._get_part_or_404(part_id)
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
         target_shelf = await self._validate_inspection_shelf(data.shelf_id)
 
         # 第一次转换：OUTSOURCE → INSPECTION
@@ -1425,6 +1445,11 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
         part.sm.pass_inspection(
             event_repo=self.events, created_by=self._user_id,
         )
