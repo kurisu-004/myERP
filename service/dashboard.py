@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_shanghai_iso
-from model import TPart, TPartEvent, TShelf, TWorker
+from model import TPart, TPartEvent, TProcess, TShelf, TWorker
 from model.enums import (
     PartEventType,
     PartStatus,
@@ -108,6 +108,14 @@ async def build_snapshot(
     ]
     worker_name_map = await _fetch_worker_names(session, worker_ids)
 
+    # 批量取工序名（适用三个区段的所有零件；Dashboard 大屏显示「下一工序」）
+    process_ids = list({
+        p.next_process_id
+        for p in on_prod_parts + on_insp_parts + worker_parts
+        if p.next_process_id is not None
+    })
+    process_name_map = await _fetch_process_names(session, process_ids)
+
     # 品检区维持原状：只查有 holder 指向的货架
     insp_shelf_ids = {
         p.current_holder_id
@@ -143,6 +151,7 @@ async def build_snapshot(
                     holder_kind="shelf",
                     shelf_code=s.code,
                     placed_at=getattr(p, "placed_at", None),
+                    process_map=process_name_map,
                 )
                 for p in items
             ],
@@ -156,6 +165,7 @@ async def build_snapshot(
             shelf_code=(insp_shelf_map[p.current_holder_id].code
                         if p.current_holder_id in insp_shelf_map else None),
             placed_at=getattr(p, "placed_at", None),
+            process_map=process_name_map,
         )
         for p in on_insp_parts
     ]
@@ -166,6 +176,7 @@ async def build_snapshot(
             holder_kind="worker",
             worker_name=worker_name_map.get(p.current_holder_id),
             picked_up_at=picked_at_map.get(p.id),
+            process_map=process_name_map,
         )
         for p in worker_parts
     ]
@@ -335,6 +346,25 @@ async def _fetch_worker_names(
     return {w.id: w.name for w in workers}
 
 
+async def _fetch_process_names(
+    session: AsyncSession, process_ids: list[int]
+) -> dict[int, str]:
+    """批量 `WHERE id IN (...)` 取工序名（Dashboard 大屏显示「下一工序」用）。
+
+    与 _fetch_worker_names / _fetch_customer_path 同款：列表空短路、
+    `deleted_at IS NULL` 过滤、单次 SELECT 一次性取回 Python 端拼 dict。
+    这样避免在 async session 中触发 lazy load（M CLAUDE.md §13）。
+    """
+    if not process_ids:
+        return {}
+    stmt = select(TProcess).where(
+        TProcess.id.in_(process_ids),
+        TProcess.deleted_at.is_(None),
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return {r.id: r.name for r in rows}
+
+
 # ============================================================
 # 拼装响应
 # ============================================================
@@ -344,6 +374,7 @@ def _group_by_shelf(
     cust_map: dict[int, dict[str, Any]],
     *,
     holder_kind: str,
+    process_map: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """按 current_holder_id (= shelf.id) 分组并按 shelf 顺序返回。
 
@@ -378,6 +409,7 @@ def _group_by_shelf(
                         holder_kind=holder_kind,
                         shelf_code=shelf.code,
                         placed_at=getattr(p, "placed_at", None),
+                        process_map=process_map,
                     )
                     for p in buckets[sid]
                 ],
@@ -395,8 +427,10 @@ def _to_dict(
     picked_up_at: Any | None = None,
     shelf_code: str | None = None,
     placed_at: Any | None = None,
+    process_map: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     cust_info = cust_map.get(part.customer_id, {})
+    np_id = part.next_process_id
     return {
         "id": str(part.id),
         "serial_no": part.serial_no,
@@ -417,6 +451,9 @@ def _to_dict(
         "customer_id": str(part.customer_id) if part.customer_id else None,
         "customer_name": cust_info.get("customer_name"),
         "customer_path": cust_info.get("customer_path"),
+        # 下一工序：Dashboard 大屏直接显示，省一次前端 /processes 拉取
+        "next_process_id": str(np_id) if np_id else None,
+        "next_process_name": process_map.get(np_id) if (np_id and process_map) else None,
     }
 
 
