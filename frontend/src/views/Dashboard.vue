@@ -33,6 +33,9 @@
               >
                 <span class="item-serial">{{ item.serial_no || '—' }}</span>
                 <span class="item-name" :title="item.name">{{ item.name }}</span>
+                <span class="item-process" :title="item.next_process_name || ''">
+                  {{ item.next_process_name || '—' }}
+                </span>
                 <span class="item-due">{{ formatShortDate(item.planned_delivery_date) }}</span>
               </div>
             </template>
@@ -56,10 +59,15 @@
             class="inprocess-pill"
           >
             <span class="pill-serial">{{ p.serial_no || '—' }}</span>
-            <el-avatar :size="32" class="pill-avatar">
-              <el-icon :size="18"><UserFilled /></el-icon>
+            <el-avatar :size="avatarSize" class="pill-avatar">
+              <el-icon :size="avatarIconSize"><UserFilled /></el-icon>
             </el-avatar>
             <span class="pill-name">{{ p.worker_name || '未记录' }}</span>
+            <span
+              v-if="p.next_process_name"
+              class="pill-process"
+              :title="p.next_process_name"
+            >→ {{ p.next_process_name }}</span>
           </div>
           <div v-if="workerParts.length === 0" class="inprocess-empty">暂无正在加工的零件</div>
         </div>
@@ -108,14 +116,37 @@ function applySnapshot(snap: DashboardSnapshot): void {
   lastUpdated.value = formatTime(snap.ts)
 }
 
+// ============ 响应式字号/头像 ============
+// 车间大屏 50"+：>=1600px 是 1080p 投影；>=2400px 是 4K。
+// 这里把 avatar size 提到 script 而非 CSS，因为 el-avatar :size 是 prop（不是 CSS 字体）。
+const winWidth = ref<number>(
+  typeof window === 'undefined' ? 1280 : window.innerWidth
+)
+function syncWidth(): void {
+  winWidth.value = window.innerWidth
+}
+const avatarSize = computed(() => {
+  if (winWidth.value >= 2400) return 80
+  if (winWidth.value >= 1600) return 64
+  return 32
+})
+const avatarIconSize = computed(() => {
+  if (winWidth.value >= 2400) return 40
+  if (winWidth.value >= 1600) return 32
+  return 18
+})
+
 onMounted(() => {
   offSnap = onDashboardSnapshot(applySnapshot)
   offStatus = onDashboardStatus((s) => { status.value = s })
+  syncWidth()
+  window.addEventListener('resize', syncWidth, { passive: true })
 })
 
 onBeforeUnmount(() => {
   offSnap?.(); offSnap = null
   offStatus?.(); offStatus = null
+  window.removeEventListener('resize', syncWidth)
 })
 </script>
 
@@ -212,7 +243,7 @@ onBeforeUnmount(() => {
 }
 .shelf-item {
   display: grid;
-  grid-template-columns: 96px 1fr 60px;
+  grid-template-columns: 96px 1.4fr 1fr 80px;   /* 序号 | 名称 | 下一工序 | 交期 */
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
@@ -232,6 +263,13 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
+}
+.item-process {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--primary-color);
+  font-size: 13px;
 }
 .item-due {
   color: #888;
@@ -322,6 +360,15 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   font-weight: 500;
 }
+.pill-process {
+  color: var(--primary-color);
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .inprocess-empty {
   width: 100%;
   text-align: center;
@@ -350,4 +397,67 @@ onBeforeUnmount(() => {
 }
 .status-mini-text { font-weight: 500; }
 .status-mini-time { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+
+// ============================================================
+// 车间大屏适配：1080p / 4K
+// 视距 5-8m，ppi ≈ 40。×2 起点保证「抬头就能看清」最小字号 26px；
+// avatar/icon 是 Element Plus 的 prop（不是 CSS 字体），由 script 的 avatarSize / avatarIconSize 接管。
+// ============================================================
+@media (min-width: 1600px) {
+  .shelves-title, .inprocess-title     { font-size: 32px; }
+  .shelf-code                          { font-size: 28px; }
+  .shelf-name                          { font-size: 26px; }
+  .shelf-count, .inprocess-count       { font-size: 22px; padding: 4px 14px; }
+  .shelf-item                          {
+    font-size: 26px;
+    padding: 14px 20px;
+    gap: 12px;
+    grid-template-columns: 140px 1.4fr 1fr 100px;
+  }
+  .item-serial                         { font-size: 28px; }
+  .item-process                        { font-size: 26px; }
+  .item-due                            { font-size: 24px; }
+  .shelf-empty, .shelves-empty         { font-size: 26px; }
+  .inprocess-pill                      {
+    font-size: 24px;
+    height: 72px;
+    padding: 8px 20px 8px 8px;
+    gap: 12px;
+  }
+  .pill-serial                         { font-size: 24px; padding-left: 10px; }
+  .pill-name                           { font-size: 24px; }
+  .pill-process                        { font-size: 22px; max-width: 360px; }
+  .inprocess-empty                     { font-size: 24px; padding: 32px 0; }
+  .status-mini                         { font-size: 22px; }
+  .dot                                 { width: 14px; height: 14px; }
+}
+
+@media (min-width: 2400px) {
+  .shelves-title, .inprocess-title     { font-size: 40px; }
+  .shelf-code                          { font-size: 34px; }
+  .shelf-name                          { font-size: 32px; }
+  .shelf-count, .inprocess-count       { font-size: 28px; padding: 6px 18px; }
+  .shelf-item                          {
+    font-size: 32px;
+    padding: 18px 28px;
+    gap: 16px;
+    grid-template-columns: 180px 1.4fr 1fr 120px;
+  }
+  .item-serial                         { font-size: 34px; }
+  .item-process                        { font-size: 32px; }
+  .item-due                            { font-size: 30px; }
+  .shelf-empty, .shelves-empty         { font-size: 32px; }
+  .inprocess-pill                      {
+    font-size: 30px;
+    height: 96px;
+    padding: 10px 28px 10px 10px;
+    gap: 16px;
+  }
+  .pill-serial                         { font-size: 30px; padding-left: 12px; }
+  .pill-name                           { font-size: 30px; }
+  .pill-process                        { font-size: 28px; max-width: 480px; }
+  .inprocess-empty                     { font-size: 30px; padding: 48px 0; }
+  .status-mini                         { font-size: 28px; }
+  .dot                                 { width: 18px; height: 18px; }
+}
 </style>
