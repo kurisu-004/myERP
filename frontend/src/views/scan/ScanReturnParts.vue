@@ -273,6 +273,8 @@ import PdfViewer from '@/components/PdfViewer.vue'
 import { getDownloadUrl, listPartFiles } from '@/api/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
+import { useAuthSession } from '@/composables/useAuthSession'
+import { getAllShelfProcessMappings } from '@/api/shelves'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import { listProcesses } from '@/api/process'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
@@ -280,6 +282,7 @@ import { PROCESS_CATEGORY_LABEL, type Process } from '@/types/process'
 
 const router = useRouter()
 const { worker, requireWorker } = useScanSession()
+const { boundShelves, isWildcardShelfAccount } = useAuthSession()
 
 const parts = ref<PartItem[]>([])
 const loadingList = ref(false)
@@ -345,7 +348,41 @@ async function loadProcesses(): Promise<void> {
   loadingProcesses.value = true
   try {
     const resp = await listProcesses({ limit: 200 })
-    processes.value = resp.items
+    const all = resp.items
+
+    // 2026-07-17：按工人货架 scope 过滤（与 ScanPartsWork.vue:373-394 同款）
+    // - 通配 SHELF_ACCOUNT（shelf_ids 为空）→ 保留全量工序
+    // - 绑了架 → 只列被这些架映射过的工序（GET /shelves/processes 一次性取）
+    // - 工人无任何 scope → 列表为空（不该发生，但兜底）
+    let scopedIds: Set<string> | null = null
+    const workerShelfIds = boundShelves()
+    if (workerShelfIds.length > 0) {
+      try {
+        const mappings = await getAllShelfProcessMappings()
+        scopedIds = new Set<string>()
+        for (const sid of workerShelfIds) {
+          for (const item of mappings.items) {
+            if (item.shelf_id === sid) {
+              for (const pid of item.process_ids) scopedIds.add(pid)
+            }
+          }
+        }
+      } catch {
+        scopedIds = null  // 映射拉取失败 → 兜底显示全量
+      }
+    } else if (!isWildcardShelfAccount()) {
+      // 既无 scope 也非通配 → 显示空列表
+      scopedIds = new Set<string>()
+    }
+    // scopedIds === null 表示通配场景，保持全量
+
+    processes.value = scopedIds
+      ? all.filter((p) => scopedIds!.has(p.id))
+      : all
+
+    if (processes.value.length === 0) {
+      ElMessage.warning('您当前没有可执行的工序，请联系管理员配置货架映射')
+    }
   } catch (e) {
     ElMessage.error((e as Error).message ?? '加载工序列表失败')
     processes.value = []
@@ -437,7 +474,12 @@ function onProcessCancel(): void {
 
 async function onShelfConfirm(shelfId: string): Promise<void> {
   showShelfPicker.value = false
-  if (!selectedPart.value || !selectedNextProcessId.value || !worker.value) return
+  if (!selectedPart.value || !selectedNextProcessId.value || !worker.value) {
+    // 2026-07-17：原来这里是静默 return，工人以为操作失败；
+    // 改为显式提示，避免误判
+    ElMessage.warning('选择已重置，请重新选择零件')
+    return
+  }
   submitting.value = true
   try {
     await scanPart({
