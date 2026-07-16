@@ -105,7 +105,7 @@ _WORKERS: list[tuple[str, str, str, str, str]] = [
     ("18064554025", "童敏华", "350629200109194518", "18064554025", "CNC编程"),
     ("18250705779", "黄道玉", "342401199009058567", "18250705779", "品检"),
     ("18046244109", "曾学辉", "510303197012091622", "18046244109", "品检"),
-    ("13359114794", "陈燕",   "510302199702011047", "13359114794", "文员"),
+    ("13359114794", "陈燕",   "510302199702011047", "13350114794", "文员"),
     ("15105972335", "翁美月", "350205199004051045", "15105972335", "文员"),
     ("18059214776", "幸世从", "51032119681002289X", "18059214776", "送货司机"),
 ]
@@ -126,6 +126,64 @@ _USERS: list[tuple[str, str, str]] = [
 _INSPECTOR_USERS: list[tuple[str, str]] = [
     ("18250705779", "黄道玉"),
     ("18046244109", "曾学辉"),
+]
+
+
+# =============================================================================
+# 客户（3 一级 + 11 二级；2026-07-16 新增）
+# 字段: (name, parent_name_or_None, serial_prefix_or_None)
+# 一级客户 serial_prefix 必填 A-Z 单字；二级客户继承父，serial_prefix 留空。
+# 部分唯一索引 uq_t_customer_root_prefix 强制一级客户 prefix 互不冲突。
+# =============================================================================
+_CUSTOMERS: list[tuple[str, str | None, str | None]] = [
+    # 一级 3 — 法拉电子 / 路达 / 宏发
+    ("法拉电子", None, "F"),
+    ("路达",     None, "L"),
+    ("宏发",     None, "H"),
+    # 二级 11 — 全部挂 法拉电子
+    ("一厂",       "法拉电子", None),
+    ("二厂",       "法拉电子", None),
+    ("五厂",       "法拉电子", None),
+    ("六厂",       "法拉电子", None),
+    ("七厂",       "法拉电子", None),
+    ("八厂",       "法拉电子", None),
+    ("母排厂",     "法拉电子", None),
+    ("镀膜长",     "法拉电子", None),  # 按用户原话录入（疑为「镀膜厂」之误，但需用户确认）
+    ("设备部",     "法拉电子", None),
+    ("IQC",        "法拉电子", None),
+    ("南海路厂区", "法拉电子", None),
+]
+
+
+# =============================================================================
+# 货架（4 条；2026-07-16 新增）
+# 字段: (code, name, zone, location)
+# A1/A2/B1 是生产区（PRODUCTION），C1 是品检区（INSPECTION）。
+# B1 仍是生产区（与 hmi-b1 绑定的「另一个生产一体机」语义一致）。
+# =============================================================================
+_SHELVES: list[tuple[str, str, str, str | None]] = [
+    ("A1", "生产区 A1", "PRODUCTION", None),
+    ("A2", "生产区 A2", "PRODUCTION", None),
+    ("B1", "生产区 B1", "PRODUCTION", None),
+    ("C1", "品检区 C1", "INSPECTION", None),
+]
+
+
+# =============================================================================
+# 工控机账号（SHELF_ACCOUNT 角色；2026-07-16 新增）
+# 字段: (username, full_name)
+# 密码统一用 changeme（与现有 6 个账号一致，bcrypt rounds=12）。
+# =============================================================================
+_HMI_USERS: list[tuple[str, str]] = [
+    ("hmi-a1", "工控机 A1"),
+    ("hmi-b1", "工控机 B1"),
+]
+
+# HMI → 货架 一对多（每个绑定写一行 t_user_role，scope_type='shelf' / scope_id=shelf.id）
+# 字段: (hmi_username, [shelf_code, ...])
+_HMI_SHELF_BINDINGS: list[tuple[str, list[str]]] = [
+    ("hmi-a1", ["A1", "A2"]),
+    ("hmi-b1", ["B1"]),
 ]
 
 
@@ -211,12 +269,18 @@ def upgrade() -> None:
     _seed_processes(bind)
     _seed_work_type_process_map(bind)
     _seed_workers(bind)
+    _update_chen_yan_phone(bind)   # 2026-07-16：先改工人 phone，再 INSERT 账号用新 phone
     _seed_users(bind)
+    _update_user_chen_yan_phone(bind)  # 2026-07-16：同步账号 phone
     _seed_menus(bind)
     _seed_inspection_menu(bind)
     _seed_inspector_users(bind)
     _seed_delivery_note_menu(bind)
     _seed_serial_counter(bind)
+    # 2026-07-16：新增 客户 / 货架 / 工控机
+    _seed_customers(bind)
+    _seed_shelves(bind)
+    _seed_hmi_users(bind)
 
 
 def _seed_work_types(bind) -> None:
@@ -386,6 +450,180 @@ def _seed_users(bind) -> None:
             ),
             {"id": new_id(), "uid": uid, "role": role},
         )
+
+
+def _update_chen_yan_phone(bind) -> None:
+    """2026-07-16：把工人陈燕的手机号从 13359114794 改成 13350114794。
+    走 UPDATE 不走 INSERT；幂等。"""
+    bind.execute(
+        sa.text(
+            """
+            UPDATE t_worker
+            SET phone = :new_phone, updated_at = now()
+            WHERE badge_code = :old_phone AND deleted_at IS NULL
+            """
+        ),
+        {"new_phone": "13350114794", "old_phone": "13359114794"},
+    )
+
+
+def _update_user_chen_yan_phone(bind) -> None:
+    """2026-07-16：把账号陈燕的 phone 同步改成 13350114794。"""
+    bind.execute(
+        sa.text(
+            """
+            UPDATE t_user
+            SET phone = :new_phone, updated_at = now()
+            WHERE username = :old_phone AND deleted_at IS NULL
+            """
+        ),
+        {"new_phone": "13350114794", "old_phone": "13359114794"},
+    )
+
+
+def _seed_customers(bind) -> None:
+    """2026-07-16：灌入 3 一级 + 11 二级客户。
+    流程：先 INSERT 一级 → 按 name 查 id 缓存 → 再 INSERT 二级（parent_id 从缓存取）。"""
+    id_by_name: dict[str, int] = {}
+
+    # 第一遍：插入一级客户
+    for name, parent_name, prefix in _CUSTOMERS:
+        if parent_name is not None:
+            continue
+        new_cid = new_id()
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_customer (id, name, parent_id, serial_prefix,
+                                         version, created_at, updated_at)
+                VALUES (:id, :name, NULL, :prefix, 0, now(), now())
+                ON CONFLICT (name) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {"id": new_cid, "name": name, "prefix": prefix},
+        )
+
+    # 回查：拿到所有客户的 id（兼容 ON CONFLICT 跳过的情况：原表已有同名客户）
+    rows = bind.execute(
+        sa.text(
+            "SELECT name, id FROM t_customer "
+            "WHERE deleted_at IS NULL AND name IN :names"
+        ).bindparams(sa.bindparam("names", expanding=True)),
+        {"names": [c[0] for c in _CUSTOMERS]},
+    ).fetchall()
+    id_by_name = {name: int(cid) for name, cid in rows}
+
+    # 第二遍：插入二级客户
+    for name, parent_name, _prefix in _CUSTOMERS:
+        if parent_name is None:
+            continue
+        parent_id = id_by_name.get(parent_name)
+        if parent_id is None:
+            continue
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_customer (id, name, parent_id, serial_prefix,
+                                         version, created_at, updated_at)
+                VALUES (:id, :name, :parent_id, NULL, 0, now(), now())
+                ON CONFLICT (name) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {"id": new_id(), "name": name, "parent_id": parent_id},
+        )
+
+
+def _seed_shelves(bind) -> None:
+    """2026-07-16：灌入 4 条货架（A1/A2/B1 生产 + C1 品检）。"""
+    for code, name, zone, location in _SHELVES:
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_shelf (id, code, name, zone, location, is_active,
+                                     display_order, version, created_at, updated_at)
+                VALUES (:id, :code, :name, :zone, :loc, true, 0, 0, now(), now())
+                ON CONFLICT (code) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {
+                "id": new_id(),
+                "code": code,
+                "name": name,
+                "zone": zone,
+                "loc": location,
+            },
+        )
+
+
+def _seed_hmi_users(bind) -> None:
+    """2026-07-16：灌入 2 个工控机账号（hmi-a1 / hmi-b1），
+    密码 changeme，绑定 SHELF_ACCOUNT 角色（scope_type='shelf' / scope_id=shelf.id）。
+
+    流程：先 INSERT 账号 → 查 user id → 查每个 shelf code 的 shelf id →
+    为每个 (user, shelf) 配对写一条 t_user_role。"""
+    pwd_hash = _bc.hashpw(b"changeme", _bc.gensalt(rounds=12)).decode("utf-8")
+
+    for username, full_name in _HMI_USERS:
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO t_user (id, username, password_hash, full_name, phone,
+                                    is_active, created_at, updated_at)
+                VALUES (:id, :username, :pwd, :full_name, :phone,
+                        true, now(), now())
+                ON CONFLICT (username) WHERE deleted_at IS NULL DO NOTHING
+                """
+            ),
+            {
+                "id": new_id(),
+                "username": username,
+                "pwd": pwd_hash,
+                "full_name": full_name,
+                "phone": username,
+            },
+        )
+
+    # 查 user id + shelf id（按 username / code 查）
+    rows = bind.execute(
+        sa.text(
+            "SELECT username, id FROM t_user "
+            "WHERE deleted_at IS NULL AND username IN :usernames"
+        ).bindparams(sa.bindparam("usernames", expanding=True)),
+        {"usernames": [u[0] for u in _HMI_USERS]},
+    ).fetchall()
+    user_id_by_username: dict[str, int] = {u: int(uid) for u, uid in rows}
+
+    all_shelf_codes = [code for _, codes in _HMI_SHELF_BINDINGS for code in codes]
+    rows = bind.execute(
+        sa.text(
+            "SELECT code, id FROM t_shelf "
+            "WHERE deleted_at IS NULL AND code IN :codes"
+        ).bindparams(sa.bindparam("codes", expanding=True)),
+        {"codes": all_shelf_codes},
+    ).fetchall()
+    shelf_id_by_code: dict[str, int] = {code: int(sid) for code, sid in rows}
+
+    for hmi_username, shelf_codes in _HMI_SHELF_BINDINGS:
+        uid = user_id_by_username.get(hmi_username)
+        if uid is None:
+            continue
+        for code in shelf_codes:
+            sid = shelf_id_by_code.get(code)
+            if sid is None:
+                continue
+            bind.execute(
+                sa.text(
+                    """
+                    INSERT INTO t_user_role
+                      (id, user_id, role, scope_type, scope_id,
+                       created_at, updated_at)
+                    VALUES
+                      (:id, :uid, 'SHELF_ACCOUNT', 'shelf', :sid, now(), now())
+                    ON CONFLICT (user_id, role, scope_type, scope_id) DO NOTHING
+                    """
+                ),
+                {"id": new_id(), "uid": uid, "sid": sid},
+            )
 
 
 def _seed_menus(bind) -> None:
@@ -645,10 +883,14 @@ def downgrade() -> None:
     )
     op.execute(
         "DELETE FROM t_user_role "
-        "WHERE role IN ('MANAGER', 'CLERK', 'CNC_PROGRAMMER', 'INSPECTOR')"
+        "WHERE role IN ('MANAGER', 'CLERK', 'CNC_PROGRAMMER', 'INSPECTOR', 'SHELF_ACCOUNT')"
     )
 
-    all_usernames = [u[0] for u in _USERS] + [u[0] for u in _INSPECTOR_USERS]
+    all_usernames = (
+        [u[0] for u in _USERS]
+        + [u[0] for u in _INSPECTOR_USERS]
+        + [u[0] for u in _HMI_USERS]   # 2026-07-16
+    )
     bind.execute(
         sa.text(
             "DELETE FROM t_user WHERE username IN :usernames AND deleted_at IS NULL"
@@ -661,6 +903,20 @@ def downgrade() -> None:
             "DELETE FROM t_worker WHERE badge_code IN :codes AND deleted_at IS NULL"
         ).bindparams(sa.bindparam("codes", expanding=True)),
         {"codes": [w[0] for w in _WORKERS]},
+    )
+
+    # 2026-07-16：清掉新加的 4 个货架 + 14 个客户
+    bind.execute(
+        sa.text(
+            "DELETE FROM t_shelf WHERE code IN :codes AND deleted_at IS NULL"
+        ).bindparams(sa.bindparam("codes", expanding=True)),
+        {"codes": [s[0] for s in _SHELVES]},
+    )
+    bind.execute(
+        sa.text(
+            "DELETE FROM t_customer WHERE name IN :names AND deleted_at IS NULL"
+        ).bindparams(sa.bindparam("names", expanding=True)),
+        {"names": [c[0] for c in _CUSTOMERS]},
     )
 
     op.execute("DELETE FROM t_menu WHERE deleted_at IS NULL")
