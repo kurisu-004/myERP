@@ -97,6 +97,7 @@ class OutsourceQuoteService:
 
         rows, total = await self._search_quotes(
             status=query.status.value if query.status else None,
+            statuses=[s.value for s in query.statuses] if query.statuses else None,
             part_id=parse_snowflake_id(query.part_id, field_name="part_id") if query.part_id else None,
             outsource_company_id=(
                 parse_snowflake_id(query.outsource_company_id, field_name="outsource_company_id")
@@ -616,6 +617,7 @@ class OutsourceQuoteService:
         self,
         *,
         status: str | None,
+        statuses: list[str] | None = None,
         part_id: int | None,
         outsource_company_id: int | None,
         part_filter_ids: list[int] | None,
@@ -628,13 +630,15 @@ class OutsourceQuoteService:
         if part_filter_ids is None:
             rows = await self.quotes.list_with_filters(
                 status=status,
+                statuses=statuses,
                 part_id=part_id,
                 outsource_company_id=outsource_company_id,
                 sort_by=sort_by, sort_dir=sort_dir,
                 limit=limit, offset=offset,
             )
             total = await self.quotes.count_with_filters(
-                status=status, part_id=part_id, outsource_company_id=outsource_company_id,
+                status=status, statuses=statuses,
+                part_id=part_id, outsource_company_id=outsource_company_id,
             )
             return rows, total
 
@@ -642,7 +646,7 @@ class OutsourceQuoteService:
         out: list[TOutsourceQuote] = []
         for pid in part_filter_ids:
             sub = await self.quotes.list_with_filters(
-                status=status, part_id=pid,
+                status=status, statuses=statuses, part_id=pid,
                 outsource_company_id=outsource_company_id,
                 sort_by=sort_by, sort_dir=sort_dir,
                 limit=200, offset=0,

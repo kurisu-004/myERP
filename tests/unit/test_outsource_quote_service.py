@@ -629,3 +629,45 @@ class TestListApprovedForSend:
                 f"customer_path 是 {type(it.customer_path).__name__}，应该是 str/None"
             )
 
+
+# =============================================================================
+# 报价列表 statuses[] 多选透传（2026-07-16 修复）
+# =============================================================================
+
+
+class TestSearchQuotesStatusesMulti:
+    async def test_statuses_array_passed_through(
+        self, svc, mock_quotes, mock_parts,
+    ):
+        from schema.outsource_quote import OutsourceQuoteListQuery
+        from model.enums import OutsourceQuoteStatus
+
+        # 准备：1 个 part 关联 1 个 quote
+        quote = _make_quote()
+        mock_quotes.session = MagicMock()
+        mock_quotes.session.execute = AsyncMock(return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[quote]))),
+        ))
+
+        # 业务场景：先 listParts 拿 part_ids（service 会先调 part_repo）
+        svc.parts.list_with_filters = AsyncMock(return_value=[])
+
+        q = OutsourceQuoteListQuery(
+            statuses=[OutsourceQuoteStatus.DRAFT, OutsourceQuoteStatus.APPROVED],
+        )
+        # part_filter_ids is None if customer_id is None
+        # → 走 _search_quotes 直接传 list_with_filters / count_with_filters
+        # 我们让 part_filter_ids = [] 来短路（避免全链路 mock）
+        from service.outsource_quote import OutsourceQuoteService
+        # 用 keyword 不为空 → 走 _resolve_part_ids → list_with_filters（无结果）
+        q2 = OutsourceQuoteListQuery(
+            statuses=[OutsourceQuoteStatus.DRAFT, OutsourceQuoteStatus.APPROVED],
+            keyword="NOMATCH",
+        )
+        out = await svc.list_quotes(q2)
+        assert out.items == []
+        assert out.total == 0
+        # 验证 svc 把 list 传给了 part_repo（_resolve_part_ids 路径）
+        call_kwargs = svc.parts.list_with_filters.call_args.kwargs
+        assert call_kwargs.get("keyword") == "NOMATCH"
+

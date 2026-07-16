@@ -64,9 +64,13 @@ class OutsourceQuoteListQuery(BaseModel):
     - `customer_id`：按 L1 客户 id 过滤时，service 端把它 + 全部子节点展平为 IN(...)
       （与 PartRepository.list_with_filters 的 customer_ids_in 同款行为）。
     - `keyword`：匹配 `t_part.serial_no` / `t_part.drawing_no` / `t_part.name`。
+    - `status` / `statuses` 二选一或多选合并：`statuses` 是多选，service 端
+      与 `status` 折叠为 list 传给 repo（用 SQL `IN(...)`）；旧调用方仅传
+      `status=DRAFT` 仍兼容。
     """
 
     status: OutsourceQuoteStatus | None = None
+    statuses: list[OutsourceQuoteStatus] | None = None
     part_id: str | None = None
     outsource_company_id: str | None = None
     customer_id: str | None = None
