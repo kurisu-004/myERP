@@ -1028,7 +1028,14 @@ class PartService:
     async def _validate_production_shelf_and_process(
         self, shelf_id: int | None, next_process_id: int | None,
     ) -> tuple[TShelf, TProcess]:
-        """校验 `shelf_id` 是 PRODUCTION 区 active 货架 + `next_process_id` 存在。"""
+        """校验 `shelf_id` 是 PRODUCTION 区 active 货架 + `next_process_id` 存在
+        + **该货架已映射该工序**（2026-07-17 强化）。
+
+        三道闸：(1) shelf 存在/active/PRODUCTION；(2) process 存在；(3) shelf↔process
+        在 `t_shelf_process` 中存在活跃行。三者全过才返回。三个调用方
+        （`place_on_shelf` / `release_from_programming` / `receive_from_outsource`）
+        都通过本 helper 一次校验。
+        """
         if shelf_id is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
@@ -1064,7 +1071,40 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         process = await self._get_process(next_process_id)
+        # 2026-07-17：货架↔工序 映射校验（兜底）
+        await self._assert_shelf_maps_process(shelf, process)
         return shelf, process
+
+    async def _assert_shelf_maps_process(
+        self, shelf: TShelf, process: TProcess,
+    ) -> None:
+        """校验 `shelf` 已映射 `process`；不满足抛 `BIZ_SHELF_PROCESS_NOT_MAPPED` 422。
+
+        - `shelf_process_repo is None` → 500 配置错误（service 没接 repo，调用方不能静默放过）
+        - 货架没有任何映射行（空集）→ 同样拒绝（用户必须先在「货架管理」配置映射）
+        - 货架有映射但不包含此 process → 422 拒绝
+
+        单独抽出便于：`place_on_shelf` / `release_from_programming` /
+        `receive_from_outsource` 通过 `_validate_production_shelf_and_process` 走；
+        `complete_repair`（货架来自 query 参数，且 next_process 由工种→默认工序
+        推导）直接调本方法。
+        """
+        if self.shelf_process_repo is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="shelf_process_repo not configured for mapping guard",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        allowed_ids = await self.shelf_process_repo.list_process_ids_by_shelf(shelf.id)
+        if not allowed_ids or process.id not in allowed_ids:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED,
+                message=(
+                    f"货架 {shelf.code!r} 未配置可执行工序 {process.code!r}，"
+                    f"请先在「货架管理」→「工序映射」中配置"
+                ),
+                http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
     async def _get_process(self, process_id: int) -> TProcess:
         """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""
@@ -1241,20 +1281,8 @@ class PartService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
             new_process = await self._get_process(data.next_process_id)
-            # 校验 next_process_id 属于当前货架的已分配工序（防御性校验）
-            if self.shelf_process_repo is not None:
-                allowed_ids = await self.shelf_process_repo.list_process_ids_by_shelf(
-                    shelf.id
-                )
-                if allowed_ids and data.next_process_id not in allowed_ids:
-                    raise BizError(
-                        code=ErrCode.BIZ_INVALID_VALUE,
-                        message=(
-                            f"process {data.next_process_id} is not assigned to "
-                            f"shelf {shelf.code!r}"
-                        ),
-                        http_status=http_status.HTTP_400_BAD_REQUEST,
-                    )
+            # 2026-07-17：货架↔工序 映射校验收紧（去掉之前空集时跳过的 permissive 行为）
+            await self._assert_shelf_maps_process(shelf, new_process)
             # 解析 prev_process_code 与 worker_work_type_code 给状态机 note 用
             prev_process_code: str | None = None
             if self.processes is not None and part.next_process_id is not None:
@@ -1569,7 +1597,13 @@ class PartService:
         return items[0]
 
     async def complete_repair(self, part_id: int, shelf_id: int) -> PartOut:
-        """REPAIRING -> IN_PROCESS：返修完成，放回生产货架。"""
+        """REPAIRING -> IN_PROCESS：返修完成，放回生产货架。
+
+        2026-07-17：补 shelf↔process 校验——REPAIRING 期间 `next_process_id`
+        由 start_repair 透传保留（ON_SHELF 进入时不传 process，next_process_id
+        沿用 REPAIRING 之前）；如果 caller 选了不兼容的 shelf，422 拒绝。
+        `next_process_id IS NULL`（fail_inspection 已清空）时跳过校验。
+        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -1596,6 +1630,9 @@ class PartService:
                 message=f"shelf {shelf.code!r} is zone={shelf.zone!r}; complete_repair requires PRODUCTION",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
+        if part.next_process_id is not None:
+            carried_process = await self._get_process(part.next_process_id)
+            await self._assert_shelf_maps_process(shelf, carried_process)
         part.sm.complete_repair(
             shelf=shelf, event_repo=self.events,
             created_by=self._user_id,

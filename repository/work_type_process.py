@@ -75,6 +75,26 @@ class WorkTypeProcessRepository:
         result = await self.session.execute(stmt)
         return [int(pid) for pid in result.scalars().all()]
 
+    async def get_default_process_id_for_work_type(
+        self, work_type_id: int,
+    ) -> int | None:
+        """取工种的「默认工序」id（最低 sort_order 的 process_id）；无映射返 None。
+
+        2026-07-17：`complete_repair` 用此方法推导 SM 会写入的 `next_process_id`，
+        以便提前做 shelf↔process 校验。无映射则 `complete_repair` 走 fail-open
+        （SM 自身会因 ON_SHELF 进入时缺 process 失败）。
+        """
+        stmt = (
+            select(TWorkTypeProcess.process_id)
+            .where(
+                TWorkTypeProcess.work_type_id == work_type_id,
+                TWorkTypeProcess.deleted_at.is_(None),
+            )
+            .order_by(TWorkTypeProcess.sort_order.asc())
+            .limit(1)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
     # ===== 集合替换（Manager 维护映射用）=====
     async def delete_by_work_type(self, work_type_id: int) -> None:
         """把某工种的全部映射置为软删。
