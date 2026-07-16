@@ -11,7 +11,7 @@ myERP —— 零件加工订单管理系统。覆盖法拉电子、路达两家�
 - 数据库：PostgreSQL 18（`docker-compose.yml` 提供容器）
 - 包管理：uv（依赖在 `pyproject.toml` / `uv.lock`）
 - 文件存储：腾讯云 COS（`core/cos.py`，后端上传模式）
-- ID 方案：`utils/id_gen.py` 生成的雪花 ID；`t_customer` 用自增
+- ID 方案：`utils/id_gen.py` 生成的雪花 ID
 - CI/CD：本地 `./scripts/push-images.sh` → 腾讯云 TCR（`ccr.ccs.tencentyun.com/hsh-erp`） → CVM（`scripts/deploy.sh` 走 `docker compose pull && up -d`）。已无 GHCR / GitHub Actions。
 
 ## 架构总览
