@@ -2,7 +2,7 @@
      (2026-07-16 仿 PartsList.vue 范式重排版：列头 popover 筛选 + 列头排序 + 分页 sizes)
 -->
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import {
@@ -19,6 +19,9 @@ import { listCustomers, type Customer } from '@/api/customer'
 import { listOutsourceCompanies } from '@/api/outsource'
 import { listProcesses } from '@/api/process'
 import { listParts } from '@/api/parts'
+import { listPartFiles } from '@/api/assembly'
+import { api } from '@/api/http'
+import type { PartFileItem } from '@/types/part_file'
 import type { PartListItem } from '@/types/parts'
 import type { Process } from '@/types/process'
 import { useAuthSession } from '@/composables/useAuthSession'
@@ -40,6 +43,17 @@ import {
 
 const { user, hasRole } = useAuthSession()
 const roleMap = computed(() => rolesArrayToMap(user.value?.roles ?? []))
+
+/** 按角色注入默认 statuses：
+ *  - CLERK 默认 DRAFT（待他提交审核的）
+ *  - MANAGER 默认 SUBMITTED（待他审批的）
+ *  - 其它角色不预选
+ */
+function defaultStatusesForRole(rm: ReturnType<typeof rolesArrayToMap>): OutsourceQuoteStatus[] {
+  if (rm.MANAGER) return ['SUBMITTED']
+  if (rm.CLERK) return ['DRAFT']
+  return []
+}
 
 const { tree: customerTree } = useCustomerTree()
 
@@ -155,6 +169,18 @@ const actionColumnWidth = computed(() => {
   return Math.max(160, maxBtns * 76 + 12)
 })
 
+/** 行点击触发图纸预览。
+ *  Element Plus 默认 row-click 不会触发被嵌套按钮 click；操作列按钮
+ *  的 click 事件已用 .stop 阻止冒泡。 */
+function onRowClick(row: unknown): void {
+  previewDrawing(row as OutsourceQuote)
+}
+
+/** 行 cursor: pointer（用 :row-class-name 把 hover cursor 加上） */
+function drawingRowClass(): string {
+  return 'quote-row-clickable'
+}
+
 function buildParams() {
   return {
     keyword: search.keyword.trim() || undefined,
@@ -244,8 +270,83 @@ async function loadLookups(): Promise<void> {
   }
 }
 
+// ============================================================
+// 图纸行内预览（2026-07-16）：行点击 / 图号链接 → 拉取该零件的 DRAWING
+// → blob URL → 全屏 PDF / 图片预览
+// ============================================================
+const drawingPreviewVisible = ref(false)
+const drawingPreviewUrl = ref<string | null>(null)
+const drawingPreviewTitle = ref('图纸预览')
+const drawingPreviewIsPdf = ref(false)
+const drawingPreviewLoading = ref(false)
+// 缓存：同一 part_id 重复点不重复拉取
+const drawingCache = new Map<string, PartFileItem | null>()
+
+const IMAGE_FILE_TYPES = new Set([
+  'PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'TIF', 'TIFF', 'WEBP',
+])
+function isPdfType(t: string): boolean {
+  return t.toUpperCase() === 'PDF'
+}
+function isImageType(t: string): boolean {
+  return IMAGE_FILE_TYPES.has(t.toUpperCase())
+}
+
+async function ensureDrawing(partId: string): Promise<PartFileItem | null> {
+  if (drawingCache.has(partId)) return drawingCache.get(partId) ?? null
+  const files = await listPartFiles(partId, 'DRAWING')
+  const f = files[0] ?? null
+  drawingCache.set(partId, f)
+  return f
+}
+
+async function previewDrawing(row: OutsourceQuote): Promise<void> {
+  if (!row.part_id) return
+  drawingPreviewLoading.value = true
+  try {
+    const f = await ensureDrawing(row.part_id)
+    if (!f) {
+      ElMessage.warning('该零件暂无图纸')
+      return
+    }
+    const resp = await api.get<Blob>(
+      `/files/${encodeURIComponent(f.id)}/content`,
+      { responseType: 'blob' },
+    )
+    if (drawingPreviewUrl.value) URL.revokeObjectURL(drawingPreviewUrl.value)
+    drawingPreviewUrl.value = URL.createObjectURL(resp.data)
+    drawingPreviewTitle.value = `图纸预览 — ${row.part_drawing_no ?? ''} / ${row.part_name ?? ''}`
+    drawingPreviewIsPdf.value = isPdfType(f.file_type)
+    drawingPreviewVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '图纸加载失败')
+  } finally {
+    drawingPreviewLoading.value = false
+  }
+}
+
+function closeDrawingPreview(): void {
+  drawingPreviewVisible.value = false
+  if (drawingPreviewUrl.value) {
+    URL.revokeObjectURL(drawingPreviewUrl.value)
+    drawingPreviewUrl.value = null
+  }
+}
+
+onBeforeUnmount(() => {
+  if (drawingPreviewUrl.value) URL.revokeObjectURL(drawingPreviewUrl.value)
+})
+
 onMounted(async () => {
   await loadLookups()
+  // 按角色注入默认 statuses（仅在用户尚未手动选过状态时生效）
+  if (search.statuses.length === 0) {
+    const defaults = defaultStatusesForRole(roleMap.value)
+    if (defaults.length > 0) {
+      search.statuses = [...defaults]
+      statusDraft.value = [...defaults]
+    }
+  }
   await refresh()
 })
 
@@ -409,7 +510,9 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         size="small"
         :default-sort="defaultSort"
         :empty-text="emptyText"
+        :row-class-name="drawingRowClass"
         @sort-change="onSortChange"
+        @row-click="onRowClick"
       >
         <el-table-column
           prop="part_serial_no"
@@ -425,7 +528,17 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           width="120"
           sortable="custom"
           show-overflow-tooltip
-        />
+        >
+          <template #default="{ row }">
+            <el-link
+              v-if="(row as OutsourceQuote).part_drawing_no"
+              type="primary"
+              :underline="false"
+              @click.stop="previewDrawing(row as OutsourceQuote)"
+            >{{ (row as OutsourceQuote).part_drawing_no }}</el-link>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
 
         <el-table-column
           prop="part_name"
@@ -692,6 +805,34 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         <el-button type="danger" @click="onReject">拒绝</el-button>
       </template>
     </el-dialog>
+
+    <!-- 图纸行内预览（2026-07-16） -->
+    <el-dialog
+      v-model="drawingPreviewVisible"
+      :title="drawingPreviewTitle"
+      width="900"
+      :close-on-click-modal="false"
+      :destroy-on-close="true"
+      append-to-body
+      @close="closeDrawingPreview"
+    >
+      <div v-if="drawingPreviewUrl" class="drawing-frame-wrap">
+        <iframe
+          v-if="drawingPreviewIsPdf"
+          :src="drawingPreviewUrl"
+          class="drawing-frame"
+          title="PDF 图纸预览"
+        />
+        <el-image
+          v-else
+          :src="drawingPreviewUrl"
+          :preview-src-list="[drawingPreviewUrl]"
+          fit="contain"
+          class="drawing-image"
+        />
+      </div>
+      <p v-else class="muted">无可预览内容</p>
+    </el-dialog>
   </div>
 </template>
 
@@ -751,5 +892,29 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
 
 .muted {
   color: var(--text-secondary);
+}
+
+// 2026-07-16：行点击 → 预览图纸；光标暗示
+:deep(.el-table__row.quote-row-clickable) {
+  cursor: pointer;
+}
+
+.drawing-frame-wrap {
+  width: 100%;
+  height: 70vh;
+  background: #f5f7fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.drawing-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.drawing-image {
+  max-width: 100%;
+  max-height: 70vh;
 }
 </style>
