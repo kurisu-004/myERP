@@ -157,8 +157,8 @@ _MENUS: list[tuple[str, str | None, str, str | None, str, int]] = [
     ("outsource_list",      None,             "外协管理",   None,          "Promotion",    35),
     ("outsource_companies_list", "outsource_list", "外协厂一览", "/outsource/companies", "OfficeBuilding", 10),
     ("outsource_quotes_list",    "outsource_list", "报价一览",    "/outsource/quotes",    "Document", 20),
-    ("outsource_send_list",      "outsource_list", "外协发送",    "/outsource/send",      "Promotion", 30),
-    ("outsource_receive_list",   "outsource_list", "外协接收",    "/outsource/receive",   "Box",       40),
+    # 2026-07-16：合并「外协发送」+「外协接收」为一个「外协发送/接收」
+    ("outsource_send_receive_list", "outsource_list", "外协发送/接收", "/outsource/send-receive", "Promotion", 30),
 ]
 
 _MANAGER_MENUS: list[str] = [
@@ -169,7 +169,8 @@ _MANAGER_MENUS: list[str] = [
     "pending_programming",
     "customer_management", "customers_list", "applicants_list",
     "outsource_list", "outsource_companies_list", "outsource_quotes_list",
-    "outsource_send_list", "outsource_receive_list",
+    # 2026-07-16：合并后的「外协发送/接收」
+    "outsource_send_receive_list",
 ]
 
 _CLERK_MENUS: list[str] = [
@@ -180,9 +181,9 @@ _CLERK_MENUS: list[str] = [
     # 各 seed 函数单独授予，无需在此列出。
     "customer_management", "customers_list", "applicants_list",
     # 2026-07-15：CLERK 也能进外协管理（与 MANAGER 同款权限）。
-    # 2026-07-16：CLERK 同步增 4 个子菜单（与 commit 7 service 端权限一致）。
+    # 2026-07-16：合并后的「外协发送/接收」一个菜单替代原 send + receive 两个。
     "outsource_list", "outsource_companies_list", "outsource_quotes_list",
-    "outsource_send_list", "outsource_receive_list",
+    "outsource_send_receive_list",
 ]
 
 _CNC_PROGRAMMER_MENUS: list[str] = [
