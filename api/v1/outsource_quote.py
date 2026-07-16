@@ -15,7 +15,7 @@
 - POST  /outsource-quotes/{id}/soft-delete 软删（DRAFT / REJECTED）
 - GET   /outsource-quotes/approved-for-send 外协发送列表页数据
 """
-from fastapi import APIRouter, Depends, status as http_status
+from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_outsource_quote_service
 from core.permission import require_role, require_roles
@@ -52,6 +52,9 @@ read_router = APIRouter(
 )
 async def list_outsource_quotes(
     status: OutsourceQuoteStatus | None = None,
+    statuses: list[OutsourceQuoteStatus] | None = Query(
+        default=None, description="多选状态（与 status 取并集，SQL IN(...)）",
+    ),
     part_id: str | None = None,
     outsource_company_id: str | None = None,
     customer_id: str | None = None,
@@ -63,7 +66,8 @@ async def list_outsource_quotes(
     svc: OutsourceQuoteService = Depends(get_outsource_quote_service),
 ) -> OutsourceQuoteListOut:
     return await svc.list_quotes(OutsourceQuoteListQuery(
-        status=status, part_id=part_id, outsource_company_id=outsource_company_id,
+        status=status, statuses=statuses,
+        part_id=part_id, outsource_company_id=outsource_company_id,
         customer_id=customer_id, keyword=keyword,
         sort_by=sort_by, sort_dir=sort_dir,
         limit=limit, offset=offset,

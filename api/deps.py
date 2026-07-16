@@ -490,5 +490,6 @@ def get_outsource_quote_service(
         companies=companies,
         processes=processes,
         customers=CustomerRepository(session),
+        part_events=PartEventRepository(session),
         current_user=user,
     )

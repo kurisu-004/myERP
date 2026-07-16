@@ -141,6 +141,7 @@ class OutsourceQuoteRepository:
         self,
         *,
         status: str | None = None,
+        statuses: list[str] | None = None,
         part_id: int | None = None,
         outsource_company_id: int | None = None,
         customer_ids_in: list[int] | None = None,
@@ -153,8 +154,16 @@ class OutsourceQuoteRepository:
         offset: int = 0,
     ) -> list[TOutsourceQuote]:
         stmt = select(TOutsourceQuote).where(TOutsourceQuote.deleted_at.is_(None))
+        # status 与 statuses 取并集（service 层会合并）
+        effective_statuses: list[str] = []
         if status:
-            stmt = stmt.where(TOutsourceQuote.status == status)
+            effective_statuses.append(status)
+        if statuses:
+            effective_statuses.extend(statuses)
+        if len(effective_statuses) == 1:
+            stmt = stmt.where(TOutsourceQuote.status == effective_statuses[0])
+        elif len(effective_statuses) > 1:
+            stmt = stmt.where(TOutsourceQuote.status.in_(effective_statuses))
         if part_id is not None:
             stmt = stmt.where(TOutsourceQuote.part_id == part_id)
         if outsource_company_id is not None:
@@ -174,14 +183,22 @@ class OutsourceQuoteRepository:
         self,
         *,
         status: str | None = None,
+        statuses: list[str] | None = None,
         part_id: int | None = None,
         outsource_company_id: int | None = None,
     ) -> int:
         stmt = select(func.count(TOutsourceQuote.id)).where(
             TOutsourceQuote.deleted_at.is_(None)
         )
+        effective_statuses: list[str] = []
         if status:
-            stmt = stmt.where(TOutsourceQuote.status == status)
+            effective_statuses.append(status)
+        if statuses:
+            effective_statuses.extend(statuses)
+        if len(effective_statuses) == 1:
+            stmt = stmt.where(TOutsourceQuote.status == effective_statuses[0])
+        elif len(effective_statuses) > 1:
+            stmt = stmt.where(TOutsourceQuote.status.in_(effective_statuses))
         if part_id is not None:
             stmt = stmt.where(TOutsourceQuote.part_id == part_id)
         if outsource_company_id is not None:

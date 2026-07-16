@@ -125,28 +125,25 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
-        // 2026-07-16：外协发送（MANAGER + CLERK）
-        path: 'outsource/send',
-        name: 'OutsourceSendList',
-        component: () => import('@/views/outsource/OutsourceSendList.vue'),
+        // 2026-07-16：外协发送/接收（MANAGER + CLERK；合并原 send + receive）
+        path: 'outsource/send-receive',
+        name: 'OutsourceSendReceive',
+        component: () => import('@/views/outsource/OutsourceSendReceive.vue'),
         meta: {
-          title: '外协发送',
+          title: '外协发送/接收',
           icon: 'Promotion',
-          menuCode: 'outsource_send_list',
-          breadcrumb: [{ label: '外协管理' }, { label: '外协发送' }],
+          menuCode: 'outsource_send_receive_list',
+          breadcrumb: [{ label: '外协管理' }, { label: '外协发送/接收' }],
         },
       },
       {
-        // 2026-07-16：外协接收（MANAGER + CLERK）
+        // 2026-07-16 兼容：旧路径 → 重定向到新页面，URL ?tab= 同步
+        path: 'outsource/send',
+        redirect: { path: '/outsource/send-receive', query: { tab: 'sendable' } },
+      },
+      {
         path: 'outsource/receive',
-        name: 'OutsourceReceiveList',
-        component: () => import('@/views/outsource/OutsourceReceiveList.vue'),
-        meta: {
-          title: '外协接收',
-          icon: 'Box',
-          menuCode: 'outsource_receive_list',
-          breadcrumb: [{ label: '外协管理' }, { label: '外协接收' }],
-        },
+        redirect: { path: '/outsource/send-receive', query: { tab: 'receiving' } },
       },
       {
         path: 'assemblies',

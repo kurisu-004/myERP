@@ -107,6 +107,7 @@ export async function setOutsourceCompanyProcesses(
 export async function listOutsourceQuotes(
   params: {
     status?: OutsourceQuoteStatus
+    statuses?: OutsourceQuoteStatus[]
     part_id?: string
     outsource_company_id?: string
     customer_id?: string

@@ -24,15 +24,18 @@ from model.customer import TCustomer
 from model.enums import (
     OutsourceQuoteSortKey,
     OutsourceQuoteStatus,
+    PartEventType,
     ProcessCategory,
     SortDir,
 )
 from model.outsource_quote_event import TOutsourceQuoteEvent
+from model.part_event import TPartEvent
 from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
+from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from schema.outsource_quote import (
     ApprovedForSendListOut,
@@ -62,6 +65,7 @@ class OutsourceQuoteService:
         processes: ProcessRepository,
         customers: CustomerRepository,
         *,
+        part_events: PartEventRepository,
         current_user: CurrentUser | None = None,
     ) -> None:
         self.quotes = quotes
@@ -70,6 +74,7 @@ class OutsourceQuoteService:
         self.companies = companies
         self.processes = processes
         self.customers = customers
+        self.part_events = part_events
         self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
@@ -92,6 +97,7 @@ class OutsourceQuoteService:
 
         rows, total = await self._search_quotes(
             status=query.status.value if query.status else None,
+            statuses=[s.value for s in query.statuses] if query.statuses else None,
             part_id=parse_snowflake_id(query.part_id, field_name="part_id") if query.part_id else None,
             outsource_company_id=(
                 parse_snowflake_id(query.outsource_company_id, field_name="outsource_company_id")
@@ -208,6 +214,23 @@ class OutsourceQuoteService:
             created_by=self._user_id,
         ))
 
+        # 同步写一行 TPartEvent（2026-07-16）：让 PartDetail 历史时间线
+        # 看到「谁什么时候为此零件创建了外协报价」。
+        # note 是中文模板，包含外协公司 / 工序 / 报价 id 便于人工追溯。
+        await self.part_events.create(TPartEvent(
+            id=new_id(),
+            part_id=part_id,
+            event_type=PartEventType.QUOTE_CREATED.value,
+            from_status=None,
+            to_status=None,
+            note=(
+                f"外协公司:{company.name} "
+                f"工序:{process.code} "
+                f"报价:#{quote.id}"
+            ),
+            created_by=self._user_id,
+        ))
+
         return await self._to_out(quote)
 
     async def update_quote(
@@ -321,6 +344,27 @@ class OutsourceQuoteService:
         await refresh_for_state_machine(
             self.quotes.session, quote, attrs=("updated_at",),
         )
+
+        # 同步写一行 TPartEvent（2026-07-16）：让 PartDetail 历史时间线
+        # 看到「谁什么时候通过了这个零件的外协报价」。
+        # 报销金额信息不入 note（隐私），只记录公司/工序/报价 id/审批意见。
+        company = await self.companies.get_by_id(quote.outsource_company_id)
+        process = await self.processes.get_by_id(quote.process_id)
+        await self.part_events.create(TPartEvent(
+            id=new_id(),
+            part_id=quote.part_id,
+            event_type=PartEventType.QUOTE_APPROVED.value,
+            from_status=None,
+            to_status=None,
+            note=(
+                f"外协公司:{company.name if company else quote.outsource_company_id} "
+                f"工序:{process.code if process else quote.process_id} "
+                f"报价:#{quote.id} "
+                f"审批意见:{data.review_note or '无'}"
+            ),
+            created_by=self._user_id,
+        ))
+
         return await self._to_out(quote)
 
     async def reject_quote(
@@ -421,15 +465,19 @@ class OutsourceQuoteService:
         all_parts = [p for p in all_parts if p.id in set(part_ids)]
 
         # 3. 「可发送」资格：PENDING 或 (IN_PROCESS + PRODUCTION_SHELF + OUTSOURCE next)
-        eligible: list = []
+        #    同时记录零件的「下一道工序」名（用于响应字段 next_process_name，
+        #    不能误用成外协报价的 q.process_id 对应工序）。
+        eligible: list[tuple] = []
         for p in all_parts:
             status = p.status
             location = p.location
+            next_proc_name: str | None = None
             next_cat = None
             if p.next_process_id is not None:
                 proc = await self.processes.get_by_id(p.next_process_id)
                 if proc is not None:
                     next_cat = proc.category
+                    next_proc_name = proc.name
             allowed = (
                 status == "PENDING"
                 or (
@@ -439,29 +487,31 @@ class OutsourceQuoteService:
                 )
             )
             if allowed:
-                eligible.append(p)
+                eligible.append((p, next_proc_name))
 
         # 4. customer 过滤
         if customer_id:
             cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
             if cid_int is not None:
                 cust_ids = await self._expand_customer_ids(cid_int)
-                eligible = [p for p in eligible if p.customer_id in cust_ids]
+                eligible = [
+                    (p, n) for p, n in eligible if p.customer_id in cust_ids
+                ]
 
         # 5. keyword 过滤
         if keyword:
             kw = keyword.strip().lower()
             if kw:
                 eligible = [
-                    p for p in eligible
+                    (p, n) for p, n in eligible
                     if (p.drawing_no and kw in p.drawing_no.lower())
                     or (p.name and kw in p.name.lower())
                     or (p.serial_no and kw in p.serial_no.lower())
                 ]
 
-        eligible.sort(key=lambda p: (
-            bool(getattr(p, "is_urgent", False)),
-            p.planned_delivery_date,
+        eligible.sort(key=lambda t: (
+            bool(getattr(t[0], "is_urgent", False)),
+            t[0].planned_delivery_date,
         ))
 
         total = len(eligible)
@@ -469,7 +519,7 @@ class OutsourceQuoteService:
 
         # 6. 拼装 ApprovedQuoteForSendItem
         items: list[ApprovedQuoteForSendItem] = []
-        for p in page:
+        for p, next_proc_name in page:
             q_for_part = [q for q in all_quotes if q.part_id == p.id]
             if not q_for_part:
                 continue
@@ -489,7 +539,7 @@ class OutsourceQuoteService:
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=None,
                 next_process_id=p.next_process_id,
-                next_process_name=process.name if process else None,
+                next_process_name=next_proc_name,  # 零件的下一道，不是外协工序
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
                 process_id=q.process_id,
@@ -499,7 +549,7 @@ class OutsourceQuoteService:
 
         # 客户路径（一次性查 + cache）
         cust_map: dict[int, TCustomer] = {}
-        cust_ids_needed = {p.customer_id for p in page if p.customer_id is not None}
+        cust_ids_needed = {p.customer_id for p, _ in page if p.customer_id is not None}
         if cust_ids_needed:
             cust_rows = await self.customers.list_by_ids(list(cust_ids_needed))
             cust_map = {c.id: c for c in cust_rows}
@@ -508,9 +558,9 @@ class OutsourceQuoteService:
                 parent_rows = await self.customers.list_by_ids(list(parent_ids))
                 cust_map.update({c.id: c for c in parent_rows})
         for it in items:
-            p_obj = next((p for p in page if p.id == it.part_id), None)
+            p_obj = next((p for p, _ in page if p.id == it.part_id), None)
             if p_obj and p_obj.customer_id and p_obj.customer_id in cust_map:
-                it.customer_path = self._make_customer_path(
+                it.customer_path = await self._make_customer_path(  # ← 必须 await
                     cust_map[p_obj.customer_id], cust_map,
                 )
 
@@ -567,6 +617,7 @@ class OutsourceQuoteService:
         self,
         *,
         status: str | None,
+        statuses: list[str] | None = None,
         part_id: int | None,
         outsource_company_id: int | None,
         part_filter_ids: list[int] | None,
@@ -579,13 +630,15 @@ class OutsourceQuoteService:
         if part_filter_ids is None:
             rows = await self.quotes.list_with_filters(
                 status=status,
+                statuses=statuses,
                 part_id=part_id,
                 outsource_company_id=outsource_company_id,
                 sort_by=sort_by, sort_dir=sort_dir,
                 limit=limit, offset=offset,
             )
             total = await self.quotes.count_with_filters(
-                status=status, part_id=part_id, outsource_company_id=outsource_company_id,
+                status=status, statuses=statuses,
+                part_id=part_id, outsource_company_id=outsource_company_id,
             )
             return rows, total
 
@@ -593,7 +646,7 @@ class OutsourceQuoteService:
         out: list[TOutsourceQuote] = []
         for pid in part_filter_ids:
             sub = await self.quotes.list_with_filters(
-                status=status, part_id=pid,
+                status=status, statuses=statuses, part_id=pid,
                 outsource_company_id=outsource_company_id,
                 sort_by=sort_by, sort_dir=sort_dir,
                 limit=200, offset=0,

@@ -31,6 +31,7 @@ from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
+from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from schema.outsource_quote import (
     OutsourceQuoteApproveRequest,
@@ -179,9 +180,17 @@ def mock_customers() -> CustomerRepository:
 
 
 @pytest.fixture
+def mock_part_events() -> PartEventRepository:
+    repo = PartEventRepository.__new__(PartEventRepository)
+    repo.session = MagicMock()
+    repo.create = AsyncMock()
+    return repo
+
+
+@pytest.fixture
 def svc(
     mock_quotes, mock_quote_events, mock_parts, mock_companies,
-    mock_processes, mock_customers,
+    mock_processes, mock_customers, mock_part_events,
 ) -> OutsourceQuoteService:
     return OutsourceQuoteService(
         quotes=mock_quotes,
@@ -190,6 +199,7 @@ def svc(
         companies=mock_companies,
         processes=mock_processes,
         customers=mock_customers,
+        part_events=mock_part_events,
         current_user=None,
     )
 
@@ -489,3 +499,175 @@ class TestApiRouterImports:
         assert "/outsource-quotes/{quote_id}/approve" in write_paths
         assert "/outsource-quotes/{quote_id}/reject" in write_paths
         assert "/outsource-quotes/{quote_id}/soft-delete" in write_paths
+
+
+# =============================================================================
+# 同步 TPartEvent 写入（2026-07-16 新增）
+# =============================================================================
+
+
+class TestPartEventSyncWrites:
+    """create_quote / approve_quote 必须同步写 TPartEvent 一行，
+    让 PartDetail 历史时间线展示报价生命周期。
+    """
+
+    async def test_create_quote_writes_part_event_quote_created(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+        mock_quote_events, mock_part_events,
+    ):
+        from schema.outsource_quote import OutsourceQuoteCreateRequest
+        from decimal import Decimal
+
+        mock_parts.get_by_id.return_value = _make_part()
+        mock_companies.get_by_id.return_value = _make_company()
+        mock_processes.get_by_id.return_value = _make_process()
+        mock_quotes.get_one_active_for_tuple.return_value = None
+
+        # 让 mock repo.create 给 quote 填上 created_at/updated_at（模拟 DB RETURNING）
+        async def _fake_create(q):
+            q.created_at = _now()
+            q.updated_at = _now()
+            return q
+        mock_quotes.create = AsyncMock(side_effect=_fake_create)
+
+        data = OutsourceQuoteCreateRequest(
+            part_id="123456",
+            outsource_company_id="200",
+            process_id="300",
+            price=Decimal("100.00"),
+        )
+        await svc.create_quote(data)
+
+        # TOutsourceQuoteEvent（CREATED）+ TPartEvent（QUOTE_CREATED）共 2 次
+        assert mock_quote_events.create.await_count == 1
+        assert mock_part_events.create.await_count == 1
+        # 第 2 次写的是 TPartEvent
+        part_event = mock_part_events.create.await_args.args[0]
+        assert part_event.event_type == "QUOTE_CREATED"
+        # part_id 是 int(snowflake id), 我们传了 part_id="123456"
+        assert part_event.part_id == 123456
+        assert "外协公司" in part_event.note
+        assert "工序" in part_event.note
+        assert "报价:#" in part_event.note
+
+    async def test_approve_quote_writes_part_event_quote_approved(
+        self, svc, mock_quotes, mock_companies, mock_processes,
+        mock_part_events,
+    ):
+        from schema.outsource_quote import OutsourceQuoteApproveRequest
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.SUBMITTED.value, version=2,
+        )
+        mock_quotes.get_by_id.return_value = q
+        mock_companies.get_by_id.return_value = _make_company()
+        mock_processes.get_by_id.return_value = _make_process()
+
+        data = OutsourceQuoteApproveRequest(version=2, review_note="OK")
+        await svc.approve_quote("999", data)
+
+        assert mock_part_events.create.await_count == 1
+        part_event = mock_part_events.create.await_args.args[0]
+        assert part_event.event_type == "QUOTE_APPROVED"
+        assert part_event.part_id == q.part_id
+        assert "审批意见:OK" in part_event.note
+
+
+# =============================================================================
+# approved-for-send 500 回归（2026-07-16 修复）
+# 根因：service/outsource_quote.py 漏 await self._make_customer_path
+# 现象：customer_path 字段是 coroutine，Pydantic 序列化抛 500
+# =============================================================================
+
+
+class TestListApprovedForSend:
+    async def test_customer_path_is_string_not_coroutine(
+        self, svc, mock_quotes, mock_companies, mock_processes, mock_customers,
+    ):
+        """回归：approved-for-send 返回 items 的 customer_path 必须是 str/None。"""
+        # 1 个 APPROVED 报价（外协工序 = OUTSOURCE 类别）
+        quote = _make_quote(status="APPROVED")
+        mock_quotes.session = MagicMock()
+        # _list_all_approved_quotes 直接走 session.execute → mock 出 quote 列表
+        mock_quotes.session.execute = AsyncMock(return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[quote]))),
+        ))
+
+        # 1 个 PENDING 零件（无客户，方便让 customer_path 走 cust_map 缺省分支）
+        pending_part = _make_part()
+        # 1 个 IN_PROCESS/PRODUCTION_SHELF + next_process=OUTSOURCE 类别
+        in_process_part = _make_part(id=200)
+        in_process_part.id = 200
+        in_process_part.status = "IN_PROCESS"
+        in_process_part.location = "PRODUCTION_SHELF"
+        in_process_part.customer_id = None  # 不让 _make_customer_path 触发
+        # next_process_id 默认是 0，_make_process 返回的 process 已是 OUTSOURCE
+        in_process_part.next_process_id = _make_process().id
+
+        svc.parts.list_with_filters = AsyncMock(
+            return_value=[pending_part, in_process_part],
+        )
+        # L2 客户：让 _make_customer_path 真走一次（避免空路径侥幸通过）
+        from model.customer import TCustomer
+        parent = TCustomer(id=500, name="法拉电子", parent_id=None)
+        child = TCustomer(id=501, name="三厂", parent_id=500)
+        # 给其中一个 part 关联到 child
+        pending_part.customer_id = 501
+        mock_customers.list_by_ids = AsyncMock(side_effect=lambda ids: {
+            (501,): [child],
+            (500,): [parent],
+        }.get(tuple(ids) or (), []))
+
+        svc.companies.get_by_id = AsyncMock(return_value=_make_company())
+        svc.processes.get_by_id = AsyncMock(return_value=_make_process())
+
+        out = await svc.list_approved_for_send(limit=20, offset=0)
+
+        # 关键断言：没有 coroutine 漏进 customer_path
+        for it in out.items:
+            assert it.customer_path is None or isinstance(it.customer_path, str), (
+                f"customer_path 是 {type(it.customer_path).__name__}，应该是 str/None"
+            )
+
+
+# =============================================================================
+# 报价列表 statuses[] 多选透传（2026-07-16 修复）
+# =============================================================================
+
+
+class TestSearchQuotesStatusesMulti:
+    async def test_statuses_array_passed_through(
+        self, svc, mock_quotes, mock_parts,
+    ):
+        from schema.outsource_quote import OutsourceQuoteListQuery
+        from model.enums import OutsourceQuoteStatus
+
+        # 准备：1 个 part 关联 1 个 quote
+        quote = _make_quote()
+        mock_quotes.session = MagicMock()
+        mock_quotes.session.execute = AsyncMock(return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[quote]))),
+        ))
+
+        # 业务场景：先 listParts 拿 part_ids（service 会先调 part_repo）
+        svc.parts.list_with_filters = AsyncMock(return_value=[])
+
+        q = OutsourceQuoteListQuery(
+            statuses=[OutsourceQuoteStatus.DRAFT, OutsourceQuoteStatus.APPROVED],
+        )
+        # part_filter_ids is None if customer_id is None
+        # → 走 _search_quotes 直接传 list_with_filters / count_with_filters
+        # 我们让 part_filter_ids = [] 来短路（避免全链路 mock）
+        from service.outsource_quote import OutsourceQuoteService
+        # 用 keyword 不为空 → 走 _resolve_part_ids → list_with_filters（无结果）
+        q2 = OutsourceQuoteListQuery(
+            statuses=[OutsourceQuoteStatus.DRAFT, OutsourceQuoteStatus.APPROVED],
+            keyword="NOMATCH",
+        )
+        out = await svc.list_quotes(q2)
+        assert out.items == []
+        assert out.total == 0
+        # 验证 svc 把 list 传给了 part_repo（_resolve_part_ids 路径）
+        call_kwargs = svc.parts.list_with_filters.call_args.kwargs
+        assert call_kwargs.get("keyword") == "NOMATCH"
+

@@ -308,6 +308,73 @@
       </div>
     </el-card>
 
+    <!-- 外协报价（2026-07-16 新增；只读展示 + 状态+角色门控的新建入口） -->
+    <el-card shadow="never" class="quote-card" v-loading="quotesLoading">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">
+            <el-icon><Document /></el-icon>
+            <span>外协报价</span>
+          </span>
+          <el-button
+            v-if="canCreateQuote"
+            link
+            type="primary"
+            size="small"
+            @click="openQuoteCreateDialog"
+          >
+            <el-icon><Plus /></el-icon>
+            <span>新建外协报价</span>
+          </el-button>
+        </div>
+      </template>
+      <el-table
+        v-if="quotes.length > 0"
+        :data="quotes"
+        size="small"
+        border
+        stripe
+      >
+        <el-table-column label="状态" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag
+              :type="((OUTSOURCE_QUOTE_STATUS_TAG[(row as OutsourceQuote).status] || 'info') as 'info' | 'success' | 'warning' | 'danger')"
+              size="small"
+              effect="plain"
+            >
+              {{ OUTSOURCE_QUOTE_STATUS_LABEL[(row as OutsourceQuote).status] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column
+          prop="outsource_company_name"
+          label="外协公司"
+          min-width="140"
+          show-overflow-tooltip
+        />
+        <el-table-column prop="process_code" label="工序" width="100" />
+        <el-table-column label="单价(元)" width="100" align="right">
+          <template #default="{ row }">{{ (row as OutsourceQuote).price }}</template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="160">
+          <template #default="{ row }">
+            <span class="muted">{{ formatDateTime((row as OutsourceQuote).created_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click="onViewQuoteDetail((row as OutsourceQuote))"
+            >详情</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="暂无外协报价" />
+    </el-card>
+
     <!-- 历史记录 -->
     <el-card shadow="never" class="history-card" v-loading="eventsLoading">
       <template #header>
@@ -653,6 +720,68 @@
         >确认下发</el-button>
       </template>
     </el-dialog>
+
+    <!-- 新建外协报价 对话框（2026-07-16 新增；part_id 隐式取自 partDetail） -->
+    <el-dialog
+      v-model="showQuoteCreate"
+      title="新建外协报价（DRAFT）"
+      width="640px"
+      :close-on-click-modal="false"
+      @closed="onQuoteCreateDialogClosed"
+    >
+      <el-form label-width="100px">
+        <el-form-item label="零件">
+          <el-input
+            v-model="part!.name"
+            disabled
+            placeholder="当前零件"
+          />
+        </el-form-item>
+        <el-form-item label="外协公司" required>
+          <el-select
+            v-model="quoteForm.outsource_company_id"
+            filterable
+            style="width:100%"
+          >
+            <el-option
+              v-for="c in quoteCompanies"
+              :key="c.id"
+              :label="c.name"
+              :value="c.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="工序(OUTSOURCE)" required>
+          <el-select
+            v-model="quoteForm.process_id"
+            filterable
+            style="width:100%"
+          >
+            <el-option
+              v-for="p in quoteOutsourceProcesses"
+              :key="p.id"
+              :label="`${p.code} ${p.name}`"
+              :value="p.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="单价(元)">
+          <el-input v-model="quoteForm.price" type="number" :precision="2" :step="0.01" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="quoteForm.note" type="textarea" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showQuoteCreate = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="quoteSubmitting"
+          :disabled="!quoteForm.outsource_company_id || !quoteForm.process_id"
+          @click="onQuoteCreateConfirm"
+        >保存为 DRAFT</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -660,7 +789,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Connection, Cpu, PriceTag, Right, Setting, Upload, User } from '@element-plus/icons-vue'
+import { ArrowRight, Connection, Cpu, Document, Plus, PriceTag, Right, Setting, Upload, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
 import Barcode from '@/components/Barcode.vue'
 import {
@@ -692,7 +821,18 @@ import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
 import { listCompaniesByProcess } from '@/api/outsource'
-import type { OutsourceCompany } from '@/types/outsource'
+import {
+  createOutsourceQuote,
+  listOutsourceCompanies,
+  listOutsourceQuotes,
+} from '@/api/outsource'
+import {
+  OUTSOURCE_QUOTE_STATUS_LABEL,
+  OUTSOURCE_QUOTE_STATUS_TAG,
+  type OutsourceCompany,
+  type OutsourceQuote,
+  type OutsourceQuoteStatus,
+} from '@/types/outsource'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
@@ -724,6 +864,19 @@ const cadFiles = ref<PartFileItem[]>([])
 const cncPrograms = ref<PartFileItem[]>([])
 const setupSheets = ref<PartFileItem[]>([])
 const assemblyDetail = ref<AssemblyDetail | null>(null)
+// 外协报价（2026-07-16 新增；只读展示 + 状态+角色门控的新建入口）
+const quotes = ref<OutsourceQuote[]>([])
+const quotesLoading = ref(false)
+const showQuoteCreate = ref(false)
+const quoteForm = reactive({
+  outsource_company_id: '' as string,
+  process_id: '' as string,
+  price: '' as string,
+  note: '' as string,
+})
+const quoteOutsourceProcesses = ref<Process[]>([])
+const quoteCompanies = ref<{ id: string; name: string }[]>([])
+const quoteSubmitting = ref(false)
 const infoLoading = ref(false)
 const eventsLoading = ref(false)
 const filesLoading = ref(false)
@@ -888,6 +1041,19 @@ async function fetchEvents(): Promise<void> {
   }
 }
 
+async function fetchQuotes(): Promise<void> {
+  quotesLoading.value = true
+  try {
+    const r = await listOutsourceQuotes({ part_id: partId.value, limit: 200 })
+    quotes.value = r.items
+  } catch (e) {
+    quotes.value = []
+    ElMessage.error((e as Error).message ?? '加载外协报价失败')
+  } finally {
+    quotesLoading.value = false
+  }
+}
+
 async function fetchDrawings(): Promise<void> {
   filesLoading.value = true
   try {
@@ -961,8 +1127,10 @@ watch(
     cadFiles.value = []
     cncPrograms.value = []
     setupSheets.value = []
+    quotes.value = []
     await fetchPart()
     void fetchEvents()
+    void fetchQuotes()
     void fetchDrawings()
     void fetch3DModels()
     void fetchCadFiles()
@@ -1295,11 +1463,85 @@ async function onReceiveConfirm(): Promise<void> {
 onMounted(() => {
   void fetchPart()
   void fetchEvents()
+  void fetchQuotes()
   void fetchDrawings()
   void fetch3DModels()
   void fetchCadFiles()
   void fetchCncPrograms()
 })
+
+// ============ 外协报价（2026-07-16 新增）============
+// 「新建外协报价」按钮：MANAGER + CLERK 且零件状态 ∈ {PENDING, IN_PROCESS, OUTSOURCE, READY_TO_SHIP, REPAIRING}
+const canCreateQuote = computed(() => {
+  if (!isManager.value && !isClerk.value) return false
+  if (!part.value) return false
+  const s = part.value.status
+  return (
+    s === 'PENDING'
+    || s === 'IN_PROCESS'
+    || s === 'OUTSOURCE'
+    || s === 'READY_TO_SHIP'
+    || s === 'REPAIRING'
+  )
+})
+
+async function openQuoteCreateDialog(): Promise<void> {
+  quoteForm.outsource_company_id = ''
+  quoteForm.process_id = ''
+  quoteForm.price = ''
+  quoteForm.note = ''
+  try {
+    const [companyResp, procResp] = await Promise.all([
+      listOutsourceCompanies({ limit: 200 }),
+      listProcesses({ limit: 200 }),
+    ])
+    quoteCompanies.value = companyResp.items.map((c) => ({ id: c.id, name: c.name }))
+    quoteOutsourceProcesses.value = procResp.items.filter((p) => p.category === 'OUTSOURCE')
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '加载下拉数据失败')
+    return
+  }
+  showQuoteCreate.value = true
+}
+
+function onQuoteCreateDialogClosed(): void {
+  quoteForm.outsource_company_id = ''
+  quoteForm.process_id = ''
+  quoteForm.price = ''
+  quoteForm.note = ''
+}
+
+async function onQuoteCreateConfirm(): Promise<void> {
+  if (!quoteForm.outsource_company_id || !quoteForm.process_id) {
+    ElMessage.warning('请填写外协公司与工序')
+    return
+  }
+  quoteSubmitting.value = true
+  try {
+    await createOutsourceQuote({
+      part_id: partId.value,
+      outsource_company_id: quoteForm.outsource_company_id,
+      process_id: quoteForm.process_id,
+      price: quoteForm.price || '0',
+      note: quoteForm.note || null,
+    })
+    ElMessage.success('已创建 DRAFT 报价')
+    showQuoteCreate.value = false
+    await fetchQuotes()
+    // 同步刷新历史时间线（创建事件 QUOTE_CREATED）
+    void fetchEvents()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '创建失败')
+  } finally {
+    quoteSubmitting.value = false
+  }
+}
+
+/** 报价列表里的「详情」按钮 — 跳到 /outsource/quote 报价一览（统一操作入口） */
+function onViewQuoteDetail(_q: OutsourceQuote): void {
+  // PartDetail 上只读，编辑/审批/删除都走 /outsource/quote
+  router.push('/outsource/quote')
+}
 </script>
 
 <style lang="scss" scoped>
