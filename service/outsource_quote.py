@@ -464,15 +464,19 @@ class OutsourceQuoteService:
         all_parts = [p for p in all_parts if p.id in set(part_ids)]
 
         # 3. 「可发送」资格：PENDING 或 (IN_PROCESS + PRODUCTION_SHELF + OUTSOURCE next)
-        eligible: list = []
+        #    同时记录零件的「下一道工序」名（用于响应字段 next_process_name，
+        #    不能误用成外协报价的 q.process_id 对应工序）。
+        eligible: list[tuple] = []
         for p in all_parts:
             status = p.status
             location = p.location
+            next_proc_name: str | None = None
             next_cat = None
             if p.next_process_id is not None:
                 proc = await self.processes.get_by_id(p.next_process_id)
                 if proc is not None:
                     next_cat = proc.category
+                    next_proc_name = proc.name
             allowed = (
                 status == "PENDING"
                 or (
@@ -482,29 +486,31 @@ class OutsourceQuoteService:
                 )
             )
             if allowed:
-                eligible.append(p)
+                eligible.append((p, next_proc_name))
 
         # 4. customer 过滤
         if customer_id:
             cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
             if cid_int is not None:
                 cust_ids = await self._expand_customer_ids(cid_int)
-                eligible = [p for p in eligible if p.customer_id in cust_ids]
+                eligible = [
+                    (p, n) for p, n in eligible if p.customer_id in cust_ids
+                ]
 
         # 5. keyword 过滤
         if keyword:
             kw = keyword.strip().lower()
             if kw:
                 eligible = [
-                    p for p in eligible
+                    (p, n) for p, n in eligible
                     if (p.drawing_no and kw in p.drawing_no.lower())
                     or (p.name and kw in p.name.lower())
                     or (p.serial_no and kw in p.serial_no.lower())
                 ]
 
-        eligible.sort(key=lambda p: (
-            bool(getattr(p, "is_urgent", False)),
-            p.planned_delivery_date,
+        eligible.sort(key=lambda t: (
+            bool(getattr(t[0], "is_urgent", False)),
+            t[0].planned_delivery_date,
         ))
 
         total = len(eligible)
@@ -512,7 +518,7 @@ class OutsourceQuoteService:
 
         # 6. 拼装 ApprovedQuoteForSendItem
         items: list[ApprovedQuoteForSendItem] = []
-        for p in page:
+        for p, next_proc_name in page:
             q_for_part = [q for q in all_quotes if q.part_id == p.id]
             if not q_for_part:
                 continue
@@ -532,7 +538,7 @@ class OutsourceQuoteService:
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=None,
                 next_process_id=p.next_process_id,
-                next_process_name=process.name if process else None,
+                next_process_name=next_proc_name,  # 零件的下一道，不是外协工序
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
                 process_id=q.process_id,
@@ -542,7 +548,7 @@ class OutsourceQuoteService:
 
         # 客户路径（一次性查 + cache）
         cust_map: dict[int, TCustomer] = {}
-        cust_ids_needed = {p.customer_id for p in page if p.customer_id is not None}
+        cust_ids_needed = {p.customer_id for p, _ in page if p.customer_id is not None}
         if cust_ids_needed:
             cust_rows = await self.customers.list_by_ids(list(cust_ids_needed))
             cust_map = {c.id: c for c in cust_rows}
@@ -551,9 +557,9 @@ class OutsourceQuoteService:
                 parent_rows = await self.customers.list_by_ids(list(parent_ids))
                 cust_map.update({c.id: c for c in parent_rows})
         for it in items:
-            p_obj = next((p for p in page if p.id == it.part_id), None)
+            p_obj = next((p for p, _ in page if p.id == it.part_id), None)
             if p_obj and p_obj.customer_id and p_obj.customer_id in cust_map:
-                it.customer_path = self._make_customer_path(
+                it.customer_path = await self._make_customer_path(  # ← 必须 await
                     cust_map[p_obj.customer_id], cust_map,
                 )
 
