@@ -139,3 +139,37 @@ export function closeDashboard(): void {
   eventSubs.clear()
   statusSubs.clear()
 }
+
+/** 强制发起一次重连（修「点首页不能自动恢复连接」bug）。
+ *
+ * 行为：
+ *   1. 清掉 `retryTimer` / `closed = false` / `retryDelay` 归 1s；
+ *   2. 若 ws 已存在，CLOSING/OPEN 状态主动 close 后置 null；
+ *   3. 立即 `connect()`。
+ *
+ * Router afterEach 在 `to.name === 'Dashboard'` 时调用本函数，确保用户
+ * 每次回到首页都能恢复连接——即便之前因 onclose 后退避停留在 10s 状态。
+ */
+export function reconnectDashboard(): void {
+  closed = false
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+  retryDelay = 1000
+  if (ws) {
+    const state = ws.readyState
+    // OPEN / CLOSING (1 / 2) 主动关；CONNECTING (0) / CLOSED (3) 直接置 null。
+    // CONNECTING 时关 close 会触发 onerror 链，无意义。
+    if (state === WebSocket.OPEN || state === WebSocket.CLOSING) {
+      try { ws.close() } catch { /* ignore */ }
+    }
+    ws = null
+  }
+  connect()
+}
+
+// —— JWT 自动刷新后顺势重连，避免陈旧 token 卡住 socket ——
+if (typeof window !== 'undefined') {
+  window.addEventListener('auth:tokens-refreshed', () => {
+    // url() 内每次现读 localStorage，新 token 已就位；强制 socket 切到新握手。
+    reconnectDashboard()
+  })
+}
