@@ -92,6 +92,8 @@ export type PartEventType =
   | 'REPAIR_COMPLETED'
   | 'SENT_TO_OUTSOURCE'
   | 'RECEIVED_FROM_OUTSOURCE'
+  | 'QUOTE_CREATED'
+  | 'QUOTE_APPROVED'
   | 'CANCELLED'
   | 'COMPLETED'
 
@@ -110,6 +112,8 @@ export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   REPAIR_COMPLETED: '返修完成',
   SENT_TO_OUTSOURCE: '发送至外协',
   RECEIVED_FROM_OUTSOURCE: '外协回收',
+  QUOTE_CREATED: '创建外协报价',
+  QUOTE_APPROVED: '报价审核通过',
   CANCELLED: '取消',
   COMPLETED: '完成',
 }
@@ -129,6 +133,8 @@ export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 
   REPAIR_COMPLETED: 'success',
   SENT_TO_OUTSOURCE: 'warning',
   RECEIVED_FROM_OUTSOURCE: 'success',
+  QUOTE_CREATED: 'info',
+  QUOTE_APPROVED: 'success',
   CANCELLED: 'danger',
   COMPLETED: 'success',
 }
