@@ -20,8 +20,9 @@
   <div class="bid-import">
     <p class="hint">
       上传「应标 Excel」（主 sheet 名 = <code>招标项目-标的</code>），系统自动按
-      「申请人所在一级部门」解析到 L2 子客户；缺失的子客户会标红挡住提交。
-      图纸 PDF 仍按行手动上传。
+      「申请人所在一级部门」解析到分厂（L2 子客户）。列表每一格都可手动修改，
+      也可点「新增一行」手工补单；缺分厂 / 申请人 / 图纸编号 / 名称 / 数量 / 计划交期
+      的行会标红并挡住提交。图纸 PDF 按行手动上传。
     </p>
 
     <el-card shadow="never" class="control-card">
@@ -81,6 +82,10 @@
       <div class="preview-header">
         <h3>预览（{{ rows.length }} 条）</h3>
         <div>
+          <el-button @click="onAddBlankRow" :disabled="submitting">
+            <el-icon><Plus /></el-icon>
+            <span>新增一行</span>
+          </el-button>
           <el-button @click="onClearAll" :disabled="rows.length === 0 || submitting">
             清空
           </el-button>
@@ -102,93 +107,130 @@
         size="small"
         :row-class-name="rowClassName"
       >
-        <el-table-column type="index" label="#" width="50" />
-        <el-table-column label="申请人" width="100" show-overflow-tooltip>
+        <el-table-column type="index" label="序号" width="56" />
+        <el-table-column label="申请人" min-width="150">
           <template #default="{ row }">
-            <span :class="{ 'row-error-text': !row.applicantName }">
-              {{ row.applicantName || '缺失' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="一级部门" width="120" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span class="mono">{{ row.deptCode }}</span>
-            <span class="muted"> / {{ row.deptName }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="物料编号" width="150" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ 'row-error-text': !row.drawingNo }">
-              {{ row.drawingNo || '缺失' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="名称" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ 'row-error-text': !row.partName }">
-              {{ row.partName || '缺失' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="图纸" width="180" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-upload
-              :show-file-list="false"
-              :auto-upload="false"
-              accept=".pdf"
-              :on-change="(f: UploadFile) => onRowDrawingChange(row as ImportRow, f)"
-            >
-              <el-button v-if="!row.drawingName" link type="primary" size="small">
-                <el-icon><Paperclip /></el-icon>
-                <span>挂图纸</span>
-              </el-button>
-              <span v-else class="drawing-pill" @click.stop>
-                <el-button link type="primary" size="small" @click.stop="openDrawingPreview(row as ImportRow)">
-                  <el-icon><View /></el-icon>
-                  <span class="drawing-name">{{ row.drawingName }}</span>
-                </el-button>
-                <el-button link type="danger" size="small" @click.stop="onRowDrawingRemove(row as ImportRow)">
-                  <el-icon><Close /></el-icon>
-                </el-button>
-              </span>
-            </el-upload>
-          </template>
-        </el-table-column>
-        <el-table-column label="数量" width="70" align="right">
-          <template #default="{ row }">{{ row.quantity }}</template>
-        </el-table-column>
-        <el-table-column label="加急" width="60" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.isUrgent" type="danger" size="small" effect="dark">加急</el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="含税单价" width="90" align="right">
-          <template #default="{ row }">{{ row.unitPrice }}</template>
-        </el-table-column>
-        <el-table-column label="含税价格" width="90" align="right">
-          <template #default="{ row }">{{ row.totalPrice }}</template>
-        </el-table-column>
-        <el-table-column label="计划交期" width="110">
-          <template #default="{ row }">{{ row.plannedDeliveryDate || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="解析客户" width="180" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-tag
-              v-if="row.customerId"
-              :type="row.customerLabel.includes('/') ? 'success' : 'info'"
+            <el-autocomplete
+              v-model="(row as ImportRow).applicantName"
+              value-key="name"
+              :fetch-suggestions="querySearch"
+              :trigger-on-focus="true"
+              :debounce="0"
+              clearable
               size="small"
-            >
-              {{ row.customerLabel }}
-            </el-tag>
-            <el-tag v-else type="danger" size="small" effect="dark">
-              未找到子客户「{{ row.deptName }}」
-            </el-tag>
+              style="width: 100%"
+              placeholder="申请人"
+              @select="(item: Record<string, unknown>) => onApplicantSelect(row as ImportRow, item as unknown as Applicant)"
+            />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="70" align="center" fixed="right">
+        <el-table-column label="分厂名" min-width="180">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" @click="onRemoveRow(row as ImportRow)">删除</el-button>
+            <el-select
+              v-model="(row as ImportRow).customerId"
+              filterable
+              clearable
+              size="small"
+              style="width: 100%"
+              placeholder="选所属分厂"
+              :disabled="!form.rootCustomerId"
+              @change="() => onRowFactoryChange(row as ImportRow)"
+            >
+              <el-option
+                v-for="f in subFactories"
+                :key="f.id"
+                :label="f.name"
+                :value="f.id"
+              />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="图纸编号" min-width="150">
+          <template #default="{ row }">
+            <el-input
+              v-model="(row as ImportRow).drawingNo"
+              size="small"
+              placeholder="图纸编号"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="名称" min-width="180">
+          <template #default="{ row }">
+            <el-input
+              v-model="(row as ImportRow).partName"
+              size="small"
+              placeholder="名称"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="130" align="center">
+          <template #default="{ row }">
+            <el-input-number
+              v-model="(row as ImportRow).quantity"
+              :min="1"
+              :step="1"
+              step-strictly
+              size="small"
+              controls-position="right"
+              style="width: 110px"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="是否加急" width="90" align="center">
+          <template #default="{ row }">
+            <el-switch v-model="(row as ImportRow).isUrgent" />
+          </template>
+        </el-table-column>
+        <el-table-column label="计划交期" width="170" align="center">
+          <template #default="{ row }">
+            <el-date-picker
+              v-model="(row as ImportRow).plannedDeliveryDate"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="计划交期"
+              size="small"
+              style="width: 150px"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="240" align="center" fixed="right">
+          <template #default="{ row }">
+            <div class="row-ops">
+              <el-upload
+                :show-file-list="false"
+                :auto-upload="false"
+                accept=".pdf"
+                :on-change="(f: UploadFile) => onRowDrawingChange(row as ImportRow, f)"
+              >
+                <el-button link type="primary" size="small">
+                  <el-icon><Paperclip /></el-icon>
+                  <span>{{ (row as ImportRow).drawingName ? '替换图纸' : '添加图纸' }}</span>
+                </el-button>
+              </el-upload>
+              <el-button
+                link
+                type="primary"
+                size="small"
+                :disabled="!(row as ImportRow).drawingUrl"
+                @click="openDrawingPreview(row as ImportRow)"
+              >
+                <el-icon><View /></el-icon>
+                <span>预览图纸</span>
+              </el-button>
+              <el-button
+                v-if="(row as ImportRow).drawingUrl"
+                link
+                type="info"
+                size="small"
+                title="移除图纸"
+                @click="onRowDrawingRemove(row as ImportRow)"
+              >
+                <el-icon><Close /></el-icon>
+              </el-button>
+              <el-button link type="danger" size="small" @click="onRemoveRow(row as ImportRow)">
+                删除
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -234,6 +276,8 @@ import {
   type PartCreatePayload,
 } from '@/api/parts'
 import { bulkGetOrCreateApplicants } from '@/api/applicant'
+import { useApplicantSearch } from '@/composables/useApplicantSearch'
+import type { Applicant } from '@/types/applicant'
 import { parseBidExcel, type BidRow } from '@/utils/bidExcelParser'
 
 // ============================================================
@@ -265,6 +309,25 @@ const customers = ref<Customer[]>([])
 const rootCustomers = computed(() =>
   customers.value.filter((c) => c.parent_id === null),
 )
+
+/** 当前 L1 根客户下的二级分厂，供「分厂名」下拉用。 */
+const subFactories = computed(() =>
+  form.rootCustomerId
+    ? customers.value.filter((c) => c.parent_id === form.rootCustomerId)
+    : [],
+)
+
+/** 客户 id → 所属一级客户 id（一级 → 自己；二级 → parent）。 */
+function resolveRootCustomerId(pickedId: string | null): string | null {
+  if (!pickedId) return null
+  const found = customers.value.find((c) => c.id === pickedId)
+  if (!found) return null
+  return found.parent_id ?? found.id
+}
+
+// 申请人自动补全：全表共享（L1 根客户在顶部统一选择，切换时载入一次）。
+const { loadForCustomer: loadApplicantsForCustomer, querySearch } =
+  useApplicantSearch({ resolveRootCustomerId })
 
 async function loadCustomers(): Promise<void> {
   try {
@@ -318,15 +381,24 @@ function revokeDrawingUrl(row: ImportRow): void {
   }
 }
 
-const errorRowCount = computed(() =>
-  rows.value.filter(
-    (r) =>
-      r.parserErrors.length > 0 ||
-      !r.customerId ||
-      !r.applicantName ||
-      !r.drawingNo ||
-      !r.partName,
-  ).length,
+/**
+ * 一行是否阻塞提交。全部走「当前字段值」实时判断（不看解析期 parserErrors），
+ * 这样用户逐格改完后标红会立即消失，符合「防止读取发生错误」。
+ */
+function rowHasError(r: ImportRow): boolean {
+  return (
+    !r.customerId ||
+    !r.applicantName.trim() ||
+    !r.drawingNo.trim() ||
+    !r.partName.trim() ||
+    !r.quantity ||
+    r.quantity < 1 ||
+    !r.plannedDeliveryDate
+  )
+}
+
+const errorRowCount = computed(
+  () => rows.value.filter(rowHasError).length,
 )
 
 const deptVariety = computed(
@@ -335,13 +407,7 @@ const deptVariety = computed(
 
 function rowClassName({ row }: { row: unknown }): string {
   const r = row as ImportRow
-  const hasError =
-    r.parserErrors.length > 0 ||
-    !r.customerId ||
-    !r.applicantName ||
-    !r.drawingNo ||
-    !r.partName
-  if (hasError) return 'row-error'
+  if (rowHasError(r)) return 'row-error'
   if (r.isUrgent) return 'row-urgent'
   return ''
 }
@@ -384,8 +450,72 @@ function resolveAllCustomers(): void {
   }
 }
 
-function onRootCustomerChange(): void {
+async function onRootCustomerChange(): Promise<void> {
+  // 清掉不属于新根的已选分厂（避免残留跨客户的 customerId）
+  const validIds = new Set(subFactories.value.map((c) => c.id))
+  for (const r of rows.value) {
+    if (r.customerId && !validIds.has(r.customerId)) {
+      r.customerId = null
+      r.rootCustomerId = null
+      r.customerLabel = ''
+    }
+  }
   resolveAllCustomers()
+  await loadApplicantsForCustomer(form.rootCustomerId)
+}
+
+/** 分厂下拉变更：同步 rootCustomerId + customerLabel。 */
+function onRowFactoryChange(row: ImportRow): void {
+  if (!row.customerId) {
+    row.rootCustomerId = null
+    row.customerLabel = ''
+    return
+  }
+  const sub = subFactories.value.find((c) => c.id === row.customerId)
+  row.rootCustomerId = form.rootCustomerId
+  row.customerLabel = sub
+    ? `${sub.parent_name ? sub.parent_name + ' / ' : ''}${sub.name}`
+    : ''
+}
+
+/** 申请人 autocomplete 选中：回填姓名。 */
+function onApplicantSelect(row: ImportRow, item: Applicant): void {
+  if (item?.name) row.applicantName = item.name
+}
+
+/** 构造一条空白可编辑行（手工补单用）。 */
+function makeBlankRow(): ImportRow {
+  return {
+    rowNumber: 0,
+    applicantName: '',
+    drawingNo: '',
+    partName: '',
+    quantity: 1,
+    unitPrice: 0,
+    totalPrice: 0,
+    isUrgent: false,
+    deliveryDays: 0,
+    plannedDeliveryDate: '',
+    deptCode: '',
+    deptName: '',
+    designDrawingLabel: null,
+    processTypeLabel: null,
+    remarkText: null,
+    warnings: [],
+    uid: makeUid(),
+    parserErrors: [],
+    customerId: null,
+    customerLabel: '',
+    rootCustomerId: null,
+    drawingFile: null,
+    drawingName: null,
+    drawingUrl: null,
+    applicantId: null,
+  }
+}
+
+function onAddBlankRow(): void {
+  rows.value.push(makeBlankRow())
 }
 
 // ============================================================
@@ -414,6 +544,7 @@ async function onExcelChange(uploadFile: UploadFile): Promise<void> {
       buildImportRow(bid, errByRow.get(bid.rowNumber) ? [errByRow.get(bid.rowNumber)!] : []),
     )
     resolveAllCustomers()
+    await loadApplicantsForCustomer(form.rootCustomerId)
     const blocking = errorRowCount.value
     if (blocking > 0) {
       ElMessage.warning(
@@ -693,6 +824,14 @@ loadCustomers()
 .warn-tag {
   margin-right: 4px;
   margin-bottom: 2px;
+}
+
+.row-ops {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px 6px;
 }
 
 .drawing-pill {
