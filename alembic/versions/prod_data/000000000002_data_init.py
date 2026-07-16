@@ -468,12 +468,16 @@ def _update_chen_yan_phone(bind) -> None:
 
 
 def _update_user_chen_yan_phone(bind) -> None:
-    """2026-07-16：把账号陈燕的 phone 同步改成 13350114794。"""
+    """2026-07-16：把账号陈燕的 username + phone 同步改成 13350114794。
+    注意 _USERS 仍用旧 username=13359114794，保证 ON CONFLICT 在已部署库上
+    能命中旧行；本函数负责 UPDATE username + phone。"""
     bind.execute(
         sa.text(
             """
             UPDATE t_user
-            SET phone = :new_phone, updated_at = now()
+            SET username = :new_phone,
+                phone = :new_phone,
+                updated_at = now()
             WHERE username = :old_phone AND deleted_at IS NULL
             """
         ),
