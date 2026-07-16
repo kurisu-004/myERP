@@ -1,9 +1,10 @@
 <!-- 报价一览页 — 外协报价 CRUD + MANAGER 审批
-     (2026-07-16 新增，仿 PartsList.vue 的 filter-card + el-table 范式)
+     (2026-07-16 仿 PartsList.vue 范式重排版：列头 popover 筛选 + 列头排序 + 分页 sizes)
 -->
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import {
   approveOutsourceQuote,
   createOutsourceQuote,
@@ -21,6 +22,7 @@ import { listParts } from '@/api/parts'
 import type { PartListItem } from '@/types/parts'
 import type { Process } from '@/types/process'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useCustomerTree } from '@/composables/useCustomerTree'
 import {
   OUTSOURCE_QUOTE_STATUS_LABEL,
   OUTSOURCE_QUOTE_STATUS_TAG,
@@ -41,39 +43,173 @@ import {
 const { user, hasRole } = useAuthSession()
 const roleMap = computed(() => rolesArrayToMap(user.value?.roles ?? []))
 
-const quotes = ref<OutsourceQuote[]>([])
+const { tree: customerTree } = useCustomerTree()
+
+// ============================================================
+// 筛选 / 排序 / 分页 状态
+// ============================================================
+interface SearchState {
+  keyword: string
+  statuses: OutsourceQuoteStatus[]
+  customerId: string
+}
+function initialSearch(): SearchState {
+  return { keyword: '', statuses: [], customerId: '' }
+}
+const search = reactive<SearchState>(initialSearch())
+
+const statusOptions: { value: OutsourceQuoteStatus; label: string }[] = (
+  Object.entries(OUTSOURCE_QUOTE_STATUS_LABEL) as [OutsourceQuoteStatus, string][]
+).map(([value, label]) => ({ value, label }))
+
+const statusFilterActive = computed(() => search.statuses.length > 0)
+const customerFilterActive = computed(() => search.customerId !== '')
+
+// 状态列头 popover（draft + 确定/重置）
+const statusPopoverVisible = ref(false)
+const statusDraft = ref<OutsourceQuoteStatus[]>([])
+
+function syncStatusDraft(): void {
+  statusDraft.value = [...search.statuses]
+}
+function resetStatusDraft(): void {
+  statusDraft.value = []
+  search.statuses = []
+  statusPopoverVisible.value = false
+  onSearch()
+}
+function confirmStatusFilter(): void {
+  search.statuses = [...statusDraft.value]
+  statusPopoverVisible.value = false
+  onSearch()
+}
+
+// 客户列头 popover（draft + 确定/重置；用 el-tree-select 选 L1，自动展平）
+const customerPopoverVisible = ref(false)
+const customerDraft = ref<string | null>(null)
+
+function syncCustomerDraft(): void {
+  customerDraft.value = search.customerId || null
+}
+function resetCustomerDraft(): void {
+  customerDraft.value = null
+  search.customerId = ''
+  customerPopoverVisible.value = false
+  onSearch()
+}
+function confirmCustomerFilter(): void {
+  search.customerId = customerDraft.value ?? ''
+  customerPopoverVisible.value = false
+  onSearch()
+}
+
+// ============================================================
+// 表格 / 排序
+// ============================================================
+const items = ref<OutsourceQuote[]>([])
 const total = ref(0)
 const loading = ref(false)
-const query = reactive({
-  keyword: '',
-  statusList: [] as OutsourceQuoteStatus[],
-  customer_id: '' as string,
-  limit: 20,
-  offset: 0,
-})
-const customers = ref<Customer[]>([])
-const companies = ref<{ id: string; name: string }[]>([])
-const processes = ref<Process[]>([])
-const parts = ref<PartListItem[]>([])
+const errorMsg = ref<string | null>(null)
+const page = ref(1)
+const pageSize = ref(20)
+
+type SortKey = 'CREATED_AT' | 'PRICE' | 'REVIEWED_AT'
+const sortBy = ref<SortKey>('CREATED_AT')
+const sortDir = ref<'ASC' | 'DESC'>('DESC')
+
+const SORT_PROP_MAP: Record<string, SortKey> = {
+  part_serial_no: 'CREATED_AT',  // 默认按创建时间
+  part_drawing_no: 'CREATED_AT',
+  part_name: 'CREATED_AT',
+  outsource_company_name: 'CREATED_AT',
+  process_code: 'CREATED_AT',
+  price: 'PRICE',
+  customer_path: 'CREATED_AT',
+}
+
+type SortOrder = 'ascending' | 'descending'
+const defaultSort = computed<{ prop: string; order: SortOrder }>(() => ({
+  prop: 'part_serial_no',
+  order: sortDir.value === 'ASC' ? 'ascending' : 'descending',
+}))
+
+const emptyText = computed(() => errorMsg.value ?? '暂无符合条件的报价')
+
+function statusLabel(s: OutsourceQuoteStatus): string {
+  return OUTSOURCE_QUOTE_STATUS_LABEL[s] ?? s
+}
+function statusTagType(s: OutsourceQuoteStatus): 'info' | 'success' | 'warning' | 'danger' | '' {
+  return OUTSOURCE_QUOTE_STATUS_TAG[s] ?? 'info'
+}
+
+function buildParams() {
+  return {
+    keyword: search.keyword.trim() || undefined,
+    status: search.statuses.length > 0 ? search.statuses[0] : undefined,  // 后端只接单 status
+    customer_id: search.customerId || undefined,
+    sort_by: sortBy.value,
+    sort_dir: sortDir.value,
+    limit: pageSize.value,
+    offset: (page.value - 1) * pageSize.value,
+  }
+}
 
 async function refresh(): Promise<void> {
   loading.value = true
+  errorMsg.value = null
   try {
-    const r = await listOutsourceQuotes({
-      keyword: query.keyword || undefined,
-      status: query.statusList[0],
-      customer_id: query.customer_id || undefined,
-      limit: query.limit,
-      offset: query.offset,
-    })
-    quotes.value = r.items
+    const r = await listOutsourceQuotes(buildParams())
+    items.value = r.items
     total.value = r.total
   } catch (e) {
-    ElMessage.error((e as Error).message ?? '加载报价列表失败')
+    items.value = []
+    total.value = 0
+    errorMsg.value = (e as Error).message ?? '加载报价列表失败'
+    ElMessage.error(errorMsg.value)
   } finally {
     loading.value = false
   }
 }
+
+const onSearch = (): void => {
+  page.value = 1
+  void refresh()
+}
+
+function onSortChange({
+  prop,
+  order,
+}: {
+  prop: string | null
+  order: 'ascending' | 'descending' | null
+}): void {
+  if (!prop || !order) return
+  sortBy.value = SORT_PROP_MAP[prop] ?? 'CREATED_AT'
+  sortDir.value = order === 'ascending' ? 'ASC' : 'DESC'
+  void refresh()
+}
+
+function onPageSizeChange(size: number): void {
+  pageSize.value = size
+  page.value = 1
+  void refresh()
+}
+
+function onReset(): void {
+  Object.assign(search, initialSearch())
+  sortBy.value = 'CREATED_AT'
+  sortDir.value = 'DESC'
+  page.value = 1
+  void refresh()
+}
+
+// ============================================================
+// 零件 / 公司 / 工序 列表（弹窗用）
+// ============================================================
+const customers = ref<Customer[]>([])
+const companies = ref<{ id: string; name: string }[]>([])
+const processes = ref<Process[]>([])
+const parts = ref<PartListItem[]>([])
 
 async function loadLookups(): Promise<void> {
   try {
@@ -82,7 +218,13 @@ async function loadLookups(): Promise<void> {
     companies.value = cs.items.map((c) => ({ id: c.id, name: c.name }))
     const ps = await listProcesses({ limit: 200 })
     processes.value = ps.items.filter((p) => p.category === 'OUTSOURCE')
-    const pt = await listParts({ limit: 200 })
+    // 报价只针对可继续流转的零件：PENDING / IN_PROCESS；按创建时间倒序，最多 500 条
+    const pt = await listParts({
+      statuses: ['PENDING', 'IN_PROCESS'],
+      sort_by: 'CREATED_AT',
+      sort_dir: 'DESC',
+      limit: 500,
+    })
     parts.value = pt.items
   } catch (e) {
     ElMessage.error((e as Error).message ?? '下拉数据加载失败')
@@ -94,18 +236,9 @@ onMounted(async () => {
   await refresh()
 })
 
-function onSearch(): void {
-  query.offset = 0
-  void refresh()
-}
-function onReset(): void {
-  query.keyword = ''
-  query.statusList = []
-  query.customer_id = ''
-  query.offset = 0
-  void refresh()
-}
-
+// ============================================================
+// 新建 / 提交 / 审批 / 拒绝 / 删除
+// ============================================================
 const showCreate = ref(false)
 const createForm = reactive({
   part_id: '',
@@ -114,6 +247,14 @@ const createForm = reactive({
   price: '',
   note: '',
 })
+function openCreate(): void {
+  createForm.part_id = ''
+  createForm.outsource_company_id = ''
+  createForm.process_id = ''
+  createForm.price = ''
+  createForm.note = ''
+  showCreate.value = true
+}
 async function onCreate(): Promise<void> {
   if (!createForm.part_id || !createForm.outsource_company_id || !createForm.process_id) {
     ElMessage.warning('请填写零件 / 公司 / 工序')
@@ -213,133 +354,276 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
 
 <template>
   <div class="page">
-    <el-card class="filter-card">
+    <!-- 顶部 filter-card：仅保留 keyword + 重置 + 共 N 条 + 新建 -->
+    <el-card shadow="never" class="filter-card">
       <div class="filter-row">
         <el-input
-          v-model="query.keyword"
-          placeholder="图号 / 名称 / 序列号"
+          v-model="search.keyword"
+          placeholder="序列号 / 图号 / 名称（前缀搜索）"
           clearable
           style="width: 280px"
           @keyup.enter="onSearch"
-        />
-        <el-select
-          v-model="query.statusList"
-          multiple
-          clearable
-          placeholder="状态"
-          style="width: 220px"
+          @clear="onSearch"
         >
-          <el-option
-            v-for="opt in (Object.entries(OUTSOURCE_QUOTE_STATUS_LABEL) as [OutsourceQuoteStatus, string][])"
-            :key="opt[0]"
-            :label="opt[1]"
-            :value="opt[0]"
-          />
-        </el-select>
-        <el-select
-          v-model="query.customer_id"
-          clearable
-          placeholder="客户（L1 客户展平子节点）"
-          style="width: 220px"
-        >
-          <el-option
-            v-for="c in customers.filter((x) => x.parent_id === null)"
-            :key="c.id"
-            :label="c.name"
-            :value="c.id"
-          />
-        </el-select>
-        <el-button type="primary" @click="onSearch">查询</el-button>
-        <el-button @click="onReset">重置</el-button>
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+
+        <el-button @click="onReset">
+          <el-icon><RefreshLeft /></el-icon>
+          <span>重置</span>
+        </el-button>
+
         <el-button
           v-if="canCreate(roleMap)"
           type="success"
-          @click="showCreate = true"
+          @click="openCreate"
         >
           新建报价
         </el-button>
+
+        <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
       </div>
     </el-card>
 
-    <el-card>
-      <el-table v-loading="loading" :data="quotes" stripe border>
-        <el-table-column prop="part_serial_no" label="序列号" width="100" />
-        <el-table-column prop="part_drawing_no" label="图号" width="120" />
-        <el-table-column prop="part_name" label="名称" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="outsource_company_name" label="外协公司" width="160" show-overflow-tooltip />
-        <el-table-column prop="process_code" label="工序" width="100" />
-        <el-table-column label="单价(元)" width="100" align="right">
-          <template #default="{ row }">{{ row.price }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="100" align="center">
+    <el-card shadow="never">
+      <el-table
+        v-loading="loading"
+        :data="items"
+        stripe
+        border
+        size="small"
+        :default-sort="defaultSort"
+        :empty-text="emptyText"
+        @sort-change="onSortChange"
+      >
+        <el-table-column
+          prop="part_serial_no"
+          label="序列号"
+          width="100"
+          sortable="custom"
+          show-overflow-tooltip
+        />
+
+        <el-table-column
+          prop="part_drawing_no"
+          label="图号"
+          width="120"
+          sortable="custom"
+          show-overflow-tooltip
+        />
+
+        <el-table-column
+          prop="part_name"
+          label="名称"
+          min-width="180"
+          sortable="custom"
+          show-overflow-tooltip
+        />
+
+        <el-table-column
+          prop="outsource_company_name"
+          label="外协公司"
+          width="160"
+          sortable="custom"
+          show-overflow-tooltip
+        />
+
+        <el-table-column
+          prop="process_code"
+          label="工序"
+          width="100"
+          sortable="custom"
+        />
+
+        <el-table-column
+          prop="price"
+          label="单价(元)"
+          width="100"
+          align="right"
+          sortable="custom"
+        />
+
+        <!-- 状态列（无 sortable；用列头 popover 过滤） -->
+        <el-table-column label="状态" width="110" align="center">
+          <template #header>
+            <span class="header-cell">
+              <span>状态</span>
+              <el-popover
+                :width="220"
+                placement="bottom-start"
+                trigger="click"
+                :show-arrow="false"
+                v-model:visible="statusPopoverVisible"
+                @show="syncStatusDraft"
+              >
+                <template #reference>
+                  <el-icon
+                    class="filter-icon"
+                    :class="{ active: statusFilterActive }"
+                  >
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                  多选状态（提交确认后生效）
+                </div>
+                <el-checkbox-group v-model="statusDraft">
+                  <el-checkbox
+                    v-for="opt in statusOptions"
+                    :key="opt.value"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                </el-checkbox-group>
+                <div class="filter-actions">
+                  <el-button size="small" link @click="resetStatusDraft">重置</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="confirmStatusFilter"
+                  >确定</el-button>
+                </div>
+              </el-popover>
+            </span>
+          </template>
           <template #default="{ row }">
             <el-tag
-              :type="(OUTSOURCE_QUOTE_STATUS_TAG[(row as unknown as OutsourceQuote).status] || 'info') as 'info' | 'success' | 'warning' | 'danger'"
+              :type="(statusTagType((row as OutsourceQuote).status) || 'info') as 'info' | 'success' | 'warning' | 'danger'"
               size="small"
               effect="plain"
             >
-              {{ OUTSOURCE_QUOTE_STATUS_LABEL[(row as unknown as OutsourceQuote).status] }}
+              {{ statusLabel((row as OutsourceQuote).status) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="customer_path" label="客户" width="180" show-overflow-tooltip />
+
+        <!-- 客户列（无 sortable；用列头 popover 过滤 L1 客户） -->
+        <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+          <template #header>
+            <span class="header-cell">
+              <span>客户</span>
+              <el-popover
+                :width="280"
+                placement="bottom-start"
+                trigger="click"
+                :show-arrow="false"
+                v-model:visible="customerPopoverVisible"
+                @show="syncCustomerDraft"
+              >
+                <template #reference>
+                  <el-icon
+                    class="filter-icon"
+                    :class="{ active: customerFilterActive }"
+                  >
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                  选一级客户自动级联其下二级客户
+                </div>
+                <el-tree-select
+                  v-model="customerDraft"
+                  :data="customerTree"
+                  node-key="id"
+                  :props="{ label: 'name', children: 'children' }"
+                  check-strictly
+                  clearable
+                  filterable
+                  placeholder="选择客户"
+                  :teleported="false"
+                  style="width: 100%"
+                  @clear="customerDraft = null"
+                />
+                <div class="filter-actions">
+                  <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="confirmCustomerFilter"
+                  >确定</el-button>
+                </div>
+              </el-popover>
+            </span>
+          </template>
+          <template #default="{ row }">
+            <span v-if="(row as OutsourceQuote).customer_path">{{ (row as OutsourceQuote).customer_path }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+
         <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="canEdit((row as unknown as OutsourceQuote), roleMap)"
+              v-if="canEdit((row as OutsourceQuote), roleMap)"
               size="small"
-              @click="onSubmit((row as unknown as OutsourceQuote))"
+              @click="onSubmit((row as OutsourceQuote))"
             >提交审核</el-button>
             <el-button
-              v-if="canSubmit((row as unknown as OutsourceQuote), roleMap)"
+              v-if="canSubmit((row as OutsourceQuote), roleMap)"
               size="small"
-              @click="onSubmit((row as unknown as OutsourceQuote))"
+              @click="onSubmit((row as OutsourceQuote))"
             >提交</el-button>
             <el-button
-              v-if="canApprove((row as unknown as OutsourceQuote), roleMap)"
+              v-if="canApprove((row as OutsourceQuote), roleMap)"
               size="small"
               type="success"
-              @click="openApprove((row as unknown as OutsourceQuote))"
+              @click="openApprove((row as OutsourceQuote))"
             >通过</el-button>
             <el-button
-              v-if="canReject((row as unknown as OutsourceQuote), roleMap)"
+              v-if="canReject((row as OutsourceQuote), roleMap)"
               size="small"
               type="danger"
-              @click="openReject((row as unknown as OutsourceQuote))"
+              @click="openReject((row as OutsourceQuote))"
             >拒绝</el-button>
             <el-button
-              v-if="canSoftDelete((row as unknown as OutsourceQuote), roleMap)"
+              v-if="canSoftDelete((row as OutsourceQuote), roleMap)"
               size="small"
               type="danger"
-              @click="onDelete((row as unknown as OutsourceQuote))"
+              @click="onDelete((row as OutsourceQuote))"
             >删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+
       <el-pagination
-        v-model:current-page="query.offset"
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :page-sizes="[20, 50, 100]"
         :total="total"
-        :page-size="query.limit"
-        layout="total, prev, pager, next, jumper"
+        layout="total, sizes, prev, pager, next, jumper"
+        background
+        size="small"
         @current-change="refresh"
+        @size-change="onPageSizeChange"
       />
     </el-card>
 
-    <!-- 新建 -->
+    <!-- 新建 DRAFT 报价 -->
     <el-dialog v-model="showCreate" title="新建外协报价（DRAFT）" width="640">
       <el-form label-width="100px">
         <el-form-item label="零件">
-          <el-select v-model="createForm.part_id" filterable style="width:100%">
+          <el-select
+            v-model="createForm.part_id"
+            filterable
+            style="width:100%"
+            placeholder="可报价零件（PENDING / 生产中）按创建时间倒序，最多 500 条"
+          >
             <el-option
               v-for="p in parts"
               :key="p.id"
-              :label="`${p.serial_no ?? ''} | ${p.drawing_no ?? ''} | ${p.name}`"
+              :label="`${p.serial_no ?? '—'} | ${p.drawing_no ?? ''} | ${p.name}`"
               :value="p.id"
             />
           </el-select>
         </el-form-item>
         <el-form-item label="外协公司">
-          <el-select v-model="createForm.outsource_company_id" filterable style="width:100%">
+          <el-select
+            v-model="createForm.outsource_company_id"
+            filterable
+            style="width:100%"
+          >
             <el-option
               v-for="c in companies"
               :key="c.id"
@@ -349,7 +633,11 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           </el-select>
         </el-form-item>
         <el-form-item label="工序(OUTSOURCE)">
-          <el-select v-model="createForm.process_id" filterable style="width:100%">
+          <el-select
+            v-model="createForm.process_id"
+            filterable
+            style="width:100%"
+          >
             <el-option
               v-for="p in processes"
               :key="p.id"
@@ -399,17 +687,61 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .page {
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
+
+.filter-card {
+  :deep(.el-card__body) {
+    padding: 12px 16px;
+  }
+}
+
 .filter-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
   align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.total-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.header-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  justify-content: center;
+}
+
+.filter-icon {
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  &.active {
+    color: var(--primary-color);
+  }
+}
+
+.filter-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border-color-lighter);
+  padding-top: 8px;
+}
+
+.muted {
+  color: var(--text-secondary);
 }
 </style>
