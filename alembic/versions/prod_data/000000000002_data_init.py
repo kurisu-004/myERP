@@ -483,53 +483,58 @@ def _update_user_chen_yan_phone(bind) -> None:
 
 def _seed_customers(bind) -> None:
     """2026-07-16：灌入 3 一级 + 11 二级客户。
-    流程：先 INSERT 一级 → 按 name 查 id 缓存 → 再 INSERT 二级（parent_id 从缓存取）。"""
-    id_by_name: dict[str, int] = {}
+    t_customer.name 没有 UNIQUE 约束（只有普通 INDEX）→ 不能用 ON CONFLICT。
+    改用先 SELECT 后插入已存在则跳过的模式。"""
+    all_names = [c[0] for c in _CUSTOMERS]
+    existing_rows = bind.execute(
+        sa.text(
+            "SELECT name, id FROM t_customer "
+            "WHERE deleted_at IS NULL AND name IN :names"
+        ).bindparams(sa.bindparam("names", expanding=True)),
+        {"names": all_names},
+    ).fetchall()
+    existing: set[str] = {name for name, _ in existing_rows}
+    id_by_name: dict[str, int] = {name: int(cid) for name, cid in existing_rows}
 
-    # 第一遍：插入一级客户
+    # 第一遍：插入一级客户（只插不存在的）
     for name, parent_name, prefix in _CUSTOMERS:
         if parent_name is not None:
             continue
+        if name in existing:
+            continue
         new_cid = new_id()
+        id_by_name[name] = new_cid
         bind.execute(
             sa.text(
                 """
                 INSERT INTO t_customer (id, name, parent_id, serial_prefix,
                                          version, created_at, updated_at)
                 VALUES (:id, :name, NULL, :prefix, 0, now(), now())
-                ON CONFLICT (name) WHERE deleted_at IS NULL DO NOTHING
                 """
             ),
             {"id": new_cid, "name": name, "prefix": prefix},
         )
 
-    # 回查：拿到所有客户的 id（兼容 ON CONFLICT 跳过的情况：原表已有同名客户）
-    rows = bind.execute(
-        sa.text(
-            "SELECT name, id FROM t_customer "
-            "WHERE deleted_at IS NULL AND name IN :names"
-        ).bindparams(sa.bindparam("names", expanding=True)),
-        {"names": [c[0] for c in _CUSTOMERS]},
-    ).fetchall()
-    id_by_name = {name: int(cid) for name, cid in rows}
-
-    # 第二遍：插入二级客户
+    # 第二遍：插入二级客户（只插不存在的）
     for name, parent_name, _prefix in _CUSTOMERS:
         if parent_name is None:
+            continue
+        if name in existing:
             continue
         parent_id = id_by_name.get(parent_name)
         if parent_id is None:
             continue
+        new_cid = new_id()
+        id_by_name[name] = new_cid
         bind.execute(
             sa.text(
                 """
                 INSERT INTO t_customer (id, name, parent_id, serial_prefix,
                                          version, created_at, updated_at)
                 VALUES (:id, :name, :parent_id, NULL, 0, now(), now())
-                ON CONFLICT (name) WHERE deleted_at IS NULL DO NOTHING
                 """
             ),
-            {"id": new_id(), "name": name, "parent_id": parent_id},
+            {"id": new_cid, "name": name, "parent_id": parent_id},
         )
 
 
