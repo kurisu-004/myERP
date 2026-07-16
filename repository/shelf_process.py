@@ -75,6 +75,28 @@ class ShelfProcessRepository:
         result = await self.session.execute(stmt)
         return [int(pid) for pid in result.scalars().all()]
 
+    async def list_all_mappings(self) -> dict[int, list[int]]:
+        """批量取所有 active 映射，返回 `{shelf_id: [process_id, ...]}`。
+
+        按 `shelf_id ASC, sort_order ASC` 排序——前端
+        `useShelfProcessFilter` 用此方法做一次性反向索引，避免 N+1。
+        """
+        stmt = (
+            select(
+                TShelfProcess.shelf_id,
+                TShelfProcess.process_id,
+            )
+            .where(TShelfProcess.deleted_at.is_(None))
+            .order_by(
+                TShelfProcess.shelf_id.asc(),
+                TShelfProcess.sort_order.asc(),
+            )
+        )
+        out: dict[int, list[int]] = {}
+        for sid, pid in (await self.session.execute(stmt)).all():
+            out.setdefault(int(sid), []).append(int(pid))
+        return out
+
     async def list_mapped_process_codes_by_shelf_ids(
         self, shelf_ids: list[int]
     ) -> dict[int, list[str]]:

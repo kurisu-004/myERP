@@ -384,6 +384,36 @@ class ShelfService:
         )
 
     # ============================================================
+    # 批量映射（2026-07-17）
+    # ============================================================
+    async def list_all_process_mappings(self) -> "ShelfProcessMappingsOut":
+        """一次性返回所有 active 货架的工序 id 列表，给前端 composable 消费。
+
+        比 N 次 `GET /shelves/{id}/processes` 节省 (N-1) 次 RTT；
+        同时也避免 worker 扫码台反复遍历 mapping。空映射的货架不出现。
+        """
+        from schema.shelf import ShelfProcessMappingItem, ShelfProcessMappingsOut
+
+        if self.shelf_process is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    "list_all_process_mappings requires shelf_process repo; "
+                    "service not configured"
+                ),
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        mapping = await self.shelf_process.list_all_mappings()
+        items = [
+            ShelfProcessMappingItem(
+                shelf_id=str(sid),
+                process_ids=[str(pid) for pid in pids],
+            )
+            for sid, pids in mapping.items()
+        ]
+        return ShelfProcessMappingsOut(items=items)
+
+    # ============================================================
     # 内部
     # ============================================================
     async def _refresh(self, s: TShelf) -> None:
