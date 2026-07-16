@@ -1475,3 +1475,80 @@ service 层 `_to_out` / `_to_list_out` / `_assembly_to_out_obj` 等所有
 - `cd frontend && npm run build` → ✓ built in 4.84s（类型扩展无错）。
 - 冷启库：`uv run alembic upgrade head` 2 步线性成功；
   `\d t_part` 等 19 张表都有 `version | integer | not null default 0`。
+
+---
+
+## 22. 货架 ↔ 工序 映射强制（2026-07-17）
+
+`t_shelf_process` 表早已存在且 MANAGER 可在「货架管理」配置，但**所有写路径都没消费这个映射**——任意 active PRODUCTION 货架 + 任意 process 都会被接受。本次改为「**冗余校验**：后端硬拦截 + 前端 reactive 收窄」，闭环 invariant。
+
+### 22.1 后端
+
+- 新增 `core/error_code.BIZ_SHELF_PROCESS_NOT_MAPPED = 20507`，HTTP **422** Unprocessable Entity（与 400 参数错区分）。
+- 新增 `service/part.py::PartService._assert_shelf_maps_process(shelf, process)` helper：
+  - `shelf_process_repo is None` → 500（不许静默放过）
+  - 货架无映射 / 映射不含目标 process → 422
+- 该 helper 在以下 4 个入口触发（覆盖所有 `(shelf, next_process)` 写路径）：
+  - `place_on_shelf` / `release_from_programming` / `receive_from_outsource` 走 `_validate_production_shelf_and_process`（helper 内嵌最后一步）
+  - `scan_event RETURNED` 之前是 `if allowed_ids and ...` **permissive** 跳过；现改为 strict，移交给 `_assert_shelf_maps_process`
+  - `complete_repair` 新加——校验 carried `next_process_id`（`fail_inspection` 已清空时跳过）
+- 新增 `repository/work_type_process.py::WorkTypeProcessRepository.get_default_process_id_for_work_type` 备用 helper（后续如要从工人工种推工序可走这条路）。
+- **新增端点**：`GET /api/v1/shelves/processes`（任意已登录），返回 `{items: [{shelf_id, process_ids}, ...]}`，给前端 `useShelfProcessFilter` 一次性消费避免 N+1。
+  - 新增 `repository/shelf_process.list_all_mappings() -> dict[int, list[int]]`
+  - 新增 `schema/shelf.ShelfProcessMappingItem` / `ShelfProcessMappingsOut`
+  - 新增 `service/shelf.list_all_process_mappings()`
+
+### 22.2 seed 改动（`alembic/versions/prod_data/000000000002_data_init.py`）
+
+新 helper `_seed_shelf_process_map(bind)`：每个 active PRODUCTION 货架默认映射 5 个 INHOUSE 工序（车/铣/磨/CNC/线切割）。`ON CONFLICT (shelf_id, process_id) WHERE deleted_at IS NULL DO NOTHING` 幂等。
+
+**未做 backfill 数据迁移**——用户拍板只改 seed；已有 prod 库需 ops 手工跑 `INSERT INTO t_shelf_process ...` 或在 UI 配置映射。
+
+### 22.3 前端
+
+- 新增 `frontend/src/composables/useShelfProcessFilter.ts`：双向 reactive 过滤 composable
+  - 入参：`(allShelves, allProcesses, shelfIdRef, processIdRef)` 四个 Ref
+  - `load()` 一次性 GET `/shelves/processes` → 内存 Map<shelfId, Set<processId>>
+  - `filteredShelves` / `filteredProcesses` computed 双向收窄
+  - watch 自动清空不兼容的对端 + `ElMessage.warning('已清空货架选择：当前货架不支持该工序')`
+  - 后端映射拉取失败时 `loaded=false`，filter 返回全量（兜底）
+- 应用到 5 个弹窗：
+  | 文件 | 弹窗 | 类别过滤 |
+  |---|---|---|
+  | `views/parts/PartsList.vue` | `dispatchVisible` (direct 模式) | — |
+  | `views/parts/PartDetail.vue` | `releaseVisible` | — |
+  | `views/parts/PartDetail.vue` | `receiveOutsourceDialogVisible` | INHOUSE |
+  | `views/cnc/PendingProgrammingList.vue` | `releaseDialogVisible` | INHOUSE |
+  | `views/outsource/OutsourceSendReceive.vue` | `receiveDialogVisible` (production 分支) | INHOUSE |
+- `views/scan/ScanReturnParts.vue` 单独处理（不需要 picker）：
+  - `loadProcesses()` 按 `boundShelves()` 过滤：通配保留全量；绑了架 → 拉 `/shelves/processes` 取并集；空 scope 但非通配 → 列表空 + warning
+  - 修 line 440 silent early-return bug → `ElMessage.warning('选择已重置，请重新选择零件')`
+
+### 22.4 测试
+
+- `tests/unit/test_part_service_workflow.py::TestShelfProcessGuard`（新增 7 用例）：
+  - `test_place_on_shelf_rejects_unmapped` / `test_release_from_programming_rejects_unmapped`
+  - `test_receive_from_outsource_rejects_unmapped`
+  - `test_scan_event_returned_strict_no_permissive_skip`（验证去掉 permissive 跳过）
+  - `test_complete_repair_rejects_when_carried_process_unmapped`
+  - `test_complete_repair_skips_guard_when_next_process_id_none`（fail_inspection 后置场景）
+  - `test_repo_none_raises_500`（配置错误兜底）
+- 5 个既有 happy-path 测试加 `mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [pid]` 配置（fixture 默认返 `[]`，保持「无效映射 → 拒绝」语义）
+- 测试基线：494 → 501 passed
+
+### 22.5 用户决策记录
+
+1. **空映射语义 = 422 + 引导文案**——拒绝任何映射缺失的 (shelf, process) 对，而不是 permissive 跳过
+2. **只改 seed 不做 backfill 迁移**——ops 在 UI 配置即可
+3. **前端架构：composable + 单次批量端点**——避免 N+1 `GET /shelves/{id}/processes`
+4. **`complete_repair` 加 guard**——与 place_on_shelf 同源 invariant，校验 carried `next_process_id`
+
+### 22.6 端到端验证
+
+- `uv run pytest tests/unit/` → **501 passed**（含新 7 用例）
+- `cd frontend && npm run build` → ✓ built
+- 手动：
+  - CLERK 派工：选货架 A → 工序下拉只剩 A 的映射；选未映射工序 → 后端 422
+  - CNC 下发到生产：同样双向收窄
+  - SHELF_ACCOUNT 工人 RETURN：工序下拉只列工人绑定架的并集
+  - MANAGER /shelves 改映射 → 下一个弹窗打开时即时反映
