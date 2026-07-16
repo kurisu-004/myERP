@@ -24,15 +24,18 @@ from model.customer import TCustomer
 from model.enums import (
     OutsourceQuoteSortKey,
     OutsourceQuoteStatus,
+    PartEventType,
     ProcessCategory,
     SortDir,
 )
 from model.outsource_quote_event import TOutsourceQuoteEvent
+from model.part_event import TPartEvent
 from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
+from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from schema.outsource_quote import (
     ApprovedForSendListOut,
@@ -62,6 +65,7 @@ class OutsourceQuoteService:
         processes: ProcessRepository,
         customers: CustomerRepository,
         *,
+        part_events: PartEventRepository,
         current_user: CurrentUser | None = None,
     ) -> None:
         self.quotes = quotes
@@ -70,6 +74,7 @@ class OutsourceQuoteService:
         self.companies = companies
         self.processes = processes
         self.customers = customers
+        self.part_events = part_events
         self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
@@ -208,6 +213,23 @@ class OutsourceQuoteService:
             created_by=self._user_id,
         ))
 
+        # 同步写一行 TPartEvent（2026-07-16）：让 PartDetail 历史时间线
+        # 看到「谁什么时候为此零件创建了外协报价」。
+        # note 是中文模板，包含外协公司 / 工序 / 报价 id 便于人工追溯。
+        await self.part_events.create(TPartEvent(
+            id=new_id(),
+            part_id=part_id,
+            event_type=PartEventType.QUOTE_CREATED.value,
+            from_status=None,
+            to_status=None,
+            note=(
+                f"外协公司:{company.name} "
+                f"工序:{process.code} "
+                f"报价:#{quote.id}"
+            ),
+            created_by=self._user_id,
+        ))
+
         return await self._to_out(quote)
 
     async def update_quote(
@@ -321,6 +343,27 @@ class OutsourceQuoteService:
         await refresh_for_state_machine(
             self.quotes.session, quote, attrs=("updated_at",),
         )
+
+        # 同步写一行 TPartEvent（2026-07-16）：让 PartDetail 历史时间线
+        # 看到「谁什么时候通过了这个零件的外协报价」。
+        # 报销金额信息不入 note（隐私），只记录公司/工序/报价 id/审批意见。
+        company = await self.companies.get_by_id(quote.outsource_company_id)
+        process = await self.processes.get_by_id(quote.process_id)
+        await self.part_events.create(TPartEvent(
+            id=new_id(),
+            part_id=quote.part_id,
+            event_type=PartEventType.QUOTE_APPROVED.value,
+            from_status=None,
+            to_status=None,
+            note=(
+                f"外协公司:{company.name if company else quote.outsource_company_id} "
+                f"工序:{process.code if process else quote.process_id} "
+                f"报价:#{quote.id} "
+                f"审批意见:{data.review_note or '无'}"
+            ),
+            created_by=self._user_id,
+        ))
+
         return await self._to_out(quote)
 
     async def reject_quote(

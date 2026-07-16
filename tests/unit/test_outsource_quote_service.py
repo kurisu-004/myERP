@@ -31,6 +31,7 @@ from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
+from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from schema.outsource_quote import (
     OutsourceQuoteApproveRequest,
@@ -179,9 +180,17 @@ def mock_customers() -> CustomerRepository:
 
 
 @pytest.fixture
+def mock_part_events() -> PartEventRepository:
+    repo = PartEventRepository.__new__(PartEventRepository)
+    repo.session = MagicMock()
+    repo.create = AsyncMock()
+    return repo
+
+
+@pytest.fixture
 def svc(
     mock_quotes, mock_quote_events, mock_parts, mock_companies,
-    mock_processes, mock_customers,
+    mock_processes, mock_customers, mock_part_events,
 ) -> OutsourceQuoteService:
     return OutsourceQuoteService(
         quotes=mock_quotes,
@@ -190,6 +199,7 @@ def svc(
         companies=mock_companies,
         processes=mock_processes,
         customers=mock_customers,
+        part_events=mock_part_events,
         current_user=None,
     )
 
@@ -489,3 +499,76 @@ class TestApiRouterImports:
         assert "/outsource-quotes/{quote_id}/approve" in write_paths
         assert "/outsource-quotes/{quote_id}/reject" in write_paths
         assert "/outsource-quotes/{quote_id}/soft-delete" in write_paths
+
+
+# =============================================================================
+# 同步 TPartEvent 写入（2026-07-16 新增）
+# =============================================================================
+
+
+class TestPartEventSyncWrites:
+    """create_quote / approve_quote 必须同步写 TPartEvent 一行，
+    让 PartDetail 历史时间线展示报价生命周期。
+    """
+
+    async def test_create_quote_writes_part_event_quote_created(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+        mock_quote_events, mock_part_events,
+    ):
+        from schema.outsource_quote import OutsourceQuoteCreateRequest
+        from decimal import Decimal
+
+        mock_parts.get_by_id.return_value = _make_part()
+        mock_companies.get_by_id.return_value = _make_company()
+        mock_processes.get_by_id.return_value = _make_process()
+        mock_quotes.get_one_active_for_tuple.return_value = None
+
+        # 让 mock repo.create 给 quote 填上 created_at/updated_at（模拟 DB RETURNING）
+        async def _fake_create(q):
+            q.created_at = _now()
+            q.updated_at = _now()
+            return q
+        mock_quotes.create = AsyncMock(side_effect=_fake_create)
+
+        data = OutsourceQuoteCreateRequest(
+            part_id="123456",
+            outsource_company_id="200",
+            process_id="300",
+            price=Decimal("100.00"),
+        )
+        await svc.create_quote(data)
+
+        # TOutsourceQuoteEvent（CREATED）+ TPartEvent（QUOTE_CREATED）共 2 次
+        assert mock_quote_events.create.await_count == 1
+        assert mock_part_events.create.await_count == 1
+        # 第 2 次写的是 TPartEvent
+        part_event = mock_part_events.create.await_args.args[0]
+        assert part_event.event_type == "QUOTE_CREATED"
+        # part_id 是 int(snowflake id), 我们传了 part_id="123456"
+        assert part_event.part_id == 123456
+        assert "外协公司" in part_event.note
+        assert "工序" in part_event.note
+        assert "报价:#" in part_event.note
+
+    async def test_approve_quote_writes_part_event_quote_approved(
+        self, svc, mock_quotes, mock_companies, mock_processes,
+        mock_part_events,
+    ):
+        from schema.outsource_quote import OutsourceQuoteApproveRequest
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.SUBMITTED.value, version=2,
+        )
+        mock_quotes.get_by_id.return_value = q
+        mock_companies.get_by_id.return_value = _make_company()
+        mock_processes.get_by_id.return_value = _make_process()
+
+        data = OutsourceQuoteApproveRequest(version=2, review_note="OK")
+        await svc.approve_quote("999", data)
+
+        assert mock_part_events.create.await_count == 1
+        part_event = mock_part_events.create.await_args.args[0]
+        assert part_event.event_type == "QUOTE_APPROVED"
+        assert part_event.part_id == q.part_id
+        assert "审批意见:OK" in part_event.note
+
