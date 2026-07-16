@@ -280,6 +280,7 @@ def upgrade() -> None:
     # 2026-07-16：新增 客户 / 货架 / 工控机
     _seed_customers(bind)
     _seed_shelves(bind)
+    _seed_shelf_process_map(bind)  # 2026-07-17：补灌货架↔工序映射
     _seed_hmi_users(bind)
 
 
@@ -562,6 +563,56 @@ def _seed_shelves(bind) -> None:
                 "loc": location,
             },
         )
+
+
+def _seed_shelf_process_map(bind) -> None:
+    """2026-07-17：补灌货架↔工序映射。
+
+    之前 seed 没灌任何 `t_shelf_process` 行，导致新启用的 422 守卫（commit 3
+    `_assert_shelf_maps_process`）会拒绝所有下发放回。给每个 active PRODUCTION
+    货架默认映射「车/铣/磨/CNC/线切割」5 个 INHOUSE 工序（与既有工种-工序
+    映射同源），INSPECTION 区货架不映射（送检流程不走工序校验）。
+
+    幂等：`uk_t_shelf_process (shelf_id, process_id) WHERE deleted_at IS NULL`
+    唯一索引 + `ON CONFLICT DO NOTHING` 保证重复跑不出错。
+    """
+    rows = bind.execute(
+        sa.text(
+            "SELECT id FROM t_shelf "
+            "WHERE deleted_at IS NULL AND zone = 'PRODUCTION' AND is_active = true"
+        )
+    ).fetchall()
+    shelf_ids: list[int] = [int(sid) for (sid,) in rows]
+    if not shelf_ids:
+        return
+
+    # 5 个 INHOUSE 工序——所有 active PRODUCTION 货架都映射这 5 个
+    proc_rows = bind.execute(
+        sa.text(
+            "SELECT id, code FROM t_process "
+            "WHERE deleted_at IS NULL AND category = 'INHOUSE' "
+            "ORDER BY sort_order ASC"
+        )
+    ).fetchall()
+    proc_ids: list[tuple[int, str]] = [(int(pid), code) for (pid, code) in proc_rows]
+    if not proc_ids:
+        return
+
+    for sid in shelf_ids:
+        for idx, (pid, _code) in enumerate(proc_ids):
+            bind.execute(
+                sa.text(
+                    """
+                    INSERT INTO t_shelf_process
+                      (id, shelf_id, process_id, sort_order,
+                       created_at, updated_at, version, created_by, updated_by)
+                    VALUES (:id, :sid, :pid, :so, now(), now(), 0, NULL, NULL)
+                    ON CONFLICT (shelf_id, process_id)
+                      WHERE deleted_at IS NULL DO NOTHING
+                    """
+                ),
+                {"id": new_id(), "sid": sid, "pid": pid, "so": idx},
+            )
 
 
 def _seed_hmi_users(bind) -> None:
