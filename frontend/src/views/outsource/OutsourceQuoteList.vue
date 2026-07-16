@@ -35,8 +35,6 @@ import {
   canEdit,
   canReject,
   canSoftDelete,
-  canSubmit,
-  canWithdraw,
   rolesArrayToMap,
 } from '@/utils/outsourceQuotePermissions'
 
@@ -142,10 +140,25 @@ function statusTagType(s: OutsourceQuoteStatus): 'info' | 'success' | 'warning' 
   return OUTSOURCE_QUOTE_STATUS_TAG[s] ?? 'info'
 }
 
+/** 操作列自适应宽度：根据当前 items 中按钮数最多的行计算。
+ *  每按钮约 76px（"提交审核" 4 字 + spacing），加 12px padding。
+ *  默认 160px（无按钮 / 空列表时）防止抖动。 */
+const actionColumnWidth = computed(() => {
+  const maxBtns = items.value.reduce((max, q) => {
+    let n = 0
+    if (canEdit(q, roleMap.value)) n++
+    if (canApprove(q, roleMap.value)) n++
+    if (canReject(q, roleMap.value)) n++
+    if (canSoftDelete(q, roleMap.value)) n++
+    return Math.max(max, n)
+  }, 0)
+  return Math.max(160, maxBtns * 76 + 12)
+})
+
 function buildParams() {
   return {
     keyword: search.keyword.trim() || undefined,
-    status: search.statuses.length > 0 ? search.statuses[0] : undefined,  // 后端只接单 status
+    statuses: search.statuses.length > 0 ? [...search.statuses] : undefined,
     customer_id: search.customerId || undefined,
     sort_by: sortBy.value,
     sort_dir: sortDir.value,
@@ -553,18 +566,13 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="320" fixed="right">
+        <el-table-column label="操作" :width="actionColumnWidth" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="canEdit((row as OutsourceQuote), roleMap)"
               size="small"
               @click="onSubmit((row as OutsourceQuote))"
             >提交审核</el-button>
-            <el-button
-              v-if="canSubmit((row as OutsourceQuote), roleMap)"
-              size="small"
-              @click="onSubmit((row as OutsourceQuote))"
-            >提交</el-button>
             <el-button
               v-if="canApprove((row as OutsourceQuote), roleMap)"
               size="small"

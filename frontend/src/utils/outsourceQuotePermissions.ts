@@ -23,14 +23,8 @@ export function canCreate(role: RoleLike): boolean {
   return hasManageQuotesRole(role)
 }
 
-/** 是否能编辑（DRAFT 状态 + 有管理权限） */
+/** 是否能编辑 / 提交审核（DRAFT 状态 + 有管理权限） */
 export function canEdit(quote: { status: OutsourceQuoteStatus }, role: RoleLike): boolean {
-  if (!hasManageQuotesRole(role)) return false
-  return quote.status === 'DRAFT'
-}
-
-/** 是否能提交审核（DRAFT → SUBMITTED） */
-export function canSubmit(quote: { status: OutsourceQuoteStatus }, role: RoleLike): boolean {
   if (!hasManageQuotesRole(role)) return false
   return quote.status === 'DRAFT'
 }
