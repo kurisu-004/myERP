@@ -47,6 +47,10 @@ class PartOut(BaseModel):
     actual_delivery_date: date | None = Field(default=None, description="实际送货日期")
     is_urgent: bool = Field(description="是否加急")
     status: PartStatus = Field(description="订单状态")
+    # —— 送货单字段（PR-F 2026-07-17，可选）——
+    order_no: str | None = Field(default=None, max_length=30, description="订单号（法拉/路达共用）")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注（文员手填）")
     customer_name: str | None = Field(
         default=None, description="客户名（二级节点，如 母排厂）"
     )
@@ -131,6 +135,10 @@ class PartListItem(BaseModel):
     actual_delivery_date: date | None = None
     is_urgent: bool
     status: PartStatus
+    # —— 送货单字段（PR-F 2026-07-17，可选）——
+    order_no: str | None = Field(default=None, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, description="备注")
     customer_name: str | None = Field(
         default=None, description="客户名（二级节点）"
     )
@@ -184,6 +192,10 @@ class PartCreateRequest(BaseModel):
     planned_delivery_date: date
     actual_delivery_date: date | None = None
     is_urgent: bool = False
+    # —— 送货单字段（PR-F 2026-07-17，可选）——
+    order_no: str | None = Field(default=None, max_length=30, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注")
     customer_id: str = Field(description="二级叶子客户 id（雪花 ID 字符串）")
 
     @field_validator("name", "drawing_no", "applicant_name")
@@ -264,6 +276,10 @@ class PartUpdateRequest(BaseModel):
     planned_delivery_date: date | None = None
     actual_delivery_date: date | None = None
     is_urgent: bool | None = None
+    # —— 送货单字段（PR-F 2026-07-17，可选）——
+    order_no: str | None = Field(default=None, max_length=30, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注")
     customer_id: str | None = Field(default=None, description="客户 id（雪花 ID 字符串）")
 
 
