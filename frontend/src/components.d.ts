@@ -65,6 +65,7 @@ declare module 'vue' {
     ElTreeSelect: typeof import('element-plus/es')['ElTreeSelect']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     FileListCard: typeof import('./components/FileListCard.vue')['default']
+    HmiPickerCard: typeof import('./components/HmiPickerCard.vue')['default']
     NotificationBanner: typeof import('./components/NotificationBanner.vue')['default']
     PdfViewer: typeof import('./components/PdfViewer.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

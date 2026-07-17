@@ -152,46 +152,25 @@
       </div>
     </div>
 
-    <!-- 下一道工序选择对话框 -->
-    <el-dialog
+    <!-- 下一道工序选择对话框（2026-07-17 升级为大卡 + INHOUSE/OUTSOURCE tabs） -->
+    <ProcessPickerDialog
+      v-if="showProcessDialog"
       v-model="showProcessDialog"
-      title="选择下一道工序"
-      width="420px"
-      :close-on-click-modal="false"
-      :close-on-press-escape="false"
-    >
-      <el-radio-group
-        v-model="selectedNextProcessId"
-        style="display: flex; flex-direction: column; gap: 8px"
-      >
-        <el-radio
-          v-for="p in processes"
-          :key="p.id"
-          :value="p.id"
-          border
-        >
-          <span style="font-family: 'SF Mono', Menlo, Consolas, monospace; font-weight: 600">{{ p.code }}</span>
-          <span style="margin-left: 8px">{{ p.name }}</span>
-          <el-tag
-            :type="p.category === 'INHOUSE' ? 'primary' : 'warning'"
-            size="small"
-            style="margin-left: 8px"
-          >{{ PROCESS_CATEGORY_LABEL[p.category] }}</el-tag>
-        </el-radio>
-      </el-radio-group>
-      <template #footer>
-        <el-button @click="onProcessCancel">取消</el-button>
-        <el-button type="primary" :disabled="!selectedNextProcessId" @click="onProcessConfirm">下一步</el-button>
-      </template>
-    </el-dialog>
+      kind="return"
+      :current-process-id="selectedPart?.next_process_id ?? null"
+      @confirm="onProcessPicked"
+      @cancel="onProcessCancel"
+    />
 
     <!-- 共享 HMI RETURN 货架选择卡片网格 picker -->
     <ShelfPickerDialog
       v-if="showShelfPicker"
       v-model="showShelfPicker"
       :next-process-id="selectedNextProcessId || ''"
+      empty-action-label="重新选择工序"
       @confirm="onShelfConfirm"
       @cancel="onShelfCancel"
+      @empty-action="onShelfEmpty"
     />
 
     <!-- 图纸 / 图片 全屏预览 -->
@@ -273,16 +252,13 @@ import PdfViewer from '@/components/PdfViewer.vue'
 import { getDownloadUrl, listPartFiles } from '@/api/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
-import { useAuthSession } from '@/composables/useAuthSession'
-import { getAllShelfProcessMappings } from '@/api/shelves'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
-import { listProcesses } from '@/api/process'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
-import { PROCESS_CATEGORY_LABEL, type Process } from '@/types/process'
+import ProcessPickerDialog from '@/views/scan/components/ProcessPickerDialog.vue'
+import type { Process } from '@/types/process'
 
 const router = useRouter()
 const { worker, requireWorker } = useScanSession()
-const { boundShelves, isWildcardShelfAccount } = useAuthSession()
 
 const parts = ref<PartItem[]>([])
 const loadingList = ref(false)
@@ -308,23 +284,18 @@ const IMAGE_TYPES = new Set(['PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'TIF', 'TIFF', 
 function isImage(t: string): boolean { return IMAGE_TYPES.has(t.toUpperCase()) }
 function isHeic(t: string): boolean { return t.toUpperCase() === 'HEIC' }
 
-// 工序选择
-const processes = ref<Process[]>([])
-const loadingProcesses = ref(false)
+// 工序选择（2026-07-17：ProcessPickerDialog 自管加载与展示，这里只保留 select 后的状态）
 const showProcessDialog = ref(false)
 const selectedNextProcessId = ref<string>('')
-const selectedNextProcessName = computed<string | null>(() => {
-  if (!selectedNextProcessId.value) return null
-  const p = processes.value.find(pp => pp.id === selectedNextProcessId.value)
-  return p ? `${p.code} ${p.name}` : null
-})
+const selectedNextProcessCode = ref<string>('')
+const selectedNextProcessName = ref<string>('')
 
 // 货架选择
 const showShelfPicker = ref(false)
 
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
-  await Promise.all([refresh(), loadProcesses()])
+  await refresh()
 })
 
 onBeforeUnmount(() => {
@@ -341,53 +312,6 @@ async function refresh(): Promise<void> {
     parts.value = []
   } finally {
     loadingList.value = false
-  }
-}
-
-async function loadProcesses(): Promise<void> {
-  loadingProcesses.value = true
-  try {
-    const resp = await listProcesses({ limit: 200 })
-    const all = resp.items
-
-    // 2026-07-17：按工人货架 scope 过滤（与 ScanPartsWork.vue:373-394 同款）
-    // - 通配 SHELF_ACCOUNT（shelf_ids 为空）→ 保留全量工序
-    // - 绑了架 → 只列被这些架映射过的工序（GET /shelves/processes 一次性取）
-    // - 工人无任何 scope → 列表为空（不该发生，但兜底）
-    let scopedIds: Set<string> | null = null
-    const workerShelfIds = boundShelves()
-    if (workerShelfIds.length > 0) {
-      try {
-        const mappings = await getAllShelfProcessMappings()
-        scopedIds = new Set<string>()
-        for (const sid of workerShelfIds) {
-          for (const item of mappings.items) {
-            if (item.shelf_id === sid) {
-              for (const pid of item.process_ids) scopedIds.add(pid)
-            }
-          }
-        }
-      } catch {
-        scopedIds = null  // 映射拉取失败 → 兜底显示全量
-      }
-    } else if (!isWildcardShelfAccount()) {
-      // 既无 scope 也非通配 → 显示空列表
-      scopedIds = new Set<string>()
-    }
-    // scopedIds === null 表示通配场景，保持全量
-
-    processes.value = scopedIds
-      ? all.filter((p) => scopedIds!.has(p.id))
-      : all
-
-    if (processes.value.length === 0) {
-      ElMessage.warning('您当前没有可执行的工序，请联系管理员配置货架映射')
-    }
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '加载工序列表失败')
-    processes.value = []
-  } finally {
-    loadingProcesses.value = false
   }
 }
 
@@ -461,8 +385,10 @@ async function downloadPreview(): Promise<void> {
   }
 }
 
-function onProcessConfirm(): void {
-  if (!selectedNextProcessId.value) return
+function onProcessPicked(process: Process): void {
+  selectedNextProcessId.value = process.id
+  selectedNextProcessCode.value = process.code
+  selectedNextProcessName.value = `${process.code} ${process.name}`
   showProcessDialog.value = false
   showShelfPicker.value = true
 }
@@ -470,6 +396,15 @@ function onProcessConfirm(): void {
 function onProcessCancel(): void {
   showProcessDialog.value = false
   cancelSelect()
+}
+
+/**
+ * 工人选了无映射架的工序 → ShelfPickerDialog 返空 → 点「重新选择工序」按钮。
+ * 关闭 shelf picker，重新弹工艺序 picker 让工人换一个。
+ */
+function onShelfEmpty(): void {
+  showShelfPicker.value = false
+  showProcessDialog.value = true
 }
 
 async function onShelfConfirm(shelfId: string): Promise<void> {

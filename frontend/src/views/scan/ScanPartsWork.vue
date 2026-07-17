@@ -236,41 +236,36 @@
         <el-button type="primary" size="large" @click="onAgain">再来一组</el-button>
       </div>
     </div>
-    <!-- 下一道工序选择对话框（RETURN 时）-->
-    <el-dialog v-model="showNextProcessDialog" title="选择下一道工序" width="420px" :close-on-click-modal="false">
-      <el-radio-group v-model="selectedNextProcessId" style="display: flex; flex-direction: column; gap: 8px">
-        <el-radio v-for="p in processes" :key="p.id" :value="p.id" border>
-          <span style="font-family: 'SF Mono', Menlo, Consolas, monospace; font-weight: 600">{{ p.code }}</span>
-          <span style="margin-left: 8px">{{ p.name }}</span>
-          <el-tag
-            :type="p.category === 'INHOUSE' ? 'primary' : 'warning'"
-            size="small" style="margin-left: 8px"
-          >{{ PROCESS_CATEGORY_LABEL[p.category] }}</el-tag>
-        </el-radio>
-      </el-radio-group>
-      <template #footer>
-        <el-button @click="showNextProcessDialog = false">取消</el-button>
-        <el-button type="primary" @click="confirmNextProcess">下一步</el-button>
-      </template>
-    </el-dialog>
+    <!-- 工序选择对话框（2026-07-17 升级为大卡 + INHOUSE/OUTSOURCE tabs） -->
+    <ProcessPickerDialog
+      v-if="showProcessDialog"
+      v-model="showProcessDialog"
+      :kind="action === 'INSPECT' ? 'inspection' : 'return'"
+      @confirm="onProcessPicked"
+      @cancel="onProcessCancel"
+    />
 
-    <!-- 共享 HMI RETURN 货架选择卡片网格 picker（2026-07-10） -->
+    <!-- 共享 HMI RETURN 货架选择卡片网格 picker（RETURN 时弹） -->
     <ShelfPickerDialog
       v-if="showShelfPicker"
       v-model="showShelfPicker"
       kind="return"
-      :next-process-id="selectedNextProcessId || ''"
+      :next-process-id="pendingNextProcessId || ''"
+      empty-action-label="重新选择工序"
       @confirm="onShelfPicked"
       @cancel="onShelfPickerCancel"
+      @empty-action="onShelfEmpty"
     />
 
-    <!-- 共享 HMI INSPECT 品检货架 picker（2026-07-13 新增） -->
+    <!-- 共享 HMI INSPECT 品检货架 picker -->
     <ShelfPickerDialog
       v-if="showInspPicker"
       v-model="showInspPicker"
       kind="inspection"
+      empty-action-label="取消"
       @confirm="onInspShelfPicked"
       @cancel="onInspPickerCancel"
+      @empty-action="onInspShelfEmpty"
     />
   </div>
 </template>
@@ -295,11 +290,9 @@ import { ACTION_LABEL, ACTION_TAG_TYPE, useScanSession } from '@/composables/use
 import { usePartsScanQueue } from '@/composables/usePartsScanQueue'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useAuthSession } from '@/composables/useAuthSession'
-import { getShelfProcesses } from '@/api/shelves'
-import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
-import { PROCESS_CATEGORY_LABEL } from '@/types/process'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
+import ProcessPickerDialog from '@/views/scan/components/ProcessPickerDialog.vue'
 
 type PageState = 'scanning' | 'submitting' | 'done'
 
@@ -314,16 +307,12 @@ const state = ref<PageState>('scanning')
 // shelf_id 在前端保持字符串：雪花 ID 长度 > 2^53，Number() 会丢精度。
 // 后端 Pydantic v2 默认接受 JSON string → int。
 const shelfId = ref<string>('')
-// 2026-07-13：INSPECT 改用 ShelfPickerDialog（kind=inspection）按 user scope 收口
+// 2026-07-17：工序 picker 统一用 ProcessPickerDialog（INSPECT + RETURN 共用）
+const showProcessDialog = ref(false)
+// INSPECT 流程的品检货架 picker
 const showInspPicker = ref(false)
 const pendingInspShelfId = ref<string | null>(null)
-// RETURN 时的「下一道工序」选择
-const showNextProcessDialog = ref(false)
-const processes = ref<Process[]>([])
-const selectedNextProcessId = ref<string>()
-// 共享 HMI RETURN 货架 picker（2026-07-10）
-// 流程：选完 next_process_id 后弹出 → 默认高亮推荐架 → 工人「完成」
-// 即提交，或点其他卡片切换。空 / 错误态 dialog 自带提示。
+// 共享 HMI RETURN 货架 picker：选完 next_process_id 后弹出
 const showShelfPicker = ref(false)
 // 「下一道工序确定后才选架」中间态：记下 next_process_id 后开 picker
 const pendingNextProcessId = ref<string | null>(null)
@@ -361,43 +350,11 @@ async function onSubmit(): Promise<void> {
   if (!worker.value || !action.value) return
   if (parts.value.length === 0) return
 
-  // 2026-07-13：INSPECT 改用 ShelfPickerDialog (kind='inspection')，后端按 user scope 收口
-  if (action.value === 'INSPECT') {
-    pendingInspShelfId.value = null
-    showInspPicker.value = true
-    return
-  }
-
-  // RETURN 需要选下一道工序（仅显示当前货架关联的工序）。
-  // wildcard HMI（shelfId 空）跳过货架映射，直接列全部工序兜底。
-  if (action.value === 'RETURN') {
-    try {
-      let processIds: string[] | null = null
-      if (shelfId.value) {
-        const sp = await getShelfProcesses(shelfId.value)
-        processIds = sp.processes.map((p) => p.process_id)
-      }
-      const allProcs = (await listProcesses({ limit: 200 })).items
-      processes.value = processIds
-        ? allProcs.filter((p) => processIds!.includes(String(p.id)))
-        : allProcs
-      if (processes.value.length === 0) {
-        ElMessage.warning('当前货架未配置可执行的工序，请联系管理员')
-        return
-      }
-    } catch {
-      // fallback：映射不存在时降级到全部工序（向后兼容）
-      processes.value = (await listProcesses({ limit: 200 })).items
-    }
-    selectedNextProcessId.value = undefined
-    showNextProcessDialog.value = true
-    return
-  }
-
-  // 其它路径（实际不会被触发，ScanPartsWork 只处理 RETURN / INSPECT）
-  if (!shelfId.value) { ElMessage.warning('未找到当前货架信息，请重新登录'); return }
-
-  await doSubmit(undefined, undefined)
+  // 2026-07-17：INSPECT 与 RETURN 都先弹工序 picker（INHOUSE/OUTSOURCE tabs + 大卡），
+  // kind 由 action 决定。ProcessPickerDialog 自管 load，无需在前端先拉。
+  pendingInspShelfId.value = null
+  pendingNextProcessId.value = null
+  showProcessDialog.value = true
 }
 
 async function doSubmit(
@@ -418,6 +375,28 @@ async function doSubmit(
 function onAgain(): void { reset(); state.value = 'scanning'; ElMessage.info('请继续扫码') }
 function backToAction(): void { void router.replace('/scan/action') }
 
+/**
+ * 工序 picker 回调（2026-07-17）：
+ * - INSPECT：选完工序再去选品检架。
+ * - RETURN：选完工序存下来，再去选目标架。
+ * 后端目前 /parts/scan INSPECTED 不接 next_process_id 参数（plan §决策记录）：
+ * 「INSPECT 是否传 selectedInspProcessId 给后端 → 不传」，这里只本地存。
+ */
+function onProcessPicked(process: Process): void {
+  showProcessDialog.value = false
+  if (action.value === 'INSPECT') {
+    showInspPicker.value = true
+  } else {
+    pendingNextProcessId.value = process.id
+    showShelfPicker.value = true
+  }
+}
+
+function onProcessCancel(): void {
+  showProcessDialog.value = false
+  ElMessage.info('已取消工序选择')
+}
+
 function onInspShelfPicked(shelfIdPicked: string): void {
   pendingInspShelfId.value = shelfIdPicked
   showInspPicker.value = false
@@ -430,15 +409,12 @@ function onInspPickerCancel(): void {
   ElMessage.info('已取消送检')
 }
 
-function confirmNextProcess(): void {
-  if (!selectedNextProcessId.value) { ElMessage.warning('请选择下一道工序'); return }
-  const nextProcessId = selectedNextProcessId.value
-  showNextProcessDialog.value = false
-  // 共享 HMI（2026-07-10）：选完 next_process 后弹货架 picker；
-  // 老 SHELF_ACCOUNT 模型（无 wildcard）会因 can_operate_shelf 被拒而走 fallback
-  // —— 这里加个 try/catch，picker 失败时退回原 activeShelfId 单架提交。
-  pendingNextProcessId.value = nextProcessId
-  showShelfPicker.value = true
+/**
+ * INSPECT 货架 picker 空状态「取消」按钮：回到工序 picker 即可。
+ */
+function onInspShelfEmpty(): void {
+  showInspPicker.value = false
+  showProcessDialog.value = true
 }
 
 function onShelfPicked(shelfIdPicked: string): void {
@@ -452,6 +428,14 @@ function onShelfPickerCancel(): void {
   pendingNextProcessId.value = null
   showShelfPicker.value = false
   ElMessage.info('已取消放回')
+}
+
+/**
+ * RETURN 货架 picker 空状态「重新选择工序」按钮：回到工序 picker 让工人换一个。
+ */
+function onShelfEmpty(): void {
+  showShelfPicker.value = false
+  showProcessDialog.value = true
 }
 </script>
 
