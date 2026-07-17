@@ -29,9 +29,14 @@
         <el-tag type="warning" effect="dark">放 回</el-tag>
       </div>
       <div class="topbar-right">
+        <HeldPartsBadge v-if="worker?.id" :worker-id="String(worker.id)" :auto-open-on-change="true" />
         <el-button type="info" plain @click="backToAction">
           <el-icon><Back /></el-icon>
           <span>返回操作选择</span>
+        </el-button>
+        <el-button type="warning" plain @click="backToBadge">
+          <el-icon><Refresh /></el-icon>
+          <span>重新扫工牌</span>
         </el-button>
       </div>
     </div>
@@ -273,13 +278,16 @@ import PdfViewer from '@/components/PdfViewer.vue'
 import { getDownloadUrl, listPartFiles } from '@/api/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
+import { useScanBus } from '@/composables/useScanBus'
+import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import { listProcesses } from '@/api/process'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 import { PROCESS_CATEGORY_LABEL, type Process } from '@/types/process'
 
 const router = useRouter()
-const { worker, requireWorker } = useScanSession()
+const { worker, requireWorker, reset: resetScanSession } = useScanSession()
+const { emitHeldChanged } = useScanBus()
 
 const parts = ref<PartItem[]>([])
 const loadingList = ref(false)
@@ -454,6 +462,7 @@ async function onShelfConfirm(shelfId: string): Promise<void> {
     )
     cancelSelect()
     await refresh()
+    emitHeldChanged()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '放回失败')
   } finally {
@@ -474,6 +483,12 @@ function cancelSelect(): void {
 function backToAction(): void {
   cancelSelect()
   void router.replace('/scan/action')
+}
+
+function backToBadge(): void {
+  cancelSelect()
+  resetScanSession()
+  void router.replace('/scan/badge')
 }
 
 // --- 交期辅助（与 ScanPickParts 一致） ---

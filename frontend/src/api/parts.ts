@@ -414,6 +414,20 @@ export async function printPartDrawing(partId: string): Promise<Blob> {
   return resp.data
 }
 
+/**
+ * 批量生成多个零件的双面打印 PDF 并合并为一个 PDF（2026-07-17 接入）。
+ * 后端把 N 个 part 的双面 PDF 用 pypdf.PdfWriter 顺序拼接成单文件返回。
+ * 前端拿到 Blob 后用单 iframe 一次 print()，避免 N 次打印弹窗。
+ */
+export async function printPartDrawingBatch(partIds: string[]): Promise<Blob> {
+  const resp = await api.post<Blob>(
+    '/parts/print-drawing-batch',
+    { part_ids: partIds },
+    { responseType: 'blob' },
+  )
+  return resp.data
+}
+
 // ============================================================
 // 外协流程（2026-07-15 新增）
 // ============================================================

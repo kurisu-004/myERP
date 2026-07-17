@@ -24,9 +24,14 @@
         <el-tag type="primary" effect="dark">取 件</el-tag>
       </div>
       <div class="topbar-right">
+        <HeldPartsBadge v-if="worker?.id" :worker-id="String(worker.id)" :auto-open-on-change="true" />
         <el-button type="info" plain @click="backToAction">
           <el-icon><Back /></el-icon>
           <span>返回操作选择</span>
+        </el-button>
+        <el-button type="warning" plain @click="backToBadge">
+          <el-icon><Refresh /></el-icon>
+          <span>重新扫工牌</span>
         </el-button>
       </div>
     </div>
@@ -219,11 +224,14 @@ import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useActiveShelfSelection } from '@/composables/useActiveShelfSelection'
+import { useScanBus } from '@/composables/useScanBus'
+import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import { listPartsByWorkTypeAllShelves, pickUpPart, type PartItem } from '@/api/parts'
 
 const router = useRouter()
-const { worker, requireWorker } = useScanSession()
+const { worker, requireWorker, reset: resetScanSession } = useScanSession()
 const { onScan } = useBarcodeScanner()
+const { emitHeldChanged } = useScanBus()
 // 2026-07-13：跨架列表展示用 listPartsByWorkTypeAllShelves（后端按 user.shelf_ids 收口）；
 // shelfId 提交兜底用 useActiveShelfSelection.selectedShelfId（多架场景工人已在 action picker
 // 顶部选好当前作业架；单架时直接 = 唯一架 id；wildcard 时为 null）。
@@ -422,6 +430,7 @@ async function onScanCode(rawCode: string): Promise<void> {
     ElMessage.success(`已领取: ${code}`)
     selectedPart.value = null
     await refresh()
+    emitHeldChanged()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '领取失败')
   } finally {
@@ -432,6 +441,12 @@ async function onScanCode(rawCode: string): Promise<void> {
 function backToAction(): void {
   selectedPart.value = null
   void router.replace('/scan/action')
+}
+
+function backToBadge(): void {
+  selectedPart.value = null
+  resetScanSession()
+  void router.replace('/scan/badge')
 }
 </script>
 

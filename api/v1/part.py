@@ -32,7 +32,8 @@ from schema.part import (
 )
 from service import PartService
 from service._id_parse import parse_snowflake_id
-from service.printing import build_part_print_pdf
+from service.printing import build_part_print_pdf, build_parts_print_pdf_batch
+from core.time import now_naive
 
 router = APIRouter(prefix="/parts", tags=["零件管理"])
 
@@ -668,6 +669,66 @@ async def print_part_drawing(
     serial = part.serial_no if part and part.serial_no else "no-serial"
     drawing = part.drawing_no if part and part.drawing_no else "part"
     fname = f"{serial}-{drawing}.pdf".replace("/", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{fname}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+# ============================================================
+# 批量打印 PDF（2026-07-17 接入：合并多 part 双面 PDF 为单 PDF）
+# ============================================================
+class PrintBatchRequest(BaseModel):
+    """批量打印请求体（雪花 ID 字符串列表，service 层 int() 转换）。"""
+
+    part_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="雪花 ID 字符串列表（1-200 个）",
+    )
+
+
+@router.post(
+    "/print-drawing-batch",
+    summary="批量生成零件的双面打印 PDF 并合并为一个 PDF",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/pdf": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
+    dependencies=_office_dep,
+)
+async def print_part_drawing_batch(
+    payload: PrintBatchRequest,
+    parts: PartRepository = Depends(get_part_repository),
+    part_files: PartFileRepository = Depends(get_part_file_repository),
+) -> Response:
+    # str → int 转换；任一失败抛 BIZ_INVALID_VALUE 400（与 CLAUDE.md §3 约定一致）
+    part_ids_int: list[int] = []
+    for s in payload.part_ids:
+        try:
+            part_ids_int.append(int(s))
+        except (TypeError, ValueError) as e:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"part_id 必须是数字字符串：{s!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            ) from e
+
+    pdf_bytes = await build_parts_print_pdf_batch(
+        part_ids=part_ids_int, parts=parts, part_files=part_files,
+    )
+    fname = f"batch-{len(part_ids_int)}parts-{now_naive().strftime('%Y%m%d%H%M%S')}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
