@@ -80,6 +80,27 @@ class TPart(Base, AuditMixin):
         Date, nullable=True
     )
 
+    # —— 送货单字段（PR-F 2026-07-17，三个可选字段）——
+    # order_no：订单号（法拉示例「订单号」、路达示例「订单编号」共用）
+    order_no: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+        index=True,
+        comment="订单号（法拉/路达共用，由文员录入）",
+    )
+    # system_delivery_date：订单方系统内部交期（区别于我方 planned_delivery_date）
+    system_delivery_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        comment="订单方系统内部交期（仅打印送货单时用）",
+    )
+    # note：备注（文员手填）
+    note: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="备注（文员手填，送货单打印可见）",
+    )
+
     # 订单状态。DB 存 varchar(20)，取值合法性由 Python PartStatus 校验。
     status: Mapped[str] = mapped_column(
         String(20),

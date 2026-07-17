@@ -65,6 +65,10 @@ export interface PartListItem {
   actual_delivery_date: string | null
   is_urgent: boolean
   status: OrderStatus
+  /** PR-F 2026-07-17：送货单字段 */
+  order_no: string | null
+  system_delivery_date: string | null
+  note: string | null
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null

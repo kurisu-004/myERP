@@ -66,12 +66,18 @@ class Settings(BaseSettings):
         default="", alias="COS_ALLOWED_TYPES"
     )
 
-    # ---- 送货单 Excel 模板（PR-B 2026-07-10）----
-    # 仓库根相对路径；service 层 load_workbook 加载后按行填字段。
+    # ---- 送货单 Excel 模板（PR-F 2026-07-17 重设计）----
+    # 按 L1 客户的序列号前缀（A-Z）映射各自的 xlsx 模板路径。
+    # service 层根据所选零件所属 L1 root 的 serial_prefix 选对应模板。
+    # 未映射的前缀 → 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED。
     # 模板由用户提供（含公司抬头 / 列头 / 签字栏），代码只填值。
-    delivery_note_template_path: str = Field(
-        default="docs/example/送货单模板.xlsx",
-        alias="DELIVERY_NOTE_TEMPLATE_PATH",
+    delivery_note_template_by_prefix: dict[str, str] = Field(
+        default={
+            "F": "docs/example/送货单_法拉.xlsx",
+            "L": "docs/example/送货单_路达.xlsx",
+        },
+        alias="DELIVERY_NOTE_TEMPLATE_BY_PREFIX",
+        description='{"F": "docs/example/送货单_法拉.xlsx", "L": "docs/example/送货单_路达.xlsx"}',
     )
 
     # ---- DELIVERED → COMPLETED 自动完成（PR-D 2026-07-10）----

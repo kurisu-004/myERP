@@ -1,9 +1,17 @@
-"""送货单 Excel 模板导出（PR-B 2026-07-10）。
+"""送货单 Excel 模板导出（PR-F 2026-07-17 重设计）。
 
 POST /api/v1/delivery-notes/generate
 - body: { part_ids: list[str] }（雪花 ID 字符串）
 - response: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 - permission: MANAGER + CLERK（与「生成送货单」前端入口对齐）
+
+模板按所选零件所属 L1 root 的 `serial_prefix` 分发：
+- prefix=F → docs/example/送货单_法拉.xlsx
+- prefix=L → docs/example/送货单_路达.xlsx
+- 未配置 → 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED
+
+状态要求：所有 part.status 必须 == READY_TO_SHIP。
+跨客户校验：所有 part 必须同属一个 L1 root。
 """
 from datetime import datetime
 
@@ -13,10 +21,8 @@ from pydantic import BaseModel, Field
 from api.deps import get_delivery_note_service
 from core.permission import require_roles
 from model.enums import UserRole
-from service.delivery_note import DeliveryNoteService
 from service._id_parse import parse_snowflake_id
-from core.error_code import ErrCode
-from core.exception import BizError
+from service.delivery_note import DeliveryNoteService
 
 router = APIRouter(prefix="/delivery-notes", tags=["送货单"])
 
@@ -38,13 +44,10 @@ async def generate_delivery_note(
     payload: DeliveryNoteGenerateRequest,
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
 ) -> Response:
-    try:
-        ids = [parse_snowflake_id(s, field_name="part_ids") for s in payload.part_ids]
-    except BizError as e:
-        # parse_snowflake_id 已经抛了 BIZ_INVALID_VALUE；这里再抛一次让框架接管
-        raise
+    # 雪花 ID 字符串 → int（parse_snowflake_id 内部已抛 BizError）
+    ids = [parse_snowflake_id(s, field_name="part_ids") for s in payload.part_ids]
 
-    blob = await svc.build_delivery_note_xlsx([i for i in ids if i is not None])
+    blob, prefix = await svc.build_xlsx_by_prefix(ids)
     today = datetime.now().strftime("%Y%m%d")
     return Response(
         content=blob,
@@ -53,7 +56,7 @@ async def generate_delivery_note(
         ),
         headers={
             "Content-Disposition": (
-                f'attachment; filename="delivery_note_{today}.xlsx"'
+                f'attachment; filename="delivery_note_{prefix}_{today}.xlsx"'
             ),
         },
         status_code=http_status.HTTP_200_OK,
