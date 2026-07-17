@@ -398,4 +398,12 @@ class PartEventOut(BaseModel):
             "操作者用户名（list_events 时通过 JOIN t_user 算出，模型不冗余存储）"
         ),
     )
+    # 2026-07-17：histories 一览显示操作者姓名（CREATE / 下发 / CANCELLED 等）。
+    # 同样通过 list_events JOIN t_user 取，不冗余存；前端 UI 默认用 operator_name 显示。
+    operator_name: str | None = Field(
+        default=None,
+        description=(
+            "操作者姓名（display_name = t_user.full_name）。list_events JOIN 算"
+        ),
+    )
     created_at: datetime

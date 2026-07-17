@@ -63,6 +63,7 @@ class ErrCode(IntEnum):
     BIZ_SHELF_PROCESS_SHELF_NOT_FOUND = 20504  # 货架不存在
     BIZ_SHELF_PROCESS_PROCESS_NOT_FOUND = 20505  # 工序不存在
     BIZ_SHELF_NO_MATCH_FOR_PROCESS = 20506  # 没有 active 货架映射指定 process → RETURN picker 无候选
+    BIZ_SHELF_PROCESS_NOT_MAPPED = 20507  # 货架未映射该工序（place/release/receive/complete_repair 422）
 
     # ---- 账号（t_user / t_user_role）----
     # 206xx：账号相关

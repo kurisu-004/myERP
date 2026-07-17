@@ -454,6 +454,9 @@ def _to_dict(
         # 下一工序：Dashboard 大屏直接显示，省一次前端 /processes 拉取
         "next_process_id": str(np_id) if np_id else None,
         "next_process_name": process_map.get(np_id) if (np_id and process_map) else None,
+        # 2026-07-17：正在加工清单需显示加工者姓名（passed in by build_snapshot via worker_name_map）。
+        # shelf_zone 流程不传 worker_name → 此字段返 None；不影响 Pill 渲染（holder_kind=shelf 时 Dashboard 不读）。
+        "worker_name": worker_name,
     }
 
 

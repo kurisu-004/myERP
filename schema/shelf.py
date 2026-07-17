@@ -103,3 +103,24 @@ class ShelfForReturnListOut(BaseModel):
 
     items: list[ShelfForReturnOut]
     recommended_shelf_id: str         # IdStrNonNull 等价
+
+
+# ============================================================
+# 2026-07-17：批量取所有 active 映射（前端 useShelfProcessFilter 用）
+# ============================================================
+class ShelfProcessMappingItem(BaseModel):
+    """单架的工序 id 列表。"""
+
+    shelf_id: IdStrNonNull
+    process_ids: list[IdStrNonNull] = Field(default_factory=list)
+
+
+class ShelfProcessMappingsOut(BaseModel):
+    """`GET /shelves/processes` 响应。
+
+    给前端 `useShelfProcessFilter` composable 一次性消费，避免每个
+    弹窗都 N+1 调 `GET /shelves/{id}/processes`。返回所有 active
+    （未软删）的 (shelf_id, [process_id]) 映射——空货架不会出现在 items 中。
+    """
+
+    items: list[ShelfProcessMappingItem]

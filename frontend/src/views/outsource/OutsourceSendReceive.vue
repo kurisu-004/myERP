@@ -18,6 +18,7 @@ import { listCustomers, type Customer } from '@/api/customer'
 import { listShelves } from '@/api/shelves'
 import type { Shelf as ShelfItem } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
+import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import type { Process } from '@/types/process'
 import {
   receiveFromOutsource,
@@ -228,6 +229,25 @@ const inhouseProcesses = computed(() =>
   processes.value.filter((p) => p.category === 'INHOUSE'),
 )
 
+// 2026-07-17：useShelfProcessFilter 双向收窄（仅 production 分支）。
+// inspection 分支无 next_process，走 INSPECTION 货架不过滤。
+const {
+  filteredShelves: filteredProductionShelves,
+  filteredProcesses: filteredInhouseProcesses,
+  load: loadReceiveMap,
+} = useShelfProcessFilter(
+  productionShelves,
+  inhouseProcesses,
+  computed({
+    get: () => receiveShelf.value || null,
+    set: (v) => { receiveShelf.value = v ?? '' },
+  }),
+  computed({
+    get: () => receiveProcess.value || null,
+    set: (v) => { receiveProcess.value = v ?? '' },
+  }),
+)
+
 function openReceive(row: PartListItem): void {
   receiveTarget.value = row
   receiveBranch.value = 'production'
@@ -235,6 +255,8 @@ function openReceive(row: PartListItem): void {
   receiveProcess.value = ''
   autoPass.value = false
   receiveDialogVisible.value = true
+  // 2026-07-17：弹窗打开后异步加载映射（仅在 shelves/processes 已就绪时有效）
+  void loadReceiveMap()
 }
 function onReceiveDialogClosed(): void {
   receiveTarget.value = null
@@ -694,7 +716,7 @@ watch(activeTab, async (t) => {
             style="width: 100%"
           >
             <el-option
-              v-for="s in (receiveBranch === 'production' ? productionShelves : inspectionShelves)"
+              v-for="s in (receiveBranch === 'production' ? filteredProductionShelves : inspectionShelves)"
               :key="s.id"
               :label="`${s.code} — ${s.name}`"
               :value="s.id"
@@ -704,7 +726,7 @@ watch(activeTab, async (t) => {
         <el-form-item v-if="receiveBranch === 'production'" label="下一道 INHOUSE" required>
           <el-select v-model="receiveProcess" filterable style="width: 100%">
             <el-option
-              v-for="p in inhouseProcesses"
+              v-for="p in filteredInhouseProcesses"
               :key="p.id"
               :label="`${p.code} — ${p.name}`"
               :value="p.id"

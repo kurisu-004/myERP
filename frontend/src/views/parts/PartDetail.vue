@@ -403,9 +403,10 @@
                   <el-icon><User /></el-icon>
                   {{ evt.worker_name }}
                 </span>
-                <span v-if="evt.operator_username" class="operator-name">
+                <!-- 2026-07-17：历史记录中显示操作者姓名（优先 operator_name，username 仅作 fallback） -->
+                <span v-if="evt.operator_name || evt.operator_username" class="operator-name">
                   <el-icon><Setting /></el-icon>
-                  {{ evt.operator_username }}
+                  {{ evt.operator_name || evt.operator_username }}
                 </span>
               </div>
               <div v-if="evt.from_status || evt.to_status" class="event-line-2">
@@ -484,7 +485,7 @@
             style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"
           >
             <el-radio
-              v-for="s in productionShelves"
+              v-for="s in receiveFilteredShelves"
               :key="s.id"
               :value="String(s.id)"
               :disabled="!s.is_active"
@@ -492,7 +493,7 @@
               {{ s.code }} — {{ s.name }}
               <span v-if="!s.is_active" class="muted">（已停用）</span>
             </el-radio>
-            <span v-if="productionShelves.length === 0" class="muted">没有可用生产货架</span>
+            <span v-if="receiveFilteredShelves.length === 0" class="muted">没有可用生产货架</span>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="下一道工序" required>
@@ -501,13 +502,13 @@
             style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"
           >
             <el-radio
-              v-for="p in inhouseProcesses"
+              v-for="p in receiveFilteredProcesses"
               :key="p.id"
               :value="String(p.id)"
             >
               {{ p.code }} — {{ p.name }}
             </el-radio>
-            <span v-if="inhouseProcesses.length === 0" class="muted">
+            <span v-if="receiveFilteredProcesses.length === 0" class="muted">
               没有 INHOUSE 工序
             </span>
           </el-radio-group>
@@ -612,7 +613,7 @@
             filterable
           >
             <el-option
-              v-for="s in productionShelves"
+              v-for="s in releaseFilteredShelves"
               :key="s.id"
               :label="s.name"
               :value="s.id"
@@ -627,7 +628,7 @@
             filterable
           >
             <el-option
-              v-for="p in processes"
+              v-for="p in releaseFilteredProcesses"
               :key="p.id"
               :label="`${p.code} / ${p.name}`"
               :value="p.id"
@@ -772,6 +773,7 @@ import {
   uploadPartCadFile,
 } from '@/api/assembly'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 
 const route = useRoute()
 const router = useRouter()
@@ -1156,6 +1158,18 @@ const releaseSubmitting = ref(false)
 const productionShelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
 
+// 2026-07-17：releaseVisible 用 useShelfProcessFilter
+const {
+  filteredShelves: releaseFilteredShelves,
+  filteredProcesses: releaseFilteredProcesses,
+  load: loadReleaseMap,
+} = useShelfProcessFilter(
+  productionShelves,
+  processes,
+  releaseShelfId,
+  releaseNextProcessId,
+)
+
 async function onOpenReleaseDialog(): Promise<void> {
   releaseShelfId.value = null
   releaseNextProcessId.value = null
@@ -1166,6 +1180,7 @@ async function onOpenReleaseDialog(): Promise<void> {
     ])
     productionShelves.value = shelfResp.items
     processes.value = procResp.items
+    void loadReleaseMap()
   } catch {
     productionShelves.value = []
     processes.value = []
@@ -1270,6 +1285,27 @@ const inhouseProcesses = computed(() =>
   processes.value.filter((p) => p.category === 'INHOUSE'),
 )
 
+// 2026-07-17：receiveOutsourceDialogVisible 用 useShelfProcessFilter
+// 关键：processes 限缩成 INHOUSE 类别（外协回收必 INHOUSE），
+// 走 inhouseProcesses 而非全量 processes。
+const {
+  filteredShelves: receiveFilteredShelves,
+  filteredProcesses: receiveFilteredProcesses,
+  load: loadReceiveMap,
+} = useShelfProcessFilter(
+  productionShelves,
+  inhouseProcesses,
+  // useShelfProcessFilter 要求 string|null；这里 ref 是 string 转一下
+  computed({
+    get: () => receiveShelfId.value || null,
+    set: (v) => { receiveShelfId.value = v ?? '' },
+  }),
+  computed({
+    get: () => receiveProcessId.value || null,
+    set: (v) => { receiveProcessId.value = v ?? '' },
+  }),
+)
+
 async function openReceiveOutsourceDialog(): Promise<void> {
   receiveShelfId.value = ''
   receiveProcessId.value = ''
@@ -1282,6 +1318,7 @@ async function openReceiveOutsourceDialog(): Promise<void> {
       const resp = await listProcesses({ limit: 200 })
       processes.value = resp.items
     }
+    void loadReceiveMap()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '加载失败')
   }

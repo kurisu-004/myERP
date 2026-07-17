@@ -31,6 +31,7 @@ from schema.shelf import (
     ShelfListOut,
     ShelfListQuery,
     ShelfOut,
+    ShelfProcessMappingsOut,
     ShelfUpdateRequest,
 )
 from schema.shelf_process import SetShelfProcessRequest, ShelfWithProcessesOut
@@ -141,6 +142,22 @@ async def list_shelves_for_inspection(
     svc: ShelfService = Depends(get_shelf_service),
 ) -> ShelfForReturnListOut:
     return await svc.list_for_inspection(user=user)
+
+
+@picker_router.get(
+    "/processes",
+    response_model=ShelfProcessMappingsOut,
+    summary=(
+        "批量返回所有 active 货架的工序 id 列表（2026-07-17）。"
+        "给前端 useShelfProcessFilter composable 一次性消费，"
+        "避免弹窗打开时 N+1 次 /shelves/{id}/processes 调用。"
+        "空映射的货架不出现在 items 中。"
+    ),
+)
+async def list_shelves_process_mappings(
+    svc: ShelfService = Depends(get_shelf_service),
+) -> ShelfProcessMappingsOut:
+    return await svc.list_all_process_mappings()
 
 
 # ============================================================

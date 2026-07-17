@@ -313,17 +313,18 @@ class PartStateMachine(StateChart):
         """RETURNED：把当前由工人持有的零件放回货架。
 
         接收 service 喂入的：
-        - process: TProcess（工人新选的下一道工序；可空）
-        - prev_process_code: str（零件改前的 next_process 的 code；可能 None）
-        - worker_work_type_code: str（工人的工种 code；用于 note 记录）
+        - shelf: TShelf（工人选定的目标架；note 用 shelf.code）
+        - process: TProcess（工人新选的下一道工序；note 用 process.code）
 
-        note 格式: "从工序 <prev> 放回到工序 <new>（<work_type_code>）"
+        note 格式（2026-07-17 统一）：「归还货架 <shelf_code> 下一工序 <process_code>」。
+        缺值时用「无」兜底，便于历史事件保留可读。
         """
         if event_repo and self.model:
             process_code = process.code if process and hasattr(process, "code") else None
+            shelf_code = shelf.code if shelf and hasattr(shelf, "code") else None
             note = (
-                f"从工序 {prev_process_code or '无'} 放回到工序 "
-                f"{process_code or '无'}（{worker_work_type_code or '无工种'}）"
+                f"归还货架 {shelf_code or '无'} "
+                f"下一工序 {process_code or '无'}"
             )
             event_repo.add(TPartEvent(
                 part_id=self.model.id,

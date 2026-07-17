@@ -174,7 +174,7 @@
             style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto"
           >
             <el-radio
-              v-for="s in productionShelves"
+              v-for="s in filteredProductionShelves"
               :key="s.id"
               :value="String(s.id)"
               :disabled="!s.is_active"
@@ -182,7 +182,7 @@
               {{ s.code }} — {{ s.name }}
               <span v-if="!s.is_active" class="muted">（已停用）</span>
             </el-radio>
-            <span v-if="productionShelves.length === 0" class="muted">
+            <span v-if="filteredProductionShelves.length === 0" class="muted">
               没有可用生产货架
             </span>
           </el-radio-group>
@@ -194,7 +194,7 @@
             style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto"
           >
             <el-radio
-              v-for="p in processes"
+              v-for="p in filteredInhouseProcesses"
               :key="p.id"
               :value="String(p.id)"
             >
@@ -208,8 +208,8 @@
                 {{ p.category === 'INHOUSE' ? '自产' : '外协' }}
               </el-tag>
             </el-radio>
-            <span v-if="processes.length === 0" class="muted">
-              没有工序配置，请先在「设置 → 工序管理」中新增
+            <span v-if="filteredInhouseProcesses.length === 0" class="muted">
+              没有 INHOUSE 工序，请先在「设置 → 工序管理」中新增
             </span>
           </el-radio-group>
         </el-form-item>
@@ -294,6 +294,7 @@ import {
 import { listPartFiles } from '@/api/assembly'
 import { listShelves } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
+import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import type { PartListItem } from '@/types/parts'
 import type { PartFileItem, PartFileKind } from '@/types/part_file'
 import type { Shelf } from '@/types/shelf'
@@ -381,6 +382,28 @@ const releaseProcessId = ref<string>('')
 const releaseSubmitting = ref(false)
 const productionShelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
+// 2026-07-17：CNC 下发只允许 INHOUSE 工序（外协工序走 send_to_outsource）
+const inhouseProcesses = computed(() =>
+  processes.value.filter((p) => p.category === 'INHOUSE'),
+)
+
+// 2026-07-17：useShelfProcessFilter 双向收窄（CNC 下发对话框）
+const {
+  filteredShelves: filteredProductionShelves,
+  filteredProcesses: filteredInhouseProcesses,
+  load: loadReleaseMap,
+} = useShelfProcessFilter(
+  productionShelves,
+  inhouseProcesses,
+  computed({
+    get: () => releaseShelfId.value || null,
+    set: (v) => { releaseShelfId.value = v ?? '' },
+  }),
+  computed({
+    get: () => releaseProcessId.value || null,
+    set: (v) => { releaseProcessId.value = v ?? '' },
+  }),
+)
 
 async function loadProductionShelves(): Promise<void> {
   try {
@@ -411,6 +434,8 @@ async function openReleaseDialog(row: RowState): Promise<void> {
     productionShelves.value.length === 0 ? loadProductionShelves() : Promise.resolve(),
     processes.value.length === 0 ? loadProcesses() : Promise.resolve(),
   ])
+  // 2026-07-17：shelves/processes 加载完后异步拉映射
+  void loadReleaseMap()
 }
 
 function onReleaseDialogClosed(): void {

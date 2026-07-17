@@ -340,7 +340,7 @@
               filterable
             >
               <el-option
-                v-for="s in shelves"
+                v-for="s in filteredShelves"
                 :key="s.id"
                 :label="s.name"
                 :value="s.id"
@@ -355,7 +355,7 @@
               filterable
             >
               <el-option
-                v-for="p in processes"
+                v-for="p in filteredProcesses"
                 :key="p.id"
                 :label="`${p.code} / ${p.name}`"
                 :value="p.id"
@@ -410,6 +410,7 @@ import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
+import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import type { Process } from '@/types/process'
 import {
   ORDER_STATUS_LABEL,
@@ -688,6 +689,17 @@ const dispatchNextProcessId = ref<string | null>(null)
 const dispatchPartId = ref<string | null>(null)
 const dispatchSubmitting = ref(false)
 const dispatchMode = ref<'direct' | 'cnc'>('direct')
+// 2026-07-17：useShelfProcessFilter 双向收窄货架/工序下拉
+const {
+  filteredShelves,
+  filteredProcesses,
+  load: loadShelfProcessMap,
+} = useShelfProcessFilter(
+  shelves,
+  processes,
+  dispatchShelfId,
+  dispatchNextProcessId,
+)
 
 async function onDispatch(row: PartListItem): Promise<void> {
   dispatchPartId.value = row.id
@@ -701,6 +713,8 @@ async function onDispatch(row: PartListItem): Promise<void> {
     ])
     shelves.value = shelfResp.items
     processes.value = procResp.items
+    // 2026-07-17：弹窗打开后异步加载映射（不阻塞 dialog 出现）
+    void loadShelfProcessMap()
   } catch {
     shelves.value = []
     processes.value = []
