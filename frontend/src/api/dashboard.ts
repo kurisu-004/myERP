@@ -70,15 +70,35 @@ function dispatch(msg: DashboardServerMessage): void {
   }
 }
 
+function teardown(socket: WebSocket): void {
+  // 拆掉旧 socket 的所有回调后再 close，确保它的 onclose 不会回过头来
+  // 清掉刚建立的新 socket / 触发多余重连（多连接堆叠 → 大屏收到重复推送）。
+  socket.onopen = null
+  socket.onmessage = null
+  socket.onerror = null
+  socket.onclose = null
+  try {
+    socket.close()
+  } catch { /* ignore */ }
+}
+
 function connect(): void {
   if (closed) return
+  // 保证同一时刻只有一条活连接：建新连接前先拆掉旧的。
+  if (ws) {
+    teardown(ws)
+    ws = null
+  }
   notifyStatus('connecting')
-  ws = new WebSocket(url())
-  ws.onopen = () => {
+  const socket = new WebSocket(url())
+  ws = socket
+  socket.onopen = () => {
+    if (socket !== ws) return
     retryDelay = 1000
     notifyStatus('open')
   }
-  ws.onmessage = (ev) => {
+  socket.onmessage = (ev) => {
+    if (socket !== ws) return
     try {
       const msg = JSON.parse(ev.data) as DashboardServerMessage
       dispatch(msg)
@@ -86,10 +106,12 @@ function connect(): void {
       console.error('dashboard WS parse error', e)
     }
   }
-  ws.onerror = () => {
+  socket.onerror = () => {
     // onclose 紧随其后
   }
-  ws.onclose = () => {
+  socket.onclose = () => {
+    // 陈旧 socket（已被新连接取代）的 onclose 直接忽略，避免误清新 ws / 误重连。
+    if (socket !== ws) return
     notifyStatus('closed')
     ws = null
     if (closed) return
@@ -142,10 +164,10 @@ export function closeDashboard(): void {
 
 /** 强制发起一次重连（修「点首页不能自动恢复连接」bug）。
  *
- * 行为：
- *   1. 清掉 `retryTimer` / `closed = false` / `retryDelay` 归 1s；
- *   2. 若 ws 已存在，CLOSING/OPEN 状态主动 close 后置 null；
- *   3. 立即 `connect()`。
+ * 行为：清 `retryTimer` / `closed = false` / `retryDelay` 归 1s，然后 `connect()`。
+ * 关旧 socket 的活交给 `connect()`（内部先 `teardown(ws)` 再建新连接），
+ * 保证任何时刻只有一条活连接——避免旧 socket 的 onclose 误清新 ws / 误重连
+ * 导致同一浏览器堆叠多条连接、大屏收到重复推送。
  *
  * Router afterEach 在 `to.name === 'Dashboard'` 时调用本函数，确保用户
  * 每次回到首页都能恢复连接——即便之前因 onclose 后退避停留在 10s 状态。
@@ -154,20 +176,14 @@ export function reconnectDashboard(): void {
   closed = false
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
   retryDelay = 1000
-  if (ws) {
-    const state = ws.readyState
-    // OPEN / CLOSING (1 / 2) 主动关；CONNECTING (0) / CLOSED (3) 直接置 null。
-    // CONNECTING 时关 close 会触发 onerror 链，无意义。
-    if (state === WebSocket.OPEN || state === WebSocket.CLOSING) {
-      try { ws.close() } catch { /* ignore */ }
-    }
-    ws = null
-  }
   connect()
 }
 
 // —— JWT 自动刷新后顺势重连，避免陈旧 token 卡住 socket ——
-if (typeof window !== 'undefined') {
+// 用 module-level flag 保证只注册一次监听（HMR 下模块可能被重复求值）。
+let refreshListenerBound = false
+if (typeof window !== 'undefined' && !refreshListenerBound) {
+  refreshListenerBound = true
   window.addEventListener('auth:tokens-refreshed', () => {
     // url() 内每次现读 localStorage，新 token 已就位；强制 socket 切到新握手。
     reconnectDashboard()
