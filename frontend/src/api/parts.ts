@@ -20,6 +20,10 @@ export interface PartItem {
   actual_delivery_date: string | null
   is_urgent: boolean
   status: OrderStatus
+  /** PR-F 2026-07-17：送货单字段 */
+  order_no: string | null
+  system_delivery_date: string | null
+  note: string | null
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null
@@ -72,6 +76,10 @@ export interface PartCreatePayload {
   planned_delivery_date: string
   actual_delivery_date?: string | null
   is_urgent?: boolean
+  /** PR-F 2026-07-17：送货单字段 */
+  order_no?: string | null
+  system_delivery_date?: string | null
+  note?: string | null
   /** 雪花 ID 字符串（CLAUDE.md §3） */
   customer_id: string
 }
@@ -91,6 +99,10 @@ export interface PartUpdatePayload {
   planned_delivery_date?: string
   actual_delivery_date?: string | null
   is_urgent?: boolean
+  /** PR-F 2026-07-17：送货单字段 */
+  order_no?: string | null
+  system_delivery_date?: string | null
+  note?: string | null
   /** 雪花 ID 字符串（CLAUDE.md §3） */
   customer_id?: string
 }
