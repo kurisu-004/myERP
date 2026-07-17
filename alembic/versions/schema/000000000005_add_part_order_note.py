@@ -19,7 +19,9 @@ import sqlalchemy as sa
 
 
 revision: str = "000000000005"
-down_revision: Union[str, None] = "000000000001"  # schema 层 001（多 head）
+# 链在 schema/003 (外协报价表) 之后，保持 CLAUDE.md §15.1/§20 承诺的单 head 线性拓扑
+# 001 → 002 → 003 → 005
+down_revision: Union[str, None] = "000000000003"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

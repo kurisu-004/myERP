@@ -132,7 +132,8 @@ def _run_alembic_upgrade_head_sync() -> None:
     cfg.set_main_option(
         "sqlalchemy.url", _os.environ["DATABASE_URL"]
     )  # alembic.ini 留空时保险起见再设一次
-    command.upgrade(cfg, "head")
+    # 多 head 时（schema/001 + schema/005 + prod_data/002），用 "heads" 拉全部
+    command.upgrade(cfg, "heads")
 
 
 def _wipe_test_data_dir() -> None:
