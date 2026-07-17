@@ -19,6 +19,9 @@
       </el-form>
       <p v-if="error" class="error-msg">{{ error }}</p>
     </div>
+    <div class="login-page-footer">
+      <BeianFooter />
+    </div>
   </div>
 </template>
 
@@ -27,6 +30,7 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { User, Lock, Box } from '@element-plus/icons-vue'
 import { useAuthSession } from '@/composables/useAuthSession'
+import BeianFooter from '@/components/BeianFooter.vue'
 
 const UserIcon = User
 const LockIcon = Lock
@@ -74,9 +78,14 @@ async function doLogin() {
 .login-page {
   height: 100vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #1a365d 0%, #2d5a87 100%);
+}
+
+.login-page-footer {
+  margin-top: 24px;
 }
 .login-card {
   width: 380px;

@@ -88,6 +88,11 @@
           </transition>
         </router-view>
       </el-main>
+
+      <!-- 备案栏：ICP + 公安网安备 -->
+      <el-footer height="40px" class="site-footer">
+        <BeianFooter />
+      </el-footer>
     </el-container>
 
     <!-- 修改密码弹窗 -->
@@ -118,6 +123,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import BeianFooter from '@/components/BeianFooter.vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   Box, Fold, Expand, Refresh, ArrowDown, Lock, SwitchButton,
@@ -377,6 +383,14 @@ onMounted(async () => {
   background-color: var(--content-bg);
   padding: 16px;
   overflow: auto;
+}
+
+.site-footer {
+  background-color: #fff;
+  border-top: 1px solid #ebeef5;
+  padding: 0;
+  display: flex;
+  align-items: center;
 }
 
 .fade-enter-active,
