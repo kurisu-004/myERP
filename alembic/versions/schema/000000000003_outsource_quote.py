@@ -1,7 +1,7 @@
 """add_outsource_quote：t_outsource_quote + t_outsource_quote_event（2026-07-16 新增）
 
 Revision ID: 000000000003
-Revises: 000000000001
+Revises: 000000000002
 Create Date: 2026-07-16
 
 说明：
@@ -12,8 +12,8 @@ Create Date: 2026-07-16
   - 同一 (part_id, company_id, process_id) 仅允许一条非 REJECTED 活跃行（partial unique 索引）。
 - 事件表 `t_outsource_quote_event`：append-only 审计（只 created_at，无 OCC）。
 - 不使用物理外键；不在 DB 层用 ENUM；status / event_type 用 varchar。
-- down_revision = "000000000001"（schema 层 head，不指 prod_data/002），
-  拓扑多 head：`schema/001 + schema/003 + prod_data/002`。
+- down_revision = "000000000002"（prod_data 之后追加 schema），线性拓扑：
+  `schema/001 → prod_data/002 → schema/003`，单 head，alembic upgrade head 直接跑通。
 """
 from typing import Sequence, Union
 
@@ -22,7 +22,7 @@ from alembic import op
 
 
 revision: str = "000000000003"
-down_revision: Union[str, None] = "000000000001"
+down_revision: Union[str, None] = "000000000002"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
