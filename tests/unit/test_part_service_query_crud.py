@@ -671,6 +671,50 @@ class TestCreatePart:
         assert result.id == 9001
         assert result.serial_no == "L2507001"
 
+    async def test_first_level_customer_with_delivery_note_fields(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_events: AsyncMock,
+        mock_serial_counters: AsyncMock,
+    ) -> None:
+        """PR-F (2026-07-17): create_part 透传 order_no / system_delivery_date / note."""
+        # ── arrange ──────────────────────────────────────────────
+        cust = _make_customer(id=10, name="FirstLevel")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+        mock_serial_counters.acquire_serial.return_value = "F2507001"
+
+        data = PartCreateRequest(
+            name="Test Part",
+            drawing_no="DWG-001",
+            applicant_name="Applicant",
+            quantity=2,
+            request_date=date(2025, 1, 1),
+            planned_delivery_date=date(2025, 2, 1),
+            is_urgent=False,
+            customer_id='10',
+            order_no="ORD-2025-001",
+            system_delivery_date=date(2025, 2, 5),
+            note="加急单",
+        )
+
+        # ── act ──────────────────────────────────────────────────
+        with patch("service.part.new_id", return_value=9001):
+            result = await service.create_part(data)
+
+        # ── assert created part fields ───────────────────────────
+        created_part: TPart = mock_parts.create.call_args[0][0]
+        assert created_part.order_no == "ORD-2025-001"
+        assert created_part.system_delivery_date == date(2025, 2, 5)
+        assert created_part.note == "加急单"
+
+        # ── assert response ──────────────────────────────────────
+        assert result.order_no == "ORD-2025-001"
+        assert result.system_delivery_date == date(2025, 2, 5)
+        assert result.note == "加急单"
+
     async def test_second_level_customer(
         self,
         service: PartService,
@@ -1084,6 +1128,52 @@ class TestUpdatePart:
         assert part.name == "Only Name Changed"
         assert part.drawing_no == "DWG-001"  # unchanged
         assert part.quantity == 1  # unchanged
+
+    async def test_update_with_delivery_note_fields(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """PR-F (2026-07-17): update_part 透传 order_no / system_delivery_date / note。"""
+        # ── arrange ──────────────────────────────────────────────
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.get_by_id.return_value = part
+
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.list_by_ids.return_value = [cust]
+
+        data = PartUpdateRequest(
+            order_no="ORD-NEW-1",
+            system_delivery_date=date(2026, 1, 15),
+            note="系统交期变更",
+        )
+
+        # ── act ──────────────────────────────────────────────────
+        await service.update_part(1, data)
+
+        # ── assert ───────────────────────────────────────────────
+        assert part.order_no == "ORD-NEW-1"
+        assert part.system_delivery_date == date(2026, 1, 15)
+        assert part.note == "系统交期变更"
+
+    async def test_update_clear_note_with_explicit_none(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """note 显式传空字符串 → 清空（per CLAUDE.md update 语义：非 None 即更新）。"""
+        part = _make_part(id=1, customer_id=10)
+        part.note = "旧备注"
+        mock_parts.get_by_id.return_value = part
+
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.list_by_ids.return_value = [cust]
+
+        data = PartUpdateRequest(note="")
+        await service.update_part(1, data)
+        assert part.note == ""
         assert part.customer_id == 10  # unchanged
         assert part.is_urgent is False  # unchanged
 
