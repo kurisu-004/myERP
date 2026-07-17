@@ -37,6 +37,10 @@
           <el-icon><Back /></el-icon>
           <span>返回操作选择</span>
         </el-button>
+        <el-button type="warning" plain @click="backToBadge">
+          <el-icon><Refresh /></el-icon>
+          <span>重新扫工牌</span>
+        </el-button>
       </div>
     </div>
 
@@ -295,6 +299,7 @@ import { ACTION_LABEL, ACTION_TAG_TYPE, useScanSession } from '@/composables/use
 import { usePartsScanQueue } from '@/composables/usePartsScanQueue'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useScanBus } from '@/composables/useScanBus'
 import { getShelfProcesses } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
@@ -305,7 +310,8 @@ type PageState = 'scanning' | 'submitting' | 'done'
 
 const route = useRoute()
 const router = useRouter()
-const { worker, action, setAction, requireWorkerAndAction, slugToAction } = useScanSession()
+const { worker, action, setAction, requireWorkerAndAction, slugToAction, reset: resetScanSession } = useScanSession()
+const { emitHeldChanged } = useScanBus()
 const queue = usePartsScanQueue()
 const { onScan } = useBarcodeScanner()
 const { isAuthenticated, refreshOrLogout, activeShelfId } = useAuthSession()
@@ -413,10 +419,15 @@ async function doSubmit(
   await submit(useShelfId, worker.value!.badge_code, action.value!, inspShelfId, nextProcessId)
   pendingInspShelfId.value = null
   state.value = 'done'
+  emitHeldChanged()
 }
 
 function onAgain(): void { reset(); state.value = 'scanning'; ElMessage.info('请继续扫码') }
 function backToAction(): void { void router.replace('/scan/action') }
+function backToBadge(): void {
+  resetScanSession()
+  void router.replace('/scan/badge')
+}
 
 function onInspShelfPicked(shelfIdPicked: string): void {
   pendingInspShelfId.value = shelfIdPicked
