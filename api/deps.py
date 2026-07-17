@@ -48,7 +48,12 @@ from service import (
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """请求级 Session。正常返回时自动 commit，异常时回滚。"""
+    """请求级 Session。正常返回时自动 commit，异常时回滚。
+
+    commit 成功后再统一 flush 累积的 dashboard 广播（见
+    `_flush_dashboard_broadcasts`）——保证 WS 推送的快照读到的是**已提交**
+    的最新状态，而不是提交前的旧数据（否则大屏货架看起来「没变化」）。
+    """
     async with SessionLocal() as session:
         try:
             yield session
@@ -56,6 +61,41 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+        else:
+            await _flush_dashboard_broadcasts(session)
+
+
+# session.info 键：在请求事务内累积待广播的 dashboard 消息，
+# 由 get_session 在 commit 成功后统一 flush。
+_SNAPSHOT_PENDING_KEY = "dashboard_snapshot_pending"
+_EVENTS_PENDING_KEY = "dashboard_events_pending"
+
+
+async def _flush_dashboard_broadcasts(session: AsyncSession) -> None:
+    """请求事务提交后，把累积在 session.info 里的 dashboard 广播发出去。
+
+    - 先推整张 snapshot（大屏货架 / 在制刷新），再逐条推 event（横幅通知），
+      与旧「先 snapshot 后 event」顺序一致。
+    - 一次请求内多次触发 snapshot 只会在提交后推一张（天然去重）。
+    - 独立包裹异常：广播失败不影响已成功提交的请求。
+    """
+    try:
+        info = session.info
+        want_snapshot = bool(info.pop(_SNAPSHOT_PENDING_KEY, False))
+        events = info.pop(_EVENTS_PENDING_KEY, None) or []
+    except Exception:  # noqa: BLE001
+        return
+    if not want_snapshot and not events:
+        return
+    from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
+    try:
+        if want_snapshot:
+            await broadcast_dashboard_snapshot()
+        for event_type, payload in events:
+            await broadcast_dashboard_event(event_type, payload)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).exception("dashboard broadcast flush failed")
 
 
 def get_serial_counter_repo(
@@ -183,13 +223,15 @@ def get_part_service(
     2026-07-16 起：注入 `OutsourceQuoteRepository` + `OutsourceQuoteEventRepository`
     以支持 send_to_outsource 防御闸 + APPROVED→USED 自动 mark。
     """
-    from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
     async def _broadcaster() -> None:
-        await broadcast_dashboard_snapshot()
+        # 不立即广播：累积到 session.info，由 get_session 在事务 commit 成功后
+        # 统一 flush（见 _flush_dashboard_broadcasts）。否则独立 session 构建的
+        # 快照读不到本请求尚未提交的写入 → 大屏货架「没变化」。
+        session.info[_SNAPSHOT_PENDING_KEY] = True
 
     async def _event_broadcaster(event_type: str, payload: dict) -> None:
-        await broadcast_dashboard_event(event_type, payload)
+        session.info.setdefault(_EVENTS_PENDING_KEY, []).append((event_type, payload))
 
     return PartService(
         parts=PartRepository(session),
@@ -361,8 +403,6 @@ def get_assembly_service(
     共享同一 session/事务：构造 PartService / PartFileService 时复用 session，
     装配体创建时的所有 DB 写入都在一个事务里，任一失败整体回滚。
     """
-    from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
-
     parts_repo = PartRepository(session)
     files_repo = PartFileRepository(session)
     assemblies_repo = AssemblyRepository(session)
@@ -391,12 +431,12 @@ def get_assembly_service(
     )
 
     async def _broadcaster() -> None:
-        # 装配体级联取消 / 软删会让 dashboard 卡片消失，
-        # 走与 PartService 同样的整张 snapshot 重推路径。
-        await broadcast_dashboard_snapshot()
+        # 装配体级联取消 / 软删会让 dashboard 卡片消失，走整张 snapshot 重推。
+        # 同 PartService：累积到 session.info，commit 成功后由 get_session flush。
+        session.info[_SNAPSHOT_PENDING_KEY] = True
 
     async def _event_broadcaster(event_type: str, payload: dict) -> None:
-        await broadcast_dashboard_event(event_type, payload)
+        session.info.setdefault(_EVENTS_PENDING_KEY, []).append((event_type, payload))
 
     return AssemblyService(
         assemblies=assemblies_repo,

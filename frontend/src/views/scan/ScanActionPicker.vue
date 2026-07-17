@@ -4,15 +4,13 @@
   /scan/action：选择报工操作（取件 / 放回 / 送检 / 送货）。
   入口守卫：worker 缺失则跳回 /scan/badge。
 
-  2026-07-13 多架 SHELF_ACCOUNT 改造：
-  - 按钮按「绑定架 zone 并集」显示（不是 shelf_ids[0] 推 zone）：
+  按钮按「绑定架 zone 并集」显示（HMI 账号在账号管理页绑定的货架决定）：
     * 绑了任意 PRODUCTION 架 → PICK_UP + RETURN
     * 绑了任意 INSPECTION 架 → INSPECT
     * 两种 zone 都绑了 → 三个按钮全显示
-  - 当同一 zone 绑了 ≥ 2 架（showShelfSelector=true）时，顶部出现
-    「当前货架」el-select 让工人显式选一架；未选完之前 PICK/RETURN/INSPECT
-    按钮会先提醒选完才跳走。
-  - 单架 / 通配场景：行为与改造前一致（无顶部选择器）。
+
+  注：HMI 账号已不再与货架一一对应，故不再显示「当前货架」选择器；
+  具体作业货架由下游各流程的 ShelfPickerDialog / 零件持有者决定。
 -->
 
 <template>
@@ -33,31 +31,6 @@
           <span>重新扫工牌</span>
         </el-button>
       </div>
-    </div>
-
-    <!-- 2026-07-13：多架 SHELF_ACCOUNT 时显示「当前货架」选择器 -->
-    <div v-if="shelfSel.showShelfSelector.value" class="shelf-selector">
-      <el-icon :size="18"><Platform /></el-icon>
-      <span class="label">当前货架：</span>
-      <el-select
-        :model-value="shelfSel.selectedShelfId.value"
-        placeholder="请选择当前作业的货架"
-        size="default"
-        style="width:280px"
-        filterable
-        @update:model-value="(v: string) => shelfSel.selectedShelfId.value = v"
-      >
-        <el-option
-          v-for="o in shelfSel.options.value"
-          :key="o.id"
-          :value="o.id"
-          :label="`${o.code} (${o.zone === 'PRODUCTION' ? '生产' : '品检'})`"
-        />
-      </el-select>
-      <span v-if="!shelfSel.selectedShelfId.value" class="hint">
-        <el-icon><InfoFilled /></el-icon>
-        需先选架才能报工
-      </span>
     </div>
 
     <div class="content">
@@ -124,8 +97,6 @@ import {
   Back,
   Box,
   Check,
-  InfoFilled,
-  Platform,
   Refresh,
   Van,
 } from '@element-plus/icons-vue'
@@ -181,12 +152,6 @@ onBeforeMount(async () => {
 })
 
 function selectAction(a: WorkAction): void {
-  // 多架 SHELF_ACCOUNT：用户必须在选择器先选架才能走 PICK/RETURN/INSPECT
-  // （DELIVER 走司机专属流程，不依赖货架）
-  if (a !== 'DELIVER' && shelfSel.showShelfSelector.value && !shelfSel.selectedShelfId.value) {
-    ElMessage.warning('请先在顶部选择当前作业的货架')
-    return
-  }
   setAction(a)
   ElMessage.success(`已选择: ${ACTION_LABEL[a]}`)
   // PICK_UP 走「按工种选件」新流程 → /scan/pick
@@ -258,29 +223,6 @@ function rescanBadge(): void {
 }
 .badge-tag {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
-}
-
-/* 2026-07-13：多架 SHELF_ACCOUNT 顶部货架选择器 */
-.shelf-selector {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 24px;
-  background: #fff7e6;          /* 暖色背景提示「要选」 */
-  border-bottom: 2px solid #ffd591;
-  color: #874d00;
-  font-size: 15px;
-  .label {
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: #d4691a;
-    font-size: 13px;
-  }
 }
 
 .content {
