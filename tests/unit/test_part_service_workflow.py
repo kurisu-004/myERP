@@ -20,7 +20,7 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from model.assembly import TAssembly
-from model.enums import PartEventType, PartStatus, ShelfZone
+from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone
 from model.part import TPart
 from model.shelf import TShelf
 from model.worker import TWorker
@@ -55,6 +55,7 @@ def _make_part(
     current_holder_id: int | None = None,
     assembly_id: int | None = None,
     customer_id: int = 1,
+    next_process_id: int | None = None,
 ) -> MagicMock:
     """Build a mock TPart with the given attribute values.
 
@@ -82,6 +83,7 @@ def _make_part(
     part.current_holder_id = current_holder_id
     part.assembly_id = assembly_id
     part.placed_at = None
+    part.next_process_id = next_process_id
     part.sm = MagicMock()
     return part
 
@@ -236,6 +238,52 @@ def mock_work_type_process():
     from repository.work_type_process import WorkTypeProcessRepository
     repo = WorkTypeProcessRepository.__new__(WorkTypeProcessRepository)
     repo.list_process_ids_by_work_type = AsyncMock()
+    repo.get_default_process_id_for_work_type = AsyncMock()
+    return repo
+
+
+@pytest.fixture
+def mock_shelf_process_repo():
+    """ShelfProcessRepository mock（2026-07-17 起 PartService 强制校验）。"""
+    from repository.shelf_process import ShelfProcessRepository
+    repo = ShelfProcessRepository.__new__(ShelfProcessRepository)
+    repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
+    repo.list_all_mappings = AsyncMock(return_value={})
+    return repo
+
+
+@pytest.fixture
+def mock_outsource_companies():
+    from repository.outsource_company import OutsourceCompanyRepository
+    repo = OutsourceCompanyRepository.__new__(OutsourceCompanyRepository)
+    repo.get_by_id = AsyncMock()
+    repo.list_by_ids = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture
+def mock_outsource_company_process():
+    from repository.outsource_company_process import OutsourceCompanyProcessRepository
+    repo = OutsourceCompanyProcessRepository.__new__(OutsourceCompanyProcessRepository)
+    repo.list_process_ids_by_outsource_company = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture
+def mock_outsource_quotes():
+    from repository.outsource_quote import OutsourceQuoteRepository
+    repo = OutsourceQuoteRepository.__new__(OutsourceQuoteRepository)
+    repo.get_one_approved = AsyncMock(return_value=None)
+    repo.update = AsyncMock(side_effect=lambda q: q)
+    return repo
+
+
+@pytest.fixture
+def mock_quote_events():
+    from repository.outsource_quote_event import OutsourceQuoteEventRepository
+    repo = OutsourceQuoteEventRepository.__new__(OutsourceQuoteEventRepository)
+    repo.add = MagicMock(side_effect=lambda ev: ev)
+    repo.create = AsyncMock(side_effect=lambda ev: ev)
     return repo
 
 
@@ -250,6 +298,11 @@ def service(
     mock_processes,
     mock_work_types,
     mock_work_type_process,
+    mock_shelf_process_repo,
+    mock_outsource_companies,
+    mock_outsource_company_process,
+    mock_outsource_quotes,
+    mock_quote_events,
 ) -> PartService:
     """PartService wired to mock repositories.
 
@@ -267,6 +320,11 @@ def service(
         processes=mock_processes,
         work_types=mock_work_types,
         work_type_process=mock_work_type_process,
+        shelf_process_repo=mock_shelf_process_repo,
+        outsource_companies=mock_outsource_companies,
+        outsource_company_process=mock_outsource_company_process,
+        outsource_quotes=mock_outsource_quotes,
+        quote_events=mock_quote_events,
         broadcaster=None,
         event_broadcaster=None,
     )
@@ -289,6 +347,7 @@ class TestPlaceOnShelf:
         mock_shelves: ShelfRepository,
         mock_events: PartEventRepository,
         mock_processes,
+        mock_shelf_process_repo,
     ) -> None:
         """PENDING part placed on an active PRODUCTION shelf succeeds."""
         from model.process import TProcess
@@ -296,7 +355,7 @@ class TestPlaceOnShelf:
         shelf = _make_shelf()
         process = TProcess(
             id=42, code="车", name="车床加工",
-            category="INHOUSE", is_inspection=False, sort_order=0,
+            category="INHOUSE", sort_order=0,
         )
         process.created_at = datetime(2026, 1, 1)
         process.updated_at = datetime(2026, 1, 1)
@@ -305,6 +364,8 @@ class TestPlaceOnShelf:
         mock_parts.get_by_id.return_value = part
         mock_shelves.get_by_id.return_value = shelf
         mock_processes.get_by_id.return_value = process
+        # 2026-07-17：上架要求货架已映射该工序
+        mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [42]
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
 
@@ -723,6 +784,7 @@ class TestScanEvent:
         mock_workers: WorkerRepository,
         mock_events: PartEventRepository,
         mock_processes,
+        mock_shelf_process_repo,
     ) -> None:
         """Worker returns part to a PRODUCTION shelf."""
         from model.process import TProcess
@@ -731,7 +793,7 @@ class TestScanEvent:
         worker = self._worker()
         process = TProcess(
             id=99, code="铣", name="铣床加工",
-            category="INHOUSE", is_inspection=False, sort_order=0,
+            category="INHOUSE", sort_order=0,
         )
         process.created_at = datetime(2026, 1, 1)
         process.updated_at = datetime(2026, 1, 1)
@@ -741,6 +803,8 @@ class TestScanEvent:
         mock_workers.get_by_badge_code.return_value = worker
         mock_parts.get_by_serial.return_value = part
         mock_processes.get_by_id.return_value = process
+        # 2026-07-17：放回要求货架已映射该工序
+        mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [99]
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
         data = PartScanRequest(
@@ -1657,6 +1721,7 @@ class TestReleaseFromProgrammingPrerequisites:
         mock_parts: PartRepository,
         mock_shelves: ShelfRepository,
         mock_processes,
+        mock_shelf_process_repo,
     ) -> None:
         from schema.part import PlaceOnShelfRequest
         from model.process import TProcess
@@ -1665,7 +1730,7 @@ class TestReleaseFromProgrammingPrerequisites:
         shelf = _make_shelf()
         process = TProcess(
             id=42, code="车", name="车床加工",
-            category="INHOUSE", is_inspection=False, sort_order=0,
+            category="INHOUSE", sort_order=0,
         )
         process.created_at = datetime(2026, 1, 1)
         process.updated_at = datetime(2026, 1, 1)
@@ -1674,6 +1739,8 @@ class TestReleaseFromProgrammingPrerequisites:
         mock_parts.get_by_id.return_value = part
         mock_shelves.get_by_id.return_value = shelf
         mock_processes.get_by_id.return_value = process
+        # 2026-07-17：下发要求货架已映射该工序
+        mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [42]
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
 
@@ -1697,3 +1764,566 @@ class TestReleaseFromProgrammingPrerequisites:
         assert result == mock_out
         # 状态机 release_from_programming 被调
         part.sm.release_from_programming.assert_called_once()
+
+
+# ============================================================
+# 外协流程（2026-07-15 新增）
+# ============================================================
+class TestSendToOutsource:
+    """PENDING / IN_PROCESS → OUTSOURCE：发送零件到外协公司。"""
+
+    async def test_pending_to_outsource_happy(
+        self, service, mock_parts, mock_outsource_companies, mock_outsource_company_process,
+        mock_processes, mock_outsource_quotes, mock_quote_events,
+    ) -> None:
+        part = _make_part(status=PartStatus.PENDING.value, location="OFFICE")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+
+        # 外协公司存在 + 启用
+        company = MagicMock()
+        company.id = 500
+        company.name = "测试外协A"
+        company.is_active = True
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+
+        # 工序存在 + OUTSOURCE 类别
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        # 公司映射了该工序
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[99],
+        )
+
+        # 2026-07-16：必须有一份 APPROVED 报价（防御闸）
+        approved_quote = MagicMock()
+        approved_quote.id = 800
+        approved_quote.sm = MagicMock()  # state machine 用 mark_used
+        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=approved_quote)
+
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        from schema.part import SendToOutsourceRequest
+        result = await service.send_to_outsource(
+            1001, SendToOutsourceRequest(
+                outsource_company_id="500", next_process_id="99",
+            ),
+        )
+        assert result == mock_out
+        part.sm.send_to_outsource.assert_called_once()
+        # 2026-07-16：发送成功会 mark_used 该报价
+        approved_quote.sm.mark_used.assert_called_once()
+        mock_outsource_quotes.update.assert_awaited_with(approved_quote)
+
+    async def test_company_not_found(
+        self, service, mock_parts, mock_outsource_companies, mock_processes,
+    ) -> None:
+        part = _make_part()
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=None)
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc_info:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="999", next_process_id="99",
+                ),
+            )
+        assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND
+
+    async def test_company_inactive(
+        self, service, mock_parts, mock_outsource_companies,
+    ) -> None:
+        part = _make_part()
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=1, name="X", is_active=False)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc_info:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="1", next_process_id="99",
+                ),
+            )
+        assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND
+
+    async def test_process_wrong_category(
+        self, service, mock_parts, mock_outsource_companies, mock_processes,
+    ) -> None:
+        part = _make_part()
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=1, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+
+        from model.process import TProcess
+        proc = TProcess(id=99, code="车", name="车", category="INHOUSE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc_info:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="1", next_process_id="99",
+                ),
+            )
+        assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS
+
+    async def test_process_not_mapped_to_company(
+        self, service, mock_parts, mock_outsource_companies, mock_outsource_company_process,
+        mock_processes,
+    ) -> None:
+        part = _make_part()
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=1, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        # 公司没映射该工序
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[100, 101],  # 不含 99
+        )
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc_info:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="1", next_process_id="99",
+                ),
+            )
+        assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_PROCESS_NOT_MAPPED
+
+
+class TestReceiveFromOutsource:
+    """OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架。"""
+
+    async def test_outsource_to_inprocess_happy(
+        self, service, mock_parts, mock_shelves, mock_processes, mock_shelf_process_repo,
+    ) -> None:
+        part = _make_part(
+            status=PartStatus.OUTSOURCE.value,
+            location="OUTSOURCE_COMPANY",
+            current_holder_id=500,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+
+        shelf = _make_shelf(shelf_id=1, code="S1", zone=ShelfZone.PRODUCTION.value)
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+        mock_shelves.list_by_ids = AsyncMock(return_value=[shelf])
+
+        from model.process import TProcess
+        proc = TProcess(id=99, code="车", name="车", category="INHOUSE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+        # 2026-07-17：外协回收要求货架已映射该工序
+        mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [99]
+
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        result = await service.receive_from_outsource(
+            1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=99),
+        )
+        assert result == mock_out
+        part.sm.receive_from_outsource.assert_called_once()
+
+    async def test_process_must_be_inhouse(
+        self, service, mock_parts, mock_shelves, mock_processes, mock_shelf_process_repo,
+    ) -> None:
+        part = _make_part(
+            status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY",
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        shelf = _make_shelf(shelf_id=1, zone=ShelfZone.PRODUCTION.value)
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+        # 2026-07-17：让 OUTSOURCE 工序通过 shelf↔process 校验，让 INHOUSE
+        # 类别校验（我们真正想测的）真正触发
+        mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [99]
+
+        with pytest.raises(BizError) as exc_info:
+            await service.receive_from_outsource(
+                1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=99),
+            )
+        assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS
+
+
+class TestReceiveFromOutsourceToInspection:
+    """2026-07-16：OUTSOURCE → INSPECTION：外协回收直接送检。"""
+
+    async def test_outsource_to_inspection_happy(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        """外协件送品检货架（auto_pass_inspection=False）。"""
+        from schema.part import ReceiveToInspectionRequest
+
+        part = _make_part(
+            status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY",
+            current_holder_id=500,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        shelf = _make_shelf(shelf_id=2, code="INSP-1", zone=ShelfZone.INSPECTION.value)
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        result = await service.receive_from_outsource_to_inspection(
+            1001, ReceiveToInspectionRequest(shelf_id="2", auto_pass_inspection=False),
+        )
+        assert result == mock_out
+        part.sm.inspect_from_outsource.assert_called_once()
+
+    async def test_outsource_to_inspection_production_shelf_rejected(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        """PRODUCTION 货架被拒（zone 错）。"""
+        from schema.part import ReceiveToInspectionRequest
+
+        part = _make_part(status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        shelf = _make_shelf(shelf_id=3, code="P1", zone=ShelfZone.PRODUCTION.value)
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+
+        with pytest.raises(BizError) as exc:
+            await service.receive_from_outsource_to_inspection(
+                1001, ReceiveToInspectionRequest(shelf_id="3"),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS
+
+    async def test_outsource_to_inspection_shelf_not_found(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        from schema.part import ReceiveToInspectionRequest
+        part = _make_part(status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_shelves.get_by_id = AsyncMock(return_value=None)
+        with pytest.raises(BizError) as exc:
+            await service.receive_from_outsource_to_inspection(
+                1001, ReceiveToInspectionRequest(shelf_id="999"),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
+
+
+class TestSendToOutsourceDefenseGate:
+    """2026-07-16：send_to_outsource 防御性扩展（状态资格 + 已批报价）。"""
+
+    async def test_no_approved_quote(
+        self, service, mock_parts, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+    ) -> None:
+        """无 APPROVED 报价 → BIZ_OUTSOURCE_QUOTE_NOT_APPROVED 400。"""
+        part = _make_part(status=PartStatus.PENDING.value, location="OFFICE")
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=500, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车",
+                        category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[99],
+        )
+        # 没有 APPROVED 报价
+        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=None)
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="99",
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED
+
+    async def test_status_not_eligible(
+        self, service, mock_parts, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+    ) -> None:
+        """IN_PROCESS + 工人手中（location=WORKER） → 拒绝发送外协。"""
+        # worker 持有 → location=WORKER → 不在 PRODUCTION_SHELF
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location="WORKER",
+            current_holder_id=42,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=500, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        from model.process import TProcess
+        proc = TProcess(id=99, code="数控车", name="数控车",
+                        category="OUTSOURCE", sort_order=0)
+        proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None; proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[99],
+        )
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="99",
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_PART_NOT_OUTSOURCEABLE
+
+    async def test_inprocess_outsource_process_eligible(
+        self, service, mock_parts, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+        mock_quote_events,
+    ) -> None:
+        """IN_PROCESS + PRODUCTION_SHELF + 下一道 OUTSOURCE + 有报价 → 成功。
+
+        PENDING 之外唯一允许的状态资格组合。
+        """
+        # 准备 OUTSOURCE 工序对象用于读取 next_process.category
+        from model.process import TProcess
+        out_proc = TProcess(id=200, code="外工序",
+                            category=ProcessCategory.OUTSOURCE.value,
+                            sort_order=0, name="下道")
+        out_proc.created_at = datetime(2025, 1, 1)
+        out_proc.updated_at = datetime(2025, 1, 1)
+        out_proc.description = None
+        out_proc.deleted_at = None
+        # mock_processes.get_by_id 在校验 send proc 时返这个 OUTSOURCE 工序
+        # 在校验 next_process_id 时也返这个 OUTSOURCE 工序
+        mock_processes.get_by_id = AsyncMock(return_value=out_proc)
+
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            next_process_id=200,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        company = MagicMock(id=500, name="X", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[200],
+        )
+        approved_quote = MagicMock()
+        approved_quote.id = 800
+        approved_quote.sm = MagicMock()
+        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=approved_quote)
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        from schema.part import SendToOutsourceRequest
+        result = await service.send_to_outsource(
+            1001, SendToOutsourceRequest(
+                outsource_company_id="500", next_process_id="200",
+            ),
+        )
+        assert result == mock_out
+        part.sm.send_to_outsource.assert_called_once()
+        approved_quote.sm.mark_used.assert_called_once()
+
+
+# ===================================================================
+# 2026-07-17：shelf ↔ process 映射守卫
+# ===================================================================
+
+
+class TestShelfProcessGuard:
+    """2026-07-17 新增 invariant：所有走 `(shelf, next_process)` 的写路径都必须
+    校验 `shelf_process_repo.list_process_ids_by_shelf(shelf.id)` 包含目标 process。
+
+    4 个入口：
+    - `place_on_shelf`            (CLERK / MANAGER 下发零件)
+    - `release_from_programming`  (CNC 编程员下发)
+    - `receive_from_outsource`    (外协回收)
+    - `scan_event RETURNED`       (工人放回)
+    - `complete_repair`           (返修完成——校验 carried next_process_id)
+
+    失败 → `BIZ_SHELF_PROCESS_NOT_MAPPED` 422 中文文案。
+    """
+
+    async def _make_process(self, pid: int = 42, category: str = "INHOUSE"):
+        from model.process import TProcess
+        p = TProcess(
+            id=pid, code=f"P{pid}", name=f"P{pid}",
+            category=category, sort_order=0,
+        )
+        p.created_at = datetime(2026, 1, 1)
+        p.updated_at = datetime(2026, 1, 1)
+        p.description = None
+        p.deleted_at = None
+        return p
+
+    # -- place_on_shelf ------------------------------------------------
+
+    async def test_place_on_shelf_rejects_unmapped(
+        self, service, mock_parts, mock_shelves, mock_processes,
+        mock_shelf_process_repo,
+    ) -> None:
+        from schema.part import PlaceOnShelfRequest
+        mock_parts.get_by_id = AsyncMock(return_value=_make_part())
+        mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
+        mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(42))
+        mock_shelf_process_repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
+
+        with pytest.raises(BizError) as exc:
+            await service.place_on_shelf(
+                1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED
+        assert exc.value.http_status == http_status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    # -- release_from_programming --------------------------------------
+
+    async def test_release_from_programming_rejects_unmapped(
+        self, service, mock_parts, mock_shelves, mock_processes,
+        mock_shelf_process_repo,
+    ) -> None:
+        from schema.part import PlaceOnShelfRequest
+        mock_parts.get_by_id = AsyncMock(return_value=_make_part(status="PROGRAMMING"))
+        mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
+        mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(42))
+        mock_shelf_process_repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
+        # 文件齐备
+        g_mock = MagicMock(); g_mock.kind = "G_CODE"
+        s_mock = MagicMock(); s_mock.kind = "SETUP_SHEET"
+        service.files = MagicMock()
+        service.files.list_by_part = AsyncMock(side_effect=lambda pid, kind=None:
+            {"G_CODE": [g_mock], "SETUP_SHEET": [s_mock]}.get(kind, []))
+
+        with pytest.raises(BizError) as exc:
+            await service.release_from_programming(
+                1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED
+
+    # -- receive_from_outsource ----------------------------------------
+
+    async def test_receive_from_outsource_rejects_unmapped(
+        self, service, mock_parts, mock_shelves, mock_processes,
+        mock_shelf_process_repo,
+    ) -> None:
+        from schema.part import PlaceOnShelfRequest
+        mock_parts.get_by_id = AsyncMock(return_value=_make_part(
+            status=PartStatus.OUTSOURCE.value, location="OUTSOURCE_COMPANY",
+        ))
+        mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
+        mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(99))
+        mock_shelf_process_repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
+
+        with pytest.raises(BizError) as exc:
+            await service.receive_from_outsource(
+                1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=99),
+            )
+        assert exc.value.code == ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED
+
+    # -- scan_event RETURNED 严格模式 ------------------------------------
+
+    async def test_scan_event_returned_strict_no_permissive_skip(
+        self, service, mock_parts, mock_shelves, mock_workers,
+        mock_processes, mock_shelf_process_repo,
+    ) -> None:
+        """empty mapping 现在也拒绝（之前是 permissive `if allowed_ids` 跳过）。"""
+        from schema.part import PartScanRequest
+        from model.enums import PartEventType
+        part = _make_part(status="IN_PROCESS", location="WORKER", current_holder_id=1)
+        shelf = _make_shelf()
+        worker = _make_worker()
+        mock_shelves.get_by_id = AsyncMock(return_value=shelf)
+        mock_workers.get_by_badge_code = AsyncMock(return_value=worker)
+        mock_parts.get_by_serial = AsyncMock(return_value=part)
+        mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(99))
+        mock_shelf_process_repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
+
+        data = PartScanRequest(
+            serial_no="L0001",
+            event_type=PartEventType.RETURNED,
+            shelf_id=1,
+            badge_code="W001",
+            next_process_id=99,
+        )
+        with pytest.raises(BizError) as exc:
+            await service.scan_event(data)
+        assert exc.value.code == ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED
+        assert exc.value.http_status == http_status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    # -- complete_repair 守卫 carried next_process_id ------------------
+
+    async def test_complete_repair_rejects_when_carried_process_unmapped(
+        self, service, mock_parts, mock_shelves, mock_processes,
+        mock_shelf_process_repo,
+    ) -> None:
+        """complete_repair：part.next_process_id 非空时校验 shelf 是否映射。"""
+        part = _make_part(status="REPAIRING")
+        part.next_process_id = 99
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
+        mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(99))
+        mock_shelf_process_repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
+
+        with pytest.raises(BizError) as exc:
+            await service.complete_repair(part_id=1001, shelf_id=1)
+        assert exc.value.code == ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED
+
+    async def test_complete_repair_skips_guard_when_next_process_id_none(
+        self, service, mock_parts, mock_shelves,
+    ) -> None:
+        """next_process_id IS NULL（fail_inspection 清空）时跳过守卫。"""
+        part = _make_part(status="REPAIRING")
+        part.next_process_id = None
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        result = await service.complete_repair(part_id=1001, shelf_id=1)
+        assert result == mock_out
+        part.sm.complete_repair.assert_called_once()
+
+    # -- 防御：shelf_process_repo is None → 500 ------------------------
+
+    async def test_repo_none_raises_500(
+        self, mock_parts, mock_customers, mock_workers, mock_events,
+        mock_serial_counters, mock_shelves, mock_processes,
+        mock_work_types, mock_work_type_process,
+    ) -> None:
+        """构造 PartService 时不传 shelf_process_repo → 守卫应抛 500。"""
+        svc = PartService(
+            parts=mock_parts,
+            customers=mock_customers,
+            workers=mock_workers,
+            events=mock_events,
+            serial_counters=mock_serial_counters,
+            shelves=mock_shelves,
+            processes=mock_processes,
+            work_types=mock_work_types,
+            work_type_process=mock_work_type_process,
+            # 故意不传 shelf_process_repo
+            shelf_process_repo=None,
+        )
+        from schema.part import PlaceOnShelfRequest
+        mock_parts.get_by_id = AsyncMock(return_value=_make_part())
+        mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
+        mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(42))
+
+        with pytest.raises(BizError) as exc:
+            await svc.place_on_shelf(
+                1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42),
+            )
+        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
+        assert exc.value.http_status == http_status.HTTP_500_INTERNAL_SERVER_ERROR

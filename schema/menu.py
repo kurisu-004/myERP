@@ -20,6 +20,7 @@ class MenuNodeOut(BaseModel):
     """
 
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     parent_id: IdStr = None
     code: str
     title: str

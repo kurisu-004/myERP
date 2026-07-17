@@ -23,9 +23,13 @@ from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
-from model.enums import PartEventType, PartStatus, ShelfZone
+from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone
 from repository.applicant import ApplicantRepository
 from repository.customer import CustomerRepository
+from repository.outsource_company import OutsourceCompanyRepository
+from repository.outsource_company_process import OutsourceCompanyProcessRepository
+from repository.outsource_quote import OutsourceQuoteRepository
+from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
@@ -50,8 +54,11 @@ from schema.part import (
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
+    ReceiveToInspectionRequest,
+    SendToOutsourceRequest,
 )
 from service._id_parse import parse_snowflake_id
+from service._session_refresh import refresh_for_state_machine
 from service.part_file import PartFileService
 from utils.id_gen import new_id
 
@@ -102,6 +109,10 @@ class PartService:
         applicants: ApplicantRepository | None = None,
         shelf_process_repo: ShelfProcessRepository | None = None,
         files: PartFileRepository | None = None,
+        outsource_companies: OutsourceCompanyRepository | None = None,
+        outsource_company_process: OutsourceCompanyProcessRepository | None = None,
+        outsource_quotes: OutsourceQuoteRepository | None = None,
+        quote_events: OutsourceQuoteEventRepository | None = None,
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
@@ -119,6 +130,10 @@ class PartService:
         self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
         self.shelf_process_repo = shelf_process_repo  # 可选：用于放回时校验工序属于货架
         self.files = files  # 可选：批量新建零件时上传 PDF 图纸
+        self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
+        self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
+        self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御 + mark_used）
+        self.quote_events = quote_events  # 2026-07-16：外协报价事件（mark_used 写 USED 事件）
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
         self._current_user = current_user
@@ -198,17 +213,22 @@ class PartService:
                 is_active=None, limit=max(100, len(worker_ids))
             )
             worker_map = {w.id: w for w in workers if w.id in worker_ids}
-        # operator_username：通过 t_user 现算（model 不冗余，避免 N 行事件 N 次 JOIN
-        # 单独建索引的代价；list_events 一次性查整本批 map）。
+        # operator_username / operator_name：通过 t_user 现算（model 不冗余，避免
+        # N 行事件 N 次 JOIN 单独建索引的代价；list_events 一次性查整本批 map）。
         operator_ids = {e.created_by for e in events if e.created_by}
         user_map: dict[int, str] = {}
+        user_name_map: dict[int, str] = {}
         if operator_ids:
             from model import TUser
             from sqlalchemy import select as _sa_select
             user_rows = await self.workers.session.execute(
-                _sa_select(TUser.id, TUser.username).where(TUser.id.in_(operator_ids))
+                _sa_select(TUser.id, TUser.username, TUser.full_name).where(
+                    TUser.id.in_(operator_ids)
+                )
             )
-            user_map = {int(uid): uname for uid, uname in user_rows.all()}
+            for uid, uname, fname in user_rows.all():
+                user_map[int(uid)] = uname
+                user_name_map[int(uid)] = fname or uname  # full_name 空时回退 username
         return [
             PartEventOut(
                 id=e.id,
@@ -225,6 +245,8 @@ class PartService:
                 note=e.note,
                 created_by=e.created_by,
                 operator_username=user_map.get(e.created_by) if e.created_by else None,
+                # 2026-07-17：历史记录中显示操作者姓名（username 仍保留供后端 audit 用）
+                operator_name=user_name_map.get(e.created_by) if e.created_by else None,
                 created_at=e.created_at,
             )
             for e in events
@@ -648,6 +670,298 @@ class PartService:
         )
         return items[0]
 
+    async def send_to_outsource(
+        self, part_id: int, data: SendToOutsourceRequest,
+    ) -> PartOut:
+        """PENDING / ON_SHELF / WITH_WORKER → OUTSOURCE：把零件发送给外协公司。
+
+        校验：
+        - outsource_company_id 存在 + 未软删 + is_active=True
+        - next_process_id 存在 + category=OUTSOURCE
+        - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
+
+        note by design：当前实现与 place_on_shelf / pick_up_by_scan 同款风险——
+        不带行锁、不带版本号。两位 CLERK 同时发送同一零件到不同公司时，
+        可能产生双重 SENT_TO_OUTSOURCE 事件；与既有代码风险等级一致。
+        """
+        if self.outsource_companies is None or self.outsource_company_process is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing outsource repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        part = await self._get_part_or_404(part_id)
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
+
+        # 1. parse_snowflake_id(company_id) → int
+        company_id_int = parse_snowflake_id(
+            data.outsource_company_id, field_name="outsource_company_id",
+        )
+        if company_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND,
+                message=(
+                    f"outsource company {data.outsource_company_id!r} not found"
+                ),
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # 2. 公司存在 + 未软删 + 启用
+        company = await self.outsource_companies.get_by_id(company_id_int)
+        if company is None or not company.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND,
+                message=(
+                    f"outsource company {data.outsource_company_id} not found"
+                ),
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # 3. 工序存在 + OUTSOURCE 类别
+        process_id_int = parse_snowflake_id(
+            data.next_process_id, field_name="next_process_id",
+        )
+        if process_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"next_process_id 不是合法的雪花 ID 字符串："
+                    f"{data.next_process_id!r}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        process = await self._get_process(process_id_int)
+        if process.category != ProcessCategory.OUTSOURCE.value:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS,
+                message=(
+                    f"工序「{process.code}」不是 OUTSOURCE 类别，"
+                    "无法用于发送外协"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        # 4. 公司映射了该工序
+        mapped = await self.outsource_company_process.list_process_ids_by_outsource_company(
+            company_id_int, include_deleted=False,
+        )
+        if process.id not in mapped:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_PROCESS_NOT_MAPPED,
+                message=(
+                    f"外协公司「{company.name}」未映射工序「{process.code}」，"
+                    "请先在外协管理中维护工序能力清单"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 5. [2026-07-16] 状态资格防御闸：UI 按钮也会校验，这里兜底
+        next_process_obj = (
+            await self._get_process(part.next_process_id)
+            if part.next_process_id else None
+        )
+        next_cat = next_process_obj.category if next_process_obj else None
+        allowed = (
+            part.status == PartStatus.PENDING.value
+            or (
+                part.status == PartStatus.IN_PROCESS.value
+                and part.location == PartLocation.PRODUCTION_SHELF.value
+                and next_cat == ProcessCategory.OUTSOURCE.value
+            )
+        )
+        if not allowed:
+            raise BizError(
+                code=ErrCode.BIZ_PART_NOT_OUTSOURCEABLE,
+                message=(
+                    f"零件状态 status={part.status} location={part.location} "
+                    f"next_process.category={next_cat}，"
+                    "不符合发送外协条件（仅 PENDING 或 IN_PROCESS + PRODUCTION_SHELF "
+                    "+ 下一道=OUTSOURCE）"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 6. [2026-07-16] 已批报价防御闸
+        if self.outsource_quotes is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing outsource quote repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        approved_quote = await self.outsource_quotes.get_one_approved(
+            part_id=part.id,
+            outsource_company_id=company_id_int,
+            process_id=process_id_int,
+        )
+        if approved_quote is None:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
+                message=(
+                    f"未找到「{company.name} / {process.code}」的已批准报价，"
+                    "请先在「报价一览」中提交并由 MANAGER 审核通过"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        await refresh_for_state_machine(
+            self.parts.session, approved_quote, attrs=("status",),
+        )
+
+        # 7. 状态机转换
+        part.sm.send_to_outsource(
+            outsource_company=company, process=process,
+            event_repo=self.events, created_by=self._user_id,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+
+        # 8. [2026-07-16] 把 APPROVED 报价 mark_used → USED + 写事件
+        approved_quote.sm.mark_used(
+            event_repo=self.quote_events, created_by=self._user_id,
+        )
+        approved_quote.updated_by = self._user_id
+        await self.outsource_quotes.update(approved_quote)
+
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "SENT_TO_OUTSOURCE",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+                shelf_code=None,
+            ),
+        )
+        return items[0]
+
+    async def receive_from_outsource(
+        self, part_id: int, data: PlaceOnShelfRequest,
+    ) -> PartOut:
+        """OUTSOURCE → IN_PROCESS：从外协回收，下发到生产货架继续加工。
+
+        body 复用 PlaceOnShelfRequest（shelf_id + next_process_id）；
+        额外校验：next_process_id 必须是 INHOUSE（外协回来后通常进车间）。
+        """
+        part = await self._get_part_or_404(part_id)
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
+        shelf, process = await self._validate_production_shelf_and_process(
+            data.shelf_id, data.next_process_id,
+        )
+        if process.category != ProcessCategory.INHOUSE.value:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS,
+                message=(
+                    f"工序「{process.code}」不是 INHOUSE 类别，"
+                    "外协回收后必须回到车间自产工序"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
+        part.sm.receive_from_outsource(
+            shelf=shelf, process=process,
+            event_repo=self.events, created_by=self._user_id,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "RECEIVED_FROM_OUTSOURCE",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+                shelf_code=shelf.code,
+            ),
+        )
+        return items[0]
+
+    async def receive_from_outsource_to_inspection(
+        self, part_id: int, data: ReceiveToInspectionRequest,
+    ) -> PartOut:
+        """2026-07-16：OUTSOURCE → INSPECTION：外协件直接送检（跳过生产货架）。
+
+        body:
+        - shelf_id（必须 INSPECTION 区 active）
+        - auto_pass_inspection：True 时一次性把状态推到 READY_TO_SHIP
+          （相当于「外协 → 品检 → 通过品检 → 待送货」两步压缩为一次操作；
+          用于信任外协质量的快捷流程）。
+
+        复用现有 pass_inspection 实现二次转换（同一事务连续两次状态机调用）。
+        """
+        part = await self._get_part_or_404(part_id)
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
+        target_shelf = await self._validate_inspection_shelf(data.shelf_id)
+
+        # 第一次转换：OUTSOURCE → INSPECTION
+        part.sm.inspect_from_outsource(
+            target_shelf=target_shelf,
+            event_repo=self.events, created_by=self._user_id,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "RECEIVED_FROM_OUTSOURCE_INSPECTED",
+            self._banner_payload(
+                part, customer_path=items[0].customer_path,
+                shelf_code=target_shelf.code,
+            ),
+        )
+
+        # auto_pass_inspection=True：再触发 INSPECTION → READY_TO_SHIP（品检通过）
+        if data.auto_pass_inspection:
+            return await self.pass_inspection(part.id)
+        return items[0]
+
+    async def _validate_inspection_shelf(self, shelf_id: str) -> TShelf:
+        """校验品检货架存在 + 启用 + zone=INSPECTION。"""
+        if not shelf_id:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="shelf_id 必填",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        shelf_id_int = parse_snowflake_id(shelf_id, field_name="shelf_id")
+        if shelf_id_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"shelf_id 不是合法的雪花 ID：{shelf_id!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        shelf = await self.shelves.get_by_id(shelf_id_int)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {shelf_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not shelf.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message=f"shelf「{shelf.code}」已停用",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if shelf.zone != ShelfZone.INSPECTION.value:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NO_MATCH_FOR_PROCESS,
+                message=(
+                    f"货架「{shelf.code}」不是品检区(INSPECTION)，"
+                    "外协回收送检请选用 INSPECTION 货架"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return shelf
+
     async def release_from_programming(
         self, part_id: int, data: PlaceOnShelfRequest
     ) -> PartOut:
@@ -730,7 +1044,14 @@ class PartService:
     async def _validate_production_shelf_and_process(
         self, shelf_id: int | None, next_process_id: int | None,
     ) -> tuple[TShelf, TProcess]:
-        """校验 `shelf_id` 是 PRODUCTION 区 active 货架 + `next_process_id` 存在。"""
+        """校验 `shelf_id` 是 PRODUCTION 区 active 货架 + `next_process_id` 存在
+        + **该货架已映射该工序**（2026-07-17 强化）。
+
+        三道闸：(1) shelf 存在/active/PRODUCTION；(2) process 存在；(3) shelf↔process
+        在 `t_shelf_process` 中存在活跃行。三者全过才返回。三个调用方
+        （`place_on_shelf` / `release_from_programming` / `receive_from_outsource`）
+        都通过本 helper 一次校验。
+        """
         if shelf_id is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
@@ -766,7 +1087,40 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         process = await self._get_process(next_process_id)
+        # 2026-07-17：货架↔工序 映射校验（兜底）
+        await self._assert_shelf_maps_process(shelf, process)
         return shelf, process
+
+    async def _assert_shelf_maps_process(
+        self, shelf: TShelf, process: TProcess,
+    ) -> None:
+        """校验 `shelf` 已映射 `process`；不满足抛 `BIZ_SHELF_PROCESS_NOT_MAPPED` 422。
+
+        - `shelf_process_repo is None` → 500 配置错误（service 没接 repo，调用方不能静默放过）
+        - 货架没有任何映射行（空集）→ 同样拒绝（用户必须先在「货架管理」配置映射）
+        - 货架有映射但不包含此 process → 422 拒绝
+
+        单独抽出便于：`place_on_shelf` / `release_from_programming` /
+        `receive_from_outsource` 通过 `_validate_production_shelf_and_process` 走；
+        `complete_repair`（货架来自 query 参数，且 next_process 由工种→默认工序
+        推导）直接调本方法。
+        """
+        if self.shelf_process_repo is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="shelf_process_repo not configured for mapping guard",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        allowed_ids = await self.shelf_process_repo.list_process_ids_by_shelf(shelf.id)
+        if not allowed_ids or process.id not in allowed_ids:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED,
+                message=(
+                    f"货架 {shelf.code!r} 未配置可执行工序 {process.code!r}，"
+                    f"请先在「货架管理」→「工序映射」中配置"
+                ),
+                http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
     async def _get_process(self, process_id: int) -> TProcess:
         """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""
@@ -943,20 +1297,8 @@ class PartService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
             new_process = await self._get_process(data.next_process_id)
-            # 校验 next_process_id 属于当前货架的已分配工序（防御性校验）
-            if self.shelf_process_repo is not None:
-                allowed_ids = await self.shelf_process_repo.list_process_ids_by_shelf(
-                    shelf.id
-                )
-                if allowed_ids and data.next_process_id not in allowed_ids:
-                    raise BizError(
-                        code=ErrCode.BIZ_INVALID_VALUE,
-                        message=(
-                            f"process {data.next_process_id} is not assigned to "
-                            f"shelf {shelf.code!r}"
-                        ),
-                        http_status=http_status.HTTP_400_BAD_REQUEST,
-                    )
+            # 2026-07-17：货架↔工序 映射校验收紧（去掉之前空集时跳过的 permissive 行为）
+            await self._assert_shelf_maps_process(shelf, new_process)
             # 解析 prev_process_code 与 worker_work_type_code 给状态机 note 用
             prev_process_code: str | None = None
             if self.processes is not None and part.next_process_id is not None:
@@ -1147,6 +1489,11 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        await refresh_for_state_machine(
+            self.parts.session,
+            part,
+            attrs=("status", "location", "next_process_id"),
+        )
         part.sm.pass_inspection(
             event_repo=self.events, created_by=self._user_id,
         )
@@ -1266,7 +1613,13 @@ class PartService:
         return items[0]
 
     async def complete_repair(self, part_id: int, shelf_id: int) -> PartOut:
-        """REPAIRING -> IN_PROCESS：返修完成，放回生产货架。"""
+        """REPAIRING -> IN_PROCESS：返修完成，放回生产货架。
+
+        2026-07-17：补 shelf↔process 校验——REPAIRING 期间 `next_process_id`
+        由 start_repair 透传保留（ON_SHELF 进入时不传 process，next_process_id
+        沿用 REPAIRING 之前）；如果 caller 选了不兼容的 shelf，422 拒绝。
+        `next_process_id IS NULL`（fail_inspection 已清空）时跳过校验。
+        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -1293,6 +1646,9 @@ class PartService:
                 message=f"shelf {shelf.code!r} is zone={shelf.zone!r}; complete_repair requires PRODUCTION",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
+        if part.next_process_id is not None:
+            carried_process = await self._get_process(part.next_process_id)
+            await self._assert_shelf_maps_process(shelf, carried_process)
         part.sm.complete_repair(
             shelf=shelf, event_repo=self.events,
             created_by=self._user_id,
@@ -1442,6 +1798,19 @@ class PartService:
             workers = await self.workers.list_by_ids(worker_ids)
             worker_map = {w.id: w.name for w in workers}
 
+        # 批查外协公司名（location=OUTSOURCE_COMPANY 的行，2026-07-15）
+        outsource_company_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location == "OUTSOURCE_COMPANY" and p.current_holder_id
+        ]
+        outsource_company_map: dict[int, str] = {}
+        if outsource_company_ids and self.outsource_companies is not None:
+            companies = await self.outsource_companies.list_by_ids(
+                outsource_company_ids,
+            )
+            outsource_company_map = {c.id: c.name for c in companies}
+
         # 批查下一道工序名称（避免前端为「下一道工序列」再发一次 /processes 请求）
         process_ids = {
             int(p.next_process_id)
@@ -1475,6 +1844,7 @@ class PartService:
             holder_kind: str | None = None
             shelf_code: str | None = None
             worker_name: str | None = None
+            outsource_company_name: str | None = None
             if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and p.current_holder_id:
                 holder_kind = "shelf"
                 shelf_id = int(p.current_holder_id)
@@ -1484,6 +1854,11 @@ class PartService:
             elif p.location == "WORKER" and p.current_holder_id:
                 holder_kind = "worker"
                 worker_name = worker_map.get(int(p.current_holder_id))
+            elif p.location == "OUTSOURCE_COMPANY" and p.current_holder_id:
+                holder_kind = "outsource_company"
+                outsource_company_name = outsource_company_map.get(
+                    int(p.current_holder_id),
+                )
 
             # 所在位置的人类可读描述（2026-07-11 装配体子件表使用）
             holder_display: str | None = None
@@ -1492,12 +1867,15 @@ class PartService:
                 holder_display = f"货架 {prefix}{shelf_code}"
             elif worker_name is not None:
                 holder_display = f"工人 {worker_name}"
+            elif outsource_company_name is not None:
+                holder_display = f"外协 {outsource_company_name}"
             elif p.location == "OFFICE":
                 holder_display = "编程员持有"
 
             out.append(
                 PartOut(
                     id=p.id,
+                    version=p.version,
                     serial_no=p.serial_no,
                     name=p.name,
                     drawing_no=p.drawing_no,
@@ -1519,6 +1897,7 @@ class PartService:
                     placed_at=getattr(p, "placed_at", None),
                     location=p.location,
                     worker_name=worker_name,
+                    outsource_company_name=outsource_company_name,
                     current_holder_display=holder_display,
                     next_process_id=p.next_process_id,
                     next_process_name=process_map.get(int(p.next_process_id))
@@ -1605,6 +1984,7 @@ class PartService:
             out.append(
                 PartListItem(
                     id=p.id,
+                    version=p.version,
                     serial_no=p.serial_no,
                     name=p.name,
                     drawing_no=p.drawing_no,

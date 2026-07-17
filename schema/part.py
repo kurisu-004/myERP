@@ -37,6 +37,7 @@ class PartOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     serial_no: str | None = Field(
         default=None, description="序列号（每客户独立循环，COMPLETED/CANCELLED 时释放）"
     )
@@ -69,9 +70,9 @@ class PartOut(BaseModel):
         default=None,
         description="当前持有者（worker.id 或 shelf.id；含义看 current_holder_kind）",
     )
-    current_holder_kind: Literal["shelf", "worker"] | None = Field(
+    current_holder_kind: Literal["shelf", "worker", "outsource_company"] | None = Field(
         default=None,
-        description="holder 实际指向哪张表（service 层批查 t_shelf ∪ t_worker 判定）",
+        description="holder 实际指向哪张表（service 层批查 t_shelf ∪ t_worker ∪ t_outsource_company 判定）",
     )
     shelf_code: str | None = Field(
         default=None,
@@ -88,6 +89,10 @@ class PartOut(BaseModel):
     worker_name: str | None = Field(
         default=None,
         description="当 holder 是工人时返回工人姓名；否则 null",
+    )
+    outsource_company_name: str | None = Field(
+        default=None,
+        description="当 holder 是外协公司时返回公司名；否则 null（2026-07-15 新增）",
     )
     current_holder_display: str | None = Field(
         default=None,
@@ -125,6 +130,7 @@ class PartListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     serial_no: str | None = Field(
         default=None, description="序列号（每客户独立循环，COMPLETED/CANCELLED 时释放）"
     )
@@ -333,6 +339,56 @@ class PartScanRequest(BaseModel):
         return v.strip()
 
 
+class SendToOutsourceRequest(BaseModel):
+    """文员把零件发送到外协公司。
+
+    支持来源状态：
+    - PENDING  （办公室待生产）
+    - IN_PROCESS（任意 sub-state：生产货架上 / 工人手中）
+      —— 工人加工几道工序后由 CLERK 选外协公司发送
+
+    服务端校验：
+    - outsource_company_id 存在 + 未软删 + is_active=True
+    - next_process_id 存在 + category=OUTSOURCE
+    - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
+
+    雪花 ID 入参用 `str`（CLAUDE.md §3 — 19 位 > JS Number.MAX_SAFE_INTEGER），
+    service 层 `parse_snowflake_id` 转 int。
+    """
+
+    outsource_company_id: str = Field(
+        description="外协公司 id（雪花 ID 字符串；JS Number 会丢精度，必须 str）",
+    )
+    next_process_id: str = Field(
+        description="外协工序 id（雪花 ID 字符串；service 层 parse_snowflake_id 转 int）",
+    )
+
+    @field_validator("next_process_id")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v or v == "0":
+            raise ValueError("must be non-empty snowflake id")
+        return v
+
+
+class ReceiveToInspectionRequest(BaseModel):
+    """2026-07-16 新增：OUTSOURCE → INSPECTION「外协回收送检」分支。
+
+    - shelf_id 必须是 INSPECTION 区 active 货架
+    - auto_pass_inspection=True：一次性走「外协→品检→自动通过品检→待送货」三步压缩流程
+      （信任外协质量时用；audit 链仍保留 OUTSOURCE→INSPECTION→READY_TO_SHIP 两条事件）
+    """
+
+    shelf_id: str = Field(
+        min_length=1,
+        description="品检货架雪花 ID 字符串；service 端 parse_snowflake_id 转 int",
+    )
+    auto_pass_inspection: bool = Field(
+        default=False,
+        description="True 时连发 pass_inspection 一次性推到 READY_TO_SHIP",
+    )
+
+
 class PartEventOut(BaseModel):
     """零件事件流条目。"""
 
@@ -356,6 +412,14 @@ class PartEventOut(BaseModel):
         default=None,
         description=(
             "操作者用户名（list_events 时通过 JOIN t_user 算出，模型不冗余存储）"
+        ),
+    )
+    # 2026-07-17：histories 一览显示操作者姓名（CREATE / 下发 / CANCELLED 等）。
+    # 同样通过 list_events JOIN t_user 取，不冗余存；前端 UI 默认用 operator_name 显示。
+    operator_name: str | None = Field(
+        default=None,
+        description=(
+            "操作者姓名（display_name = t_user.full_name）。list_events JOIN 算"
         ),
     )
     created_at: datetime

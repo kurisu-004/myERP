@@ -1,5 +1,7 @@
 export interface Worker {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   badge_code: string
   name: string
   work_type_id: string | null

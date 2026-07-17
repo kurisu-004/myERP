@@ -27,10 +27,13 @@ from schema.part import (
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
+    ReceiveToInspectionRequest,
+    SendToOutsourceRequest,
 )
 from service import PartService
 from service._id_parse import parse_snowflake_id
-from service.printing import build_part_print_pdf
+from service.printing import build_part_print_pdf, build_parts_print_pdf_batch
+from core.time import now_naive
 
 router = APIRouter(prefix="/parts", tags=["零件管理"])
 
@@ -260,6 +263,69 @@ async def release_part_from_programming(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.release_from_programming(part_id, payload)
+
+
+# ============================================================
+# 外协流程（2026-07-15 新增）
+# ============================================================
+@router.post(
+    "/{part_id}/send-to-outsource",
+    response_model=PartOut,
+    summary=(
+        "PENDING / IN_PROCESS → OUTSOURCE：发送零件到外协公司（MANAGER / CLERK）"
+    ),
+    description=(
+        "body: outsource_company_id (雪花 ID 字符串) + next_process_id (OUTSOURCE 类别)。"
+        "支持来源：PENDING / ON_SHELF / WITH_WORKER。"
+        "后端严格校验公司存在 + 启用 + 工序 OUTSOURCE + 公司映射了该工序。"
+    ),
+    dependencies=_office_dep,
+)
+async def send_part_to_outsource(
+    part_id: int,
+    payload: SendToOutsourceRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.send_to_outsource(part_id, payload)
+
+
+@router.post(
+    "/{part_id}/receive-from-outsource",
+    response_model=PartOut,
+    summary=(
+        "OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架（MANAGER / CLERK）"
+    ),
+    description=(
+        "body 同下发：shelf_id (PRODUCTION 区 active) + next_process_id (必须 INHOUSE)。"
+    ),
+    dependencies=_office_dep,
+)
+async def receive_part_from_outsource(
+    part_id: int,
+    payload: PlaceOnShelfRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.receive_from_outsource(part_id, payload)
+
+
+@router.post(
+    "/{part_id}/receive-from-outsource-to-inspection",
+    response_model=PartOut,
+    summary=(
+        "OUTSOURCE → INSPECTION：外协件直接送检（MANAGER / CLERK，2026-07-16 新增）"
+    ),
+    description=(
+        "body: shelf_id (INSPECTION 区 active 货架) + auto_pass_inspection (可选)。"
+        "auto_pass_inspection=true 时一次性 OUTSOURCE → INSPECTION → READY_TO_SHIP。"
+    ),
+    dependencies=_office_dep,
+)
+async def receive_part_from_outsource_to_inspection(
+    part_id: int,
+    payload: ReceiveToInspectionRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.receive_from_outsource_to_inspection(part_id, payload)
 
 
 @router.post(
@@ -603,6 +669,66 @@ async def print_part_drawing(
     serial = part.serial_no if part and part.serial_no else "no-serial"
     drawing = part.drawing_no if part and part.drawing_no else "part"
     fname = f"{serial}-{drawing}.pdf".replace("/", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{fname}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+# ============================================================
+# 批量打印 PDF（2026-07-17 接入：合并多 part 双面 PDF 为单 PDF）
+# ============================================================
+class PrintBatchRequest(BaseModel):
+    """批量打印请求体（雪花 ID 字符串列表，service 层 int() 转换）。"""
+
+    part_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="雪花 ID 字符串列表（1-200 个）",
+    )
+
+
+@router.post(
+    "/print-drawing-batch",
+    summary="批量生成零件的双面打印 PDF 并合并为一个 PDF",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/pdf": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
+    dependencies=_office_dep,
+)
+async def print_part_drawing_batch(
+    payload: PrintBatchRequest,
+    parts: PartRepository = Depends(get_part_repository),
+    part_files: PartFileRepository = Depends(get_part_file_repository),
+) -> Response:
+    # str → int 转换；任一失败抛 BIZ_INVALID_VALUE 400（与 CLAUDE.md §3 约定一致）
+    part_ids_int: list[int] = []
+    for s in payload.part_ids:
+        try:
+            part_ids_int.append(int(s))
+        except (TypeError, ValueError) as e:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"part_id 必须是数字字符串：{s!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            ) from e
+
+    pdf_bytes = await build_parts_print_pdf_batch(
+        part_ids=part_ids_int, parts=parts, part_files=part_files,
+    )
+    fname = f"batch-{len(part_ids_int)}parts-{now_naive().strftime('%Y%m%d%H%M%S')}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

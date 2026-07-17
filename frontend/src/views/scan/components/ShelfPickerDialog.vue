@@ -1,20 +1,24 @@
 <!--
   ShelfPickerDialog.vue
 
-  共享 HMI 卡片网格 picker 弹窗（2026-07-10 创建，2026-07-13 扩展为 RETURN + INSPECT 两用）。
+  共享 HMI 卡片网格 picker 弹窗（2026-07-10 创建，2026-07-13 扩展为 RETURN + INSPECT 两用，2026-07-17
+  接入 HmiPickerCard 通用卡 + 空状态回退）。
   - 卡片网格（auto-fit, 220-280px 列宽）
   - 默认高亮 + 自动选中推荐架
   - 「完成」直接接受当前选中架；点其他卡片切换选中
   - 取消按钮保留（工人可放弃放回/送检）
+  - 空状态可配置「返回上级」动作：调用方传 emptyActionLabel 则按钮显示，点击触发 empty-action 事件
 
   props:
     modelValue: boolean                       // 弹窗可见
     nextProcessId: string                     // RETURN 必填（用于查 /shelves/for-return）
     kind?: 'return' | 'inspection' = 'return' // picker 用途（INSPECT 走 /shelves/for-inspection）
+    emptyActionLabel?: string                  // 空状态下方的操作按钮文案；不传则不显示
   emits:
     update:modelValue(v: boolean)
     confirm(shelfId: string)
     cancel()
+    empty-action()                            // 空状态操作按钮点击；接收方应关闭 dialog 并回退流程
 -->
 <template>
   <el-dialog
@@ -39,16 +43,30 @@
       </p>
     </div>
     <div v-else-if="shelves.length === 0" class="empty-state">
-      <el-icon :size="36" color="#c0c4cc"><Box /></el-icon>
-      <p>暂无可用货架</p>
+      <el-icon :size="48" color="#c0c4cc"><Box /></el-icon>
+      <p class="empty-text">暂无可用货架</p>
+      <el-button
+        v-if="emptyActionLabel"
+        type="primary"
+        size="large"
+        class="empty-action-btn"
+        @click="onEmptyAction"
+      >
+        {{ emptyActionLabel }}
+      </el-button>
     </div>
     <div v-else class="card-grid">
-      <ShelfPickerCard
+      <HmiPickerCard
         v-for="s in shelves"
         :key="s.id"
-        :shelf="s"
+        kind="shelf"
+        :code="s.code"
+        :name="s.name"
+        :location="s.location || undefined"
+        :current-load="s.current_load"
+        :mapped-process-codes="s.mapped_process_codes"
         :is-selected="s.id === selectedId"
-        @select="onSelect"
+        @select="onSelect(s.id)"
       />
     </div>
     <template #footer>
@@ -76,7 +94,7 @@ import {
   Select,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import ShelfPickerCard from '@/components/ShelfPickerCard.vue'
+import HmiPickerCard from '@/components/HmiPickerCard.vue'
 import { listShelvesForReturn, listShelvesForInspection } from '@/api/shelves'
 import type { ShelfForReturn } from '@/types/shelf'
 
@@ -85,15 +103,20 @@ const props = withDefaults(defineProps<{
   /** RETURN 必填（用于查 /shelves/for-return）；INSPECT 时可省略。 */
   nextProcessId?: string
   kind?: 'return' | 'inspection'
+  /** 空状态操作按钮文案；不传则不显示按钮 */
+  emptyActionLabel?: string
 }>(), {
   kind: 'return',
   nextProcessId: '',
+  emptyActionLabel: '',
 })
 
 const emit = defineEmits<{
   'update:modelValue': [v: boolean]
   confirm: [shelfId: string]
   cancel: []
+  /** 空状态操作按钮点击；接收方应关闭 dialog 并回退流程 */
+  'empty-action': []
 }>()
 
 const loading = ref(false)
@@ -122,13 +145,8 @@ async function loadReturn(nextProcessId: string): Promise<void> {
   try {
     const result = await listShelvesForReturn(nextProcessId)
     shelves.value = result.items
-    // 默认选中推荐架
-    const recommended = result.items.find((s) => s.is_recommended)
-    if (recommended) {
-      selectedId.value = recommended.id
-    } else {
-      selectedId.value = result.recommended_shelf_id || result.items[0]?.id || null
-    }
+    // 2026-07-17 移除「默认选中推荐架」行为：工人点选 free；推荐字段后端保留
+    // 用于客户端下次调用 if needed，但本 dialog 不再自动高亮 + 一键提交。
   } catch (err: unknown) {
     // 后端 BIZ_SHELF_NO_MATCH_FOR_PROCESS 等业务异常会进到这里
     const msg = err instanceof Error ? err.message : String(err)
@@ -149,12 +167,7 @@ async function loadInspection(): Promise<void> {
   try {
     const result = await listShelvesForInspection()
     shelves.value = result.items
-    const recommended = result.items.find((s) => s.is_recommended)
-    if (recommended) {
-      selectedId.value = recommended.id
-    } else {
-      selectedId.value = result.recommended_shelf_id || result.items[0]?.id || null
-    }
+    // 不自动选中推荐架（与 RETURN 一致，2026-07-17 移除）
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     errorMessage.value = msg || '加载失败'
@@ -179,6 +192,15 @@ function onConfirm(): void {
 
 function onCancel(): void {
   emit('cancel')
+  emit('update:modelValue', false)
+}
+
+/**
+ * 空状态「返回上级」按钮点击：发事件给调用方处理流程回退（比如 RETURN 流程回退到
+ * ProcessPickerDialog 让工人重选工序），同时把 dialog 关闭。
+ */
+function onEmptyAction(): void {
+  emit('empty-action')
   emit('update:modelValue', false)
 }
 </script>
@@ -208,6 +230,17 @@ function onCancel(): void {
   color: #f56c6c;
   .error-text { font-size: 16px; font-weight: 600; }
   .error-hint { font-size: 13px; color: #909399; }
+}
+.empty-state {
+  gap: 16px;
+  padding: 64px 0;
+  .empty-text { font-size: 18px; font-weight: 500; color: #606266; }
+  .empty-action-btn {
+    min-width: 200px;
+    font-size: 18px;
+    font-weight: 600;
+    padding: 14px 32px;
+  }
 }
 .is-loading { animation: spin 1s linear infinite; }
 @keyframes spin {

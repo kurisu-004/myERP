@@ -644,7 +644,7 @@ def _make_process_obj(id: int, code: str, name: str):
 
     p = TProcess(
         id=id, code=code, name=name,
-        category="INHOUSE", is_inspection=False,
+        category="INHOUSE",
         sort_order=0, description=None,
     )
     return p

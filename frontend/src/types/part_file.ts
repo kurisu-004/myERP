@@ -19,6 +19,8 @@ export type PartFileKind =
 /** 统一文件项 */
 export interface PartFileItem {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   /** polymorphic owner_id：真实 t_part.id 或 t_assembly.id（kind=ASSEMBLY_MASTER） */
   owner_id: string
   kind: PartFileKind

@@ -1063,6 +1063,7 @@ class AssemblyService:
             path = parent_name
         return AssemblyOut(
             id=asm.id,
+            version=asm.version,
             serial_no=asm.serial_no,
             drawing_no=asm.drawing_no,
             name=asm.name,
@@ -1103,6 +1104,7 @@ class AssemblyService:
             path = parent_name
         return AssemblyListItem(
             id=asm.id,
+            version=asm.version,
             serial_no=asm.serial_no,
             drawing_no=asm.drawing_no,
             name=asm.name,

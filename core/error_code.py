@@ -10,6 +10,7 @@ class ErrCode(IntEnum):
     FORBIDDEN = 40300
     NOT_FOUND = 40400
     CONFLICT = 40900
+    BIZ_VERSION_CONFLICT = 40901   # 乐观锁冲突：当前 version 与 DB 不一致
 
     INTERNAL_ERROR = 50000
     DATABASE_ERROR = 50001
@@ -65,6 +66,7 @@ class ErrCode(IntEnum):
     BIZ_SHELF_PROCESS_SHELF_NOT_FOUND = 20504  # 货架不存在
     BIZ_SHELF_PROCESS_PROCESS_NOT_FOUND = 20505  # 工序不存在
     BIZ_SHELF_NO_MATCH_FOR_PROCESS = 20506  # 没有 active 货架映射指定 process → RETURN picker 无候选
+    BIZ_SHELF_PROCESS_NOT_MAPPED = 20507  # 货架未映射该工序（place/release/receive/complete_repair 422）
 
     # ---- 账号（t_user / t_user_role）----
     # 206xx：账号相关
@@ -104,3 +106,19 @@ class ErrCode(IntEnum):
     BIZ_APPLICANT_DUPLICATE_NAME = 21002   # 同一一级客户下重名（DB partial unique 兜底）
     BIZ_APPLICANT_BAD_CUSTOMER = 21003     # customer 不存在或不是一级
     BIZ_APPLICANT_IN_USE = 21004           # 被未软删 part.applicant_name 引用 → 拒软删
+
+    # ---- 外协公司（t_outsource_company + t_outsource_company_process）----
+    # 212xx：外协公司相关（2026-07-15 新增）
+    BIZ_OUTSOURCE_COMPANY_NOT_FOUND = 21201
+    BIZ_OUTSOURCE_COMPANY_DUPLICATE = 21202    # uk_t_outsource_company_name 部分唯一兜底
+    BIZ_OUTSOURCE_COMPANY_BAD_PROCESS = 21203  # 工序不存在 / 不是 OUTSOURCE/INHOUSE 类别
+    BIZ_OUTSOURCE_PROCESS_NOT_MAPPED = 21204   # 公司未映射该 OUTSOURCE 工序
+    BIZ_OUTSOURCE_COMPANY_IN_USE = 21205       # 被 part OUTSOURCE 引用 / 仍映射工序
+    BIZ_PART_NOT_OUTSOURCEABLE = 21206         # 当前状态不允许发送外协（兜底，正常流不该撞）
+
+    # ---- 外协报价（t_outsource_quote，2026-07-16 新增）----
+    # 213xx：外协报价相关
+    BIZ_OUTSOURCE_QUOTE_NOT_FOUND = 21301
+    BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION = 21302  # 当前状态不允许此操作
+    BIZ_OUTSOURCE_QUOTE_DUPLICATE = 21303           # 同 (part,company,process) 已存在活跃报价
+    BIZ_OUTSOURCE_QUOTE_NOT_APPROVED = 21307        # send_to_outsource 找不到该 tuple 的 APPROVED 报价

@@ -10,6 +10,10 @@ from repository import (
     AssemblyRepository,
     CustomerRepository,
     MenuRepository,
+    OutsourceCompanyProcessRepository,
+    OutsourceCompanyRepository,
+    OutsourceQuoteEventRepository,
+    OutsourceQuoteRepository,
     PartEventRepository,
     PartFileRepository,
     PartRepository,
@@ -29,6 +33,8 @@ from service import (
     AuthService,
     CustomerService,
     DeliveryNoteService,
+    OutsourceCompanyService,
+    OutsourceQuoteService,
     PartFileService,
     PartService,
     ProcessService,
@@ -173,6 +179,9 @@ def get_part_service(
     2026-07-10 起：注入 `PartFileRepository` 以支持
     `POST /parts/batch` multipart 端点的 PDF 上传 + 下发前置校验
     (≥1 G_CODE + ≥1 SETUP_SHEET)。
+
+    2026-07-16 起：注入 `OutsourceQuoteRepository` + `OutsourceQuoteEventRepository`
+    以支持 send_to_outsource 防御闸 + APPROVED→USED 自动 mark。
     """
     from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
 
@@ -195,6 +204,10 @@ def get_part_service(
         applicants=ApplicantRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         files=PartFileRepository(session),
+        outsource_companies=OutsourceCompanyRepository(session),
+        outsource_company_process=OutsourceCompanyProcessRepository(session),
+        outsource_quotes=OutsourceQuoteRepository(session),
+        quote_events=OutsourceQuoteEventRepository(session),
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,
@@ -368,6 +381,8 @@ def get_assembly_service(
         processes=ProcessRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         files=files_repo,
+        outsource_companies=OutsourceCompanyRepository(session),
+        outsource_company_process=OutsourceCompanyProcessRepository(session),
         current_user=user,
     )
     part_files = PartFileService(
@@ -410,4 +425,71 @@ def get_delivery_note_service(
     return DeliveryNoteService(
         parts=PartRepository(session),
         customers=CustomerRepository(session),
+    )
+
+
+# ============================================================
+# 外协公司 DI（2026-07-15 新增）
+# ============================================================
+def get_outsource_company_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceCompanyRepository:
+    return OutsourceCompanyRepository(session)
+
+
+def get_outsource_company_process_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceCompanyProcessRepository:
+    return OutsourceCompanyProcessRepository(session)
+
+
+def get_outsource_company_service(
+    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
+    junction: OutsourceCompanyProcessRepository = Depends(
+        get_outsource_company_process_repo,
+    ),
+    processes: ProcessRepository = Depends(get_process_repo),
+    user: CurrentUser = Depends(get_current_user),
+) -> OutsourceCompanyService:
+    return OutsourceCompanyService(
+        companies=companies, junction=junction, processes=processes,
+        current_user=user,
+    )
+
+
+# ============================================================
+# 外协报价 DI（2026-07-16 新增）
+# ============================================================
+def get_outsource_quote_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceQuoteRepository:
+    return OutsourceQuoteRepository(session)
+
+
+def get_outsource_quote_event_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceQuoteEventRepository:
+    return OutsourceQuoteEventRepository(session)
+
+
+def get_outsource_quote_service(
+    quotes: OutsourceQuoteRepository = Depends(get_outsource_quote_repo),
+    quote_events: OutsourceQuoteEventRepository = Depends(
+        get_outsource_quote_event_repo,
+    ),
+    parts: PartRepository = Depends(get_part_repository),
+    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
+    processes: ProcessRepository = Depends(get_process_repo),
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> OutsourceQuoteService:
+    return OutsourceQuoteService(
+        quotes=quotes,
+        quote_events=quote_events,
+        parts=parts,
+        companies=companies,
+        processes=processes,
+        customers=CustomerRepository(session),
+        part_events=PartEventRepository(session),
+        current_user=user,
     )

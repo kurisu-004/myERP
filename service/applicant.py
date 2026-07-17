@@ -352,6 +352,7 @@ class ApplicantService:
         return [
             ApplicantOut(
                 id=r.id,
+                version=r.version,
                 name=r.name,
                 customer_id=r.customer_id,
                 customer_name=cust_map.get(r.customer_id),

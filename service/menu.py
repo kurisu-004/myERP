@@ -26,6 +26,7 @@ def _to_tree(rows: list[MenuRow]) -> list[MenuNodeOut]:
     nodes: dict[int, MenuNodeOut] = {
         r.id: MenuNodeOut(
             id=r.id,
+            version=r.version,
             parent_id=r.parent_id,
             code=r.code,
             title=r.title,

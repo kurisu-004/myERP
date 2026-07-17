@@ -16,6 +16,7 @@ class MenuRow:
     """
 
     id: int
+    version: int
     parent_id: int | None
     code: str
     title: str
@@ -43,6 +44,7 @@ class MenuRepository:
         stmt = (
             select(
                 TMenu.id,
+                TMenu.version,
                 TMenu.parent_id,
                 TMenu.code,
                 TMenu.title,
@@ -67,12 +69,13 @@ class MenuRepository:
         return [
             MenuRow(
                 id=int(r[0]),
-                parent_id=r[1],
-                code=r[2],
-                title=r[3],
-                path=r[4],
-                icon=r[5],
-                sort_order=int(r[6]),
+                version=int(r[1]),
+                parent_id=r[2],
+                code=r[3],
+                title=r[4],
+                path=r[5],
+                icon=r[6],
+                sort_order=int(r[7]),
             )
             for r in result.all()
         ]

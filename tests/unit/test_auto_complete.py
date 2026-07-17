@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -58,7 +58,9 @@ class TestFindDeliveredOlderThan:
         old_part = _make_part(part_id=1001)
         session.execute.return_value = _FakeResult([old_part])
 
-        threshold = datetime.utcnow() - timedelta(days=7)
+        # 2026-07-15 修复 deprecation：datetime.utcnow() 已废弃，
+        # 改用 `datetime.now(timezone.utc).replace(tzinfo=None)` 保持 naive。
+        threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
         rows = await repo.find_delivered_older_than(threshold=threshold, limit=200)
 
         assert rows == [old_part]
@@ -70,7 +72,7 @@ class TestFindDeliveredOlderThan:
     ) -> None:
         """无候选 → 返回空 list。"""
         session.execute.return_value = _FakeResult([])
-        threshold = datetime.utcnow() - timedelta(days=7)
+        threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
         rows = await repo.find_delivered_older_than(threshold=threshold)
         assert rows == []
 

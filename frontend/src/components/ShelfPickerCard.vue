@@ -1,16 +1,20 @@
 <!--
   ShelfPickerCard.vue
 
-  共享 HMI RETURN 卡片网格 picker 的单张卡片（2026-07-10）。
+  @deprecated 2026-07-17：视觉部分已迁到 HmiPickerCard.vue（kind='shelf'）。
+  本文件保留作为 fallback；ShelfPickerDialog 现在消费 HmiPickerCard，
+  旧 props 接口 shelf/isSelected 已不再被引用。下个 sprint 整体迁移完成后删除本文件。
+
+  历史背景（2026-07-10）：共享 HMI RETURN 卡片网格 picker 的单张卡片。
   - 大卡片：≥ 160×120 px（手套触屏友好）
   - 显示架号、名称、在架件数、映射工序 chips
   - 推荐状态：橙色边框 + ✓ 推荐 徽章
   - 选中状态：绿色背景 + 边框
 
-  props:
+  原 props:
     shelf: ShelfForReturn
     isSelected: boolean
-  emits:
+  原 emits:
     select(shelf.id)
 -->
 <template>

@@ -8,6 +8,8 @@ from . import (
     customer,
     delivery_note,
     drawing,
+    outsource_company,
+    outsource_quote,
     part,
     process,
     shelf,
@@ -20,11 +22,17 @@ from . import (
 api_router = APIRouter(prefix="/v1")
 api_router.include_router(auth.router)
 api_router.include_router(user.router)
+# 共享 HMI picker 路由（任意已登录，含 SHELF_ACCOUNT 共享账号；2026-07-10）。
+# ⚠️ 必须在 shelf.read_router **之前** 注册：read_router 含 /{shelf_id:int}
+# catch-all，若先注册会把 GET /shelves/processes（2026-07-17 新增批量端点）以及
+# /shelves/for-return（2026-07-13）/shelves/for-inspection（2026-07-13）三个字面
+# 子路径截胡到 get_shelf 并因 "processes"/"for-return"/"for-inspection" → int
+# 转换失败返回 40001 VALIDATION_ERROR（HTTP 422）；而前端 useShelfProcessFilter
+# 静默 catch 后 loaded=false 退回全集、shelf↔process 下拉无联动。（2026-07-17 修）
+api_router.include_router(shelf.picker_router)
 # 货架：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER-only）两个并列 router
 api_router.include_router(shelf.read_router)
 api_router.include_router(shelf.write_router)
-# 共享 HMI picker 路由（任意已登录，含 SHELF_ACCOUNT 共享账号；2026-07-10）
-api_router.include_router(shelf.picker_router)
 # 客户管理：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER+CLERK）两个并列 router
 api_router.include_router(customer.read_router)
 api_router.include_router(customer.write_router)
@@ -54,3 +62,9 @@ api_router.include_router(work_type.write_router)
 # 工序：读（MANAGER+CLERK+CNC_PROGRAMMER+SHELF_ACCOUNT）+ 写（MANAGER-only）
 api_router.include_router(process.read_router)
 api_router.include_router(process.write_router)
+# 外协公司：读（MANAGER+CLERK+CNC_PROGRAMMER）+ 写（MANAGER+CLERK）两个并列 router（2026-07-15）
+api_router.include_router(outsource_company.read_router)
+api_router.include_router(outsource_company.write_router)
+# 外协报价：读（MANAGER+CLERK）+ 写（MANAGER+CLERK；approve/reject 是 MANAGER-only）两个并列 router（2026-07-16）
+api_router.include_router(outsource_quote.read_router)
+api_router.include_router(outsource_quote.write_router)

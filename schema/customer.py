@@ -37,6 +37,7 @@ class CustomerOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     name: str
     parent_id: IdStr = None
     parent_name: str | None = None

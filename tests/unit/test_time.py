@@ -19,9 +19,10 @@ def test_now_naive_returns_naive_datetime() -> None:
 
 def test_now_naive_matches_utc_plus_eight_hours() -> None:
     """now_naive() 应该与「UTC + 8h」在同一秒内（精度内）。"""
-    from datetime import datetime as _dt
-
-    utc_now = _dt.utcnow()
+    # 2026-07-15 修复 deprecation：datetime.utcnow() 已废弃，
+    # 改用 `datetime.now(timezone.utc)` 拿 timezone-aware 当前 UTC 时间，
+    # 再 `.replace(tzinfo=None)` 转 naive 与 now_naive() 同源做减法。
+    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
     expected = utc_now + timedelta(hours=8)
     actual = now_naive()
     # 允许 ±1s 误差（程序执行时间）

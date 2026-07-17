@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -96,7 +96,10 @@ def service(
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    # 2026-07-15 修复 deprecation：datetime.utcnow() 已废弃。
+    # 改用 `datetime.now(timezone.utc).replace(tzinfo=None)` 保持 naive
+    # datetime（与 DB `timestamp without time zone` 列兼容）。
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _make_user(id: int, **kwargs: object) -> TUser:

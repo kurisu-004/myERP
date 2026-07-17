@@ -26,6 +26,10 @@
           <el-icon><HomeFilled /></el-icon>
           <span>返回首页</span>
         </el-button>
+        <el-button type="warning" plain @click="backToBadge">
+          <el-icon><Refresh /></el-icon>
+          <span>重新扫工牌</span>
+        </el-button>
       </div>
     </div>
 
@@ -143,7 +147,7 @@ import { useScanSession } from '@/composables/useScanSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 
 const router = useRouter()
-const { worker, requireWorker } = useScanSession()
+const { worker, requireWorker, reset: resetScanSession } = useScanSession()
 
 const loading = ref(true)
 // 第一屏：按客户分组的预览（用 PartListItem 即可；customer_id 不可用，按 path 分组）
@@ -319,6 +323,11 @@ async function onFinish(): Promise<void> {
 
 function goHome(): void {
   void router.push('/dashboard')
+}
+
+function backToBadge(): void {
+  resetScanSession()
+  void router.replace('/scan/badge')
 }
 
 // 全局扫码监听（复用现有 useBarcodeScanner）

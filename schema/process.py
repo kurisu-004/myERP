@@ -15,7 +15,6 @@ class ProcessCreateRequest(BaseModel):
     category: ProcessCategory = Field(
         description="INHOUSE 自产 / OUTSOURCE 外协",
     )
-    is_inspection: bool = Field(default=False, description="是否品检工序")
     sort_order: int = Field(default=0, ge=0)
     description: str | None = Field(default=None, max_length=200)
 
@@ -30,7 +29,6 @@ class ProcessUpdateRequest(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=50)
     category: ProcessCategory | None = None
-    is_inspection: bool | None = None
     sort_order: int | None = Field(default=None, ge=0)
     description: str | None = Field(default=None, max_length=200)
 
@@ -46,10 +44,10 @@ class ProcessOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；每次 UPDATE 自增；前端可用于冲突检测")
     code: str
     name: str
     category: ProcessCategory
-    is_inspection: bool
     sort_order: int
     description: str | None = None
     created_at: datetime

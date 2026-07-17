@@ -29,9 +29,14 @@
         <el-tag type="warning" effect="dark">放 回</el-tag>
       </div>
       <div class="topbar-right">
+        <HeldPartsBadge v-if="worker?.id" :worker-id="String(worker.id)" :auto-open-on-change="true" />
         <el-button type="info" plain @click="backToAction">
           <el-icon><Back /></el-icon>
           <span>返回操作选择</span>
+        </el-button>
+        <el-button type="warning" plain @click="backToBadge">
+          <el-icon><Refresh /></el-icon>
+          <span>重新扫工牌</span>
         </el-button>
       </div>
     </div>
@@ -152,46 +157,25 @@
       </div>
     </div>
 
-    <!-- 下一道工序选择对话框 -->
-    <el-dialog
+    <!-- 下一道工序选择对话框（2026-07-17 升级为大卡 + INHOUSE/OUTSOURCE tabs） -->
+    <ProcessPickerDialog
+      v-if="showProcessDialog"
       v-model="showProcessDialog"
-      title="选择下一道工序"
-      width="420px"
-      :close-on-click-modal="false"
-      :close-on-press-escape="false"
-    >
-      <el-radio-group
-        v-model="selectedNextProcessId"
-        style="display: flex; flex-direction: column; gap: 8px"
-      >
-        <el-radio
-          v-for="p in processes"
-          :key="p.id"
-          :value="p.id"
-          border
-        >
-          <span style="font-family: 'SF Mono', Menlo, Consolas, monospace; font-weight: 600">{{ p.code }}</span>
-          <span style="margin-left: 8px">{{ p.name }}</span>
-          <el-tag
-            :type="p.category === 'INHOUSE' ? 'primary' : 'warning'"
-            size="small"
-            style="margin-left: 8px"
-          >{{ PROCESS_CATEGORY_LABEL[p.category] }}</el-tag>
-        </el-radio>
-      </el-radio-group>
-      <template #footer>
-        <el-button @click="onProcessCancel">取消</el-button>
-        <el-button type="primary" :disabled="!selectedNextProcessId" @click="onProcessConfirm">下一步</el-button>
-      </template>
-    </el-dialog>
+      kind="return"
+      :current-process-id="selectedPart?.next_process_id ?? null"
+      @confirm="onProcessPicked"
+      @cancel="onProcessCancel"
+    />
 
     <!-- 共享 HMI RETURN 货架选择卡片网格 picker -->
     <ShelfPickerDialog
       v-if="showShelfPicker"
       v-model="showShelfPicker"
       :next-process-id="selectedNextProcessId || ''"
+      empty-action-label="重新选择工序"
       @confirm="onShelfConfirm"
       @cancel="onShelfCancel"
+      @empty-action="onShelfEmpty"
     />
 
     <!-- 图纸 / 图片 全屏预览 -->
@@ -273,13 +257,16 @@ import PdfViewer from '@/components/PdfViewer.vue'
 import { getDownloadUrl, listPartFiles } from '@/api/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
+import { useScanBus } from '@/composables/useScanBus'
+import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
-import { listProcesses } from '@/api/process'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
-import { PROCESS_CATEGORY_LABEL, type Process } from '@/types/process'
+import ProcessPickerDialog from '@/views/scan/components/ProcessPickerDialog.vue'
+import type { Process } from '@/types/process'
 
 const router = useRouter()
-const { worker, requireWorker } = useScanSession()
+const { worker, requireWorker, reset: resetScanSession } = useScanSession()
+const { emitHeldChanged } = useScanBus()
 
 const parts = ref<PartItem[]>([])
 const loadingList = ref(false)
@@ -305,23 +292,18 @@ const IMAGE_TYPES = new Set(['PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'TIF', 'TIFF', 
 function isImage(t: string): boolean { return IMAGE_TYPES.has(t.toUpperCase()) }
 function isHeic(t: string): boolean { return t.toUpperCase() === 'HEIC' }
 
-// 工序选择
-const processes = ref<Process[]>([])
-const loadingProcesses = ref(false)
+// 工序选择（2026-07-17：ProcessPickerDialog 自管加载与展示，这里只保留 select 后的状态）
 const showProcessDialog = ref(false)
 const selectedNextProcessId = ref<string>('')
-const selectedNextProcessName = computed<string | null>(() => {
-  if (!selectedNextProcessId.value) return null
-  const p = processes.value.find(pp => pp.id === selectedNextProcessId.value)
-  return p ? `${p.code} ${p.name}` : null
-})
+const selectedNextProcessCode = ref<string>('')
+const selectedNextProcessName = ref<string>('')
 
 // 货架选择
 const showShelfPicker = ref(false)
 
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
-  await Promise.all([refresh(), loadProcesses()])
+  await refresh()
 })
 
 onBeforeUnmount(() => {
@@ -338,19 +320,6 @@ async function refresh(): Promise<void> {
     parts.value = []
   } finally {
     loadingList.value = false
-  }
-}
-
-async function loadProcesses(): Promise<void> {
-  loadingProcesses.value = true
-  try {
-    const resp = await listProcesses({ limit: 200 })
-    processes.value = resp.items
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '加载工序列表失败')
-    processes.value = []
-  } finally {
-    loadingProcesses.value = false
   }
 }
 
@@ -424,8 +393,10 @@ async function downloadPreview(): Promise<void> {
   }
 }
 
-function onProcessConfirm(): void {
-  if (!selectedNextProcessId.value) return
+function onProcessPicked(process: Process): void {
+  selectedNextProcessId.value = process.id
+  selectedNextProcessCode.value = process.code
+  selectedNextProcessName.value = `${process.code} ${process.name}`
   showProcessDialog.value = false
   showShelfPicker.value = true
 }
@@ -435,9 +406,23 @@ function onProcessCancel(): void {
   cancelSelect()
 }
 
+/**
+ * 工人选了无映射架的工序 → ShelfPickerDialog 返空 → 点「重新选择工序」按钮。
+ * 关闭 shelf picker，重新弹工艺序 picker 让工人换一个。
+ */
+function onShelfEmpty(): void {
+  showShelfPicker.value = false
+  showProcessDialog.value = true
+}
+
 async function onShelfConfirm(shelfId: string): Promise<void> {
   showShelfPicker.value = false
-  if (!selectedPart.value || !selectedNextProcessId.value || !worker.value) return
+  if (!selectedPart.value || !selectedNextProcessId.value || !worker.value) {
+    // 2026-07-17：原来这里是静默 return，工人以为操作失败；
+    // 改为显式提示，避免误判
+    ElMessage.warning('选择已重置，请重新选择零件')
+    return
+  }
   submitting.value = true
   try {
     await scanPart({
@@ -454,6 +439,7 @@ async function onShelfConfirm(shelfId: string): Promise<void> {
     )
     cancelSelect()
     await refresh()
+    emitHeldChanged()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '放回失败')
   } finally {
@@ -474,6 +460,12 @@ function cancelSelect(): void {
 function backToAction(): void {
   cancelSelect()
   void router.replace('/scan/action')
+}
+
+function backToBadge(): void {
+  cancelSelect()
+  resetScanSession()
+  void router.replace('/scan/badge')
 }
 
 // --- 交期辅助（与 ScanPickParts 一致） ---

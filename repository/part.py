@@ -454,3 +454,121 @@ class PartRepository:
                     | TPart.name.ilike(f"{kw}%")
                 )
         return stmt
+
+    # ============================================================
+    # 外协列表专用（2026-07-16 新增）
+    # ============================================================
+    async def list_outsource_sendable(
+        self,
+        *,
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        is_urgent: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """外协发送一览：可发送外协的零件。
+
+        资格条件（跟前端按钮 enabled 逻辑 + 后端 send_to_outsource 服务端兜底一致）：
+        - status='PENDING'（办公室待生产）
+        - OR (status='IN_PROCESS' + location='PRODUCTION_SHELF'
+              + next_process.category='OUTSOURCE')
+
+        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
+
+        注意：本查询先在 SQL 层把 PENDING 取齐，IN_PROCESS/PRODUCTION_SHELF
+        这一支用 `next_process_id IN (subquery)` 取 OUTSOURCE 工序集，
+        比 LEFT JOIN t_process 更轻（不在零件行附带 process 全字段）。
+        """
+        from sqlalchemy import select as _select
+        from model import TProcess as _TProc
+        from model.enums import ProcessCategory as _PC
+
+        # 找所有 OUTSOURCE 工序的 id 子集
+        outsource_proc_ids_subq = (
+            _select(_TProc.id)
+            .where(_TProc.deleted_at.is_(None))
+            .where(_TProc.category == _PC.OUTSOURCE.value)
+        )
+
+        stmt = _select(TPart).where(
+            TPart.deleted_at.is_(None) if not include_deleted else True,
+        )
+        # 主过滤：可外协的两组合取 OR
+        from sqlalchemy import or_ as _or
+        stmt = stmt.where(
+            _or(
+                TPart.status == "PENDING",
+                _and_chained(
+                    TPart.status == "IN_PROCESS",
+                    TPart.location == "PRODUCTION_SHELF",
+                    TPart.next_process_id.in_(outsource_proc_ids_subq),
+                ),
+            )
+        )
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if is_urgent is not None:
+            stmt = stmt.where(TPart.is_urgent.is_(is_urgent))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
+                )
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        ).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_outsource_receivable(
+        self,
+        *,
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        is_urgent: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """外协接收一览：status='OUTSOURCE' + location='OUTSOURCE_COMPANY' 的零件。
+
+        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
+        """
+        stmt = select(TPart).where(
+            TPart.status == "OUTSOURCE",
+            TPart.location == "OUTSOURCE_COMPANY",
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if is_urgent is not None:
+            stmt = stmt.where(TPart.is_urgent.is_(is_urgent))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
+                )
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        ).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+
+def _and_chained(*clauses):
+    """简易 AND 链组合（与 SQLAlchemy 的 and_ 等价但避免 import 冲突）。"""
+    from sqlalchemy import and_
+    return and_(*clauses)

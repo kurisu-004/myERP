@@ -29,9 +29,11 @@ export interface PartItem {
   customer_path: string | null
   assembly_id: string | null
   current_holder_id: string | null
-  current_holder_kind: 'shelf' | 'worker' | null
+  current_holder_kind: 'shelf' | 'worker' | 'outsource_company' | null
   shelf_code: string | null
   worker_name: string | null
+  /** holder 是外协公司时的公司名（2026-07-15 接入） */
+  outsource_company_name: string | null
   location: string | null
   placed_at: string | null
   /** 下一道工序 id（NULL = 未设置） */
@@ -136,6 +138,8 @@ export interface PartEvent {
   note: string | null
   created_by: string | null
   operator_username: string | null
+  // 2026-07-17：操作者姓名（display_name）；前端 UI 默认用它，username 仅作 fallback
+  operator_name: string | null
   created_at: string
 }
 
@@ -420,6 +424,86 @@ export async function printPartDrawing(partId: string): Promise<Blob> {
   const resp = await api.get<Blob>(
     `/parts/${encodeURIComponent(partId)}/print-drawing`,
     { responseType: 'blob' },
+  )
+  return resp.data
+}
+
+/**
+ * 批量生成多个零件的双面打印 PDF 并合并为一个 PDF（2026-07-17 接入）。
+ * 后端把 N 个 part 的双面 PDF 用 pypdf.PdfWriter 顺序拼接成单文件返回。
+ * 前端拿到 Blob 后用单 iframe 一次 print()，避免 N 次打印弹窗。
+ */
+export async function printPartDrawingBatch(partIds: string[]): Promise<Blob> {
+  const resp = await api.post<Blob>(
+    '/parts/print-drawing-batch',
+    { part_ids: partIds },
+    { responseType: 'blob' },
+  )
+  return resp.data
+}
+
+// ============================================================
+// 外协流程（2026-07-15 新增）
+// ============================================================
+export interface SendToOutsourcePayload {
+  /** 外协公司 id（雪花 ID 字符串） */
+  outsource_company_id: string
+  /** 外协工序 id（雪花 ID 字符串；JS Number 会丢精度） */
+  next_process_id: string
+}
+
+/**
+ * PENDING / IN_PROCESS → OUTSOURCE：把零件发送给外协公司。
+ * 后端会校验公司存在 + 启用 + 工序 OUTSOURCE + 公司映射了该工序。
+ */
+export async function sendToOutsource(
+  partId: string,
+  payload: SendToOutsourcePayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${encodeURIComponent(partId)}/send-to-outsource`,
+    payload,
+  )
+  return resp.data
+}
+
+export interface ReceiveFromOutsourcePayload {
+  shelf_id: string
+  /** 下一道工序 id（雪花 ID 字符串；JS Number 会丢精度） */
+  next_process_id: string
+}
+
+export interface ReceiveToInspectionPayload {
+  shelf_id: string
+  /** True: 自动通过品检 → READY_TO_SHIP（"送货流程"快捷分支，2026-07-16 加） */
+  auto_pass_inspection?: boolean
+}
+
+/**
+ * OUTSOURCE → IN_PROCESS：从外协回收，下发到生产货架继续加工。
+ */
+export async function receiveFromOutsource(
+  partId: string,
+  payload: ReceiveFromOutsourcePayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${encodeURIComponent(partId)}/receive-from-outsource`,
+    payload,
+  )
+  return resp.data
+}
+/**
+ * 2026-07-16：OUTSOURCE → INSPECTION：外协件直接送检（跳过生产货架）。
+ * auto_pass_inspection=True 时连发 pass_inspection 一次推到 READY_TO_SHIP
+ * （"送货流程" 快捷分支 = OUTSOURCE → INSPECTION → READY_TO_SHIP）。
+ */
+export async function receiveFromOutsourceToInspection(
+  partId: string,
+  payload: ReceiveToInspectionPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${encodeURIComponent(partId)}/receive-from-outsource-to-inspection`,
+    payload,
   )
   return resp.data
 }

@@ -75,7 +75,6 @@ class ProcessService:
             code=data.code,
             name=data.name,
             category=data.category.value,
-            is_inspection=data.is_inspection,
             sort_order=data.sort_order,
             description=data.description,
         )
@@ -98,14 +97,16 @@ class ProcessService:
             p.name = data.name.strip()
         if data.category is not None:
             p.category = data.category.value
-        if data.is_inspection is not None:
-            p.is_inspection = data.is_inspection
         if data.sort_order is not None:
             p.sort_order = data.sort_order
         if data.description is not None:
             p.description = data.description
         p.updated_by = self._user_id
         await self.processes.update(p)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
+        # 避免 _process_to_out 同步读 updated_at 触发 MissingGreenlet
+        # （与 service/worker.py:159-163 / service/user.py:121-126 同款）
+        await self.processes.session.refresh(p)
         return _process_to_out(p)
 
     async def soft_delete_process(self, process_id: int) -> None:
@@ -139,10 +140,10 @@ class ProcessService:
 def _process_to_out(p: TProcess) -> ProcessOut:
     return ProcessOut(
         id=p.id,
+        version=p.version,
         code=p.code,
         name=p.name,
         category=ProcessCategory(p.category),
-        is_inspection=p.is_inspection,
         sort_order=p.sort_order,
         description=p.description,
         created_at=p.created_at,

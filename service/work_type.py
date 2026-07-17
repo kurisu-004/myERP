@@ -147,6 +147,7 @@ class WorkTypeService:
 def _work_type_to_out(wt: TWorkType) -> WorkTypeOut:
     return WorkTypeOut(
         id=wt.id,
+        version=wt.version,
         code=wt.code,
         name=wt.name,
         description=wt.description,

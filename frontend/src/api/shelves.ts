@@ -113,3 +113,23 @@ export async function listShelvesForInspection(): Promise<ShelfForReturnResult> 
   const resp = await api.get<ShelfForReturnResult>('/shelves/for-inspection')
   return resp.data
 }
+
+/**
+ * 2026-07-17 新增：批量取所有 active 货架的工序 id 列表。
+ * 后端 `GET /shelves/processes`
+ * 返回 `{items: [{shelf_id, process_ids}, ...]}`——空映射的货架不出现在 items 中。
+ *
+ * 给 `useShelfProcessFilter` composable 一次性消费，避免弹窗打开时
+ * N+1 次 `GET /shelves/{id}/processes` 调用。
+ */
+export interface ShelfProcessMapping {
+  shelf_id: string
+  process_ids: string[]
+}
+export interface ShelfProcessMappingsResult {
+  items: ShelfProcessMapping[]
+}
+export async function getAllShelfProcessMappings(): Promise<ShelfProcessMappingsResult> {
+  const resp = await api.get<ShelfProcessMappingsResult>('/shelves/processes')
+  return resp.data
+}

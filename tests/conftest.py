@@ -124,6 +124,10 @@ def _run_alembic_upgrade_head_sync() -> None:
     """在测试容器上跑迁移。env 已经在 conftest 顶部注入过了。
 
     必须在独立线程里跑——alembic 内部用了 asyncio.run()，不能在已有 event loop 里调。
+
+    用 `upgrade heads`（复数）而不是 `upgrade head`：当前 alembic 拓扑有
+    `schema/003 + prod_data/002` 两个 head；用 `head`（单数）会报
+    `Multiple head revisions` 错误。
     """
     from alembic import command
     from alembic.config import Config
@@ -132,7 +136,6 @@ def _run_alembic_upgrade_head_sync() -> None:
     cfg.set_main_option(
         "sqlalchemy.url", _os.environ["DATABASE_URL"]
     )  # alembic.ini 留空时保险起见再设一次
-    # 多 head 时（schema/001 + schema/005 + prod_data/002），用 "heads" 拉全部
     command.upgrade(cfg, "heads")
 
 
@@ -197,6 +200,8 @@ async def _postgres_test_lifecycle():
 # 业务表清单（按"先子后父"顺序 truncate，避免 FK 冲突；本项目无物理 FK，
 # 但仍按依赖顺序保持稳定）。
 _BUSINESS_TABLES = (
+    "t_outsource_quote_event",
+    "t_outsource_quote",
     "t_part_event",
     "t_work_type_process",
     "t_part_file",

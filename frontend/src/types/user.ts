@@ -3,6 +3,8 @@ export type UserRole = 'MANAGER' | 'SHELF_ACCOUNT' | 'CLERK' | 'INSPECTOR' | 'CN
 
 export interface UserOut {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   username: string
   full_name: string
   phone: string | null
@@ -15,6 +17,8 @@ export interface UserOut {
 
 export interface UserRoleOut {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   role: string
   scope_type: string | null
   scope_id: string | null

@@ -96,6 +96,56 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-16：commit 8 — /outsource 老入口重定向到 /outsource/companies
+        path: '/outsource',
+        redirect: '/outsource/companies',
+      },
+      {
+        // 2026-07-16：外协厂一览（MANAGER + CLERK，commit 8 后叶子挂分组）
+        path: 'outsource/companies',
+        name: 'OutsourceCompaniesList',
+        component: () => import('@/views/outsource/OutsourceList.vue'),
+        meta: {
+          title: '外协厂一览',
+          icon: 'OfficeBuilding',
+          menuCode: 'outsource_companies_list',
+          breadcrumb: [{ label: '外协管理' }, { label: '外协厂一览' }],
+        },
+      },
+      {
+        // 2026-07-16：报价一览（MANAGER + CLERK）
+        path: 'outsource/quotes',
+        name: 'OutsourceQuoteList',
+        component: () => import('@/views/outsource/OutsourceQuoteList.vue'),
+        meta: {
+          title: '报价一览',
+          icon: 'Document',
+          menuCode: 'outsource_quotes_list',
+          breadcrumb: [{ label: '外协管理' }, { label: '报价一览' }],
+        },
+      },
+      {
+        // 2026-07-16：外协发送/接收（MANAGER + CLERK；合并原 send + receive）
+        path: 'outsource/send-receive',
+        name: 'OutsourceSendReceive',
+        component: () => import('@/views/outsource/OutsourceSendReceive.vue'),
+        meta: {
+          title: '外协发送/接收',
+          icon: 'Promotion',
+          menuCode: 'outsource_send_receive_list',
+          breadcrumb: [{ label: '外协管理' }, { label: '外协发送/接收' }],
+        },
+      },
+      {
+        // 2026-07-16 兼容：旧路径 → 重定向到新页面，URL ?tab= 同步
+        path: 'outsource/send',
+        redirect: { path: '/outsource/send-receive', query: { tab: 'sendable' } },
+      },
+      {
+        path: 'outsource/receive',
+        redirect: { path: '/outsource/send-receive', query: { tab: 'receiving' } },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
@@ -257,6 +307,20 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   next()
+})
+
+// 全局后置守卫：进入 Dashboard 路由就重连 WS（修「点首页不会自动建立连接」bug）
+//
+// 实现：afterEach 而非 beforeEach —— beforeEach 在路由切换「前」跑，此时
+// router-view 还没切换，但用户在 Dashboard 上再次点 Dashboard 同路径
+// Vue Router 是 no-op，beforeEach 不会被重复触发；用 afterEach 同样能在 to 变化时
+// 回调一次，且不影响路由解析。
+//
+// 动态 import 防循环依赖（router → api/dashboard → 不应回 router）。
+router.afterEach((to) => {
+  if (to.name === 'Dashboard') {
+    void import('@/api/dashboard').then((m) => m.reconnectDashboard())
+  }
 })
 
 export default router

@@ -36,6 +36,25 @@
           <span>从应标 Excel 导入</span>
         </el-button>
 
+        <!-- 批量打印图纸 toggle（2026-07-17 接入） -->
+        <el-button
+          v-if="!batchMode"
+          type="success"
+          plain
+          @click="onEnterBatchMode"
+        >
+          <el-icon><Printer /></el-icon>
+          <span>批量打印图纸</span>
+        </el-button>
+        <el-button
+          v-else
+          type="warning"
+          @click="onExitBatchMode"
+        >
+          <el-icon><Close /></el-icon>
+          <span>退出批量模式</span>
+        </el-button>
+
         <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
           编程员视图：默认查看「编程中」零件
         </el-tag>
@@ -53,9 +72,17 @@
         size="small"
         :default-sort="defaultSort"
         :row-class-name="rowClassName"
+        row-key="id"
         @sort-change="onSortChange"
+        @selection-change="onSelectionChange"
         :empty-text="emptyText"
       >
+        <el-table-column
+          v-if="batchMode"
+          type="selection"
+          width="55"
+          :reserve-selection="true"
+        />
         <el-table-column
           prop="serial_no"
           label="序列号"
@@ -251,6 +278,31 @@
       </el-table>
     </div>
 
+    <!-- 批量打印图纸 — 底部 action bar（2026-07-17） -->
+    <div v-if="batchMode" class="batch-bar">
+      <div class="bar-info">
+        <span>已选 <strong>{{ selectedRows.length }}</strong> 件</span>
+        <el-button link size="small" @click="onSelectAllPage">全选当前页</el-button>
+        <el-button link size="small" @click="onClearSelection">清空选择</el-button>
+      </div>
+      <el-button
+        type="primary"
+        :loading="batchPrinting"
+        :disabled="selectedRows.length === 0"
+        @click="onBatchPrint"
+      >
+        <el-icon><Printer /></el-icon>
+        <span>打印预览（{{ selectedRows.length }} 件）</span>
+      </el-button>
+    </div>
+
+    <!-- 隐藏 iframe：批量打印用（仿 FileListCard.vue 的 print 实现） -->
+    <iframe
+      ref="batchPrintIframeRef"
+      style="position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; border: 0; opacity: 0; pointer-events: none;"
+      title="批量打印预览"
+    />
+
     <div class="pagination">
       <el-pagination
         v-model:current-page="page"
@@ -288,7 +340,7 @@
               filterable
             >
               <el-option
-                v-for="s in shelves"
+                v-for="s in filteredShelves"
                 :key="s.id"
                 :label="s.name"
                 :value="s.id"
@@ -303,7 +355,7 @@
               filterable
             >
               <el-option
-                v-for="p in processes"
+                v-for="p in filteredProcesses"
                 :key="p.id"
                 :label="`${p.code} / ${p.name}`"
                 :value="p.id"
@@ -336,13 +388,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Document, Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
+import {
+  Close,
+  Document,
+  Filter,
+  Printer,
+  RefreshLeft,
+  Search,
+} from '@element-plus/icons-vue'
 import {
   listParts,
   placeOnShelf,
+  printPartDrawingBatch,
   sendToProgramming,
   type ListPartsParams,
 } from '@/api/parts'
@@ -350,6 +410,7 @@ import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
+import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import type { Process } from '@/types/process'
 import {
   ORDER_STATUS_LABEL,
@@ -453,6 +514,70 @@ const pageSize = ref(20)
 const sortBy = ref<PartSortKey>('PLANNED_DELIVERY_DATE')
 const sortDir = ref<SortDir>('ASC')
 
+// ============ 批量打印（2026-07-17 接入）============
+const batchMode = ref(false)
+const selectedRows = ref<PartListItem[]>([])
+const batchPrinting = ref(false)
+const batchPrintIframeRef = ref<HTMLIFrameElement | null>(null)
+let batchPrintBlobUrl = ''
+
+function onEnterBatchMode(): void {
+  batchMode.value = true
+  selectedRows.value = []
+}
+function onExitBatchMode(): void {
+  batchMode.value = false
+  selectedRows.value = []
+}
+function onSelectionChange(rows: PartListItem[]): void {
+  selectedRows.value = rows
+}
+function onSelectAllPage(): void {
+  // el-table 默认全选仅当前页；这里把当前页 items 视为全选
+  selectedRows.value = [...items.value]
+}
+function onClearSelection(): void {
+  selectedRows.value = []
+}
+
+async function onBatchPrint(): Promise<void> {
+  if (selectedRows.value.length === 0) return
+  batchPrinting.value = true
+  try {
+    const ids = selectedRows.value.map((r) => r.id)
+    const blob = await printPartDrawingBatch(ids)
+    if (batchPrintBlobUrl) URL.revokeObjectURL(batchPrintBlobUrl)
+    batchPrintBlobUrl = URL.createObjectURL(blob)
+    const iframe = batchPrintIframeRef.value
+    if (!iframe) {
+      ElMessage.error('打印 iframe 未挂载，请刷新页面后重试')
+      return
+    }
+    iframe.src = batchPrintBlobUrl
+    iframe.onload = () => {
+      try {
+        iframe.contentWindow?.focus()
+        iframe.contentWindow?.print()
+      } catch {
+        // sandbox / cross-origin 等极端情况下 fallback 到新窗口打印
+        const w = window.open(batchPrintBlobUrl, '_blank')
+        if (w) w.print()
+      }
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '批量打印失败')
+  } finally {
+    setTimeout(() => { batchPrinting.value = false }, 800)
+  }
+}
+
+onBeforeUnmount(() => {
+  if (batchPrintBlobUrl) {
+    URL.revokeObjectURL(batchPrintBlobUrl)
+    batchPrintBlobUrl = ''
+  }
+})
+
 const SORT_PROP_MAP: Record<string, PartSortKey> = {
   serial_no: 'SERIAL_NO',
   drawing_no: 'DRAWING_NO',
@@ -499,6 +624,11 @@ async function fetchList(): Promise<void> {
     const resp = await listParts(buildParams())
     items.value = resp.items
     total.value = resp.total
+    // 批量模式下：剔除已不在当前页的失效勾选（仿 DeliveryNoteNew 模式）
+    if (batchMode.value) {
+      const validIds = new Set(items.value.map((r) => r.id))
+      selectedRows.value = selectedRows.value.filter((r) => validIds.has(r.id))
+    }
   } catch (e) {
     items.value = []
     total.value = 0
@@ -559,6 +689,17 @@ const dispatchNextProcessId = ref<string | null>(null)
 const dispatchPartId = ref<string | null>(null)
 const dispatchSubmitting = ref(false)
 const dispatchMode = ref<'direct' | 'cnc'>('direct')
+// 2026-07-17：useShelfProcessFilter 双向收窄货架/工序下拉
+const {
+  filteredShelves,
+  filteredProcesses,
+  load: loadShelfProcessMap,
+} = useShelfProcessFilter(
+  shelves,
+  processes,
+  dispatchShelfId,
+  dispatchNextProcessId,
+)
 
 async function onDispatch(row: PartListItem): Promise<void> {
   dispatchPartId.value = row.id
@@ -572,6 +713,8 @@ async function onDispatch(row: PartListItem): Promise<void> {
     ])
     shelves.value = shelfResp.items
     processes.value = procResp.items
+    // 2026-07-17：弹窗打开后异步加载映射（不阻塞 dialog 出现）
+    void loadShelfProcessMap()
   } catch {
     shelves.value = []
     processes.value = []
@@ -650,6 +793,30 @@ async function onDispatchConfirm(): Promise<void> {
   justify-content: flex-end;
   align-items: center;
   padding: 0 4px;
+}
+
+/* 批量打印底部 action bar（仿 DeliveryNoteNew 范式） */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+}
+.batch-bar .bar-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #303133;
+  font-size: 13px;
+}
+.batch-bar .bar-info strong {
+  color: #409eff;
+  font-weight: 600;
 }
 
 .muted {

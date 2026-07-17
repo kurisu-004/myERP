@@ -31,12 +31,6 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="品检" width="80">
-          <template #default="{ row }">
-            <el-tag v-if="(row as Process).is_inspection" type="success" size="small">是</el-tag>
-            <span v-else>-</span>
-          </template>
-        </el-table-column>
         <el-table-column prop="sort_order" label="排序" width="80" />
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
@@ -60,12 +54,6 @@
             <el-option label="自产" value="INHOUSE" />
             <el-option label="外协" value="OUTSOURCE" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="品检工序">
-          <el-switch v-model="form.is_inspection" />
-          <span style="margin-left: 8px; color: #909399; font-size: 12px">
-            仅作 UI 提示,不影响取件过滤
-          </span>
         </el-form-item>
         <el-form-item label="排序">
           <el-input-number v-model="form.sort_order" :min="0" />
@@ -106,8 +94,8 @@ const dialogVisible = ref(false)
 const editing = ref<Process | null>(null)
 const form = reactive<{
   code: string; name: string; category: ProcessCategory
-  is_inspection: boolean; sort_order: number; description: string
-}>({ code: '', name: '', category: 'INHOUSE', is_inspection: false, sort_order: 0, description: '' })
+  sort_order: number; description: string
+}>({ code: '', name: '', category: 'INHOUSE', sort_order: 0, description: '' })
 
 async function fetchList(): Promise<void> {
   loading.value = true
@@ -128,14 +116,14 @@ async function fetchList(): Promise<void> {
 function onReset(): void { search.code_like = ''; search.category = undefined; fetchList() }
 function onNew(): void {
   editing.value = null
-  Object.assign(form, { code: '', name: '', category: 'INHOUSE', is_inspection: false, sort_order: 0, description: '' })
+  Object.assign(form, { code: '', name: '', category: 'INHOUSE', sort_order: 0, description: '' })
   dialogVisible.value = true
 }
 function onEdit(row: Process): void {
   editing.value = row
   Object.assign(form, {
     code: row.code, name: row.name, category: row.category,
-    is_inspection: row.is_inspection, sort_order: row.sort_order,
+    sort_order: row.sort_order,
     description: row.description ?? '',
   })
   dialogVisible.value = true
@@ -152,7 +140,6 @@ async function onSave(): Promise<void> {
       await updateProcess(editing.value.id, {
         name: form.name.trim(),
         category: form.category,
-        is_inspection: form.is_inspection,
         sort_order: form.sort_order,
         description: form.description.trim() || null,
       })
@@ -162,7 +149,6 @@ async function onSave(): Promise<void> {
         code: form.code.trim(),
         name: form.name.trim(),
         category: form.category,
-        is_inspection: form.is_inspection,
         sort_order: form.sort_order,
         description: form.description.trim() || null,
       })
@@ -179,7 +165,7 @@ async function onSave(): Promise<void> {
 
 function onDialogClosed(): void {
   editing.value = null
-  Object.assign(form, { code: '', name: '', category: 'INHOUSE', is_inspection: false, sort_order: 0, description: '' })
+  Object.assign(form, { code: '', name: '', category: 'INHOUSE', sort_order: 0, description: '' })
 }
 
 async function onDelete(row: Process): Promise<void> {

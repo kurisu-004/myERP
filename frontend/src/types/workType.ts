@@ -2,6 +2,8 @@
 
 export interface WorkType {
   id: string
+  /** 乐观锁版本号；每次 UPDATE 自增 */
+  version: number
   code: string
   name: string
   description: string | null

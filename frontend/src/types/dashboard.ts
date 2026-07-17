@@ -16,6 +16,9 @@ export interface DashboardPartItem {
   worker_name?: string | null
   customer_name: string | null
   customer_path: string | null
+  // Dashboard 大屏「下一工序」直接展示，省一次前端 /processes 请求
+  next_process_id: string | null
+  next_process_name: string | null
 }
 
 export interface DashboardShelfGroup {
