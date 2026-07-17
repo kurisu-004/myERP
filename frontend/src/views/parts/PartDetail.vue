@@ -48,6 +48,17 @@
               <el-date-picker v-model="form.actual_delivery_date" type="date" size="small" style="width:100%" />
             </el-descriptions-item>
             <el-descriptions-item label="单据 ID">#{{ part.id }}</el-descriptions-item>
+
+            <!-- 送货单字段（PR-F 2026-07-17） -->
+            <el-descriptions-item label="订单号">
+              <el-input v-model="form.order_no" size="small" placeholder="如 6200037950" />
+            </el-descriptions-item>
+            <el-descriptions-item label="系统交期">
+              <el-date-picker v-model="form.system_delivery_date" type="date" size="small" style="width:100%" />
+            </el-descriptions-item>
+            <el-descriptions-item label="备注">
+              <el-input v-model="form.note" size="small" placeholder="文员手填" />
+            </el-descriptions-item>
           </el-descriptions>
 
           <div class="edit-actions">
@@ -88,6 +99,20 @@
               <span v-else class="muted">—</span>
             </el-descriptions-item>
             <el-descriptions-item label="单据 ID">#{{ part.id }}</el-descriptions-item>
+
+            <!-- 送货单字段（PR-F 2026-07-17） -->
+            <el-descriptions-item label="订单号">
+              <span v-if="part.order_no">{{ part.order_no }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="系统交期">
+              <span v-if="part.system_delivery_date">{{ part.system_delivery_date }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="备注">
+              <span v-if="part.note">{{ part.note }}</span>
+              <span v-else class="muted">—</span>
+            </el-descriptions-item>
           </el-descriptions>
 
           <div class="edit-actions">
@@ -595,6 +620,9 @@ const form = reactive({
   is_urgent: false,
   planned_delivery_date: '',
   actual_delivery_date: '' as string | null,
+  order_no: '' as string | null,
+  system_delivery_date: '' as string | null,
+  note: '' as string | null,
 })
 
 function onStartEdit(): void {
@@ -605,6 +633,9 @@ function onStartEdit(): void {
   form.is_urgent = part.value.is_urgent
   form.planned_delivery_date = part.value.planned_delivery_date
   form.actual_delivery_date = part.value.actual_delivery_date
+  form.order_no = part.value.order_no
+  form.system_delivery_date = part.value.system_delivery_date
+  form.note = part.value.note
   editing.value = true
 }
 
@@ -622,6 +653,9 @@ async function onSave(): Promise<void> {
       is_urgent: form.is_urgent,
       planned_delivery_date: form.planned_delivery_date,
       actual_delivery_date: form.actual_delivery_date || null,
+      order_no: form.order_no || null,
+      system_delivery_date: form.system_delivery_date || null,
+      note: form.note || null,
     }
     part.value = await updatePart(partId.value, payload)
     ElMessage.success('保存成功')

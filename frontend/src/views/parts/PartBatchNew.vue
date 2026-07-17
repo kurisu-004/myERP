@@ -210,6 +210,30 @@
           </el-col>
         </el-row>
 
+        <!-- 送货单字段（PR-F 2026-07-17） -->
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="订单号">
+              <el-input v-model="form.orderNo" placeholder="如 6200037950（可选）" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="系统交期">
+              <el-date-picker
+                v-model="form.systemDeliveryDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="订单方系统内部交期（可选）"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="备注">
+          <el-input v-model="form.note" placeholder="文员手填备注（可选，送货单可见）" />
+        </el-form-item>
+
         <el-form-item label="图纸">
           <el-upload
             :auto-upload="false"
@@ -380,6 +404,10 @@ interface StagedEntry {
   isUrgent: boolean
   requestDate: string
   plannedDeliveryDate: string
+  /** PR-F 2026-07-17：送货单字段 */
+  orderNo: string | null
+  systemDeliveryDate: string | null
+  note: string | null
   drawingFile: File | null
   drawingName: string | null
   drawingUrl: string | null
@@ -420,6 +448,10 @@ interface FormState {
   isUrgent: boolean
   requestDate: string
   plannedDeliveryDate: string
+  /** PR-F 2026-07-17：送货单字段 */
+  orderNo: string | null
+  systemDeliveryDate: string | null
+  note: string | null
   drawingFile: File | null
   drawingName: string | null
   drawingUrl: string | null
@@ -460,6 +492,9 @@ const initialForm = (): FormState => ({
   isUrgent: false,
   requestDate: todayIso(),
   plannedDeliveryDate: '',
+  orderNo: null,
+  systemDeliveryDate: null,
+  note: null,
   drawingFile: null,
   drawingName: null,
   drawingUrl: null,
@@ -591,6 +626,9 @@ async function onAddConfirm(): Promise<void> {
       isUrgent: form.isUrgent,
       requestDate: form.requestDate,
       plannedDeliveryDate: form.plannedDeliveryDate,
+      orderNo: form.orderNo || null,
+      systemDeliveryDate: form.systemDeliveryDate || null,
+      note: form.note || null,
       drawingFile: form.drawingFile,
       drawingName: form.drawingName,
       drawingUrl: form.drawingUrl,
@@ -652,6 +690,9 @@ function onEditFromPreview(): void {
     isUrgent: target.isUrgent,
     requestDate: target.requestDate,
     plannedDeliveryDate: target.plannedDeliveryDate,
+    orderNo: target.orderNo,
+    systemDeliveryDate: target.systemDeliveryDate,
+    note: target.note,
     drawingFile: target.drawingFile,
     drawingName: target.drawingName,
     drawingUrl: target.drawingUrl,
@@ -737,6 +778,10 @@ async function onSubmit(): Promise<void> {
       request_date: s.requestDate,
       planned_delivery_date: s.plannedDeliveryDate,
       is_urgent: s.isUrgent,
+      /** PR-F 2026-07-17：送货单字段 */
+      order_no: s.orderNo,
+      system_delivery_date: s.systemDeliveryDate,
+      note: s.note,
       // customer_id 雪花 ID 字符串（CLAUDE.md §3）
       customer_id: s.customerId!,
     }))
