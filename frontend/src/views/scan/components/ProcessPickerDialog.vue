@@ -54,7 +54,6 @@
               :name="p.name"
               :category="p.category"
               :is-selected="p.id === selectedId"
-              :is-recommended="p.id === currentProcessId"
               @select="onSelect(p.id)"
             />
           </div>

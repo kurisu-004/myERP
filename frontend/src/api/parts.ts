@@ -126,6 +126,8 @@ export interface PartEvent {
   note: string | null
   created_by: string | null
   operator_username: string | null
+  // 2026-07-17：操作者姓名（display_name）；前端 UI 默认用它，username 仅作 fallback
+  operator_name: string | null
   created_at: string
 }
 

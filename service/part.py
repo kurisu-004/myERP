@@ -213,17 +213,22 @@ class PartService:
                 is_active=None, limit=max(100, len(worker_ids))
             )
             worker_map = {w.id: w for w in workers if w.id in worker_ids}
-        # operator_username：通过 t_user 现算（model 不冗余，避免 N 行事件 N 次 JOIN
-        # 单独建索引的代价；list_events 一次性查整本批 map）。
+        # operator_username / operator_name：通过 t_user 现算（model 不冗余，避免
+        # N 行事件 N 次 JOIN 单独建索引的代价；list_events 一次性查整本批 map）。
         operator_ids = {e.created_by for e in events if e.created_by}
         user_map: dict[int, str] = {}
+        user_name_map: dict[int, str] = {}
         if operator_ids:
             from model import TUser
             from sqlalchemy import select as _sa_select
             user_rows = await self.workers.session.execute(
-                _sa_select(TUser.id, TUser.username).where(TUser.id.in_(operator_ids))
+                _sa_select(TUser.id, TUser.username, TUser.full_name).where(
+                    TUser.id.in_(operator_ids)
+                )
             )
-            user_map = {int(uid): uname for uid, uname in user_rows.all()}
+            for uid, uname, fname in user_rows.all():
+                user_map[int(uid)] = uname
+                user_name_map[int(uid)] = fname or uname  # full_name 空时回退 username
         return [
             PartEventOut(
                 id=e.id,
@@ -240,6 +245,8 @@ class PartService:
                 note=e.note,
                 created_by=e.created_by,
                 operator_username=user_map.get(e.created_by) if e.created_by else None,
+                # 2026-07-17：历史记录中显示操作者姓名（username 仍保留供后端 audit 用）
+                operator_name=user_name_map.get(e.created_by) if e.created_by else None,
                 created_at=e.created_at,
             )
             for e in events

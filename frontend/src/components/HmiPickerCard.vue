@@ -1,8 +1,8 @@
 <!--
   HmiPickerCard.vue
 
-  共享 HMI 触摸友好大卡片（2026-07-17）：kind='process' | 'shelf'。
-  视觉规范沿用 ShelfPickerCard：min-height 140px、3px 实线边框、12px 圆角、推荐橙 + 选中绿、
+  共享 HMI 触摸友好大卡片（2026-07-17 创建，2026-07-17 移除「推荐」视觉提示）。
+  视觉规范沿用 ShelfPickerCard：min-height 140px、3px 实线边框、12px 圆角、选中绿、
   active scale(0.98)、-webkit-tap-highlight-color: transparent。
 
   用于：
@@ -14,11 +14,9 @@
     code: string                                     主标题（架号 / 工序代码），mono 字体
     name: string                                     副标题（中文名）
     isSelected: boolean                              选中态（绿色边框 + 渐变背景）
-    isRecommended?: boolean                          推荐态（橙色边框 + 渐变背景）
 
     # kind='process' 时必填
     category?: 'INHOUSE' | 'OUTSOURCE'
-    isCurrent?: boolean                              当前工件 next_process 的标记（与 isRecommended 同效）
 
     # kind='shelf' 时必填
     location?: string                                货架物理位置
@@ -31,10 +29,7 @@
 <template>
   <div
     class="hmi-card"
-    :class="{
-      'is-recommended': isRecommended,
-      'is-selected': isSelected,
-    }"
+    :class="{ 'is-selected': isSelected }"
     role="button"
     tabindex="0"
     @click="onClick"
@@ -43,16 +38,6 @@
   >
     <div class="card-header">
       <span class="code">{{ code }}</span>
-      <el-tag
-        v-if="isRecommended"
-        type="warning"
-        size="default"
-        effect="dark"
-        class="recommended-tag"
-      >
-        <el-icon><StarFilled /></el-icon>
-        <span>推荐</span>
-      </el-tag>
     </div>
     <div class="name">{{ name }}</div>
 
@@ -100,25 +85,21 @@
  * 视觉规范：与 ShelfPickerCard.vue（2026-07-10）像素级一致；本组件是 ShelfPickerCard
  * 的 kind='process' 扩展形态，kind='shelf' 是 ShelfPickerCard 视觉部分的等价实现。
  *
- * 推荐态触发条件：
- * - kind='process'：当 currentProcessId 命中此卡（工件 next_process 推荐） → 调用方传 isRecommended=true
- * - kind='shelf'：当 shelf.is_recommended 为 true → 调用方传 isRecommended=true
+ * 2026-07-17 移除：原 isRecommended prop（橙边框 + 渐变 + 「推荐」徽章）。流程不再做
+ * 自动推荐；工人点选 free。
  *
  * 选中态：调用方传 isSelected=true（通常由 selectedId 比较卡 id 得出）。
  */
-import { Box, StarFilled } from '@element-plus/icons-vue'
+import { Box } from '@element-plus/icons-vue'
 
 defineProps<{
   kind: 'process' | 'shelf'
   code: string
   name: string
   isSelected: boolean
-  isRecommended?: boolean
 
   /** kind='process' */
   category?: 'INHOUSE' | 'OUTSOURCE'
-  /** kind='process'：当前工件 next_process 推荐标识（HMI 视觉等价 isRecommended） */
-  isCurrent?: boolean
 
   /** kind='shelf' */
   location?: string
@@ -159,11 +140,6 @@ function onClick(): void {
   &:active {
     transform: scale(0.98);
   }
-  &.is-recommended {
-    border-color: #e6a23c;
-    background: linear-gradient(135deg, #fdf6ec 0%, #fff 60%);
-    box-shadow: 0 2px 8px rgba(230, 162, 60, 0.2);
-  }
   &.is-selected {
     border-color: #67c23a;
     background: linear-gradient(135deg, #f0f9eb 0%, #fff 60%);
@@ -183,13 +159,6 @@ function onClick(): void {
   font-weight: 700;
   color: #303133;
   letter-spacing: 1px;
-}
-.recommended-tag {
-  font-size: 14px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
 }
 .name {
   font-size: 16px;

@@ -66,7 +66,6 @@
         :current-load="s.current_load"
         :mapped-process-codes="s.mapped_process_codes"
         :is-selected="s.id === selectedId"
-        :is-recommended="s.is_recommended"
         @select="onSelect(s.id)"
       />
     </div>
@@ -146,13 +145,8 @@ async function loadReturn(nextProcessId: string): Promise<void> {
   try {
     const result = await listShelvesForReturn(nextProcessId)
     shelves.value = result.items
-    // 默认选中推荐架
-    const recommended = result.items.find((s) => s.is_recommended)
-    if (recommended) {
-      selectedId.value = recommended.id
-    } else {
-      selectedId.value = result.recommended_shelf_id || result.items[0]?.id || null
-    }
+    // 2026-07-17 移除「默认选中推荐架」行为：工人点选 free；推荐字段后端保留
+    // 用于客户端下次调用 if needed，但本 dialog 不再自动高亮 + 一键提交。
   } catch (err: unknown) {
     // 后端 BIZ_SHELF_NO_MATCH_FOR_PROCESS 等业务异常会进到这里
     const msg = err instanceof Error ? err.message : String(err)
@@ -173,12 +167,7 @@ async function loadInspection(): Promise<void> {
   try {
     const result = await listShelvesForInspection()
     shelves.value = result.items
-    const recommended = result.items.find((s) => s.is_recommended)
-    if (recommended) {
-      selectedId.value = recommended.id
-    } else {
-      selectedId.value = result.recommended_shelf_id || result.items[0]?.id || null
-    }
+    // 不自动选中推荐架（与 RETURN 一致，2026-07-17 移除）
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     errorMessage.value = msg || '加载失败'

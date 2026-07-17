@@ -403,9 +403,10 @@
                   <el-icon><User /></el-icon>
                   {{ evt.worker_name }}
                 </span>
-                <span v-if="evt.operator_username" class="operator-name">
+                <!-- 2026-07-17：历史记录中显示操作者姓名（优先 operator_name，username 仅作 fallback） -->
+                <span v-if="evt.operator_name || evt.operator_username" class="operator-name">
                   <el-icon><Setting /></el-icon>
-                  {{ evt.operator_username }}
+                  {{ evt.operator_name || evt.operator_username }}
                 </span>
               </div>
               <div v-if="evt.from_status || evt.to_status" class="event-line-2">
