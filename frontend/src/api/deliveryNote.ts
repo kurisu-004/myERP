@@ -1,4 +1,4 @@
-// 送货单 Excel 导出 API（PR-B 2026-07-10）
+// 送货单 Excel 导出 API（PR-F 2026-07-17 重设计）
 
 import { api } from '@/api/http'
 
@@ -11,8 +11,12 @@ export interface GenerateDeliveryNotePayload {
  * POST /api/v1/delivery-notes/generate
  * 返回 Blob，content-type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet。
  *
- * 模板文件路径由后端 DELIVERY_NOTE_TEMPLATE_PATH 控制；
- * 模板缺失 / 缺 sheet / part_ids 为空等错误都会以普通 BizError JSON 返回。
+ * 后端按所选零件所属 L1 root 的 `serial_prefix` 选对应 xlsx 模板：
+ * - F → docs/example/送货单_法拉.xlsx
+ * - L → docs/example/送货单_路达.xlsx
+ * - 未配置 / 跨客户 / 状态非 READY_TO_SHIP → BizError JSON
+ *
+ * Content-Disposition: attachment; filename="delivery_note_<prefix>_<yyyymmdd>.xlsx"
  */
 export async function generateDeliveryNote(
   partIds: string[],
