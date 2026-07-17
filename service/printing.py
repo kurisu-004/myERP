@@ -369,3 +369,42 @@ async def build_part_print_pdf(
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()
+
+
+# ============================================================
+# 批量入口
+# ============================================================
+async def build_parts_print_pdf_batch(
+    *,
+    part_ids: list[int],
+    parts: PartRepository,
+    part_files: PartFileRepository,
+) -> bytes:
+    """合并多个零件的双面 PDF 为单 PDF 字节流（2026-07-17 批量打印）。
+
+    - 顺序：按传入 part_ids 顺序逐个拼接（每 part 2 页：图页 + 条码页）。
+    - 失败处理：单 part 失败仅 warning 日志 + 跳过该 part，不阻断整批。
+      （用户至少能拿到其余图纸；失败的 detail 在后端日志排查。）
+    - 空集合：返回有效空 PDF（PdfWriter 0 page，PDF reader 仍可解析）。
+
+    用于前端「批量打印图纸」一次弹单次打印对话框：
+        POST /parts/print-drawing-batch  body: { part_ids: ["..."] }
+    """
+    logger = logging.getLogger(__name__)
+    writer = PdfWriter()
+    for pid in part_ids:
+        try:
+            pdf_bytes = await build_part_print_pdf(
+                part_id=pid, parts=parts, part_files=part_files,
+            )
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception as e:
+            # 单 part 失败跳过；常见：part 不存在 / 已软删 / 文件 COS 404
+            logger.warning("batch print skip part_id=%s: %s", pid, e)
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+    return out.getvalue()
