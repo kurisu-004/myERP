@@ -392,6 +392,9 @@ class PartService:
             actual_delivery_date=data.actual_delivery_date,
             status=PartStatus.PENDING.value,
             is_urgent=data.is_urgent,
+            order_no=data.order_no,
+            system_delivery_date=data.system_delivery_date,
+            note=data.note,
             customer_id=customer_id_int,
         )
         part.location = "OFFICE"
@@ -548,6 +551,12 @@ class PartService:
             part.actual_delivery_date = data.actual_delivery_date
         if data.is_urgent is not None:
             part.is_urgent = data.is_urgent
+        if data.order_no is not None:
+            part.order_no = data.order_no.strip() if data.order_no else None
+        if data.system_delivery_date is not None:
+            part.system_delivery_date = data.system_delivery_date
+        if data.note is not None:
+            part.note = data.note
         if data.customer_id is not None:
             new_cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
             if new_cid is None:
@@ -1497,6 +1506,9 @@ class PartService:
                     actual_delivery_date=p.actual_delivery_date,
                     is_urgent=p.is_urgent,
                     status=_parse_status(p.status) or PartStatus.PENDING,
+                    order_no=p.order_no,
+                    system_delivery_date=p.system_delivery_date,
+                    note=p.note,
                     customer_name=child_name,
                     parent_customer_name=parent_name,
                     customer_path=path,
@@ -1601,6 +1613,9 @@ class PartService:
                     actual_delivery_date=p.actual_delivery_date,
                     is_urgent=p.is_urgent,
                     status=_parse_status(p.status) or PartStatus.PENDING,
+                    order_no=p.order_no,
+                    system_delivery_date=p.system_delivery_date,
+                    note=p.note,
                     customer_name=child_name,
                     parent_customer_name=parent_name,
                     customer_path=path,

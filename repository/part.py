@@ -45,6 +45,29 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_by_ids(
+        self,
+        part_ids: list[int],
+        *,
+        include_deleted: bool = False,
+        order: str = "id",
+    ) -> list[TPart]:
+        """按 ID 批查（送货单生成专用，避免 N+1）。
+
+        - 默认按 id ASC（与 caller 传入顺序一致，方便 caller 直接对齐）
+        - include_deleted=False 时过滤掉软删件；caller 拿到 None 表示缺失。
+        - 空列表短路返 []，不触发 DB。
+        """
+        if not part_ids:
+            return []
+        stmt = select(TPart).where(TPart.id.in_(part_ids))
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if order == "id":
+            stmt = stmt.order_by(TPart.id.asc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 列表查询（核心：前缀搜索 + 多维过滤 + 排序） =====
     async def list_with_filters(
         self,
