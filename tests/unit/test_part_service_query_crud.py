@@ -27,6 +27,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.orm import configure_mappers
 
 from core.error_code import ErrCode
@@ -1176,6 +1177,82 @@ class TestUpdatePart:
         assert part.note == ""
         assert part.customer_id == 10  # unchanged
         assert part.is_urgent is False  # unchanged
+
+
+# ======================================================================
+# 日期字段 JSON 序列化回归测试（修复 422 错）
+# ======================================================================
+# 背景：PartDetail.vue 编辑表单的 3 个 el-date-picker 必须有
+# `value-format="YYYY-MM-DD"`，否则 v-model 是 JS Date 对象，axios 序列化为
+# ISO datetime 字符串（如 "2026-07-19T00:00:00.000Z"）。上海时区（UTC+8）下
+# 本地午夜 → UTC 时间偏移，**不是 UTC 午夜**，Pydantic v2.13+ 的
+# `date_from_datetime_inexact` 校验直接拒绝 → 后端返回 422 Unprocessable Content。
+#
+# 这些用例不调 service，只直接 model_validate 各种入参格式，记录 Pydantic v2
+# 当前行为，作为前端 value-format 修复后的回归门：
+# - 后端必须接受前端实际发出的 "YYYY-MM-DD" 字符串（正确路径）
+# - 后端对 Date 对象（axios 序列化的 ISO datetime 字符串）应当**报错**，作为
+#   对前端 value-format 缺失的「明确拒绝」信号。
+# ======================================================================
+
+
+class TestPartUpdateRequestDateParsing:
+    """PartUpdateRequest 接受多种日期格式入参（Pydantic v2 行为契约）。
+
+    锁定 2026-07-19 时上海时区（UTC+8）的实际行为，避免上游 Pydantic 升级
+    偷偷改变校验规则时静默破坏前端。
+    """
+
+    async def test_accepts_iso_date_string(self) -> None:
+        """前端 value-format="YYYY-MM-DD" 发出的标准格式：必须接受。"""
+        data = PartUpdateRequest.model_validate(
+            {"planned_delivery_date": "2026-07-19"}
+        )
+        assert data.planned_delivery_date == date(2026, 7, 19)
+
+    async def test_accepts_python_date_object(self) -> None:
+        """service 层 unit test 路径：Python `date` 对象。"""
+        data = PartUpdateRequest.model_validate(
+            {"planned_delivery_date": date(2026, 7, 19)}
+        )
+        assert data.planned_delivery_date == date(2026, 7, 19)
+
+    async def test_rejects_iso_datetime_shanghai_midnight(self) -> None:
+        """回归门：前端 el-date-picker 漏 value-format 时序列化产物。
+
+        el-date-picker v-model 是 JS `new Date(2026, 6, 19)`（本地午夜），
+        axios JSON.stringify 在上海时区（UTC+8）下输出
+        `"2026-07-18T16:00:00.000Z"`（UTC 时间）。Pydantic v2.13+ 的
+        `date_from_datetime_inexact` 要求**精确 UTC 午夜**，非午夜 datetime
+        必须被拒绝 —— 否则前端漏 value-format 时会静默把日期错位 1 天写入 DB。
+
+        如果此用例改成「接受」了，说明 Pydantic 升级放宽了校验，需重新评估
+        是否仍需要在 PartDetail.vue 加 value-format。
+        """
+        # 在 Asia/Shanghai 时区下，本地午夜 2026-07-19 → UTC 2026-07-18T16:00
+        with pytest.raises(ValidationError) as exc_info:
+            PartUpdateRequest.model_validate(
+                {"actual_delivery_date": "2026-07-18T16:00:00.000Z"}
+            )
+        # 错误信息应指明 `date_from_datetime_inexact`（Pydantic v2.13+ 的
+        # 准确午夜校验错误码）。如果错误码变了，证明 Pydantic 行为已变。
+        errors = exc_info.value.errors()
+        assert any(
+            "date_from_datetime_inexact" in str(e).lower()
+            or "date" in str(e["type"]).lower()
+            for e in errors
+        ), f"expected date validation error, got: {errors}"
+
+    async def test_accepts_iso_datetime_utc_midnight(self) -> None:
+        """边界用例：UTC 午夜 datetime 字符串 → Pydantic 应能抽取日期部分。
+
+        注：当前前端实际不发出此格式（本地 el-date-picker 输出本地时间）。
+        此用例仅为完整记录 Pydantic 行为，避免对回归门产生误导。
+        """
+        data = PartUpdateRequest.model_validate(
+            {"system_delivery_date": "2026-07-19T00:00:00.000Z"}
+        )
+        assert data.system_delivery_date == date(2026, 7, 19)
 
 
 # ======================================================================
