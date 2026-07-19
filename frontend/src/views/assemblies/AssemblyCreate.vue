@@ -226,8 +226,8 @@
           :key="pdfBlobUrl"
           :url="pdfBlobUrl"
           :page="pdfPreviewPage"
-          :initial-scale="1.4"
-          :fit="true"
+
+
         />
       </el-dialog>
 

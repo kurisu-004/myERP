@@ -252,7 +252,7 @@
       append-to-body
     >
       <div v-if="drawingPreviewUrl" class="preview-frame-wrap">
-        <PdfViewer :url="drawingPreviewUrl" :initial-scale="1.4" :fit="true" />
+        <PdfViewer :url="drawingPreviewUrl" />
       </div>
       <p v-else class="muted">无可预览内容</p>
     </el-dialog>

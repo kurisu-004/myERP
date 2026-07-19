@@ -277,8 +277,8 @@
         v-if="drawingPreviewRow?.drawingUrl"
         :url="drawingPreviewRow.drawingUrl"
         :page="1"
-        :initial-scale="1.4"
-        :fit="true"
+
+
       />
     </el-dialog>
 
@@ -301,8 +301,8 @@
             v-if="previewing.drawingUrl"
             :url="previewing.drawingUrl"
             :page="1"
-            :initial-scale="1.0"
-            :fit="true"
+
+
           />
           <span v-else class="muted">未上传</span>
         </el-descriptions-item>

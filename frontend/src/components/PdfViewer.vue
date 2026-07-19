@@ -14,7 +14,7 @@
       <el-icon :size="24" color="#f56c6c"><CircleClose /></el-icon>
       <span>{{ error }}</span>
     </div>
-    <div v-else ref="wrapRef" class="canvas-wrap">
+    <div v-else class="canvas-wrap">
       <div class="pdf-toolbar">
         <el-button-group>
           <el-button :disabled="page <= 1" @click="prevPage">
@@ -66,18 +66,13 @@ interface Props {
   url: string
   page?: number
   initialScale?: number
-  /** 首次渲染时缩放至容器大小（取 fitScale 与 initialScale 的较小值，
-   *  避免在 initialScale 已经够小时放大；用户手动缩放后保持用户选择）。 */
-  fit?: boolean
 }
 const props = withDefaults(defineProps<Props>(), {
   page: 1,
-  initialScale: 1.4,
-  fit: false,
+  initialScale: 1.0,
 })
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
-const wrapRef = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const page = ref(props.page)
@@ -106,30 +101,7 @@ async function load() {
   // 否则 render() 中 canvasRef.value 为 null，绘画被静默跳过。
   loading.value = false
   await nextTick()
-  // fit=true 时：测量 wrap 容器大小，取 min(initialScale, fitScale)
-  // 在 render() 之前设置 scale.value，避免先按 initialScale 闪一下再跳到 fit。
-  if (props.fit) {
-    const fs = await computeFitScale()
-    if (fs !== null) {
-      scale.value = Math.min(props.initialScale, fs)
-    }
-  }
   await render()
-}
-
-/** 计算「恰好填满 wrap 容器」的 CSS 像素 scale（不含 DPR；render() 内部再乘 DPR）。
- *  返回 null 表示容器尚未布局（clientWidth/clientHeight = 0），调用方应 fallback 到 initialScale。 */
-async function computeFitScale(): Promise<number | null> {
-  if (!pdfDoc || !wrapRef.value) return null
-  const p = await pdfDoc.getPage(page.value)
-  const nativeViewport = p.getViewport({ scale: 1 })
-  const cw = wrapRef.value.clientWidth
-  const ch = wrapRef.value.clientHeight
-  if (cw <= 0 || ch <= 0) return null
-  const pad = 16  // 留边距；canvas 自带 1px border
-  const fitW = (cw - pad) / nativeViewport.width
-  const fitH = (ch - pad) / nativeViewport.height
-  return Math.min(fitW, fitH)
 }
 
 async function render() {
@@ -221,8 +193,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 100%;          // 填满 el-dialog body（全屏时 = 100vh - 头部）
-  min-height: 0;         // 让 .canvas-wrap 可以收缩（fit 测量需要）
+  min-height: 400px;
 }
 .loading,
 .error {
@@ -237,9 +208,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  flex: 1 1 auto;        // 占据 toolbar 后的剩余高度（fit 测量容器）
-  min-height: 0;
-  overflow: auto;        // PDF 比 fit 还大时可滚动
 }
 .pdf-toolbar {
   display: flex;
@@ -257,6 +225,5 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-color);
   background: #fff;
   max-width: 100%;
-  height: auto;
 }
 </style>

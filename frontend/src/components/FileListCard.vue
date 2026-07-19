@@ -118,8 +118,8 @@
         v-if="previewFile && isPdf(previewFile.file_type)"
         :url="previewBlobUrl"
         :page="defaultPage"
-        :initial-scale="1.4"
-        :fit="true"
+
+
       />
       <div
         v-else-if="previewFile && isImage(previewFile.file_type)"

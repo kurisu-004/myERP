@@ -824,8 +824,8 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         <PdfViewer
           v-if="drawingPreviewIsPdf"
           :url="drawingPreviewUrl"
-          :initial-scale="1.4"
-          :fit="true"
+
+
         />
         <el-image
           v-else

@@ -351,8 +351,8 @@
         v-if="drawingPreviewFile && drawingPreviewBlobUrl"
         :url="drawingPreviewBlobUrl"
         :page="1"
-        :initial-scale="1.4"
-        :fit="true"
+
+
       />
       <div v-else class="loading-tip">
         <el-icon class="is-loading"><Loading /></el-icon>
