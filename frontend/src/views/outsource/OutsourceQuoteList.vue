@@ -171,8 +171,11 @@ const actionColumnWidth = computed(() => {
 })
 
 /** 行点击触发图纸预览。
- *  Element Plus 默认 row-click 不会触发被嵌套按钮 click；操作列按钮
- *  的 click 事件已用 .stop 阻止冒泡。 */
+ *  Element Plus row-click 不会因嵌套按钮自动短路,
+ *  操作列每个按钮必须显式 @click.stop 阻止冒泡（见下方操作列）。
+ *  图号链接也用 @click.stop（见 drawing_no 列），但通过单独调用
+ *  previewDrawing() 主动触发预览，不依赖 row-click。
+ */
 function onRowClick(row: unknown): void {
   previewDrawing(row as OutsourceQuote)
 }
@@ -685,25 +688,25 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             <el-button
               v-if="canEdit((row as OutsourceQuote), roleMap)"
               size="small"
-              @click="onSubmit((row as OutsourceQuote))"
+              @click.stop="onSubmit((row as OutsourceQuote))"
             >提交审核</el-button>
             <el-button
               v-if="canApprove((row as OutsourceQuote), roleMap)"
               size="small"
               type="success"
-              @click="openApprove((row as OutsourceQuote))"
+              @click.stop="openApprove((row as OutsourceQuote))"
             >通过</el-button>
             <el-button
               v-if="canReject((row as OutsourceQuote), roleMap)"
               size="small"
               type="danger"
-              @click="openReject((row as OutsourceQuote))"
+              @click.stop="openReject((row as OutsourceQuote))"
             >拒绝</el-button>
             <el-button
               v-if="canSoftDelete((row as OutsourceQuote), roleMap)"
               size="small"
               type="danger"
-              @click="onDelete((row as OutsourceQuote))"
+              @click.stop="onDelete((row as OutsourceQuote))"
             >删除</el-button>
           </template>
         </el-table-column>
@@ -811,7 +814,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
     <el-dialog
       v-model="drawingPreviewVisible"
       :title="drawingPreviewTitle"
-      width="900"
+      fullscreen
       :close-on-click-modal="false"
       :destroy-on-close="true"
       append-to-body
@@ -822,6 +825,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           v-if="drawingPreviewIsPdf"
           :url="drawingPreviewUrl"
           :initial-scale="1.4"
+          :fit="true"
         />
         <el-image
           v-else
@@ -901,7 +905,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
 
 .drawing-frame-wrap {
   width: 100%;
-  height: 70vh;
+  height: 100%;
   background: #f5f7fa;
   display: flex;
   align-items: center;

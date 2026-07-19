@@ -246,13 +246,13 @@
     <el-dialog
       v-model="drawingPreviewVisible"
       :title="drawingPreviewTitle"
-      width="900"
+      fullscreen
       :close-on-click-modal="false"
       :destroy-on-close="true"
       append-to-body
     >
       <div v-if="drawingPreviewUrl" class="preview-frame-wrap">
-        <PdfViewer :url="drawingPreviewUrl" :initial-scale="1.4" />
+        <PdfViewer :url="drawingPreviewUrl" :initial-scale="1.4" :fit="true" />
       </div>
       <p v-else class="muted">无可预览内容</p>
     </el-dialog>
@@ -847,7 +847,7 @@ loadCustomers()
 
 .preview-frame-wrap {
   width: 100%;
-  height: 70vh;
+  height: 100%;
   background: #f5f7fa;
 }
 

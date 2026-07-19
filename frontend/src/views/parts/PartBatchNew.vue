@@ -269,8 +269,7 @@
     <el-dialog
       v-model="drawingPreviewVisible"
       :title="`图纸预览 — ${drawingPreviewRow?.drawingNo ?? ''}`"
-      width="80%"
-      top="5vh"
+      fullscreen
       destroy-on-close
       @closed="onDrawingPreviewClosed"
     >
@@ -279,11 +278,12 @@
         :url="drawingPreviewRow.drawingUrl"
         :page="1"
         :initial-scale="1.4"
+        :fit="true"
       />
     </el-dialog>
 
-    <!-- 预览 Dialog（只读） -->
-    <el-dialog v-model="previewDialogVisible" title="预览零件" width="720px">
+    <!-- 预览 Dialog（只读，全屏，含图纸预览） -->
+    <el-dialog v-model="previewDialogVisible" title="预览零件" fullscreen>
       <el-descriptions v-if="previewing" :column="2" border>
         <el-descriptions-item label="图号">{{ previewing.drawingNo }}</el-descriptions-item>
         <el-descriptions-item label="名称">{{ previewing.name }}</el-descriptions-item>
@@ -302,6 +302,7 @@
             :url="previewing.drawingUrl"
             :page="1"
             :initial-scale="1.0"
+            :fit="true"
           />
           <span v-else class="muted">未上传</span>
         </el-descriptions-item>

@@ -216,11 +216,10 @@
       <el-dialog
         v-model="pdfPreviewVisible"
         title="PDF 预览"
-        width="900"
+        fullscreen
         :close-on-click-modal="false"
         :destroy-on-close="true"
         append-to-body
-        top="5vh"
       >
         <PdfViewer
           v-if="pdfPreviewVisible && pdfBlobUrl"
@@ -228,6 +227,7 @@
           :url="pdfBlobUrl"
           :page="pdfPreviewPage"
           :initial-scale="1.4"
+          :fit="true"
         />
       </el-dialog>
 
