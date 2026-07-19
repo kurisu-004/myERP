@@ -23,6 +23,7 @@ from barcode import Code128
 from barcode.writer import ImageWriter
 from PIL import Image, ImageDraw, ImageFont
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import RectangleObject
 
 from core import cos as cos_mod
 from core.error_code import ErrCode
@@ -42,12 +43,12 @@ A4_LANDSCAPE = (842, 595)
 DPI = 150
 PX_PER_PT = DPI / 72.0
 
-# === 2026-07-20 迭代：反面页 2 行堆叠居中 ===
-SERIAL_FONT_PX = int(842 * PX_PER_PT / 8)       # ≈ 219 px
-BARCODE_H_PX = int(842 * PX_PER_PT / 7)         # ≈ 250 px
-BARCODE_W_FRACTION = 0.5
-BOTTOM_MARGIN_PT = 30                           # 条码距页底
-SERIAL_TO_BC_GAP_PT = 22                        # 序列号与条码间距
+# === 2026-07-20 迭代 v2：反面页序列号 + 条码旋转 90° 贴 A4 右边 ===
+SERIAL_FONT_PX = int(842 * PX_PER_PT / 8)       # ≈ 219 px（旋转前的字体高度）
+BARCODE_H_PX = int(842 * PX_PER_PT / 7)         # ≈ 250 px（旋转前的条码高度；旋转后变成水平宽度）
+BARCODE_W_FRACTION = 0.5                          # 旋转前的条码水平宽度 = A4 短边 50%
+RIGHT_MARGIN_PT = 30                            # 块距页面右边
+SERIAL_TO_BC_GAP_PT = 22                         # 序列号 ↔ 条码 间距
 
 
 def _a4_px(orientation: str) -> tuple[int, int]:
@@ -96,42 +97,68 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
 
 
 def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
-    """渲染反面页（2026-07-20 迭代）：
-    - 序列号大字在上、Code128 条码在下，水平居中，贴 A4 短边底部；
-    - 条码高度 = A4 长边 / 7，序列号字号 = A4 长边 / 8；
-    - 条码宽度 = A4 短边 50%；
-    - 底边留白 BOTTOM_MARGIN_PT。
+    """渲染反面页（2026-07-20 迭代 v2）：
+    - 序列号 + 条码均旋转 90°（顺时针，rotate(-90)），垂直堆叠贴 A4 右边；
+    - 条码水平长度 = A4 短边 50%（旋转后变成纵向长度）；
+    - 序列号字号 = A4 长边 / 8（旋转后是文本纵向高度）；
+    - 距右边 RIGHT_MARGIN_PT；序列号与条码之间 SERIAL_TO_BC_GAP_PT。
+
+    旋转方向说明：rotate(-90) 是 PIL 顺时针 90°，原始 LR 文本 → 旋转后 L 在上、
+    4 在下，自上而下可读，符合中文标签/书脊惯例。
     """
     page_w, page_h = _a4_px(orientation)
     page = Image.new("RGB", (page_w, page_h), "white")
-    draw = ImageDraw.Draw(page)
 
-    serial_font = _load_cn_font(size=SERIAL_FONT_PX)
     short_side_px = min(page_w, page_h)
-    bc_w_px = int(short_side_px * BARCODE_W_FRACTION)
-    bc_h_px = BARCODE_H_PX
 
+    # === 条码：先按原朝向渲染 + 缩放，再旋转 -90° ===
     bc_img = _render_barcode_pil(serial_no)
-    bc_resized = bc_img.resize((bc_w_px, bc_h_px), Image.LANCZOS)
+    target_bc_w_native = int(short_side_px * BARCODE_W_FRACTION)
+    bc_native_h_scaled = int(bc_img.height * target_bc_w_native / bc_img.width)
+    bc_resized = bc_img.resize(
+        (target_bc_w_native, bc_native_h_scaled),
+        Image.LANCZOS,
+    )
+    # NEAREST 保持条码边缘锐利，确保扫码兼容性
+    bc_rotated = bc_resized.rotate(-90, expand=True, resample=Image.NEAREST)
 
-    bbox = draw.textbbox((0, 0), serial_no, font=serial_font)
-    serial_h = bbox[3] - bbox[1]
-    serial_w = bbox[2] - bbox[0]
+    # === 序列号：渲染到刚好装下的白色画布，再旋转 -90° ===
+    serial_font = _load_cn_font(size=SERIAL_FONT_PX)
+    _tmp = Image.new("RGB", (1, 1))
+    _tmp_draw = ImageDraw.Draw(_tmp)
+    bbox = _tmp_draw.textbbox((0, 0), serial_no, font=serial_font)
+    serial_w_native = bbox[2] - bbox[0]
+    serial_h_native = bbox[3] - bbox[1]
 
+    serial_canvas = Image.new("RGB", (serial_w_native, serial_h_native), "white")
+    serial_draw = ImageDraw.Draw(serial_canvas)
+    # y 偏移 -bbox[1] 处理 ascender 顶部负偏移，确保字符不超出画布
+    serial_draw.text((0, -bbox[1]), serial_no, fill="#000", font=serial_font)
+    # BICUBIC 让字符边缘平滑（可读性优先）
+    serial_rotated = serial_canvas.rotate(-90, expand=True, resample=Image.BICUBIC)
+
+    # === 布局：旋转后两块沿右边垂直堆叠，垂直居中 ===
+    right_margin_px = int(RIGHT_MARGIN_PT * PX_PER_PT)
     gap_px = int(SERIAL_TO_BC_GAP_PT * PX_PER_PT)
-    bottom_margin_px = int(BOTTOM_MARGIN_PT * PX_PER_PT)
-    block_total_h = serial_h + gap_px + bc_h_px
-    block_bottom_y = page_h - bottom_margin_px
-    block_top_y = block_bottom_y - block_total_h
 
-    # 1) 序列号（水平居中）
-    serial_x = (page_w - serial_w) // 2
-    draw.text((serial_x, block_top_y), serial_no, fill="#000", font=serial_font)
+    bc_w, bc_h = bc_rotated.size
+    sr_w, sr_h = serial_rotated.size
 
-    # 2) 条码（水平居中，紧贴序列号下方）
-    bc_x = (page_w - bc_w_px) // 2
-    bc_y = block_top_y + serial_h + gap_px
-    page.paste(bc_resized, (bc_x, bc_y))
+    block_w = max(bc_w, sr_w)
+    block_h = sr_h + gap_px + bc_h
+
+    block_right_x = page_w - right_margin_px
+    block_left_x = block_right_x - block_w
+    block_top_y = (page_h - block_h) // 2
+
+    # 序列号在堆叠的上方
+    serial_x = block_left_x + (block_w - sr_w) // 2
+    page.paste(serial_rotated, (serial_x, block_top_y))
+
+    # 条码在序列号下方
+    bc_x = block_left_x + (block_w - bc_w) // 2
+    bc_y = block_top_y + sr_h + gap_px
+    page.paste(bc_rotated, (bc_x, bc_y))
 
     return page
 
@@ -190,11 +217,32 @@ def _build_info_card_page(
     return page
 
 
-def _image_to_a4_pdf_bytes(img: Image.Image) -> bytes:
-    """把 pillow Image 渲染成单页 PDF（bytes）。"""
+def _image_to_a4_pdf_bytes(
+    img: Image.Image, orientation: str = "landscape",
+) -> bytes:
+    """把 pillow Image 渲染成单页 PDF（bytes）。
+
+    2026-07-20 迭代：返回前用 PdfReader 读出再用 PdfWriter 覆写
+    MediaBox/CropBox/TrimBox/BleedBox 为精确 A4，避免 Pillow 按
+    resolution 推算出的 mediabox 偏差，也避免源 PDF 的非标 CropBox
+    导致浏览器打印预览按 CropBox 裁切图纸。
+    """
     buf = io.BytesIO()
     img.save(buf, "PDF", resolution=DPI)
-    return buf.getvalue()
+    reader = PdfReader(io.BytesIO(buf.getvalue()))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    w_pt, h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
+    box = RectangleObject([0, 0, w_pt, h_pt])
+    for page in writer.pages:
+        page.mediabox = box
+        page.cropbox = box
+        page.trimbox = box
+        page.bleedbox = box
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 def _detect_pdf_orientation(pdf_bytes: bytes) -> str:
@@ -258,6 +306,23 @@ async def build_part_print_pdf(
         try:
             if ext == "PDF":
                 front_pdf_bytes = await _download_drawing_bytes(master)
+                # 2026-07-20 调试：源 PDF 若 CropBox != MediaBox，浏览器按 CropBox 渲染
+                # 会裁切图纸。此处打 warning 辅助未来类似问题定位。
+                try:
+                    _r = PdfReader(io.BytesIO(front_pdf_bytes))
+                    if _r.pages:
+                        _mb = _r.pages[0].mediabox
+                        _cb = _r.pages[0].cropbox
+                        if (float(_cb.width) != float(_mb.width)
+                                or float(_cb.height) != float(_mb.height)):
+                            _logger.warning(
+                                "source drawing PDF has CropBox != MediaBox: "
+                                "mb=%s cb=%s — normalizing",
+                                [float(x) for x in _mb],
+                                [float(x) for x in _cb],
+                            )
+                except Exception:  # noqa: BLE001
+                    pass
                 orientation = _detect_pdf_orientation(front_pdf_bytes)
             elif ext in {
                 "PNG", "JPG", "JPEG", "GIF", "BMP",
@@ -275,7 +340,7 @@ async def build_part_print_pdf(
                 img = img.resize((new_w, new_h), Image.LANCZOS)
                 canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
                 canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
-                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas)
+                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
             elif ext == "HEIC":
                 # HEIC 需 pillow-heif；运行时 try，缺失则降级到信息卡
                 raw = await _download_drawing_bytes(master)
@@ -291,7 +356,7 @@ async def build_part_print_pdf(
                     img = img.resize((new_w, new_h), Image.LANCZOS)
                     canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
                     canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
-                    front_pdf_bytes = _image_to_a4_pdf_bytes(canvas)
+                    front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
                 except ImportError:
                     _logger.warning(
                         "pillow-heif not installed; HEIC drawing falls back to info card"
@@ -325,17 +390,29 @@ async def build_part_print_pdf(
             serial_no=part.serial_no,
             customer_path=None,
         )
-        info_pdf_bytes = _image_to_a4_pdf_bytes(info_card)
+        info_pdf_bytes = _image_to_a4_pdf_bytes(info_card, orientation)
         info_reader = PdfReader(io.BytesIO(info_pdf_bytes))
         for page in info_reader.pages:
             writer.add_page(page)
 
     # 反面：条码页（朝向与正面一致）
     barcode_page_img = _build_barcode_page(orientation, serial_no)
-    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img)
+    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, orientation)
     barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
     for page in barcode_reader.pages:
         writer.add_page(page)
+
+    # ---- 规范化所有 page 的 boxes 为精确 A4 ----
+    # 2026-07-20 修复：源 PDF（如 CAD 导出的 PDF）经常带非标 CropBox/TrimBox，
+    # 浏览器原生打印预览有时按 CropBox 而非 MediaBox 渲染，导致图纸被裁切显示不全。
+    # 强制把每页的 mediabox / cropbox / trimbox / bleedbox 都对齐到精确 A4。
+    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
+    _a4_box = RectangleObject([0, 0, _w_pt, _h_pt])
+    for _p in writer.pages:
+        _p.mediabox = _a4_box
+        _p.cropbox = _a4_box
+        _p.trimbox = _a4_box
+        _p.bleedbox = _a4_box
 
     out = io.BytesIO()
     writer.write(out)

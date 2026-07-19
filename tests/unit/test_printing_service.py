@@ -174,61 +174,140 @@ class TestBuildPartPrintPdfOrientation:
             assert float(page.mediabox.width) < float(page.mediabox.height)
 
 
-class TestBarcodePageLayout:
-    """2026-07-20 迭代：反面页序列号 + 条码水平居中贴 A4 短边底部。
+class TestBarcodePageLayoutVertical:
+    """2026-07-20 v2 迭代：序列号 + 条码旋转 90° 贴 A4 右边。
 
     验证 _build_barcode_page 的输出:
-    - 上半页（50%）基本为白色（序列号与条码都贴在底部）；
-    - 左下区域有黑色像素（条码水平居中而非贴右）；
-    - 左右半页的黑色像素数量大致对称（水平居中）。
+    - 右边 25% 区域有大量黑色像素（条码在右边）；
+    - 左边 75% 区域基本为白色（所有内容都在右边）；
+    - 上下 25% 基本为白色（块垂直居中）；
+    - 右条带上下半都有黑色像素（序列号 + 条码堆叠）。
     """
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_top_half_is_empty(self, orientation: str) -> None:
-        """序列号 + 条码贴底 → 上半页（50%）应基本为白色。"""
+    def test_right_quarter_has_barcode(self, orientation: str) -> None:
+        """右边 25% 区域应有条码黑色像素。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(orientation, "L2014")
         w, h = img.size
 
-        top = img.crop((0, 0, w, h // 2)).convert("L")
-        hist = top.histogram()
-        non_white = sum(hist[:250])  # 灰度 < 250 的像素
+        right = img.crop((int(w * 0.75), 0, w, h)).convert("L")
+        hist = right.histogram()
+        black = hist[0] + hist[1]
+        assert black > 500, f"右边 25% 应有大量条码黑色像素，实际 black={black}"
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_left_half_is_empty(self, orientation: str) -> None:
+        """左半页应基本为白色（块只在右边，块左缘 > page_w/2）。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        left = img.crop((0, 0, w // 2, h)).convert("L")
+        hist = left.histogram()
+        non_white = sum(hist[:250])
         total = sum(hist)
-        assert non_white / total < 0.005, (
-            f"上半页应基本为白色，实际非白像素 {non_white}/{total}"
+        assert non_white / total < 0.001, (
+            f"左半页应基本为白色，实际非白像素 {non_white}/{total}"
         )
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_bottom_left_has_barcode(self, orientation: str) -> None:
-        """条码水平居中 → 左下 50% 区域应有黑色像素（旧布局在右下角不会）。"""
+    def test_top_left_corner_is_empty(self, orientation: str) -> None:
+        """左上角（左半页的上半）应基本为白色。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(orientation, "L2014")
         w, h = img.size
 
-        bot_left = img.crop((0, int(h * 0.7), w // 2, h)).convert("L")
-        hist = bot_left.histogram()
-        black = hist[0]  # 灰度 == 0 的像素
-        assert black > 100, f"左下区域应有条码黑色像素，实际 black={black}"
+        tl = img.crop((0, 0, w // 2, h // 2)).convert("L")
+        hist = tl.histogram()
+        non_white = sum(hist[:250])
+        total = sum(hist)
+        assert non_white / total < 0.001, (
+            f"左上角应基本为白色，实际非白像素 {non_white}/{total}"
+        )
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_centered_horizontally(self, orientation: str) -> None:
-        """水平居中：左半与右半页的黑色像素数量应大致对称。"""
+    def test_bottom_left_corner_is_empty(self, orientation: str) -> None:
+        """左下角（左半页的下半）应基本为白色。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(orientation, "L2014")
         w, h = img.size
 
-        bottom = img.crop((0, h // 2, w, h)).convert("L")
-        bw = bottom.width
-        left_hist = bottom.crop((0, 0, bw // 2, bottom.height)).histogram()
-        right_hist = bottom.crop((bw // 2, 0, bw, bottom.height)).histogram()
-        left_black = left_hist[0] + left_hist[1]
-        right_black = right_hist[0] + right_hist[1]
-        total_black = left_black + right_black
-        assert total_black > 100, f"下半页黑色像素过少：{total_black}"
-        diff_ratio = abs(left_black - right_black) / total_black
-        assert diff_ratio < 0.5, (
-            f"左右严重不对称：left={left_black} right={right_black}"
+        bl = img.crop((0, h // 2, w // 2, h)).convert("L")
+        hist = bl.histogram()
+        non_white = sum(hist[:250])
+        total = sum(hist)
+        assert non_white / total < 0.001, (
+            f"左下角应基本为白色，实际非白像素 {non_white}/{total}"
         )
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_serial_above_barcode_in_right_strip(self, orientation: str) -> None:
+        """右条带上下半都有黑色像素（序列号 + 条码堆叠）。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        right_strip = img.crop((int(w * 0.70), 0, w, h)).convert("L")
+        rs_w, rs_h = right_strip.size
+        upper_hist = right_strip.crop((0, 0, rs_w, rs_h // 2)).histogram()
+        lower_hist = right_strip.crop((0, rs_h // 2, rs_w, rs_h)).histogram()
+        upper_black = upper_hist[0] + upper_hist[1]
+        lower_black = lower_hist[0] + lower_hist[1]
+        assert upper_black > 100, f"右条带上半应有序列号，实际 black={upper_black}"
+        assert lower_black > 100, f"右条带下半应有条码，实际 black={lower_black}"
+
+
+class TestDrawingPdfMediaboxNormalization:
+    """2026-07-20 修复：浏览器打印预览中图纸被裁切。
+
+    验证源 PDF 即便带非标 CropBox / TrimBox，合并后每页的 MediaBox /
+    CropBox / TrimBox / BleedBox 都被规范化为精确 A4。
+    """
+
+    @pytest.mark.parametrize("orientation,a4_pt", [
+        ("landscape", (842, 595)),
+        ("portrait", (595, 842)),
+    ])
+    async def test_pdf_drawing_pages_have_a4_mediabox(
+        self, monkeypatch, fake_parts_repo, orientation, a4_pt,
+    ):
+        from pypdf import PdfWriter as _Pw
+        from pypdf.generic import RectangleObject
+        w, h = a4_pt
+        src = _Pw()
+        page = src.add_blank_page(width=w, height=h)
+        # 故意设置比 MediaBox 小的 CropBox / TrimBox（模拟 CAD 导出）
+        page.cropbox = RectangleObject([10, 10, w - 10, h - 10])
+        page.trimbox = RectangleObject([5, 5, w - 5, h - 5])
+        buf = io.BytesIO()
+        src.write(buf)
+
+        async def fake_download(_key):
+            return buf.getvalue()
+        import service.printing as printing_mod
+        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
+
+        files_repo = MagicMock()
+        files_repo.list_by_part = AsyncMock(
+            return_value=[_make_drawing_row("PDF", "pdf", "drawings/part/1234/DRAWING/x")]
+        )
+
+        pdf_bytes = await build_part_print_pdf(
+            part_id=1234, parts=fake_parts_repo, part_files=files_repo,
+        )
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        assert len(reader.pages) == 2
+        w_pt, h_pt = a4_pt
+        for i, p in enumerate(reader.pages):
+            assert float(p.mediabox.width) == pytest.approx(w_pt, abs=0.1)
+            assert float(p.mediabox.height) == pytest.approx(h_pt, abs=0.1)
+            assert float(p.cropbox.width) == pytest.approx(w_pt, abs=0.1), (
+                f"page {i}: cropbox 未规范化，浏览器打印预览会裁切图纸"
+            )
+            assert float(p.cropbox.height) == pytest.approx(h_pt, abs=0.1)

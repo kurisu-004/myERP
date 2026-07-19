@@ -5,14 +5,11 @@
   ====================
   - 菜单侧：CNC 编程员专属入口；侧栏只挂「待编程一览」（顶层菜单）。
   - 数据侧：调 GET /parts/pending-programming（status=PROGRAMMING 已硬编码于后端）。
-  - 三个动作：
+  - 两个动作：
     * 「详情」 → 跳 /parts/{id}（PartDetail 页内有图纸下载 / G 代码上传 / 设定单上传）
     * 「下发到生产」 → 弹 el-dialog 同时选 PRODUCTION 货架 + 下一道工序，
       调 POST /parts/{id}/release-from-programming（PROGRAMMING → IN_PROCESS）。
       后端要求必须先上传 G_CODE + SETUP_SHEET，否则 400；前端 catch 后 ElMessage.error。
-    * 「文件」 → 打开 el-drawer 按 DRAWING / 3D_MODEL / CAD_2D / G_CODE / SETUP_SHEET
-      五类分组列出该零件的所有文件，每行一个「下载」按钮（用 PartFileItem 自带
-      的 download_url 字段直接 window.open，sign 900s 临时 URL）。
   - 加急行整行红底 #fde2e2（与 PartsList / InspectionPending 同款）。
   - 自动刷新（10s）按需勾选。
 -->
@@ -109,7 +106,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -124,12 +121,6 @@
               :loading="row._releasing"
               @click="openReleaseDialog(row as PartListItem)"
             >下发</el-button>
-            <el-button
-              link
-              type="warning"
-              size="small"
-              @click="openFilesDrawer(row as PartListItem)"
-            >文件</el-button>
           </template>
         </el-table-column>
 
@@ -232,75 +223,6 @@
         >确认下发</el-button>
       </template>
     </el-dialog>
-
-    <!-- 文件 抽屉：按 kind 分组列出 + 下载 -->
-    <el-drawer
-      v-model="filesDrawerVisible"
-      direction="rtl"
-      size="520px"
-      :title="`文件 — ${filesDrawerTarget?.serial_no || filesDrawerTarget?.drawing_no || ''}`"
-      :close-on-click-modal="false"
-      @closed="onFilesDrawerClosed"
-    >
-      <div v-if="filesLoading" v-loading="true" class="files-loading"></div>
-      <template v-else>
-        <div v-if="groupedFiles.length === 0" class="files-empty">
-          <el-empty description="该零件暂无任何文件" />
-        </div>
-        <div
-          v-for="group in groupedFiles"
-          :key="group.kind"
-          class="files-group"
-        >
-          <div class="files-group-title">
-            <el-icon><FolderOpened /></el-icon>
-            <span>{{ group.title }}</span>
-            <el-tag size="small" effect="plain" type="info">{{ group.items.length }}</el-tag>
-          </div>
-          <ul class="files-list">
-            <li v-for="f in group.items" :key="f.id" class="file-item">
-              <div class="file-meta">
-                <el-icon><Document /></el-icon>
-                <span class="file-name">{{ f.original_filename }}</span>
-                <span class="file-size muted">{{ formatBytes(f.file_size) }}</span>
-              </div>
-              <div class="file-actions">
-                <el-button
-                  v-if="canPreview(f)"
-                  link
-                  type="primary"
-                  size="small"
-                  @click="onPreviewPdf(f)"
-                >预览</el-button>
-                <el-button
-                  link
-                  type="primary"
-                  size="small"
-                  @click="onDownload(f)"
-                >下载</el-button>
-              </div>
-            </li>
-          </ul>
-        </div>
-      </template>
-    </el-drawer>
-
-    <!-- PDF 预览弹窗 -->
-    <el-dialog
-      v-model="pdfPreviewVisible"
-      :title="pdfPreviewTitle"
-      width="900"
-      :close-on-click-modal="false"
-      :destroy-on-close="true"
-      append-to-body
-      top="5vh"
-    >
-      <PdfViewer
-        v-if="pdfPreviewVisible && pdfPreviewUrl"
-        :url="pdfPreviewUrl"
-        :initial-scale="1.4"
-      />
-    </el-dialog>
   </div>
 </template>
 
@@ -308,22 +230,17 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Document,
-  FolderOpened,
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
-import PdfViewer from '@/components/PdfViewer.vue'
 import {
   listPendingProgramming,
   releaseFromProgramming,
 } from '@/api/parts'
-import { listPartFiles } from '@/api/assembly'
 import { listShelves } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
 import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import type { PartListItem } from '@/types/parts'
-import type { PartFileItem, PartFileKind } from '@/types/part_file'
 import type { Shelf } from '@/types/shelf'
 import type { Process } from '@/types/process'
 
@@ -504,119 +421,6 @@ async function onReleaseConfirm(): Promise<void> {
   }
 }
 
-// ============ 文件 抽屉 ============
-const filesDrawerVisible = ref(false)
-const filesDrawerTarget = ref<PartListItem | null>(null)
-const filesLoading = ref(false)
-const filesByKind = ref<Record<PartFileKind, PartFileItem[]>>({
-  DRAWING: [],
-  '3D_MODEL': [],
-  G_CODE: [],
-  SETUP_SHEET: [],
-  ASSEMBLY_MASTER: [],
-  CAD_2D: [],
-})
-
-// PDF 预览弹窗
-const pdfPreviewVisible = ref(false)
-const pdfPreviewUrl = ref<string | null>(null)
-const pdfPreviewTitle = ref('PDF 预览')
-
-const KIND_TITLE: Record<PartFileKind, string> = {
-  DRAWING: '图纸',
-  '3D_MODEL': '3D 模型',
-  G_CODE: 'G 代码',
-  SETUP_SHEET: 'CNC 设定单',
-  ASSEMBLY_MASTER: '装配体总装图',
-  CAD_2D: 'CAD 源文件',
-}
-
-// 展示顺序：DRAWING / 3D_MODEL / CAD_2D / G_CODE / SETUP_SHEET
-const KIND_DISPLAY_ORDER: PartFileKind[] = [
-  'DRAWING', '3D_MODEL', 'CAD_2D', 'G_CODE', 'SETUP_SHEET',
-]
-
-const groupedFiles = computed(() =>
-  KIND_DISPLAY_ORDER
-    .map((kind) => ({
-      kind,
-      title: KIND_TITLE[kind],
-      items: filesByKind.value[kind] ?? [],
-    }))
-    .filter((g) => g.items.length > 0),
-)
-
-async function openFilesDrawer(row: PartListItem): Promise<void> {
-  filesDrawerTarget.value = row
-  filesDrawerVisible.value = true
-  filesLoading.value = true
-  // 重置
-  filesByKind.value = {
-    DRAWING: [],
-    '3D_MODEL': [],
-    G_CODE: [],
-    SETUP_SHEET: [],
-    ASSEMBLY_MASTER: [],
-    CAD_2D: [],
-  }
-  try {
-    // 并发拉取 5 类文件
-    const kinds: PartFileKind[] = [
-      'DRAWING', '3D_MODEL', 'CAD_2D', 'G_CODE', 'SETUP_SHEET',
-    ]
-    const results = await Promise.allSettled(
-      kinds.map((k) => listPartFiles(row.id, k)),
-    )
-    kinds.forEach((k, i) => {
-      const r = results[i]
-      if (r.status === 'fulfilled') {
-        filesByKind.value[k] = r.value
-      } else {
-        filesByKind.value[k] = []
-        // 单类失败不阻塞 drawer；累计到 console 方便排查
-        // eslint-disable-next-line no-console
-        console.warn(`listPartFiles(${row.id}, ${k}) failed:`, r.reason)
-      }
-    })
-  } finally {
-    filesLoading.value = false
-  }
-}
-
-function onFilesDrawerClosed(): void {
-  filesDrawerTarget.value = null
-}
-
-function onDownload(f: PartFileItem): void {
-  // PartFileItem.download_url 是后端在 list 响应里同步签发的临时 URL（900s TTL）
-  if (!f.download_url) {
-    ElMessage.error('该文件下载链接尚未签发，请稍后重试')
-    return
-  }
-  window.open(f.download_url, '_blank', 'noopener,noreferrer')
-}
-
-function canPreview(f: PartFileItem): boolean {
-  return f.file_type.toUpperCase() === 'PDF'
-}
-
-function onPreviewPdf(f: PartFileItem): void {
-  if (!f.download_url) {
-    ElMessage.error('该文件下载链接尚未签发，请稍后重试')
-    return
-  }
-  pdfPreviewUrl.value = f.download_url
-  pdfPreviewTitle.value = `预览 — ${f.original_filename}`
-  pdfPreviewVisible.value = true
-}
-
-function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '—'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`
-}
-
 onMounted(() => {
   fetchList()
 })
@@ -673,62 +477,5 @@ onMounted(() => {
   padding: 10px 14px;
   line-height: 1.8;
   font-size: 13px;
-}
-.files-loading {
-  min-height: 240px;
-}
-.files-empty {
-  padding: 40px 0;
-}
-.files-group {
-  margin-bottom: 18px;
-}
-.files-group-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 14px;
-  margin-bottom: 8px;
-  color: var(--text-primary);
-}
-.files-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.file-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 8px;
-  border-radius: 4px;
-}
-.file-item:hover {
-  background: #f5f7fa;
-}
-.file-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-.file-name {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.file-size {
-  font-size: 12px;
-  margin-left: 8px;
-  flex-shrink: 0;
-}
-
-.file-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
 }
 </style>
