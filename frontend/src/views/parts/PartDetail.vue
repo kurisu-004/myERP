@@ -116,7 +116,7 @@
           </el-descriptions>
 
           <div class="edit-actions">
-            <el-button type="primary" plain @click="onStartEdit">编辑</el-button>
+            <el-button v-if="canEditPart" type="primary" plain @click="onStartEdit">编辑</el-button>
           </div>
         </template>
       </template>
@@ -334,7 +334,12 @@
     </el-card>
 
     <!-- 外协报价（2026-07-16 新增；只读展示 + 状态+角色门控的新建入口） -->
-    <el-card shadow="never" class="quote-card" v-loading="quotesLoading">
+    <el-card
+      v-if="canViewQuotes"
+      shadow="never"
+      class="quote-card"
+      v-loading="quotesLoading"
+    >
       <template #header>
         <div class="card-header">
           <span class="card-title">
@@ -1000,6 +1005,12 @@ async function fetchEvents(): Promise<void> {
 }
 
 async function fetchQuotes(): Promise<void> {
+  if (!canViewQuotes.value) {
+    quotes.value = []
+    quotesLoading.value = false
+    return
+  }
+
   quotesLoading.value = true
   try {
     const r = await listOutsourceQuotes({ part_id: partId.value, limit: 200 })
@@ -1123,6 +1134,10 @@ const canCancelPart = computed(() => isManager.value || isClerk.value)
 
 // 删除订单：MANAGER-only
 const canDeletePart = computed(() => isManager.value)
+
+// 编辑零件信息 / 查看外协报价：MANAGER + CLERK
+const canEditPart = computed(() => isManager.value || isClerk.value)
+const canViewQuotes = computed(() => isManager.value || isClerk.value)
 
 // 品检通过 / 打回：MANAGER + CLERK + INSPECTOR（与后端 _inspector_dep 一致）
 const isInspector = computed(() => hasRole('INSPECTOR'))
