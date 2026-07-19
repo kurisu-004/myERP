@@ -17,14 +17,14 @@ SSL_CRT="/etc/nginx/ssl/hsh-erp.cloud_bundle.crt"
 SSL_KEY="/etc/nginx/ssl/hsh-erp.cloud.key"
 
 if [ -f "$SSL_CRT" ] && [ -f "$SSL_KEY" ]; then
-    echo "[entrypoint] SSL cert found, HTTPS server block enabled"
+    echo "[entrypoint] SSL cert found, HTTPS server block enabled (use shipped default.conf)"
 else
     echo "[entrypoint] SSL cert missing ($SSL_CRT or $SSL_KEY)"
-    echo "[entrypoint]   removing HTTPS server block from nginx.conf"
-    # 删掉从 SSL_BLOCK_START 标记行（含）到文件末尾的所有行
-    sed -i '/>>> SSL_BLOCK_START <<</,$d' "$NGINX_CONF"
-    # 上面会保留 SSL_BLOCK_END 这行残留（如果它还在的话）；一并清掉
-    sed -i '/<<< SSL_BLOCK_END <<</d' "$NGINX_CONF"
+    echo "[entrypoint]   switching to HTTP-only config (nginx.http-only.conf)"
+    # 旧行为是 sed 删掉 HTTPS server 块，但 :80 server 只剩 301→https，
+    # 本地 / 未备案环境完全无法访问。改为整份替换成纯 HTTP 配置
+    # （内容 location 与 HTTPS 块一致，只是不带 SSL/HSTS）。
+    cp /etc/nginx/templates/http-only.conf "$NGINX_CONF"
 fi
 
 # 注意：不要在这里 exec nginx。nginx:1.27-alpine 镜像默认 entrypoint

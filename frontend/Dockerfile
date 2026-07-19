@@ -24,6 +24,7 @@ RUN rm -f /etc/nginx/conf.d/default.conf \
     && mkdir -p /etc/nginx/ssl
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.http-only.conf /etc/nginx/templates/http-only.conf
 COPY entrypoint.sh /docker-entrypoint.d/40-nginx-ssl-gate.sh
 COPY --from=builder /app/dist /usr/share/nginx/html
 RUN chmod +x /docker-entrypoint.d/40-nginx-ssl-gate.sh
