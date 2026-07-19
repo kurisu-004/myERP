@@ -3,12 +3,9 @@
 // 用 pdfjs-dist 在浏览器本地读取 PDF 的页数（不发起网络请求）。
 // 用于 AssemblyCreate.vue 上传 PDF 后自动按页生成子零件草稿。
 //
-// Worker 配置：复用 PdfViewer.vue 的同款（?url 是 Vite 5 内置语法）。
+// Worker 配置：集中在 @/utils/pdfjs（含 workerSrc 缓存穿透参数）。
 
-import * as pdfjsLib from 'pdfjs-dist'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker
+import { pdfjsLib } from '@/utils/pdfjs'
 
 /**
  * 读取本地 File 的 PDF 页数。
