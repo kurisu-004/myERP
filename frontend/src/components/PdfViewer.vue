@@ -69,7 +69,7 @@ interface Props {
 }
 const props = withDefaults(defineProps<Props>(), {
   page: 1,
-  initialScale: 1.4,
+  initialScale: 1.0,
 })
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)

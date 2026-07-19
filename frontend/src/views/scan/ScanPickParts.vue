@@ -160,7 +160,8 @@
       <PdfViewer
         v-else-if="previewFile && isPdf(previewFile.file_type)"
         :url="previewBlobUrl"
-        :initial-scale="1.4"
+
+
       />
 
       <div

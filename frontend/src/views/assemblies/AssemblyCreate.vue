@@ -212,6 +212,25 @@
         </el-table>
       </el-form>
 
+      <!-- PDF 预览弹窗（替代 window.open） -->
+      <el-dialog
+        v-model="pdfPreviewVisible"
+        title="PDF 预览"
+        fullscreen
+        :close-on-click-modal="false"
+        :destroy-on-close="true"
+        append-to-body
+      >
+        <PdfViewer
+          v-if="pdfPreviewVisible && pdfBlobUrl"
+          :key="pdfBlobUrl"
+          :url="pdfBlobUrl"
+          :page="pdfPreviewPage"
+
+
+        />
+      </el-dialog>
+
       <div class="form-footer">
         <el-button @click="onCancel">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="onSubmit">
@@ -235,6 +254,7 @@ import {
   type UploadFile,
 } from 'element-plus'
 import { Check, Document, Upload } from '@element-plus/icons-vue'
+import PdfViewer from '@/components/PdfViewer.vue'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createAssembly } from '@/api/assembly'
 import { createApplicant } from '@/api/applicant'
@@ -370,6 +390,15 @@ const pdfName = ref<string>('')
 const pdfSize = ref<number>(0)
 /** 本地 PDF 的 blob URL，用于「预览总装图 / 预览图纸」按钮。 */
 const pdfBlobUrl = ref<string | null>(null)
+
+// PDF 预览弹窗（in-app 替代 window.open）
+const pdfPreviewVisible = ref(false)
+const pdfPreviewPage = ref(1)
+function openPdfPreview(page: number): void {
+  if (!pdfBlobUrl.value) return
+  pdfPreviewPage.value = Math.max(1, page)
+  pdfPreviewVisible.value = true
+}
 /** PDF 总页数（page 1 = 总图，page 2..N = 子件 1..N-1）。 */
 const pageCount = ref(0)
 
@@ -447,15 +476,12 @@ onBeforeUnmount(() => {
 })
 
 function onPreviewChild(_row: unknown, idx: number): void {
-  if (!pdfBlobUrl.value) return
   // 该子件在原 PDF 中的页码 = idx + 2（page 1 是总装图）
-  const page = idx + 2
-  window.open(`${pdfBlobUrl.value}#page=${page}&toolbar=0`, '_blank', 'noopener')
+  openPdfPreview(idx + 2)
 }
 
 function onPreviewMaster(): void {
-  if (!pdfBlobUrl.value) return
-  window.open(`${pdfBlobUrl.value}#page=1&toolbar=0`, '_blank', 'noopener')
+  openPdfPreview(1)
 }
 
 function formatSize(n: number): string {
