@@ -88,13 +88,15 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
     candidates = [
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc",
-        # Alpine apk add wqy-microhei 安装位置（两个变体都试）
+        # Alpine apk add font-dejavu 安装位置
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        # Debian/Ubuntu apt install fonts-dejavu 路径
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        # CJK 字体（若后续需要中文渲染,装 font-noto-cjk 后命中）
         "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
-        # Debian/Ubuntu apt install fonts-wqy-microhei 路径
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
     ]
     for fp in candidates:
         try:

@@ -30,14 +30,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # tzdata 给 logging 用；tini 正确转发信号给 uvicorn（alpine 没自带）
 # 不装 libpq5：asyncpg 的 musllinux 轮子自带
-# wqy-microhei：service/printing.py 渲染图纸反面的序列号 + 信息卡需要中文字体；
-# alpine 默认无任何字体（main repo 不含 CJK），_load_cn_font 会 fallback 到
-# PIL 内置 ~10px bitmap，导致序列号在部署后变成蚂蚁大小。
-# wqy-microhei 在 alpine community repo 里，动态匹配当前 alpine 版本。
-RUN ALPINE_VERSION="$(cut -d. -f1,2 /etc/alpine-release)" && \
-    apk add --no-cache tzdata tini \
-    && apk add --no-cache wqy-microhei \
-       --repository="http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" \
+# font-dejavu：service/printing.py 渲染序列号（ASCII 字符如 F1004）需要支持 size
+# 的 TTF 字体；alpine 默认无任何字体，_load_cn_font 会 fallback 到 PIL 内置
+# ~10px bitmap（完全忽略 size 参数），导致序列号在部署后变成蚂蚁大小。
+# 注：DejaVu 是 Latin-only，信息卡的中文标签（图号/名称/客户/流水号）
+#     仍无法渲染（会显示 ▯ 缺字符）；如有需要再换 font-noto-cjk。
+RUN apk add --no-cache tzdata tini font-dejavu \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone
 
