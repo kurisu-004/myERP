@@ -156,16 +156,16 @@ function selectAction(a: WorkAction): void {
   ElMessage.success(`已选择: ${ACTION_LABEL[a]}`)
   // PICK_UP 走「按工种选件」新流程 → /scan/pick
   // RETURN 走「按工人列持有件 → 选件 → 选工序 → 选架」新流程 → /scan/return
-  // INSPECT 沿用旧扫码流程 → /scan/parts
+  // INSPECT 走「按工人列持有件 → 选件 → 扫码确认 → 选品检架」新流程 → /scan/inspect
   // DELIVER（PR-C）走司机专属送货单流程 → /scan/deliver
   if (a === 'PICK_UP') {
     void router.push('/scan/pick')
   } else if (a === 'RETURN') {
     void router.push('/scan/return')
+  } else if (a === 'INSPECT') {
+    void router.push('/scan/inspect')
   } else if (a === 'DELIVER') {
     void router.push('/scan/deliver')
-  } else {
-    void router.push(`/scan/parts?action=${a.toLowerCase().replace('_', '')}`)
   }
 }
 
