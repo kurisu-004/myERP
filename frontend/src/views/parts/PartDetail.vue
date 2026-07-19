@@ -42,10 +42,10 @@
             </el-descriptions-item>
 
             <el-descriptions-item label="计划交期">
-              <el-date-picker v-model="form.planned_delivery_date" type="date" size="small" style="width:100%" />
+              <el-date-picker v-model="form.planned_delivery_date" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%" />
             </el-descriptions-item>
             <el-descriptions-item label="实际送货">
-              <el-date-picker v-model="form.actual_delivery_date" type="date" size="small" style="width:100%" />
+              <el-date-picker v-model="form.actual_delivery_date" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%" />
             </el-descriptions-item>
             <el-descriptions-item label="单据 ID">#{{ part.id }}</el-descriptions-item>
 
@@ -54,7 +54,7 @@
               <el-input v-model="form.order_no" size="small" placeholder="如 6200037950" />
             </el-descriptions-item>
             <el-descriptions-item label="系统交期">
-              <el-date-picker v-model="form.system_delivery_date" type="date" size="small" style="width:100%" />
+              <el-date-picker v-model="form.system_delivery_date" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%" />
             </el-descriptions-item>
             <el-descriptions-item label="备注">
               <el-input v-model="form.note" size="small" placeholder="文员手填" />
