@@ -31,9 +31,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # tzdata 给 logging 用；tini 正确转发信号给 uvicorn（alpine 没自带）
 # 不装 libpq5：asyncpg 的 musllinux 轮子自带
 # wqy-microhei：service/printing.py 渲染图纸反面的序列号 + 信息卡需要中文字体；
-# alpine 默认无任何字体，_load_cn_font 会 fallback 到 PIL 内置 ~10px bitmap，
-# 导致序列号在部署后变成蚂蚁大小
-RUN apk add --no-cache tzdata tini wqy-microhei \
+# alpine 默认无任何字体（main repo 不含 CJK），_load_cn_font 会 fallback 到
+# PIL 内置 ~10px bitmap，导致序列号在部署后变成蚂蚁大小。
+# wqy-microhei 在 alpine community repo 里，动态匹配当前 alpine 版本。
+RUN ALPINE_VERSION="$(cut -d. -f1,2 /etc/alpine-release)" && \
+    apk add --no-cache tzdata tini \
+    && apk add --no-cache wqy-microhei \
+       --repository="http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone
 
