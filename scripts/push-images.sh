@@ -2,9 +2,10 @@
 # ----------------------------------------------------------------------------
 # 本地构建并推送 myERP 前后端镜像到腾讯云 TCR
 # 用法:
-#   ./scripts/push-images.sh                  # 推 prod- 前缀（默认）
+#   ./scripts/push-images.sh                        # 推 prod- 前缀,打 SHA + latest
 #   TAG_PREFIX=staging ./scripts/push-images.sh
 #   DOCKER_REPO=ccr.ccs.tencentyun.com/foo ./scripts/push-images.sh
+#   VERSION=0.1.0 ./scripts/push-images.sh          # 发布版:只打 0.1.0 tag（不打 SHA / latest）
 #
 # 凭据: 自动从 .env 读取 DOCKER_USERNAME / DOCKER_PASSWORD / DOCKER_REPO
 #       也可以在 shell 里 export 覆盖
@@ -29,42 +30,58 @@ TAG_PREFIX="${TAG_PREFIX:-prod}"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'local')"
 REGISTRY_HOST="$(echo "$DOCKER_REPO" | cut -d/ -f1)"
 
-echo "==> 仓库: $DOCKER_REPO"
-echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend / $TAG_PREFIX-frontend)"
-echo "==> Git SHA: $SHA"
+# 发布模式:VERSION 设置时只打 VERSION 一个 tag（无 SHA / latest）。
+# 默认模式:打 SHA + latest 两个 tag,便于滚动部署与回滚。
+if [ -n "${VERSION:-}" ]; then
+  TAGS=("$VERSION")
+  echo "==> 仓库: $DOCKER_REPO"
+  echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend / $TAG_PREFIX-frontend)"
+  echo "==> 发布版本: $VERSION  (Git SHA: $SHA, 只打 $VERSION tag)"
+else
+  TAGS=("$SHA" "latest")
+  echo "==> 仓库: $DOCKER_REPO"
+  echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend / $TAG_PREFIX-frontend)"
+  echo "==> Git SHA: $SHA  (打 SHA + latest 两个 tag)"
+fi
 echo
 
 echo "==> 1/4 登录 TCR ($REGISTRY_HOST)"
 echo "$DOCKER_PASSWORD" | docker login "$REGISTRY_HOST" -u "$DOCKER_USERNAME" --password-stdin
 
+# 把所有 tag 拼成 docker build 的 -t 参数
+BACKEND_TAG_ARGS=()
+FRONTEND_TAG_ARGS=()
+for t in "${TAGS[@]}"; do
+  BACKEND_TAG_ARGS+=("-t" "$DOCKER_REPO/$TAG_PREFIX-backend:$t")
+  FRONTEND_TAG_ARGS+=("-t" "$DOCKER_REPO/$TAG_PREFIX-frontend:$t")
+done
+
 echo
-echo "==> 2/4 构建 backend  ($TAG_PREFIX-backend:$SHA)"
+echo "==> 2/4 构建 backend  ($TAG_PREFIX-backend:${TAGS[*]})"
 # --platform linux/amd64：Mac Apple Silicon 本地 build 默认出 arm64，
 # CVM 是 amd64，必须显式指定。push 之后 CVM 才能正常拉取。
 docker build \
   --platform linux/amd64 \
-  -t "$DOCKER_REPO/$TAG_PREFIX-backend:$SHA" \
-  -t "$DOCKER_REPO/$TAG_PREFIX-backend:latest" \
+  "${BACKEND_TAG_ARGS[@]}" \
   --label "org.opencontainers.image.revision=$SHA" \
   --label "org.opencontainers.image.source=$(git config --get remote.origin.url 2>/dev/null || echo 'local')" \
   .
 
 echo
-echo "==> 3/4 构建 frontend ($TAG_PREFIX-frontend:$SHA)"
+echo "==> 3/4 构建 frontend ($TAG_PREFIX-frontend:${TAGS[*]})"
 docker build \
   --platform linux/amd64 \
-  -t "$DOCKER_REPO/$TAG_PREFIX-frontend:$SHA" \
-  -t "$DOCKER_REPO/$TAG_PREFIX-frontend:latest" \
+  "${FRONTEND_TAG_ARGS[@]}" \
   --label "org.opencontainers.image.revision=$SHA" \
   --label "org.opencontainers.image.source=$(git config --get remote.origin.url 2>/dev/null || echo 'local')" \
   ./frontend
 
 echo
-echo "==> 4/4 推送 4 个 tag 到 TCR"
-docker push "$DOCKER_REPO/$TAG_PREFIX-backend:$SHA"
-docker push "$DOCKER_REPO/$TAG_PREFIX-backend:latest"
-docker push "$DOCKER_REPO/$TAG_PREFIX-frontend:$SHA"
-docker push "$DOCKER_REPO/$TAG_PREFIX-frontend:latest"
+echo "==> 4/4 推送 tag 到 TCR"
+for t in "${TAGS[@]}"; do
+  docker push "$DOCKER_REPO/$TAG_PREFIX-backend:$t"
+  docker push "$DOCKER_REPO/$TAG_PREFIX-frontend:$t"
+done
 
 echo
 echo "==> 登出（清理凭据）"
@@ -72,7 +89,7 @@ docker logout "$REGISTRY_HOST" >/dev/null
 
 echo
 echo "✓ 推送完成"
-echo "  - $DOCKER_REPO/$TAG_PREFIX-backend:$SHA"
-echo "  - $DOCKER_REPO/$TAG_PREFIX-backend:latest"
-echo "  - $DOCKER_REPO/$TAG_PREFIX-frontend:$SHA"
-echo "  - $DOCKER_REPO/$TAG_PREFIX-frontend:latest"
+for t in "${TAGS[@]}"; do
+  echo "  - $DOCKER_REPO/$TAG_PREFIX-backend:$t"
+  echo "  - $DOCKER_REPO/$TAG_PREFIX-frontend:$t"
+done
