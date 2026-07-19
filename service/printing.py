@@ -378,4 +378,3 @@ async def build_parts_print_pdf_batch(
     buf = io.BytesIO()
     writer.write(buf)
     return buf.getvalue()
-    return out.getvalue()
