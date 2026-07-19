@@ -174,19 +174,91 @@ class TestBuildPartPrintPdfOrientation:
             assert float(page.mediabox.width) < float(page.mediabox.height)
 
 
+def _find_black_x_segments(img: Image.Image, y_lo: int, y_hi: int) -> list[tuple[int, int]]:
+    """在 y ∈ [y_lo, y_hi] 水平条带内，找出 x 方向上的连续黑色像素段。
+
+    用于验证「序列号在条码左侧」类布局——两段黑色像素之间应有 gap。
+    """
+    band = img.crop((0, y_lo, img.width, y_hi)).convert("L")
+    bw = band.width
+    bh = band.height
+    segments: list[tuple[int, int]] = []
+    in_seg = False
+    start = 0
+    for x in range(bw):
+        col = band.crop((x, 0, x + 1, bh))
+        col_min = min(col.getdata())
+        has_black = col_min < 128
+        if has_black and not in_seg:
+            start = x
+            in_seg = True
+        elif not has_black and in_seg:
+            segments.append((start, x - 1))
+            in_seg = False
+    if in_seg:
+        segments.append((start, bw - 1))
+    return segments
+
+
 class TestBarcodePageLayoutVertical:
-    """2026-07-20 v2 迭代：序列号 + 条码旋转 90° 贴 A4 右边。
+    """2026-07-20 v3 迭代：序列号 + 条码 CCW 旋转 90°，序列号在条码左侧并排。
 
     验证 _build_barcode_page 的输出:
-    - 右边 25% 区域有大量黑色像素（条码在右边）；
-    - 左边 75% 区域基本为白色（所有内容都在右边）；
-    - 上下 25% 基本为白色（块垂直居中）；
-    - 右条带上下半都有黑色像素（序列号 + 条码堆叠）。
+    - 序列号与条码沿 A4 右边并排堆叠（不重叠），序列号在左侧（x 较小）；
+    - 条码距页面右边精确 1 cm（RIGHT_MARGIN_PT = 28 pt ≈ 58 px @ 150 DPI）；
+    - 左边 65% 区域基本为白色（所有内容都在右边）；
+    - 右边 25% 区域有大量黑色像素（条码主体）。
     """
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_serial_left_of_barcode(self, orientation: str) -> None:
+        """序列号在条码左侧，中间有 gap 不重叠。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        # 取垂直中间 40% 条带，水平扫黑色像素段
+        segments = _find_black_x_segments(img, int(h * 0.3), int(h * 0.7))
+
+        # 应有 ≥ 2 段：serial + barcode
+        assert len(segments) >= 2, (
+            f"中间条带应有 ≥ 2 段黑色像素（serial + barcode 并排），实际 {len(segments)} 段: {segments}"
+        )
+
+        # 第一段（最左）应是 serial，最右段应是 barcode；serial 在 barcode 左侧
+        serial_right_edge = segments[0][1]
+        barcode_left_edge = segments[-1][0]
+        assert serial_right_edge < barcode_left_edge, (
+            f"serial 应在 barcode 左侧：serial_right={serial_right_edge}, "
+            f"barcode_left={barcode_left_edge}"
+        )
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_barcode_1cm_from_right_edge(self, orientation: str) -> None:
+        """条码距页面右边精确 1 cm（28 pt ≈ 58 px @ 150 DPI）。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        # 距右边 1 cm 区域应基本为白色（margin 区域）
+        margin_zone = img.crop((w - 58, 0, w, h)).convert("L")
+        hist = margin_zone.histogram()
+        black = hist[0] + hist[1]
+        assert black < 50, (
+            f"距右边 1 cm 区域应为白色 margin，实际 black={black}"
+        )
+
+        # 条码主体区域（距右边 ~1-5 cm 内）应有大量黑色像素
+        barcode_zone = img.crop((w - 316, int(h * 0.3), w - 58, int(h * 0.7))).convert("L")
+        hist = barcode_zone.histogram()
+        black = hist[0] + hist[1]
+        assert black > 500, f"条码主体区域应有大量黑色像素，实际 black={black}"
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
     def test_right_quarter_has_barcode(self, orientation: str) -> None:
-        """右边 25% 区域应有条码黑色像素。"""
+        """右边 25% 区域应有大量条码黑色像素。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(orientation, "L2014")
@@ -199,7 +271,7 @@ class TestBarcodePageLayoutVertical:
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
     def test_left_half_is_empty(self, orientation: str) -> None:
-        """左半页应基本为白色（块只在右边，块左缘 > page_w/2）。"""
+        """左半页应基本为白色（块只在右边，块左缘 < w/2 但内容很窄）。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(orientation, "L2014")
@@ -212,55 +284,6 @@ class TestBarcodePageLayoutVertical:
         assert non_white / total < 0.001, (
             f"左半页应基本为白色，实际非白像素 {non_white}/{total}"
         )
-
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_top_left_corner_is_empty(self, orientation: str) -> None:
-        """左上角（左半页的上半）应基本为白色。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page(orientation, "L2014")
-        w, h = img.size
-
-        tl = img.crop((0, 0, w // 2, h // 2)).convert("L")
-        hist = tl.histogram()
-        non_white = sum(hist[:250])
-        total = sum(hist)
-        assert non_white / total < 0.001, (
-            f"左上角应基本为白色，实际非白像素 {non_white}/{total}"
-        )
-
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_bottom_left_corner_is_empty(self, orientation: str) -> None:
-        """左下角（左半页的下半）应基本为白色。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page(orientation, "L2014")
-        w, h = img.size
-
-        bl = img.crop((0, h // 2, w // 2, h)).convert("L")
-        hist = bl.histogram()
-        non_white = sum(hist[:250])
-        total = sum(hist)
-        assert non_white / total < 0.001, (
-            f"左下角应基本为白色，实际非白像素 {non_white}/{total}"
-        )
-
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_serial_above_barcode_in_right_strip(self, orientation: str) -> None:
-        """右条带上下半都有黑色像素（序列号 + 条码堆叠）。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page(orientation, "L2014")
-        w, h = img.size
-
-        right_strip = img.crop((int(w * 0.70), 0, w, h)).convert("L")
-        rs_w, rs_h = right_strip.size
-        upper_hist = right_strip.crop((0, 0, rs_w, rs_h // 2)).histogram()
-        lower_hist = right_strip.crop((0, rs_h // 2, rs_w, rs_h)).histogram()
-        upper_black = upper_hist[0] + upper_hist[1]
-        lower_black = lower_hist[0] + lower_hist[1]
-        assert upper_black > 100, f"右条带上半应有序列号，实际 black={upper_black}"
-        assert lower_black > 100, f"右条带下半应有条码，实际 black={lower_black}"
 
 
 class TestDrawingPdfMediaboxNormalization:

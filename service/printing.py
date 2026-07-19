@@ -43,11 +43,11 @@ A4_LANDSCAPE = (842, 595)
 DPI = 150
 PX_PER_PT = DPI / 72.0
 
-# === 2026-07-20 迭代 v2：反面页序列号 + 条码旋转 90° 贴 A4 右边 ===
+# === 2026-07-20 迭代 v3：反面页序列号 + 条码 CCW 旋转 90° 沿 A4 右边并排 ===
 SERIAL_FONT_PX = int(842 * PX_PER_PT / 8)       # ≈ 219 px（旋转前的字体高度）
 BARCODE_H_PX = int(842 * PX_PER_PT / 7)         # ≈ 250 px（旋转前的条码高度；旋转后变成水平宽度）
 BARCODE_W_FRACTION = 0.5                          # 旋转前的条码水平宽度 = A4 短边 50%
-RIGHT_MARGIN_PT = 30                            # 块距页面右边
+RIGHT_MARGIN_PT = 28                            # 条码距页面右边（精确 1 cm）
 SERIAL_TO_BC_GAP_PT = 22                         # 序列号 ↔ 条码 间距
 
 
@@ -97,21 +97,23 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
 
 
 def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
-    """渲染反面页（2026-07-20 迭代 v2）：
-    - 序列号 + 条码均旋转 90°（顺时针，rotate(-90)），垂直堆叠贴 A4 右边；
+    """渲染反面页（2026-07-20 迭代 v3）：
+    - 序列号 + 条码均旋转 90° CCW（rotate(90)），沿 A4 右边并排堆叠；
+    - 序列号在条码左侧（视觉上的「左」，即 x 较小的位置）；
     - 条码水平长度 = A4 短边 50%（旋转后变成纵向长度）；
     - 序列号字号 = A4 长边 / 8（旋转后是文本纵向高度）；
-    - 距右边 RIGHT_MARGIN_PT；序列号与条码之间 SERIAL_TO_BC_GAP_PT。
+    - 条码距页面右边 RIGHT_MARGIN_PT = 28 pt（精确 1 cm）。
 
-    旋转方向说明：rotate(-90) 是 PIL 顺时针 90°，原始 LR 文本 → 旋转后 L 在上、
-    4 在下，自上而下可读，符合中文标签/书脊惯例。
+    旋转方向说明：rotate(90) 是 PIL 逆时针 90°，原始 LR 文本 → 旋转后
+    文本最右字符（如 "F1004" 的 "4"）出现在顶部，自上而下读为 "4001F"。
+    这是用户指定「向左旋转 90°」的字面解释；扫描方面两个方向现代扫码枪都兼容。
     """
     page_w, page_h = _a4_px(orientation)
     page = Image.new("RGB", (page_w, page_h), "white")
 
     short_side_px = min(page_w, page_h)
 
-    # === 条码：先按原朝向渲染 + 缩放，再旋转 -90° ===
+    # === 条码：先按原朝向渲染 + 缩放，再旋转 90° CCW ===
     bc_img = _render_barcode_pil(serial_no)
     target_bc_w_native = int(short_side_px * BARCODE_W_FRACTION)
     bc_native_h_scaled = int(bc_img.height * target_bc_w_native / bc_img.width)
@@ -120,9 +122,9 @@ def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
         Image.LANCZOS,
     )
     # NEAREST 保持条码边缘锐利，确保扫码兼容性
-    bc_rotated = bc_resized.rotate(-90, expand=True, resample=Image.NEAREST)
+    bc_rotated = bc_resized.rotate(90, expand=True, resample=Image.NEAREST)
 
-    # === 序列号：渲染到刚好装下的白色画布，再旋转 -90° ===
+    # === 序列号：渲染到刚好装下的白色画布，再旋转 90° CCW ===
     serial_font = _load_cn_font(size=SERIAL_FONT_PX)
     _tmp = Image.new("RGB", (1, 1))
     _tmp_draw = ImageDraw.Draw(_tmp)
@@ -135,29 +137,31 @@ def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
     # y 偏移 -bbox[1] 处理 ascender 顶部负偏移，确保字符不超出画布
     serial_draw.text((0, -bbox[1]), serial_no, fill="#000", font=serial_font)
     # BICUBIC 让字符边缘平滑（可读性优先）
-    serial_rotated = serial_canvas.rotate(-90, expand=True, resample=Image.BICUBIC)
+    serial_rotated = serial_canvas.rotate(90, expand=True, resample=Image.BICUBIC)
 
-    # === 布局：旋转后两块沿右边垂直堆叠，垂直居中 ===
+    # === 布局：旋转后两块沿右边并排堆叠，垂直居中 ===
     right_margin_px = int(RIGHT_MARGIN_PT * PX_PER_PT)
     gap_px = int(SERIAL_TO_BC_GAP_PT * PX_PER_PT)
 
     bc_w, bc_h = bc_rotated.size
     sr_w, sr_h = serial_rotated.size
 
-    block_w = max(bc_w, sr_w)
-    block_h = sr_h + gap_px + bc_h
+    # 条码贴在右边（距右边 1 cm），序列号位于条码左侧
+    bc_right_x = page_w - right_margin_px
+    bc_x = bc_right_x - bc_w
 
-    block_right_x = page_w - right_margin_px
-    block_left_x = block_right_x - block_w
-    block_top_y = (page_h - block_h) // 2
+    # 序列号左侧贴条码：右缘 = bc_x - gap
+    sr_right_x = bc_x - gap_px
+    sr_x = sr_right_x - sr_w
 
-    # 序列号在堆叠的上方
-    serial_x = block_left_x + (block_w - sr_w) // 2
-    page.paste(serial_rotated, (serial_x, block_top_y))
+    # 垂直方向：以条码高度为基准，整体垂直居中
+    # 条码竖条更高（620px），序列号竖条更短（290px），两者按各自高度居中于同一 y_center
+    block_h = max(bc_h, sr_h)
+    y_center = page_h // 2
+    bc_y = y_center - bc_h // 2
+    sr_y = y_center - sr_h // 2
 
-    # 条码在序列号下方
-    bc_x = block_left_x + (block_w - bc_w) // 2
-    bc_y = block_top_y + sr_h + gap_px
+    page.paste(serial_rotated, (sr_x, sr_y))
     page.paste(bc_rotated, (bc_x, bc_y))
 
     return page
@@ -413,6 +417,25 @@ async def build_part_print_pdf(
         _p.cropbox = _a4_box
         _p.trimbox = _a4_box
         _p.bleedbox = _a4_box
+
+    # 2026-07-20 调试：输出每页最终的 mediabox 大小（pt），
+    # 辅助排查「打印预览显示非 A4」类问题。
+    _logger.info(
+        "build_part_print_pdf: orientation=%s pages=%d A4=%sx%s pt",
+        orientation,
+        len(writer.pages),
+        _w_pt,
+        _h_pt,
+    )
+    for _i, _p in enumerate(writer.pages):
+        _logger.info(
+            "  page[%d] mediabox=%sx%s cropbox=%sx%s",
+            _i,
+            float(_p.mediabox.width),
+            float(_p.mediabox.height),
+            float(_p.cropbox.width),
+            float(_p.cropbox.height),
+        )
 
     out = io.BytesIO()
     writer.write(out)
