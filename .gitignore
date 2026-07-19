@@ -131,6 +131,9 @@ test_*.tmp
 .agent/
 .claude/
 
+# Git worktree 隔离目录（每个分支一个 worktree，避免污染主 checkout）
+.worktrees/
+
 # 2026-07-15：真实客户数据 / 临时 Excel（送货单 / 加工明细 / 招标项目）不进 git。
 # 这些文件含业务敏感信息且会频繁变更；只保留在本地 docs/example/ 作
 # 调试 / 演示用，不入版本控制。Excel 模板（如应标批量导入的 .xlsx 模板）
