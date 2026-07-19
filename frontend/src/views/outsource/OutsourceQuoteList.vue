@@ -5,6 +5,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
+import PdfViewer from '@/components/PdfViewer.vue'
 import {
   approveOutsourceQuote,
   createOutsourceQuote,
@@ -817,11 +818,10 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
       @close="closeDrawingPreview"
     >
       <div v-if="drawingPreviewUrl" class="drawing-frame-wrap">
-        <iframe
+        <PdfViewer
           v-if="drawingPreviewIsPdf"
-          :src="drawingPreviewUrl"
-          class="drawing-frame"
-          title="PDF 图纸预览"
+          :url="drawingPreviewUrl"
+          :initial-scale="1.4"
         />
         <el-image
           v-else
@@ -906,12 +906,6 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.drawing-frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #fff;
 }
 .drawing-image {
   max-width: 100%;

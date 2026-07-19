@@ -264,17 +264,43 @@
                 <span class="file-name">{{ f.original_filename }}</span>
                 <span class="file-size muted">{{ formatBytes(f.file_size) }}</span>
               </div>
-              <el-button
-                link
-                type="primary"
-                size="small"
-                @click="onDownload(f)"
-              >下载</el-button>
+              <div class="file-actions">
+                <el-button
+                  v-if="canPreview(f)"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="onPreviewPdf(f)"
+                >预览</el-button>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="onDownload(f)"
+                >下载</el-button>
+              </div>
             </li>
           </ul>
         </div>
       </template>
     </el-drawer>
+
+    <!-- PDF 预览弹窗 -->
+    <el-dialog
+      v-model="pdfPreviewVisible"
+      :title="pdfPreviewTitle"
+      width="900"
+      :close-on-click-modal="false"
+      :destroy-on-close="true"
+      append-to-body
+      top="5vh"
+    >
+      <PdfViewer
+        v-if="pdfPreviewVisible && pdfPreviewUrl"
+        :url="pdfPreviewUrl"
+        :initial-scale="1.4"
+      />
+    </el-dialog>
   </div>
 </template>
 
@@ -287,6 +313,7 @@ import {
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
+import PdfViewer from '@/components/PdfViewer.vue'
 import {
   listPendingProgramming,
   releaseFromProgramming,
@@ -490,6 +517,11 @@ const filesByKind = ref<Record<PartFileKind, PartFileItem[]>>({
   CAD_2D: [],
 })
 
+// PDF 预览弹窗
+const pdfPreviewVisible = ref(false)
+const pdfPreviewUrl = ref<string | null>(null)
+const pdfPreviewTitle = ref('PDF 预览')
+
 const KIND_TITLE: Record<PartFileKind, string> = {
   DRAWING: '图纸',
   '3D_MODEL': '3D 模型',
@@ -562,6 +594,20 @@ function onDownload(f: PartFileItem): void {
     return
   }
   window.open(f.download_url, '_blank', 'noopener,noreferrer')
+}
+
+function canPreview(f: PartFileItem): boolean {
+  return f.file_type.toUpperCase() === 'PDF'
+}
+
+function onPreviewPdf(f: PartFileItem): void {
+  if (!f.download_url) {
+    ElMessage.error('该文件下载链接尚未签发，请稍后重试')
+    return
+  }
+  pdfPreviewUrl.value = f.download_url
+  pdfPreviewTitle.value = `预览 — ${f.original_filename}`
+  pdfPreviewVisible.value = true
 }
 
 function formatBytes(n: number): string {
@@ -677,6 +723,12 @@ onMounted(() => {
 .file-size {
   font-size: 12px;
   margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.file-actions {
+  display: flex;
+  gap: 4px;
   flex-shrink: 0;
 }
 </style>

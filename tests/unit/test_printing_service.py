@@ -172,3 +172,63 @@ class TestBuildPartPrintPdfOrientation:
         # 两页都应是 portrait
         for page in reader.pages:
             assert float(page.mediabox.width) < float(page.mediabox.height)
+
+
+class TestBarcodePageLayout:
+    """2026-07-20 迭代：反面页序列号 + 条码水平居中贴 A4 短边底部。
+
+    验证 _build_barcode_page 的输出:
+    - 上半页（50%）基本为白色（序列号与条码都贴在底部）；
+    - 左下区域有黑色像素（条码水平居中而非贴右）；
+    - 左右半页的黑色像素数量大致对称（水平居中）。
+    """
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_top_half_is_empty(self, orientation: str) -> None:
+        """序列号 + 条码贴底 → 上半页（50%）应基本为白色。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        top = img.crop((0, 0, w, h // 2)).convert("L")
+        hist = top.histogram()
+        non_white = sum(hist[:250])  # 灰度 < 250 的像素
+        total = sum(hist)
+        assert non_white / total < 0.005, (
+            f"上半页应基本为白色，实际非白像素 {non_white}/{total}"
+        )
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_bottom_left_has_barcode(self, orientation: str) -> None:
+        """条码水平居中 → 左下 50% 区域应有黑色像素（旧布局在右下角不会）。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        bot_left = img.crop((0, int(h * 0.7), w // 2, h)).convert("L")
+        hist = bot_left.histogram()
+        black = hist[0]  # 灰度 == 0 的像素
+        assert black > 100, f"左下区域应有条码黑色像素，实际 black={black}"
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_centered_horizontally(self, orientation: str) -> None:
+        """水平居中：左半与右半页的黑色像素数量应大致对称。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+
+        bottom = img.crop((0, h // 2, w, h)).convert("L")
+        bw = bottom.width
+        left_hist = bottom.crop((0, 0, bw // 2, bottom.height)).histogram()
+        right_hist = bottom.crop((bw // 2, 0, bw, bottom.height)).histogram()
+        left_black = left_hist[0] + left_hist[1]
+        right_black = right_hist[0] + right_hist[1]
+        total_black = left_black + right_black
+        assert total_black > 100, f"下半页黑色像素过少：{total_black}"
+        diff_ratio = abs(left_black - right_black) / total_black
+        assert diff_ratio < 0.5, (
+            f"左右严重不对称：left={left_black} right={right_black}"
+        )

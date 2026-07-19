@@ -42,6 +42,13 @@ A4_LANDSCAPE = (842, 595)
 DPI = 150
 PX_PER_PT = DPI / 72.0
 
+# === 2026-07-20 迭代：反面页 2 行堆叠居中 ===
+SERIAL_FONT_PX = int(842 * PX_PER_PT / 8)       # ≈ 219 px
+BARCODE_H_PX = int(842 * PX_PER_PT / 7)         # ≈ 250 px
+BARCODE_W_FRACTION = 0.5
+BOTTOM_MARGIN_PT = 30                           # 条码距页底
+SERIAL_TO_BC_GAP_PT = 22                        # 序列号与条码间距
+
 
 def _a4_px(orientation: str) -> tuple[int, int]:
     """按方向返回 A4 像素尺寸 (w, h)。orientation ∈ {'portrait','landscape'}。"""
@@ -64,7 +71,6 @@ def _render_barcode_pil(data: str) -> Image.Image:
         "quiet_zone": 3.0,
         "background": "white",
         "foreground": "black",
-        "write_text": False,
     }
     buf = io.BytesIO()
     barcode_obj.write(buf, opts)
@@ -90,77 +96,42 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
 
 
 def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
-    """渲染第 2 页（反面）：白底 A4 + 右下角条形码 + 序列号文字。
-
-    极简版（2026-07-07 迭代）：去掉「序列号」灰色 pill 与橙色边框方框，
-    只保留大字号 serial_no + Code128 条形码 + 条码下方小号扫描标签。
-    条码宽度按页面短边的 49.5% 自适应（原 55%，缩小 10%）。
+    """渲染反面页（2026-07-20 迭代）：
+    - 序列号大字在上、Code128 条码在下，水平居中，贴 A4 短边底部；
+    - 条码高度 = A4 长边 / 7，序列号字号 = A4 长边 / 8；
+    - 条码宽度 = A4 短边 50%；
+    - 底边留白 BOTTOM_MARGIN_PT。
     """
     page_w, page_h = _a4_px(orientation)
     page = Image.new("RGB", (page_w, page_h), "white")
     draw = ImageDraw.Draw(page)
 
-    # 字号随朝向微调：横向时页面更宽，字号更大
-    big_value_size = 120 if orientation == "landscape" else 96
-    small_tag_size = 36
-
-    big_value_font = _load_cn_font(size=big_value_size)
-    small_tag_font = _load_cn_font(size=small_tag_size)
-
-    # === 右下角固定角落 ===
-    # 条形码宽度按页面短边自适应（原 55%，本轮 ×0.9 → 49.5%）
-    short_side_pt = min(*A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT)
-    barcode_w_px = int(short_side_pt * PX_PER_PT * 0.495)  # 横 ~686px / 纵 ~513px
-    barcode_w_px = max(barcode_w_px, 400)
+    serial_font = _load_cn_font(size=SERIAL_FONT_PX)
+    short_side_px = min(page_w, page_h)
+    bc_w_px = int(short_side_px * BARCODE_W_FRACTION)
+    bc_h_px = BARCODE_H_PX
 
     bc_img = _render_barcode_pil(serial_no)
-    ratio = barcode_w_px / bc_img.width
-    bc_resized = bc_img.resize(
-        (barcode_w_px, int(bc_img.height * ratio)), Image.LANCZOS,
-    )
+    bc_resized = bc_img.resize((bc_w_px, bc_h_px), Image.LANCZOS)
 
-    corner_margin_r_px = int(60 * PX_PER_PT)
-    corner_margin_b_px = int(60 * PX_PER_PT)
+    bbox = draw.textbbox((0, 0), serial_no, font=serial_font)
+    serial_h = bbox[3] - bbox[1]
+    serial_w = bbox[2] - bbox[0]
 
-    # 倒推：从下到上排（大字 → 条码 → 小标签），整块底边对齐右下角
-    value_to_bc_gap = 22
-    bc_to_tag_gap = 14
-    # 大字占的纵向高度（实际字形 bbox + 一点 padding）
-    bbox = draw.textbbox((0, 0), serial_no, font=big_value_font)
-    value_h = bbox[3] - bbox[1]
-    block_total_h = (
-        value_h + value_to_bc_gap
-        + bc_resized.height + bc_to_tag_gap
-        + small_tag_size
-    )
-    block_bottom_y = page_h - corner_margin_b_px
+    gap_px = int(SERIAL_TO_BC_GAP_PT * PX_PER_PT)
+    bottom_margin_px = int(BOTTOM_MARGIN_PT * PX_PER_PT)
+    block_total_h = serial_h + gap_px + bc_h_px
+    block_bottom_y = page_h - bottom_margin_px
     block_top_y = block_bottom_y - block_total_h
-    cur_y = block_top_y
 
-    # 1) 序列号大字号（裸文本，无边框 / 无底色块）
-    # 居中于条码列宽内
-    bbox = draw.textbbox((0, 0), serial_no, font=big_value_font)
-    vw = bbox[2] - bbox[0]
-    text_x = corner_margin_r_px + barcode_w_px - vw  # 右对齐到条码右边缘
-    # 用 page_w - corner_margin_r_px - vw 等价：右贴条码右缘
-    text_x = page_w - corner_margin_r_px - vw
-    draw.text((text_x, cur_y), serial_no, fill="#000", font=big_value_font)
-    cur_y += value_h + value_to_bc_gap
+    # 1) 序列号（水平居中）
+    serial_x = (page_w - serial_w) // 2
+    draw.text((serial_x, block_top_y), serial_no, fill="#000", font=serial_font)
 
-    # 2) 条形码本体（右对齐）
-    paste_x = page_w - corner_margin_r_px - barcode_w_px
-    page.paste(bc_resized, (paste_x, cur_y))
-    cur_y += bc_resized.height + bc_to_tag_gap
-
-    # 3) 条码下方小号扫描标签（与条码同宽居中）
-    bbox = draw.textbbox((0, 0), serial_no, font=small_tag_font)
-    tw = bbox[2] - bbox[0]
-    draw.text(
-        (paste_x + (barcode_w_px - tw) // 2, cur_y),
-        serial_no,
-        fill="#000",
-        font=small_tag_font,
-    )
+    # 2) 条码（水平居中，紧贴序列号下方）
+    bc_x = (page_w - bc_w_px) // 2
+    bc_y = block_top_y + serial_h + gap_px
+    page.paste(bc_resized, (bc_x, bc_y))
 
     return page
 

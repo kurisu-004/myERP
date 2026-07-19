@@ -252,11 +252,7 @@
       append-to-body
     >
       <div v-if="drawingPreviewUrl" class="preview-frame-wrap">
-        <iframe
-          :src="drawingPreviewUrl"
-          class="preview-frame"
-          title="图纸预览"
-        />
+        <PdfViewer :url="drawingPreviewUrl" :initial-scale="1.4" />
       </div>
       <p v-else class="muted">无可预览内容</p>
     </el-dialog>
@@ -269,6 +265,7 @@ import { useRouter } from 'vue-router'
 import * as XLSX from 'xlsx'
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 
+import PdfViewer from '@/components/PdfViewer.vue'
 import { listCustomers, type Customer } from '@/api/customer'
 import {
   batchCreateParts,
@@ -852,12 +849,6 @@ loadCustomers()
   width: 100%;
   height: 70vh;
   background: #f5f7fa;
-}
-.preview-frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #fff;
 }
 
 :deep(.row-error) {
