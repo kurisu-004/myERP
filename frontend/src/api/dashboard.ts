@@ -84,6 +84,11 @@ function teardown(socket: WebSocket): void {
 
 function connect(): void {
   if (closed) return
+  // 旧 socket 还在握手（CONNECTING）期间不允许 teardown——close() 会让浏览器报
+  // "WebSocket is closed before the connection is established"。所有调用方（首次
+  // 进入 Dashboard 时 onMounted 与 router.afterEach 同 tick 双触发；JWT 刷新后
+  // reconnectDashboard）共用同一单例 URL，等这次握手完成即可，无需 close。
+  if (ws && ws.readyState === WebSocket.CONNECTING) return
   // 保证同一时刻只有一条活连接：建新连接前先拆掉旧的。
   if (ws) {
     teardown(ws)
