@@ -30,7 +30,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # tzdata 给 logging 用；tini 正确转发信号给 uvicorn（alpine 没自带）
 # 不装 libpq5：asyncpg 的 musllinux 轮子自带
-RUN apk add --no-cache tzdata tini \
+# wqy-microhei：service/printing.py 渲染图纸反面的序列号 + 信息卡需要中文字体；
+# alpine 默认无任何字体，_load_cn_font 会 fallback 到 PIL 内置 ~10px bitmap，
+# 导致序列号在部署后变成蚂蚁大小
+RUN apk add --no-cache tzdata tini wqy-microhei \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone
 

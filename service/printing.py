@@ -80,10 +80,18 @@ def _render_barcode_pil(data: str) -> Image.Image:
 
 
 def _load_cn_font(size: int) -> ImageFont.ImageFont:
-    """尽量加载中文字体；找不到时 fallback 到默认（标签仍可显示）。"""
+    """尽量加载中文字体；找不到时 fallback 到默认（标签仍可显示）。
+
+    部署环境（alpine）默认无任何字体，必须显式 apk add wqy-microhei 装入，
+    否则 fallback 到 PIL 内置 ~10px bitmap，导致序列号变得极小。
+    """
     candidates = [
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc",
+        # Alpine apk add wqy-microhei 安装位置（两个变体都试）
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
+        # Debian/Ubuntu apt install fonts-wqy-microhei 路径
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
