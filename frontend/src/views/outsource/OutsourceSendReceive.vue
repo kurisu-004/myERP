@@ -10,21 +10,25 @@
 URL ?tab=sendable|receiving|received 记忆上次选择；初次进入默认 可发送。
 -->
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Promotion } from '@element-plus/icons-vue'
 import { listApprovedForSend } from '@/api/outsource'
 import { listCustomers, type Customer } from '@/api/customer'
 import { listShelves } from '@/api/shelves'
 import type { Shelf as ShelfItem } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
 import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
+import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import type { Process } from '@/types/process'
 import {
   receiveFromOutsource,
   receiveFromOutsourceToInspection,
   sendToOutsource as sendPartToOutsource,
+  getPartBySerial,
   type SendToOutsourcePayload,
+  type PartItem,
   listParts,
   listPartEvents,
   type PartEvent,
@@ -175,6 +179,158 @@ function onSendablePageSizeChange(size: number): void {
   sendablePage.value = 1
   void refreshSendable()
 }
+
+// ============================================================
+// 扫码批量发送队列（PR-I 2026-07-20）
+//
+// INSPECTOR / 文员 扫一个序列号 → 查 part → 校验「在可发送列表」 → 入队。
+// 队列 N 件后点「确认发送」→ for 循环 POST 单 part 端点。
+// 后端 Schema 不变（仍走 POST /parts/{id}/send-to-outsource）。
+// ============================================================
+
+interface SendQueueItem {
+  part: { id: string; serial_no: string; drawing_no: string; name: string }
+  outsource_company_id: string
+  outsource_company_name: string
+  process_id: string
+  process_name: string
+  price: number
+  // 入队后做标记，给 UI 看
+  _failed?: boolean
+  _failMsg?: string
+}
+
+const sendQueue = ref<SendQueueItem[]>([])
+const batchSending = ref(false)
+const scanInput = ref('')
+
+async function handleScannedSerialForSend(code: string): Promise<void> {
+  const trimmed = code.trim()
+  if (!trimmed) return
+  let part: PartItem
+  try {
+    part = await getPartBySerial(trimmed)
+  } catch (e) {
+    ElMessage.error(`序列号 ${trimmed} 未找到：${(e as Error).message}`)
+    return
+  }
+  // 已在队列里？
+  if (sendQueue.value.find((q) => q.part.id === part.id)) {
+    ElMessage.warning(`${part.serial_no ?? trimmed} 已在发送队列中`)
+    return
+  }
+  // 必须在当前可发送列表里（status_label === 'sendable'）
+  const match = sendableItems.value.find(
+    (it) => it.part_id === part.id && it.status_label === 'sendable',
+  )
+  if (!match) {
+    ElMessage.warning(`${part.serial_no ?? trimmed} 当前不在可发送列表（可能状态不满足或没有 APPROVED 报价）`)
+    return
+  }
+  sendQueue.value.push({
+    part: {
+      id: part.id,
+      serial_no: part.serial_no ?? '',
+      drawing_no: part.drawing_no,
+      name: part.name,
+    },
+    outsource_company_id: match.outsource_company_id,
+    outsource_company_name: match.outsource_company_name ?? '',
+    process_id: match.process_id,
+    process_name: match.process_name ?? '',
+    price: Number(match.price),
+  })
+  ElMessage.success(`已加入发送队列：${part.serial_no ?? trimmed}`)
+}
+
+function onScanInputEnter(): void {
+  const code = scanInput.value
+  scanInput.value = ''
+  void handleScannedSerialForSend(code)
+}
+
+function onScanInputClear(): void {
+  scanInput.value = ''
+}
+
+function removeFromSendQueue(idx: number): void {
+  sendQueue.value.splice(idx, 1)
+}
+
+function clearSendQueue(): void {
+  sendQueue.value = []
+}
+
+async function onConfirmBatchSend(): Promise<void> {
+  if (sendQueue.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确认批量发送 ${sendQueue.value.length} 件零件到外协？`,
+      '批量发送',
+      { type: 'warning', confirmButtonText: '确认发送', cancelButtonText: '取消' },
+    )
+  } catch {
+    return  // 用户取消
+  }
+  batchSending.value = true
+  const errors: { serial: string; msg: string; idx: number }[] = []
+  let okCount = 0
+  // 串行 for 循环：避免并发踩状态机；失败项保留在队列可重试
+  for (let i = 0; i < sendQueue.value.length; i++) {
+    const item = sendQueue.value[i]
+    try {
+      const payload: SendToOutsourcePayload = {
+        outsource_company_id: item.outsource_company_id,
+        next_process_id: item.process_id,
+      }
+      await sendPartToOutsource(item.part.id, payload)
+      okCount++
+      // 成功后从队列移除
+      sendQueue.value.splice(i, 1)
+      i--  // 抵消 splice 导致的位移
+    } catch (e) {
+      const msg = (e as Error).message ?? '未知错误'
+      errors.push({
+        serial: item.part.serial_no || item.part.drawing_no,
+        msg,
+        idx: i,
+      })
+      sendQueue.value[i]._failed = true
+      sendQueue.value[i]._failMsg = msg
+    }
+  }
+  batchSending.value = false
+  if (okCount > 0) {
+    ElMessage.success(`成功发送 ${okCount} 件`)
+    await refreshSendable()
+    void refreshReceiving()
+  }
+  if (errors.length > 0) {
+    ElMessage.error(
+      `失败 ${errors.length} 件：${errors.map((e) => `${e.serial} (${e.msg})`).join('; ')}`,
+    )
+  }
+}
+
+// 全局扫码枪监听（学 ScanDeliver.vue）
+const { onScan: onGlobalScan } = useBarcodeScanner()
+let unsubScan: (() => void) | null = null
+
+onMounted(() => {
+  unsubScan = onGlobalScan((code) => {
+    // 仅在「可发送」tab 接收扫码（其他 tab 用户若误扫不会触发）
+    if (activeTab.value === 'sendable') {
+      void handleScannedSerialForSend(code)
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  if (unsubScan) {
+    unsubScan()
+    unsubScan = null
+  }
+})
 
 // ============================================================
 // Tab 2：待接收
@@ -446,6 +602,81 @@ watch(activeTab, async (t) => {
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <!-- ====================== Tab 1: 可发送 ====================== -->
         <el-tab-pane name="sendable" label="可发送">
+          <!-- 扫码批量发送（PR-I 2026-07-20）：扫序列号自动入队，最后批量提交 -->
+          <div class="scan-row">
+            <el-input
+              v-model="scanInput"
+              placeholder="扫码或输入序列号加入发送队列（Enter 入队）"
+              clearable
+              style="width: 360px"
+              @keyup.enter="onScanInputEnter"
+              @clear="onScanInputClear"
+            >
+              <template #prefix>
+                <el-icon><Promotion /></el-icon>
+              </template>
+            </el-input>
+            <el-button @click="onScanInputEnter">加入队列</el-button>
+            <el-tag v-if="sendQueue.length > 0" type="success" effect="plain" size="small">
+              队列 {{ sendQueue.length }} 件
+            </el-tag>
+            <el-button
+              v-if="sendQueue.length > 0"
+              link
+              size="small"
+              @click="clearSendQueue"
+            >清空队列</el-button>
+          </div>
+
+          <!-- 扫码队列表格 -->
+          <el-table
+            v-if="sendQueue.length > 0"
+            :data="sendQueue"
+            stripe
+            border
+            size="small"
+            class="queue-table"
+            style="margin-bottom: 12px"
+          >
+            <el-table-column label="序列号" width="110">
+              <template #default="{ row }">
+                <span :class="{ muted: !row.part.serial_no }">{{ row.part.serial_no || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="part.drawing_no" label="图号" width="120" />
+            <el-table-column prop="part.name" label="名称" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="outsource_company_name" label="外协公司" width="160" show-overflow-tooltip />
+            <el-table-column prop="process_name" label="外协工序" width="120" />
+            <el-table-column prop="price" label="单价(元)" width="80" align="right" />
+            <el-table-column label="状态" width="80" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row._failed" type="danger" size="small">失败</el-tag>
+                <span v-else class="muted">待发</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="70" fixed="right">
+              <template #default="{ $index }">
+                <el-button
+                  link
+                  type="danger"
+                  size="small"
+                  @click="removeFromSendQueue($index)"
+                >移除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div v-if="sendQueue.length > 0" class="batch-bar">
+            <span class="batch-info">已入队 <strong>{{ sendQueue.length }}</strong> 件</span>
+            <el-button
+              type="primary"
+              :loading="batchSending"
+              @click="onConfirmBatchSend"
+            >
+              确认发送 {{ sendQueue.length }} 件
+            </el-button>
+          </div>
+
           <div class="filter-row">
             <el-input
               v-model="sendableFilter.keyword"
@@ -768,6 +999,44 @@ watch(activeTab, async (t) => {
   font-size: 13px;
   color: var(--text-secondary);
   margin-left: auto;
+}
+// 2026-07-20：扫码批量发送 UI（PR-I）
+.scan-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+}
+.queue-table {
+  margin-bottom: 12px;
+}
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: #f0f9eb;
+  border: 1px solid #e1f3d8;
+  border-radius: 6px;
+}
+.batch-bar .batch-info {
+  color: #303133;
+  font-size: 13px;
+}
+.batch-bar .batch-info strong {
+  color: #67c23a;
+  font-weight: 600;
+  margin: 0 2px;
+}
+.muted {
+  color: var(--text-secondary);
 }
 :deep(.el-tabs__content) {
   overflow: visible;

@@ -31,29 +31,31 @@
           <span>重置</span>
         </el-button>
 
-        <el-button @click="router.push('/parts/new/bid-import')">
+        <el-button v-if="!isInspector" @click="router.push('/parts/new/bid-import')">
           <el-icon><Document /></el-icon>
           <span>从应标 Excel 导入</span>
         </el-button>
 
-        <!-- 批量打印图纸 toggle（2026-07-17 接入） -->
-        <el-button
-          v-if="!batchMode"
-          type="success"
-          plain
-          @click="onEnterBatchMode"
-        >
-          <el-icon><Printer /></el-icon>
-          <span>批量打印图纸</span>
-        </el-button>
-        <el-button
-          v-else
-          type="warning"
-          @click="onExitBatchMode"
-        >
-          <el-icon><Close /></el-icon>
-          <span>退出批量模式</span>
-        </el-button>
+        <!-- 批量打印图纸 toggle（2026-07-17 接入；2026-07-20 INSPECTOR 不可见） -->
+        <template v-if="!isInspector">
+          <el-button
+            v-if="!batchMode"
+            type="success"
+            plain
+            @click="onEnterBatchMode"
+          >
+            <el-icon><Printer /></el-icon>
+            <span>批量打印图纸</span>
+          </el-button>
+          <el-button
+            v-else
+            type="warning"
+            @click="onExitBatchMode"
+          >
+            <el-icon><Close /></el-icon>
+            <span>退出批量模式</span>
+          </el-button>
+        </template>
 
         <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
           编程员视图：默认查看「编程中」零件
@@ -263,7 +265,7 @@
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
             <el-button
-              v-if="row.status === 'PENDING'"
+              v-if="!isInspector && row.status === 'PENDING'"
               link
               type="success"
               size="small"
@@ -278,8 +280,8 @@
       </el-table>
     </div>
 
-    <!-- 批量打印图纸 — 底部 action bar（2026-07-17） -->
-    <div v-if="batchMode" class="batch-bar">
+    <!-- 批量打印图纸 — 底部 action bar（2026-07-17；2026-07-20 INSPECTOR 不可见） -->
+    <div v-if="!isInspector && batchMode" class="batch-bar">
       <div class="bar-info">
         <span>已选 <strong>{{ selectedRows.length }}</strong> 件</span>
         <el-button link size="small" @click="onSelectAllPage">全选当前页</el-button>
@@ -418,11 +420,15 @@ import {
   type OrderStatus,
 } from '@/types/parts'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { usePermissions } from '@/composables/usePermissions'
 import { useCustomerTree } from '@/composables/useCustomerTree'
+import { useListFilterPersist } from '@/composables/useListFilterPersist'
 
 // ============ 角色 & 默认筛选 ============
 const { hasRole } = useAuthSession()
 const isCncProgrammer = hasRole('CNC_PROGRAMMER')
+// PR-I 2026-07-20：INSPECTOR 看不到导入 / 批量打印 / 下发按钮
+const { isInspector } = usePermissions()
 const { tree: customerTree } = useCustomerTree()
 const route = useRoute()
 const router = useRouter()
@@ -663,19 +669,46 @@ function onPageSizeChange(size: number): void {
   void fetchList()
 }
 
+// ============ 筛选状态持久化（PR-I 2026-07-20）============
+const { restore: restorePartsFilter, clear: clearPartsFilter } =
+  useListFilterPersist<SearchState>(
+    'parts_list_filter',
+    { search, sortBy, sortDir, pageSize },
+  )
+
 function onReset(): void {
   Object.assign(search, initialSearch())
   sortBy.value = 'PLANNED_DELIVERY_DATE'
   sortDir.value = 'ASC'
   page.value = 1
+  clearPartsFilter()
   void fetchList()
 }
 
 onMounted(() => {
-  // 从 URL ?status=PENDING 等注入筛选（与批量新建后跳转保持一致）
+  // 1) 优先尝试从 URL ?status=PENDING 注入（与批量新建后跳转保持一致）
   const q = route.query.status
   if (typeof q === 'string' && q in ORDER_STATUS_LABEL) {
     search.statuses = [q as OrderStatus]
+  } else {
+    // 2) 否则从 localStorage 恢复上次的筛选 / 排序 / 分页大小
+    const persisted = restorePartsFilter()
+    if (persisted) {
+      search.keyword = persisted.search.keyword ?? search.keyword
+      search.statuses = Array.isArray(persisted.search.statuses)
+        ? persisted.search.statuses
+        : search.statuses
+      search.isUrgent = persisted.search.isUrgent ?? search.isUrgent
+      search.customerId = persisted.search.customerId ?? search.customerId
+      // localStorage 存的是 string，恢复时按合法值收敛（默认值兜底）
+      sortBy.value = (SORT_PROP_MAP[persisted.sortBy]
+        ? persisted.sortBy as PartSortKey
+        : 'PLANNED_DELIVERY_DATE')
+      sortDir.value = (persisted.sortDir === 'ASC' || persisted.sortDir === 'DESC'
+        ? persisted.sortDir as SortDir
+        : 'ASC')
+      pageSize.value = persisted.pageSize
+    }
   }
   void fetchList()
 })

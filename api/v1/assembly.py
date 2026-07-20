@@ -24,20 +24,33 @@ from schema.part_file import PartFileOut
 from service._id_parse import parse_snowflake_id
 from service.assembly import AssemblyService
 
-# 装配体自身的 CRUD（MANAGER + CLERK：文员也能建/查/编辑装配体）
+# 装配体自身的路由：去掉 router 级 deps，改成 per-route 声明，
+# 让 INSPECTOR（品检员）能只读访问 list / detail / files。
+# 写端点（POST）仍保持 MANAGER + CLERK。
+
 router = APIRouter(
     prefix="/assemblies",
     tags=["装配体管理"],
-    dependencies=[
-        Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
-    ],
 )
+
+# 读端点共用：MANAGER + CLERK + INSPECTOR（PR-I 2026-07-20）
+_assembly_read_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+    ))
+]
+
+# 写端点共用：MANAGER + CLERK
+_assembly_write_dep = [
+    Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
+]
 
 
 @router.get(
     "",
     response_model=AssemblyListOut,
-    summary="分页查询装配体列表",
+    summary="分页查询装配体列表（MANAGER / CLERK / INSPECTOR 只读）",
+    dependencies=_assembly_read_dep,
 )
 async def list_assemblies(
     customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
@@ -77,6 +90,7 @@ async def list_assemblies(
     response_model=AssemblyCreateResult,
     status_code=http_status.HTTP_201_CREATED,
     summary="创建装配件（可同时上传总装 PDF + 生成子零件；也可先建空装配体再到详情页补充）",
+    dependencies=_assembly_write_dep,
 )
 async def create_assembly(
     data: str = Form(..., description="AssemblyCreateRequest 的 JSON 字符串"),
@@ -95,7 +109,8 @@ async def create_assembly(
 @router.get(
     "/{assembly_id}",
     response_model=AssemblyDetail,
-    summary="装配件详情（自身 + 子件 + 文件）",
+    summary="装配件详情（自身 + 子件 + 文件）（MANAGER / CLERK / INSPECTOR 只读）",
+    dependencies=_assembly_read_dep,
 )
 async def get_assembly(
     assembly_id: int,
@@ -121,6 +136,7 @@ async def soft_delete_assembly(
     "/{assembly_id}/cancel",
     response_model=AssemblyDetail,
     summary="取消装配体，级联取消所有非终态子件",
+    dependencies=_assembly_write_dep,
 )
 async def cancel_assembly(
     assembly_id: int,
@@ -133,6 +149,7 @@ async def cancel_assembly(
     "/{assembly_id}/update",
     response_model=AssemblyDetail,
     summary="编辑装配体元数据（MANAGER + CLERK，field-level partial update）",
+    dependencies=_assembly_write_dep,
 )
 async def update_assembly(
     assembly_id: int,
@@ -147,6 +164,7 @@ async def update_assembly(
     response_model=AssemblyDetail,
     status_code=http_status.HTTP_201_CREATED,
     summary="详情页上传总装 PDF：拆页 → page 1 = master + page 2..N = 自动创建子件",
+    dependencies=_assembly_write_dep,
 )
 async def upload_assembly_pdf(
     assembly_id: int,
@@ -166,6 +184,7 @@ async def upload_assembly_pdf(
     response_model=dict,  # PartOut（避免循环引用；前端用 PartListItem 接收）
     status_code=http_status.HTTP_201_CREATED,
     summary="详情页添加单个子件（无 PDF；如需 PDF 走 POST /parts/{id}/files）",
+    dependencies=_assembly_write_dep,
 )
 async def add_assembly_child(
     assembly_id: int,
@@ -212,12 +231,14 @@ async def get_assembly_for_child(
 
 # 装配件文件：list（聚合 master + 子件 drawings），
 # 上传已合并到 create_assembly / upload_total_pdf 流程，不再有独立 POST 端点。
+# INSPECTOR 加进读端点（PR-I 2026-07-20）。
 file_router = APIRouter(
     prefix="/assemblies",
     tags=["装配体管理"],
     dependencies=[
         Depends(require_roles(
             UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+            UserRole.INSPECTOR,
         ))
     ],
 )

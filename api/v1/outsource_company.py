@@ -28,7 +28,8 @@ from service import OutsourceCompanyService
 
 
 # ============================================================
-# 读路由：MANAGER + CLERK + CNC_PROGRAMMER
+# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + INSPECTOR
+# （PR-I 2026-07-20：INSPECTOR 扫码发送外协需要按工序选公司）
 # ============================================================
 read_router = APIRouter(
     prefix="/outsource-companies",
@@ -38,6 +39,7 @@ read_router = APIRouter(
             UserRole.MANAGER,
             UserRole.CLERK,
             UserRole.CNC_PROGRAMMER,
+            UserRole.INSPECTOR,
         ))
     ],
 )
@@ -46,7 +48,7 @@ read_router = APIRouter(
 @read_router.get(
     "",
     response_model=OutsourceCompanyListOut,
-    summary="外协公司列表（MANAGER / CLERK / CNC_PROGRAMMER）",
+    summary="外协公司列表（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
 )
 async def list_outsource_companies(
     name_like: str | None = None,
@@ -68,7 +70,7 @@ async def list_outsource_companies(
     response_model=list[OutsourceCompanyOut],
     summary=(
         "按工序反查能做该 OUTSOURCE 工序的活跃公司"
-        "（MANAGER / CLERK / CNC_PROGRAMMER；发送外协对话框用）"
+        "（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR；发送外协对话框用）"
     ),
 )
 async def list_companies_by_process(
@@ -81,7 +83,7 @@ async def list_companies_by_process(
 @read_router.get(
     "/{company_id}",
     response_model=OutsourceCompanyWithProcessesOut,
-    summary="外协公司详情（含映射的工序，MANAGER / CLERK / CNC_PROGRAMMER）",
+    summary="外协公司详情（含映射的工序，MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
 )
 async def get_outsource_company(
     company_id: str,

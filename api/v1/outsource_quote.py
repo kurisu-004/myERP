@@ -34,13 +34,15 @@ from service import OutsourceQuoteService
 
 
 # ============================================================
-# 读路由：MANAGER + CLERK
+# 读路由：MANAGER + CLERK + INSPECTOR（PR-I 2026-07-20：INSPECTOR 扫码外协发送需要看报价）
 # ============================================================
 read_router = APIRouter(
     prefix="/outsource-quotes",
     tags=["外协报价(读)"],
     dependencies=[
-        Depends(require_roles(UserRole.MANAGER, UserRole.CLERK)),
+        Depends(require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+        )),
     ],
 )
 
@@ -48,7 +50,7 @@ read_router = APIRouter(
 @read_router.get(
     "",
     response_model=OutsourceQuoteListOut,
-    summary="外协报价列表（MANAGER / CLERK）",
+    summary="外协报价列表（MANAGER / CLERK / INSPECTOR 只读）",
 )
 async def list_outsource_quotes(
     status: OutsourceQuoteStatus | None = None,
@@ -79,7 +81,7 @@ async def list_outsource_quotes(
     response_model=ApprovedForSendListOut,
     summary=(
         "外协发送列表：至少有 1 条 APPROVED 报价 + 状态可发送的零件"
-        "（MANAGER / CLERK）"
+        "（MANAGER / CLERK / INSPECTOR）"
     ),
 )
 async def list_approved_for_send(
@@ -98,7 +100,7 @@ async def list_approved_for_send(
 @read_router.get(
     "/{quote_id}",
     response_model=OutsourceQuoteOut,
-    summary="外协报价详情（MANAGER / CLERK）",
+    summary="外协报价详情（MANAGER / CLERK / INSPECTOR 只读）",
 )
 async def get_outsource_quote(
     quote_id: str,

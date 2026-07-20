@@ -57,7 +57,24 @@ _inspector_dep = [
     ))
 ]
 
-# MANAGER + CLERK + CNC_PROGRAMMER：待编程一览 / 详情只读 / 文件下载
+# MANAGER + CLERK + INSPECTOR：外协发送 / 接收 端点。
+# 品检员扫码批量发送外协 + 接收外协（PR-I 2026-07-20）。
+_inspector_outsource_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+    ))
+]
+
+# MANAGER + CLERK + CNC_PROGRAMMER + INSPECTOR：零件只读端点（列表 / 详情 / 事件）。
+# INSPECTOR 只读零件一览 / 详情 / 事件流（PR-I 2026-07-20）。
+_read_part_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+        UserRole.INSPECTOR,
+    ))
+]
+
+# MANAGER + CLERK + CNC_PROGRAMMER：待编程一览（INSPECTOR 不需要，仍保持窄权限）
 _read_lots_dep = [
     Depends(require_roles(
         UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
@@ -68,8 +85,8 @@ _read_lots_dep = [
 @router.get(
     "",
     response_model=PartListOut,
-    summary="分页查询零件列表（MANAGER / CLERK / CNC_PROGRAMMER）",
-    dependencies=_read_lots_dep,
+    summary="分页查询零件列表（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
+    dependencies=_read_part_dep,
 )
 async def list_parts(
     customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
@@ -199,8 +216,8 @@ async def list_pending_programming_parts(
 @router.get(
     "/{part_id}",
     response_model=PartOut,
-    summary="零件详情（MANAGER / CLERK / CNC_PROGRAMMER）",
-    dependencies=_read_lots_dep,
+    summary="零件详情（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
+    dependencies=_read_part_dep,
 )
 async def get_part(
     part_id: int,
@@ -272,14 +289,15 @@ async def release_part_from_programming(
     "/{part_id}/send-to-outsource",
     response_model=PartOut,
     summary=(
-        "PENDING / IN_PROCESS → OUTSOURCE：发送零件到外协公司（MANAGER / CLERK）"
+        "PENDING / IN_PROCESS → OUTSOURCE：发送零件到外协公司（MANAGER / CLERK / INSPECTOR）"
     ),
     description=(
         "body: outsource_company_id (雪花 ID 字符串) + next_process_id (OUTSOURCE 类别)。"
         "支持来源：PENDING / ON_SHELF / WITH_WORKER。"
         "后端严格校验公司存在 + 启用 + 工序 OUTSOURCE + 公司映射了该工序。"
+        "INSPECTOR 走扫码批量发送（PR-I 2026-07-20）。"
     ),
-    dependencies=_office_dep,
+    dependencies=_inspector_outsource_dep,
 )
 async def send_part_to_outsource(
     part_id: int,
@@ -293,12 +311,13 @@ async def send_part_to_outsource(
     "/{part_id}/receive-from-outsource",
     response_model=PartOut,
     summary=(
-        "OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架（MANAGER / CLERK）"
+        "OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架（MANAGER / CLERK / INSPECTOR）"
     ),
     description=(
         "body 同下发：shelf_id (PRODUCTION 区 active) + next_process_id (必须 INHOUSE)。"
+        "INSPECTOR 走扫码批量接收（PR-I 2026-07-20）。"
     ),
-    dependencies=_office_dep,
+    dependencies=_inspector_outsource_dep,
 )
 async def receive_part_from_outsource(
     part_id: int,
@@ -312,13 +331,14 @@ async def receive_part_from_outsource(
     "/{part_id}/receive-from-outsource-to-inspection",
     response_model=PartOut,
     summary=(
-        "OUTSOURCE → INSPECTION：外协件直接送检（MANAGER / CLERK，2026-07-16 新增）"
+        "OUTSOURCE → INSPECTION：外协件直接送检（MANAGER / CLERK / INSPECTOR，2026-07-16 新增）"
     ),
     description=(
         "body: shelf_id (INSPECTION 区 active 货架) + auto_pass_inspection (可选)。"
         "auto_pass_inspection=true 时一次性 OUTSOURCE → INSPECTION → READY_TO_SHIP。"
+        "INSPECTOR 走扫码批量接收（PR-I 2026-07-20）。"
     ),
-    dependencies=_office_dep,
+    dependencies=_inspector_outsource_dep,
 )
 async def receive_part_from_outsource_to_inspection(
     part_id: int,
@@ -471,8 +491,8 @@ async def cancel_part(
 @router.get(
     "/{part_id}/events",
     response_model=list[PartEventOut],
-    summary="该零件的全生命周期事件流（MANAGER / CLERK / CNC_PROGRAMMER）",
-    dependencies=_read_lots_dep,
+    summary="该零件的全生命周期事件流（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
+    dependencies=_read_part_dep,
 )
 async def list_part_events(
     part_id: int,

@@ -32,7 +32,7 @@
           <span>重置</span>
         </el-button>
 
-        <el-button type="primary" @click="$router.push('/assemblies/new')">
+        <el-button v-if="!isInspector" type="primary" @click="$router.push('/assemblies/new')">
           <el-icon><Plus /></el-icon>
           <span>新建装配件</span>
         </el-button>
@@ -254,8 +254,12 @@ import {
   type SortDir,
 } from '@/types/assembly'
 import { useCustomerTree } from '@/composables/useCustomerTree'
+import { usePermissions } from '@/composables/usePermissions'
+import { useListFilterPersist } from '@/composables/useListFilterPersist'
 
 const { tree: customerTree } = useCustomerTree()
+// PR-I 2026-07-20：INSPECTOR 看不到「新建装配件」按钮
+const { isInspector } = usePermissions()
 const route = useRoute()
 
 // ============ 搜索条件 ============
@@ -405,6 +409,7 @@ function onReset(): void {
   sortBy.value = 'PLANNED_DELIVERY_DATE'
   sortDir.value = 'ASC'
   page.value = 1
+  clearAsmFilter()
   void fetchData()
 }
 
@@ -427,11 +432,37 @@ function onSortChange({
   void fetchData()
 }
 
+// ============ 筛选状态持久化（PR-I 2026-07-20）============
+const { restore: restoreAsmFilter, clear: clearAsmFilter } =
+  useListFilterPersist<SearchState>(
+    'assemblies_list_filter',
+    { search, sortBy, sortDir, pageSize },
+  )
+
 onMounted(() => {
-  // 从 URL ?status=PENDING 等注入筛选（与新建后跳转保持一致）
+  // 1) 优先尝试从 URL ?status=PENDING 注入（与新建后跳转保持一致）
   const q = route.query.status
   if (typeof q === 'string' && q in ASSEMBLY_STATUS_LABEL) {
     search.statuses = [q]
+  } else {
+    // 2) 否则从 localStorage 恢复上次的筛选 / 排序 / 分页大小
+    const persisted = restoreAsmFilter()
+    if (persisted) {
+      search.keyword = persisted.search.keyword ?? search.keyword
+      search.statuses = Array.isArray(persisted.search.statuses)
+        ? persisted.search.statuses
+        : search.statuses
+      search.isUrgent = persisted.search.isUrgent ?? search.isUrgent
+      search.customerId = persisted.search.customerId ?? search.customerId
+      // localStorage 存的是 string，恢复时按 enum 字面量收敛（默认值兜底）
+      sortBy.value = (SORT_PROP_MAP[persisted.sortBy]
+        ? persisted.sortBy as AssemblySortKey
+        : 'PLANNED_DELIVERY_DATE')
+      sortDir.value = (persisted.sortDir === 'ASC' || persisted.sortDir === 'DESC'
+        ? persisted.sortDir as SortDir
+        : 'ASC')
+      pageSize.value = persisted.pageSize
+    }
   }
   void fetchData()
 })

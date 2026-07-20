@@ -214,7 +214,7 @@
       kind="DRAWING"
       :show-upload="canManageDrawings"
       :show-delete="canManageDrawings"
-      :show-print="true"
+      :show-print="!isInspector"
       :api-upload="uploadPartDrawing"
       @refresh="fetchDrawings"
     />
