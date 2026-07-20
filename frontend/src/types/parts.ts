@@ -51,6 +51,18 @@ export type PartSortKey =
 
 export type SortDir = 'ASC' | 'DESC'
 
+/**
+ * `el-table` 列 `prop` → 后端 `PartSortKey` 映射。
+ * PartsList / DeliveryNoteNew 共用；列头点击 → onSortChange → 触发服务端排序。
+ * 命名对应 `model/enums.py::PartSortKey`。
+ */
+export const PART_SORT_PROP_MAP: Record<string, PartSortKey> = {
+  serial_no: 'SERIAL_NO',
+  drawing_no: 'DRAWING_NO',
+  name: 'NAME',
+  planned_delivery_date: 'PLANNED_DELIVERY_DATE',
+}
+
 /** 列表展示用窄出参（与 PartItem 不同，无 holder/next_process/assembly_id）。 */
 export interface PartListItem {
   id: string

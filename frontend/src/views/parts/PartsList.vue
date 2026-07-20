@@ -417,6 +417,7 @@ import type { Process } from '@/types/process'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
+  PART_SORT_PROP_MAP,
   type OrderStatus,
 } from '@/types/parts'
 import { useAuthSession } from '@/composables/useAuthSession'
@@ -584,12 +585,7 @@ onBeforeUnmount(() => {
   }
 })
 
-const SORT_PROP_MAP: Record<string, PartSortKey> = {
-  serial_no: 'SERIAL_NO',
-  drawing_no: 'DRAWING_NO',
-  name: 'NAME',
-  planned_delivery_date: 'PLANNED_DELIVERY_DATE',
-}
+const SORT_PROP_MAP: Record<string, PartSortKey> = PART_SORT_PROP_MAP
 
 type SortOrder = 'ascending' | 'descending'
 const defaultSort = computed<{ prop: string; order: SortOrder }>(() => ({
