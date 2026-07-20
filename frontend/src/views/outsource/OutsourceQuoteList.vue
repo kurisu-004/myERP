@@ -3,7 +3,7 @@
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import {
   approveOutsourceQuote,
@@ -354,6 +354,7 @@ onMounted(async () => {
 // 新建 / 提交 / 审批 / 拒绝 / 删除
 // ============================================================
 const showCreate = ref(false)
+const createFormRef = ref<FormInstance>()
 const createForm = reactive({
   part_id: '',
   outsource_company_id: '',
@@ -361,6 +362,31 @@ const createForm = reactive({
   price: '',
   note: '',
 })
+// 前端必填校验：4 个核心字段都必填，price 还需 > 0（镜像 schema/outsource_quote.py
+// `OutsourceQuoteCreateRequest` 的 `gt=0`）。
+const createRules: FormRules = {
+  part_id: [{ required: true, message: '请选择零件', trigger: 'change' }],
+  outsource_company_id: [
+    { required: true, message: '请选择外协公司', trigger: 'change' },
+  ],
+  process_id: [
+    { required: true, message: '请选择工序', trigger: 'change' },
+  ],
+  price: [
+    { required: true, message: '请填写单价', trigger: 'blur' },
+    {
+      validator: (_rule, value: string, cb) => {
+        const n = Number(value)
+        if (value === '' || value == null || Number.isNaN(n) || n <= 0) {
+          cb(new Error('单价必须大于 0'))
+        } else {
+          cb()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
 function openCreate(): void {
   createForm.part_id = ''
   createForm.outsource_company_id = ''
@@ -370,8 +396,11 @@ function openCreate(): void {
   showCreate.value = true
 }
 async function onCreate(): Promise<void> {
-  if (!createForm.part_id || !createForm.outsource_company_id || !createForm.process_id) {
-    ElMessage.warning('请填写零件 / 公司 / 工序')
+  if (!createFormRef.value) return
+  // el-form 校验：4 个必填字段 + price > 0；校验失败时 validate() reject，直接短路（红字提示）
+  try {
+    await createFormRef.value.validate()
+  } catch {
     return
   }
   try {
@@ -723,8 +752,13 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
 
     <!-- 新建 DRAFT 报价 -->
     <el-dialog v-model="showCreate" title="新建外协报价（DRAFT）" width="640">
-      <el-form label-width="100px">
-        <el-form-item label="零件">
+      <el-form
+        ref="createFormRef"
+        :model="createForm"
+        :rules="createRules"
+        label-width="100px"
+      >
+        <el-form-item label="零件" prop="part_id">
           <el-select
             v-model="createForm.part_id"
             filterable
@@ -739,7 +773,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="外协公司">
+        <el-form-item label="外协公司" prop="outsource_company_id">
           <el-select
             v-model="createForm.outsource_company_id"
             filterable
@@ -753,7 +787,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="工序(OUTSOURCE)">
+        <el-form-item label="工序(OUTSOURCE)" prop="process_id">
           <el-select
             v-model="createForm.process_id"
             filterable
@@ -767,7 +801,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="单价(元)">
+        <el-form-item label="单价(元)" prop="price">
           <el-input v-model="createForm.price" type="number" :precision="2" :step="0.01" />
         </el-form-item>
         <el-form-item label="备注">
