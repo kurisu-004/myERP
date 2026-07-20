@@ -56,11 +56,14 @@ async function doLogin() {
     const u = await login(form.username, form.password)
     // 按角色自动跳。优先级：MANAGER → /dashboard；
     // CLERK / CNC_PROGRAMMER → /parts（编程员默认筛选 PROGRAMMING）；
+    // INSPECTOR → /inspection/pending（品检员的日常入口，2026-07-20 PR-I）；
     // 纯 SHELF_ACCOUNT → /scan/badge。
     if (u.roles.includes('MANAGER')) {
       router.replace('/dashboard')
     } else if (u.roles.includes('CLERK') || u.roles.includes('CNC_PROGRAMMER')) {
       router.replace('/parts')
+    } else if (u.roles.includes('INSPECTOR')) {
+      router.replace('/inspection/pending')
     } else if (u.roles.includes('SHELF_ACCOUNT')) {
       router.replace('/scan/badge')
     } else {
