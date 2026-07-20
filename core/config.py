@@ -66,18 +66,21 @@ class Settings(BaseSettings):
         default="", alias="COS_ALLOWED_TYPES"
     )
 
-    # ---- 送货单 Excel 模板（PR-F 2026-07-17 重设计）----
+    # ---- 送货单 Excel 模板（PR-F 2026-07-17 重设计；2026-07-20 切换到 template/ 新模板）----
     # 按 L1 客户的序列号前缀（A-Z）映射各自的 xlsx 模板路径。
-    # service 层根据所选零件所属 L1 root 的 serial_prefix 选对应模板。
+    # service 层根据所选零件所属 L1 root 的 serial_prefix 选对应模板；
+    # 调用方也可通过 API 显式传 `template` 字段覆盖自动分发。
     # 未映射的前缀 → 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED。
     # 模板由用户提供（含公司抬头 / 列头 / 签字栏），代码只填值。
+    # 2026-07-20 起切换到 `template/` 下的新模板（法 = Sheet1 / 路 = 杏南）；
+    # 老的 `docs/example/送货单_*.xlsx` 不再使用。
     delivery_note_template_by_prefix: dict[str, str] = Field(
         default={
-            "F": "docs/example/送货单_法拉.xlsx",
-            "L": "docs/example/送货单_路达.xlsx",
+            "F": "template/delivery_note_fala.xlsx",
+            "L": "template/delivery_note_luda.xlsx",
         },
         alias="DELIVERY_NOTE_TEMPLATE_BY_PREFIX",
-        description='{"F": "docs/example/送货单_法拉.xlsx", "L": "docs/example/送货单_路达.xlsx"}',
+        description='{"F": "template/delivery_note_fala.xlsx", "L": "template/delivery_note_luda.xlsx"}',
     )
 
     # ---- DELIVERED → COMPLETED 自动完成（PR-D 2026-07-10）----
