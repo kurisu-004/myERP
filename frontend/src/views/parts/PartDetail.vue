@@ -685,7 +685,12 @@
       :close-on-click-modal="false"
       @closed="onQuoteCreateDialogClosed"
     >
-      <el-form label-width="100px">
+      <el-form
+        ref="quoteFormRef"
+        :model="quoteForm"
+        :rules="quoteRules"
+        label-width="100px"
+      >
         <el-form-item label="零件">
           <el-input
             v-model="part!.name"
@@ -693,7 +698,7 @@
             placeholder="当前零件"
           />
         </el-form-item>
-        <el-form-item label="外协公司" required>
+        <el-form-item label="外协公司" prop="outsource_company_id">
           <el-select
             v-model="quoteForm.outsource_company_id"
             filterable
@@ -707,7 +712,7 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="工序(OUTSOURCE)" required>
+        <el-form-item label="工序(OUTSOURCE)" prop="process_id">
           <el-select
             v-model="quoteForm.process_id"
             filterable
@@ -721,7 +726,7 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="单价(元)">
+        <el-form-item label="单价(元)" prop="price">
           <el-input v-model="quoteForm.price" type="number" :precision="2" :step="0.01" />
         </el-form-item>
         <el-form-item label="备注">
@@ -733,7 +738,6 @@
         <el-button
           type="primary"
           :loading="quoteSubmitting"
-          :disabled="!quoteForm.outsource_company_id || !quoteForm.process_id"
           @click="onQuoteCreateConfirm"
         >保存为 DRAFT</el-button>
       </template>
@@ -744,7 +748,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { ArrowRight, Connection, Cpu, Document, Plus, PriceTag, Right, Setting, Upload, User } from '@element-plus/icons-vue'
 import FileListCard from '@/components/FileListCard.vue'
 import Barcode from '@/components/Barcode.vue'
@@ -828,6 +832,30 @@ const quoteForm = reactive({
   price: '' as string,
   note: '' as string,
 })
+const quoteFormRef = ref<FormInstance>()
+// 前端必填校验：part_id 由 URL 隐式取自 partDetail，无需 prop。外协公司/工序/单价必填，price 还需 > 0。
+const quoteRules: FormRules = {
+  outsource_company_id: [
+    { required: true, message: '请选择外协公司', trigger: 'change' },
+  ],
+  process_id: [
+    { required: true, message: '请选择工序', trigger: 'change' },
+  ],
+  price: [
+    { required: true, message: '请填写单价', trigger: 'blur' },
+    {
+      validator: (_rule, value: string, cb) => {
+        const n = Number(value)
+        if (value === '' || value == null || Number.isNaN(n) || n <= 0) {
+          cb(new Error('单价必须大于 0'))
+        } else {
+          cb()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
 const quoteOutsourceProcesses = ref<Process[]>([])
 const quoteCompanies = ref<{ id: string; name: string }[]>([])
 const quoteSubmitting = ref(false)
@@ -1450,8 +1478,11 @@ function onQuoteCreateDialogClosed(): void {
 }
 
 async function onQuoteCreateConfirm(): Promise<void> {
-  if (!quoteForm.outsource_company_id || !quoteForm.process_id) {
-    ElMessage.warning('请填写外协公司与工序')
+  if (!quoteFormRef.value) return
+  // el-form 校验：外协公司 / 工序 / 单价（>0）；校验失败时 validate() reject，直接短路
+  try {
+    await quoteFormRef.value.validate()
+  } catch {
     return
   }
   quoteSubmitting.value = true
