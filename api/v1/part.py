@@ -92,7 +92,10 @@ async def list_parts(
     customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
     statuses: list[str] | None = Query(default=None, description="订单状态多选"),
     is_urgent: bool | None = Query(default=None, description="是否加急"),
-    keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
+    keyword: str | None = Query(
+        default=None,
+        description="搜索关键字（图号 ILIKE 包含 %kw%；名称 ILIKE 前缀 kw%）",
+    ),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -190,7 +193,10 @@ async def update_part(
 )
 async def list_pending_programming_parts(
     customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
-    keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
+    keyword: str | None = Query(
+        default=None,
+        description="搜索关键字（图号 ILIKE 包含 %kw%；名称 ILIKE 前缀 kw%）",
+    ),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),

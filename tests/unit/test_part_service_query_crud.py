@@ -455,6 +455,40 @@ class TestListParts:
         call_kwargs = mock_parts.list_with_filters.await_args.kwargs
         assert call_kwargs["sort_by"] == PartSortKey.NAME
 
+    async def test_keyword_forwarded_non_none(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """非空 keyword 透传给 repository（drawing_no 改子串匹配后，repository 仍按 kw 过滤）。
+
+        SQL 层 'ilike %kw%' vs 'ilike kw%' 的语义差异由 repository 集成测试保证；
+        本测只锁定 plumbing：service 必须把 keyword 原样下传。
+        """
+        # drawing_no='ABC-123-XYZ', name='完全不相关名字'
+        part = _make_part(
+            id=1,
+            customer_id=10,
+            drawing_no="ABC-123-XYZ",
+            name="完全不相关名字",
+        )
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+        mock_customers.list_by_ids.return_value = []
+
+        query = PartListQuery(keyword="123")
+
+        result = await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["keyword"] == "123"
+        # call_kwargs 的列表关键字（count）也带 keyword
+        count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert count_kwargs["keyword"] == "123"
+        assert len(result.items) == 1
+        assert result.total == 1
+
 
 # ======================================================================
 # get_part

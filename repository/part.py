@@ -449,8 +449,10 @@ class PartRepository:
         if keyword:
             kw = keyword.strip()
             if kw:
+                # drawing_no 走子串包含（ilike '%kw%'）；name 仍按前缀以减小回归面。
+                # TODO: 后续把 %/_ 通配符转义（参考 repository/applicant.py:131-133）
                 stmt = stmt.where(
-                    TPart.drawing_no.ilike(f"{kw}%")
+                    TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
                 )
         return stmt
@@ -515,7 +517,7 @@ class PartRepository:
             kw = keyword.strip()
             if kw:
                 stmt = stmt.where(
-                    TPart.drawing_no.ilike(f"{kw}%")
+                    TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
                     | TPart.serial_no.ilike(f"{kw}%")
                 )
@@ -555,7 +557,7 @@ class PartRepository:
             kw = keyword.strip()
             if kw:
                 stmt = stmt.where(
-                    TPart.drawing_no.ilike(f"{kw}%")
+                    TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
                     | TPart.serial_no.ilike(f"{kw}%")
                 )
