@@ -17,7 +17,8 @@ class PartListQuery(BaseModel):
     )
     is_urgent: bool | None = Field(default=None, description="是否加急（null=全部）")
     keyword: str | None = Field(
-        default=None, description="图号/名称前缀搜索（对两列 OR ILIKE '...%'）"
+        default=None,
+        description="搜索关键字（图号 ILIKE 包含匹配 %kw%；名称 ILIKE 前缀匹配 kw%）",
     )
     sort_by: PartSortKey = Field(
         default=PartSortKey.PLANNED_DELIVERY_DATE, description="排序字段"

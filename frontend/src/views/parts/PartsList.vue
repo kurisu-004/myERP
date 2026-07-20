@@ -15,7 +15,7 @@
       <div class="filter-row">
         <el-input
           v-model="search.keyword"
-          placeholder="图号 / 名称（前缀搜索）"
+          placeholder="图号（含子串）/ 名称（前缀）"
           clearable
           style="width: 260px"
           @keyup.enter="onSearch"

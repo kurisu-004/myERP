@@ -16,7 +16,7 @@
       <div class="filter-row">
         <el-input
           v-model="search.keyword"
-          placeholder="图号 / 名称（模糊搜索）"
+          placeholder="图号（含子串）"
           clearable
           style="width: 260px"
           @keyup.enter="onSearch"
@@ -375,8 +375,8 @@ async function fetchData(): Promise<void> {
     if (search.isUrgent !== null) base.is_urgent = search.isUrgent
     const trimmed = search.keyword.trim()
     if (trimmed) {
+      // 仅按总图图号包含匹配；name_like 留空，避免 keyword 必须同时命中两列
       base.drawing_no_like = trimmed
-      base.name_like = trimmed
     }
     // status 单值（多选展示但只透传第一个）
     if (search.statuses.length === 1) {
