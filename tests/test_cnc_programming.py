@@ -15,12 +15,13 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from model import TCustomer, TPart, TPartEvent, TProcess, TShelf
+from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TShelfProcess
 from model.enums import PartEventType, PartStatus, ShelfZone
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from repository.shelf import ShelfRepository
+from repository.shelf_process import ShelfProcessRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -227,6 +228,9 @@ async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db
     process = await process_repo.create(
         await _make_process(session, "CNC-OPX", "CNC 操机 X")
     )
+    # 货架↔工序映射：release_from_programming 落货架时的 _assert_shelf_maps_process 需要
+    session.add(TShelfProcess(shelf_id=shelf.id, process_id=process.id, sort_order=0))
+    await session.flush()
 
     part_repo = PartRepository(session)
     part = await part_repo.create(
@@ -260,6 +264,7 @@ async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db
         work_types=None,
         work_type_process=None,
         files=files_repo,
+        shelf_process_repo=ShelfProcessRepository(session),
         broadcaster=None,
         event_broadcaster=None,
     )

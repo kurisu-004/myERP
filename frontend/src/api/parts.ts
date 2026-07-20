@@ -55,6 +55,12 @@ export interface ListPartsParams {
   statuses?: OrderStatus[]
   is_urgent?: boolean
   keyword?: string
+  /**
+   * 仅返回「曾外协过」的零件（2026-07-20 新增，外协接收历史页用）。
+   * 命中条件由后端 EXISTS 子查询判定（SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE
+   * / INSPECTED + note ILIKE '%外协%'）。
+   */
+  has_outsource_history?: boolean
   sort_by?: PartSortKey
   sort_dir?: SortDir
   limit?: number

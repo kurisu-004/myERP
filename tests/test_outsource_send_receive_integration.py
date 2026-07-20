@@ -15,6 +15,7 @@ from model import (
     TPart,
     TProcess,
     TShelf,
+    TShelfProcess,
 )
 from model.enums import (
     OutsourceQuoteEventType,
@@ -35,6 +36,7 @@ from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
+from repository.shelf_process import ShelfProcessRepository
 from repository.worker import WorkerRepository
 from schema.outsource_quote import (
     OutsourceQuoteApproveRequest,
@@ -93,6 +95,12 @@ async def _seed_world(session, *, suffix: str, part_status: str = "PENDING"):
         process_id=outsource_process.id,
         sort_order=0,
     )
+    # 货架↔工序映射：receive_from_outsource 落生产货架时的 _assert_shelf_maps_process 需要
+    shelf_process_mapping = TShelfProcess(
+        shelf_id=production_shelf.id,
+        process_id=inhouse_process.id,
+        sort_order=0,
+    )
     part = TPart(
         serial_no=f"O{suffix[-4:]}",
         name=f"外协收发测试零件-{suffix}",
@@ -109,7 +117,7 @@ async def _seed_world(session, *, suffix: str, part_status: str = "PENDING"):
             else None
         ),
     )
-    session.add_all([mapping, part])
+    session.add_all([mapping, shelf_process_mapping, part])
     await session.flush()
     return {
         "customer": customer,
@@ -130,6 +138,7 @@ def _make_quote_service(session) -> OutsourceQuoteService:
         companies=OutsourceCompanyRepository(session),
         processes=ProcessRepository(session),
         customers=CustomerRepository(session),
+        part_events=PartEventRepository(session),
     )
 
 
@@ -146,6 +155,7 @@ def _make_part_service(session, *, event_broadcaster=None) -> PartService:
         outsource_company_process=OutsourceCompanyProcessRepository(session),
         outsource_quotes=OutsourceQuoteRepository(session),
         quote_events=OutsourceQuoteEventRepository(session),
+        shelf_process_repo=ShelfProcessRepository(session),
         event_broadcaster=event_broadcaster,
     )
 
@@ -210,6 +220,8 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
 
     part_events = await service.events.list_by_part(world["part"].id)
     assert [event.event_type for event in part_events] == [
+        PartEventType.QUOTE_CREATED.value,
+        PartEventType.QUOTE_APPROVED.value,
         PartEventType.SENT_TO_OUTSOURCE.value,
         PartEventType.RECEIVED_FROM_OUTSOURCE.value,
     ]
@@ -273,6 +285,8 @@ async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db)
 
     part_events = await service.events.list_by_part(world["part"].id)
     assert [event.event_type for event in part_events] == [
+        PartEventType.QUOTE_CREATED.value,
+        PartEventType.QUOTE_APPROVED.value,
         PartEventType.SENT_TO_OUTSOURCE.value,
         PartEventType.INSPECTED.value,
         PartEventType.STATUS_CHANGED.value,

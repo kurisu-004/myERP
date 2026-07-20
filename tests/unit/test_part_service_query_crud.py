@@ -276,6 +276,7 @@ class TestListParts:
             statuses=None,
             is_urgent=None,
             keyword=None,
+            has_outsource_history=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -286,6 +287,7 @@ class TestListParts:
             statuses=None,
             is_urgent=None,
             keyword=None,
+            has_outsource_history=None,
         )
         assert isinstance(result, PartListOut)
         assert len(result.items) == 1
@@ -327,6 +329,7 @@ class TestListParts:
             statuses=None,
             is_urgent=None,
             keyword=None,
+            has_outsource_history=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -361,6 +364,7 @@ class TestListParts:
             statuses=None,
             is_urgent=None,
             keyword=None,
+            has_outsource_history=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,

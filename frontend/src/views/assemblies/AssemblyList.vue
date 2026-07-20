@@ -77,6 +77,11 @@
           sortable="custom"
           show-overflow-tooltip
         />
+        <el-table-column label="申请人" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :class="{ muted: !row.applicant_name }">{{ row.applicant_name || '—' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="客户" min-width="200" show-overflow-tooltip>
           <template #header>
             <span class="header-cell">
@@ -135,6 +140,9 @@
               {{ row.child_count }}
             </el-tag>
           </template>
+        </el-table-column>
+        <el-table-column label="请购日期" width="120">
+          <template #default="{ row }">{{ row.request_date || '—' }}</template>
         </el-table-column>
         <el-table-column
           prop="planned_delivery_date"

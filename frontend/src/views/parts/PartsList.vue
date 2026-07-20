@@ -103,7 +103,16 @@
           fixed="left"
           sortable="custom"
           show-overflow-tooltip
-        />
+        >
+          <template #default="{ row }">
+            <el-input
+              v-if="editingId === row.id"
+              v-model="editBuffer.drawing_no"
+              size="small"
+            />
+            <span v-else>{{ row.drawing_no }}</span>
+          </template>
+        </el-table-column>
 
         <el-table-column
           prop="name"
@@ -113,20 +122,148 @@
           show-overflow-tooltip
         >
           <template #default="{ row }">
-            <router-link :to="`/parts/${row.id}`" class="name-link">
+            <el-input
+              v-if="editingId === row.id"
+              v-model="editBuffer.name"
+              size="small"
+            />
+            <router-link v-else :to="`/parts/${row.id}`" class="name-link">
               {{ row.name }}
             </router-link>
           </template>
         </el-table-column>
 
-        <el-table-column prop="quantity" label="数量" width="80" align="right" />
+        <el-table-column label="申请人" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-input
+              v-if="editingId === row.id"
+              v-model="editBuffer.applicant_name"
+              size="small"
+            />
+            <span v-else>{{ row.applicant_name || '—' }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="数量" width="110" align="right">
+          <template #default="{ row }">
+            <el-input-number
+              v-if="editingId === row.id"
+              v-model="editBuffer.quantity"
+              :min="1"
+              :precision="0"
+              :controls="false"
+              size="small"
+              style="width: 90px"
+            />
+            <span v-else>{{ row.quantity }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="单价" width="120" align="right">
+          <template #default="{ row }">
+            <el-input-number
+              v-if="editingId === row.id"
+              v-model="editBuffer.unit_price"
+              :min="0"
+              :precision="2"
+              :step="0.01"
+              :controls="false"
+              size="small"
+              style="width: 100px"
+            />
+            <span v-else>{{ row.unit_price }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="请购日期" width="150">
+          <template #default="{ row }">
+            <el-date-picker
+              v-if="editingId === row.id"
+              v-model="editBuffer.request_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              size="small"
+              style="width: 138px"
+              :clearable="false"
+            />
+            <span v-else>{{ row.request_date }}</span>
+          </template>
+        </el-table-column>
 
         <el-table-column
           prop="planned_delivery_date"
           label="计划交期"
-          width="120"
+          width="150"
           sortable="custom"
-        />
+        >
+          <template #default="{ row }">
+            <el-date-picker
+              v-if="editingId === row.id"
+              v-model="editBuffer.planned_delivery_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              size="small"
+              style="width: 138px"
+              :clearable="false"
+            />
+            <span v-else>{{ row.planned_delivery_date }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="系统交期" width="150">
+          <template #default="{ row }">
+            <el-date-picker
+              v-if="editingId === row.id"
+              v-model="editBuffer.system_delivery_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              size="small"
+              style="width: 138px"
+              clearable
+            />
+            <span v-else>{{ row.system_delivery_date || '—' }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="订单号" width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-input
+              v-if="editingId === row.id"
+              v-model="editBuffer.order_no"
+              size="small"
+            />
+            <span v-else>{{ row.order_no || '—' }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="备注" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-input
+              v-if="editingId === row.id"
+              v-model="editBuffer.note"
+              size="small"
+            />
+            <span v-else>{{ row.note || '—' }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="加急" width="80" align="center">
+          <template #default="{ row }">
+            <el-switch
+              v-if="editingId === row.id"
+              v-model="editBuffer.is_urgent"
+              size="small"
+            />
+            <el-tag
+              v-else-if="row.is_urgent"
+              type="danger"
+              effect="plain"
+              size="small"
+            >加急</el-tag>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+
 
         <el-table-column
           label="状态"
@@ -259,16 +396,35 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="130" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
-            <el-button
-              v-if="row.status === 'PENDING'"
-              link
-              type="success"
-              size="small"
-              @click="onDispatch(row as PartListItem)"
-            >下发</el-button>
+            <template v-if="editingId === row.id">
+              <el-button
+                link
+                type="primary"
+                size="small"
+                :loading="savingEdit"
+                @click="saveEdit(row as PartListItem)"
+              >保存</el-button>
+              <el-button link size="small" @click="cancelEdit">取消</el-button>
+            </template>
+            <template v-else>
+              <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
+              <el-button
+                v-if="canEdit"
+                link
+                type="warning"
+                size="small"
+                @click="startEdit(row as PartListItem)"
+              >编辑</el-button>
+              <el-button
+                v-if="row.status === 'PENDING'"
+                link
+                type="success"
+                size="small"
+                @click="onDispatch(row as PartListItem)"
+              >下发</el-button>
+            </template>
           </template>
         </el-table-column>
 
@@ -404,7 +560,9 @@ import {
   placeOnShelf,
   printPartDrawingBatch,
   sendToProgramming,
+  updatePart,
   type ListPartsParams,
+  type PartUpdatePayload,
 } from '@/api/parts'
 import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
@@ -423,6 +581,8 @@ import { useCustomerTree } from '@/composables/useCustomerTree'
 // ============ 角色 & 默认筛选 ============
 const { hasRole } = useAuthSession()
 const isCncProgrammer = hasRole('CNC_PROGRAMMER')
+// 行内编辑权限：与后端 POST /parts/{id}/update 一致（MANAGER / CLERK）
+const canEdit = hasRole('MANAGER') || hasRole('CLERK')
 const { tree: customerTree } = useCustomerTree()
 const route = useRoute()
 const router = useRouter()
@@ -679,6 +839,119 @@ onMounted(() => {
   }
   void fetchList()
 })
+
+// ============ 行内编辑（2026-07-20）============
+// editBuffer 是纯前端本地态：只在点「保存」时才发请求写库，
+// 因此一个文员编辑不会影响另一个文员看到的列表数据。
+interface EditBuffer {
+  name: string
+  drawing_no: string
+  applicant_name: string
+  quantity: number
+  unit_price: number
+  request_date: string
+  planned_delivery_date: string
+  system_delivery_date: string | null
+  order_no: string | null
+  note: string | null
+  is_urgent: boolean
+}
+const editingId = ref<string | null>(null)
+const savingEdit = ref(false)
+const editBuffer = reactive<EditBuffer>({
+  name: '',
+  drawing_no: '',
+  applicant_name: '',
+  quantity: 1,
+  unit_price: 0,
+  request_date: '',
+  planned_delivery_date: '',
+  system_delivery_date: null,
+  order_no: null,
+  note: null,
+  is_urgent: false,
+})
+
+function startEdit(row: PartListItem): void {
+  if (editingId.value && editingId.value !== row.id) {
+    ElMessage.warning('请先保存或取消当前正在编辑的行')
+    return
+  }
+  editBuffer.name = row.name
+  editBuffer.drawing_no = row.drawing_no
+  editBuffer.applicant_name = row.applicant_name ?? ''
+  editBuffer.quantity = row.quantity
+  editBuffer.unit_price = row.unit_price
+  editBuffer.request_date = row.request_date
+  editBuffer.planned_delivery_date = row.planned_delivery_date
+  editBuffer.system_delivery_date = row.system_delivery_date
+  editBuffer.order_no = row.order_no
+  editBuffer.note = row.note
+  editBuffer.is_urgent = row.is_urgent
+  editingId.value = row.id
+}
+
+function cancelEdit(): void {
+  editingId.value = null
+}
+
+async function saveEdit(row: PartListItem): Promise<void> {
+  const name = editBuffer.name.trim()
+  const drawingNo = editBuffer.drawing_no.trim()
+  if (!name) { ElMessage.warning('名称不能为空'); return }
+  if (!drawingNo) { ElMessage.warning('图号不能为空'); return }
+  if (!editBuffer.request_date) { ElMessage.warning('请购日期不能为空'); return }
+  if (!editBuffer.planned_delivery_date) { ElMessage.warning('计划交期不能为空'); return }
+  if (editBuffer.quantity == null || editBuffer.quantity < 1) {
+    ElMessage.warning('数量必须 ≥ 1'); return
+  }
+  savingEdit.value = true
+  try {
+    const payload: PartUpdatePayload = {
+      name,
+      drawing_no: drawingNo,
+      applicant_name: editBuffer.applicant_name.trim(),
+      quantity: editBuffer.quantity,
+      unit_price: editBuffer.unit_price,
+      request_date: editBuffer.request_date,
+      planned_delivery_date: editBuffer.planned_delivery_date,
+      system_delivery_date: editBuffer.system_delivery_date || null,
+      order_no: editBuffer.order_no || null,
+      note: editBuffer.note || null,
+      is_urgent: editBuffer.is_urgent,
+    }
+    await updatePart(row.id, payload)
+    // updatePart 返回 PartOut（不含 applicant_name/request_date/unit_price），
+    // 用已知的 buffer 值就地回填该行，避免整表刷新的闪烁。
+    Object.assign(row, {
+      name,
+      drawing_no: drawingNo,
+      applicant_name: payload.applicant_name,
+      quantity: payload.quantity,
+      unit_price: payload.unit_price,
+      request_date: payload.request_date,
+      planned_delivery_date: payload.planned_delivery_date,
+      system_delivery_date: payload.system_delivery_date ?? null,
+      order_no: payload.order_no ?? null,
+      note: payload.note ?? null,
+      is_urgent: payload.is_urgent,
+    })
+    editingId.value = null
+    ElMessage.success('保存成功')
+  } catch (e) {
+    // 40901 = BIZ_VERSION_CONFLICT（乐观锁冲突）
+    if ((e as { code?: number }).code === 40901) {
+      ElMessage.warning('该零件已被他人修改，已为你刷新列表')
+      editingId.value = null
+      void fetchList()
+    } else {
+      ElMessage.error((e as Error).message ?? '保存失败')
+    }
+  } finally {
+    savingEdit.value = false
+  }
+}
+
 
 // ============ 下发对话框 ============
 const shelves = ref<Shelf[]>([])

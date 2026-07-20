@@ -19,6 +19,14 @@ class PartListQuery(BaseModel):
     keyword: str | None = Field(
         default=None, description="图号/名称前缀搜索（对两列 OR ILIKE '...%'）"
     )
+    has_outsource_history: bool | None = Field(
+        default=None,
+        description=(
+            "仅返回「曾外协过」的零件（按 t_part_event 存在 "
+            "SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE / "
+            "INSPECTED+note ILIKE '%外协%' 判定；2026-07-20 新增，外协接收历史页用）"
+        ),
+    )
     sort_by: PartSortKey = Field(
         default=PartSortKey.PLANNED_DELIVERY_DATE, description="排序字段"
     )
@@ -136,7 +144,10 @@ class PartListItem(BaseModel):
     )
     name: str
     drawing_no: str
+    applicant_name: str | None = Field(default=None, description="申请人姓名快照")
     quantity: int
+    unit_price: Decimal = Field(default=Decimal("0"), description="单价")
+    request_date: date = Field(description="请购日期")
     planned_delivery_date: date
     actual_delivery_date: date | None = None
     is_urgent: bool

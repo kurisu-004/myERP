@@ -76,6 +76,13 @@ async def list_parts(
     statuses: list[str] | None = Query(default=None, description="订单状态多选"),
     is_urgent: bool | None = Query(default=None, description="是否加急"),
     keyword: str | None = Query(default=None, description="图号/名称前缀搜索"),
+    has_outsource_history: bool | None = Query(
+        default=None,
+        description=(
+            "仅返回「曾外协过」的零件（外协接收历史页用，"
+            "2026-07-20 新增；按下发/接收/外协相关事件 EXISTS 判定）"
+        ),
+    ),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -90,6 +97,7 @@ async def list_parts(
             statuses=[PartStatus(s) for s in statuses] if statuses else None,
             is_urgent=is_urgent,
             keyword=keyword,
+            has_outsource_history=has_outsource_history,
             sort_by=PartSortKey(sort_by),
             sort_dir=SortDir(sort_dir),
             limit=limit,

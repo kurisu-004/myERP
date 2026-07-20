@@ -77,6 +77,7 @@ class PartRepository:
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
         keyword: str | None = None,
+        has_outsource_history: bool | None = None,
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
@@ -89,6 +90,7 @@ class PartRepository:
             statuses=statuses,
             is_urgent=is_urgent,
             keyword=keyword,
+            has_outsource_history=has_outsource_history,
             include_deleted=include_deleted,
         )
         sort_col = {
@@ -115,6 +117,7 @@ class PartRepository:
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
         keyword: str | None = None,
+        has_outsource_history: bool | None = None,
         include_deleted: bool = False,
     ) -> int:
         stmt = self._build_filter_stmt(
@@ -123,6 +126,7 @@ class PartRepository:
             statuses=statuses,
             is_urgent=is_urgent,
             keyword=keyword,
+            has_outsource_history=has_outsource_history,
             include_deleted=include_deleted,
         ).with_only_columns(func.count(TPart.id))
         result = await self.session.execute(stmt)
@@ -429,6 +433,7 @@ class PartRepository:
         statuses: list[PartStatus] | None,
         is_urgent: bool | None,
         keyword: str | None,
+        has_outsource_history: bool | None,
         include_deleted: bool,
     ):
         stmt = select(TPart)
@@ -453,60 +458,74 @@ class PartRepository:
                     TPart.drawing_no.ilike(f"{kw}%")
                     | TPart.name.ilike(f"{kw}%")
                 )
+        # 2026-07-20：外协接收历史页（曾外协过判定）与列表 SQL 合一。
+        # EXISTS 子查询命中 `t_part_event` 复合索引 `(part_id, created_at)`，
+        # list + count 共用同一谓词，行为完全对齐。
+        if has_outsource_history:
+            stmt = stmt.where(
+                select(TPartEvent.part_id)
+                .where(
+                    TPartEvent.part_id == TPart.id,
+                    or_(
+                        TPartEvent.event_type.in_([
+                            PartEventType.SENT_TO_OUTSOURCE.value,
+                            PartEventType.RECEIVED_FROM_OUTSOURCE.value,
+                        ]),
+                        and_(
+                            TPartEvent.event_type == PartEventType.INSPECTED.value,
+                            TPartEvent.note.ilike("%外协%"),
+                        ),
+                    ),
+                )
+                .exists()
+            )
         return stmt
 
     # ============================================================
     # 外协列表专用（2026-07-16 新增）
     # ============================================================
-    async def list_outsource_sendable(
+    def _build_outsource_sendable_stmt(
         self,
         *,
+        part_ids_in: list[int] | None = None,
         customer_ids_in: list[int] | None = None,
         keyword: str | None = None,
         is_urgent: bool | None = None,
-        limit: int = 50,
-        offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[TPart]:
-        """外协发送一览：可发送外协的零件。
+    ):
+        """外协发送一览的共享 statement builder（list / count 复用，避免谓词漂移）。
 
         资格条件（跟前端按钮 enabled 逻辑 + 后端 send_to_outsource 服务端兜底一致）：
         - status='PENDING'（办公室待生产）
         - OR (status='IN_PROCESS' + location='PRODUCTION_SHELF'
               + next_process.category='OUTSOURCE')
 
-        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
-
-        注意：本查询先在 SQL 层把 PENDING 取齐，IN_PROCESS/PRODUCTION_SHELF
-        这一支用 `next_process_id IN (subquery)` 取 OUTSOURCE 工序集，
-        比 LEFT JOIN t_process 更轻（不在零件行附带 process 全字段）。
+        `part_ids_in` 用于把候选收敛到「有 APPROVED 报价」的零件集合（外协发送页专用）。
+        空列表由调用方短路，不进这里。
         """
-        from sqlalchemy import select as _select
         from model import TProcess as _TProc
         from model.enums import ProcessCategory as _PC
 
-        # 找所有 OUTSOURCE 工序的 id 子集
         outsource_proc_ids_subq = (
-            _select(_TProc.id)
+            select(_TProc.id)
             .where(_TProc.deleted_at.is_(None))
             .where(_TProc.category == _PC.OUTSOURCE.value)
         )
-
-        stmt = _select(TPart).where(
-            TPart.deleted_at.is_(None) if not include_deleted else True,
-        )
-        # 主过滤：可外协的两组合取 OR
-        from sqlalchemy import or_ as _or
+        stmt = select(TPart)
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
         stmt = stmt.where(
-            _or(
+            or_(
                 TPart.status == "PENDING",
-                _and_chained(
+                and_(
                     TPart.status == "IN_PROCESS",
                     TPart.location == "PRODUCTION_SHELF",
                     TPart.next_process_id.in_(outsource_proc_ids_subq),
                 ),
             )
         )
+        if part_ids_in is not None:
+            stmt = stmt.where(TPart.id.in_(part_ids_in))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if is_urgent is not None:
@@ -515,10 +534,35 @@ class PartRepository:
             kw = keyword.strip()
             if kw:
                 stmt = stmt.where(
-                    TPart.drawing_no.ilike(f"{kw}%")
-                    | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"{kw}%")
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
                 )
+        return stmt
+
+    async def list_outsource_sendable(
+        self,
+        *,
+        part_ids_in: list[int] | None = None,
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        is_urgent: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """外协发送一览：可发送外协的零件（一页）。
+
+        排序：is_urgent DESC, planned_delivery_date ASC, id DESC。
+        `part_ids_in == []` 由调用方短路（此处不特判，空列表 IN() 会返回 0 行）。
+        """
+        stmt = self._build_outsource_sendable_stmt(
+            part_ids_in=part_ids_in,
+            customer_ids_in=customer_ids_in,
+            keyword=keyword,
+            is_urgent=is_urgent,
+            include_deleted=include_deleted,
+        )
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
             TPart.planned_delivery_date.asc(),
@@ -526,6 +570,27 @@ class PartRepository:
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_outsource_sendable(
+        self,
+        *,
+        part_ids_in: list[int] | None = None,
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        is_urgent: bool | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        """外协发送一览的总数（与 list_outsource_sendable 同谓词）。"""
+        stmt = self._build_outsource_sendable_stmt(
+            part_ids_in=part_ids_in,
+            customer_ids_in=customer_ids_in,
+            keyword=keyword,
+            is_urgent=is_urgent,
+            include_deleted=include_deleted,
+        ).with_only_columns(func.count(TPart.id))
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
+
 
     async def list_outsource_receivable(
         self,

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 
 from fastapi import Depends
@@ -50,9 +51,9 @@ from service import (
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """请求级 Session。正常返回时自动 commit，异常时回滚。
 
-    commit 成功后再统一 flush 累积的 dashboard 广播（见
-    `_flush_dashboard_broadcasts`）——保证 WS 推送的快照读到的是**已提交**
-    的最新状态，而不是提交前的旧数据（否则大屏货架看起来「没变化」）。
+    commit 成功后把累积的 dashboard 广播「脱离 session」调度到后台任务
+    （见 `_schedule_dashboard_flush`）——广播读到的是**已提交**的最新状态，
+    且**不阻塞** HTTP 响应：慢 WS 客户端不会再拖慢本请求返回。
     """
     async with SessionLocal() as session:
         try:
@@ -62,22 +63,30 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             await session.rollback()
             raise
         else:
-            await _flush_dashboard_broadcasts(session)
+            _drain_and_schedule_dashboard_broadcasts(session)
 
 
 # session.info 键：在请求事务内累积待广播的 dashboard 消息，
-# 由 get_session 在 commit 成功后统一 flush。
+# 由 get_session 在 commit 成功后「脱离 session」调度到后台任务。
 _SNAPSHOT_PENDING_KEY = "dashboard_snapshot_pending"
 _EVENTS_PENDING_KEY = "dashboard_events_pending"
 
+# 后台单飞（single-flight）调度状态：
+# - 最多一个在跑的 flush task（强引用挂在 _flush_task 上，避免被 GC）；
+# - 多个并发请求的 snapshot 标志 / event 队列合并到模块级 pending，
+#   worker 一轮 drain 后若又有新 pending 则继续循环；
+# - 避免写入风暴触发大量并发 snapshot session 抢连接池。
+_pending_snapshot = False
+_pending_events: list[tuple[str, dict]] = []
+_flush_task: "asyncio.Task[None] | None" = None
 
-async def _flush_dashboard_broadcasts(session: AsyncSession) -> None:
-    """请求事务提交后，把累积在 session.info 里的 dashboard 广播发出去。
 
-    - 先推整张 snapshot（大屏货架 / 在制刷新），再逐条推 event（横幅通知），
-      与旧「先 snapshot 后 event」顺序一致。
-    - 一次请求内多次触发 snapshot 只会在提交后推一张（天然去重）。
-    - 独立包裹异常：广播失败不影响已成功提交的请求。
+def _drain_and_schedule_dashboard_broadcasts(session: AsyncSession) -> None:
+    """commit 成功后：同步把 session.info 里的待广播数据取出（脱离 session），
+    再调度后台 flush。**不 await**，因此不拖慢 HTTP 响应。
+
+    payload 都是普通 dict、event 是 (str, dict) 元组，拷成模块级纯 Python 值后
+    与请求 session 生命周期完全解耦。
     """
     try:
         info = session.info
@@ -87,15 +96,54 @@ async def _flush_dashboard_broadcasts(session: AsyncSession) -> None:
         return
     if not want_snapshot and not events:
         return
+    _schedule_dashboard_flush(want_snapshot, list(events))
+
+
+def _schedule_dashboard_flush(
+    want_snapshot: bool, events: list[tuple[str, dict]],
+) -> None:
+    """把待广播合并进模块级 pending，并保证只有一个后台 flush task 在跑。"""
+    global _pending_snapshot, _flush_task
+    if want_snapshot:
+        _pending_snapshot = True
+    if events:
+        _pending_events.extend(events)
+    if not _pending_snapshot and not _pending_events:
+        return
+    if _flush_task is not None and not _flush_task.done():
+        # 已有 worker 在跑：它会在下一轮循环里 drain 到刚合并进来的 pending
+        return
+    _flush_task = asyncio.create_task(_dashboard_flush_worker())
+
+
+async def _dashboard_flush_worker() -> None:
+    """后台 flush：先推 snapshot，再逐条推 event（保持「先 snapshot 后 event」）。
+
+    - 一轮 drain 当前 pending → 广播（await WS send，可能被慢客户端拖住，但只影响
+      本后台任务，不影响任何 HTTP 响应）；
+    - drain 期间新到的 pending 会让 worker 继续下一轮，收敛后退出；
+    - snapshot 构建走 broadcast_dashboard_snapshot 自己的 SessionLocal，
+      **不引用**任何请求 session。
+    - 捕获并 log 所有异常，避免 "Task exception was never retrieved"。
+    """
+    global _pending_snapshot, _pending_events
+    import logging
+
     from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
-    try:
-        if want_snapshot:
-            await broadcast_dashboard_snapshot()
-        for event_type, payload in events:
-            await broadcast_dashboard_event(event_type, payload)
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).exception("dashboard broadcast flush failed")
+
+    logger = logging.getLogger(__name__)
+    while _pending_snapshot or _pending_events:
+        want_snapshot = _pending_snapshot
+        events = _pending_events
+        _pending_snapshot = False
+        _pending_events = []
+        try:
+            if want_snapshot:
+                await broadcast_dashboard_snapshot()
+            for event_type, payload in events:
+                await broadcast_dashboard_event(event_type, payload)
+        except Exception:  # noqa: BLE001
+            logger.exception("dashboard broadcast flush failed")
 
 
 def get_serial_counter_repo(
