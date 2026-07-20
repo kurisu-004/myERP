@@ -23,6 +23,7 @@ from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
+from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from schema.outsource_quote import (
     OutsourceQuoteApproveRequest,
@@ -73,6 +74,7 @@ def _make_service(session) -> OutsourceQuoteService:
         companies=OutsourceCompanyRepository(session),
         processes=ProcessRepository(session),
         customers=CustomerRepository(session),
+        part_events=PartEventRepository(session),
     )
 
 

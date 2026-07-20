@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from fastapi import status as http_status
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.error_code import ErrCode
 from core.exception import BizError
@@ -108,7 +107,7 @@ class OutsourceQuoteService:
             limit=query.limit, offset=query.offset,
         )
         return OutsourceQuoteListOut(
-            items=[await self._to_out(q) for q in rows],
+            items=await self._to_out_many(rows),
             total=total,
             limit=query.limit, offset=query.offset,
         )
@@ -442,90 +441,97 @@ class OutsourceQuoteService:
         limit: int = 50,
         offset: int = 0,
     ) -> ApprovedForSendListOut:
-        # 1. 全部 APPROVED 报价
-        all_quotes = await self._list_all_approved_quotes()
-        part_ids = sorted({q.part_id for q in all_quotes})
-        if not part_ids:
+        # 1. 全部 APPROVED 报价（一次查询）；按 part 取「第一条」（list_all_approved
+        #    已按 part_id ASC, created_at DESC, id DESC 排序 → 每 part 取最新创建）
+        all_quotes = await self.quotes.list_all_approved()
+        if not all_quotes:
             return ApprovedForSendListOut(
                 items=[], total=0, limit=limit, offset=offset,
             )
+        quotes_by_part: dict[int, TOutsourceQuote] = {}
+        for q in all_quotes:
+            if q.part_id not in quotes_by_part:
+                quotes_by_part[q.part_id] = q
+        approved_part_ids = list(quotes_by_part.keys())
 
-        # 2. 取这些零件（PartRepository 没有 list_by_ids，借 list_with_filters 二次过滤）
-        #    → 用 t_part.id IN(part_ids) 过滤；为简化走 keyword / customer 二次过滤
-        all_parts = await self.parts.list_with_filters(
-            customer_id=None,
-            customer_ids_in=None,
-            statuses=None,
-            is_urgent=None,
-            keyword=None,
-            include_deleted=False,
-            limit=500,
-            offset=0,
-        )
-        all_parts = [p for p in all_parts if p.id in set(part_ids)]
-
-        # 3. 「可发送」资格：PENDING 或 (IN_PROCESS + PRODUCTION_SHELF + OUTSOURCE next)
-        #    同时记录零件的「下一道工序」名（用于响应字段 next_process_name，
-        #    不能误用成外协报价的 q.process_id 对应工序）。
-        eligible: list[tuple] = []
-        for p in all_parts:
-            status = p.status
-            location = p.location
-            next_proc_name: str | None = None
-            next_cat = None
-            if p.next_process_id is not None:
-                proc = await self.processes.get_by_id(p.next_process_id)
-                if proc is not None:
-                    next_cat = proc.category
-                    next_proc_name = proc.name
-            allowed = (
-                status == "PENDING"
-                or (
-                    status == "IN_PROCESS"
-                    and location == "PRODUCTION_SHELF"
-                    and next_cat == ProcessCategory.OUTSOURCE.value
-                )
-            )
-            if allowed:
-                eligible.append((p, next_proc_name))
-
-        # 4. customer 过滤
+        # 2. customer 过滤展开
+        customer_ids_in: list[int] | None = None
         if customer_id:
             cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
-            if cid_int is not None:
-                cust_ids = await self._expand_customer_ids(cid_int)
-                eligible = [
-                    (p, n) for p, n in eligible if p.customer_id in cust_ids
-                ]
+            if cid_int is None:
+                return ApprovedForSendListOut(
+                    items=[], total=0, limit=limit, offset=offset,
+                )
+            customer_ids_in = await self._expand_customer_ids(cid_int)
 
-        # 5. keyword 过滤
-        if keyword:
-            kw = keyword.strip().lower()
-            if kw:
-                eligible = [
-                    (p, n) for p, n in eligible
-                    if (p.drawing_no and kw in p.drawing_no.lower())
-                    or (p.name and kw in p.name.lower())
-                    or (p.serial_no and kw in p.serial_no.lower())
-                ]
+        kw = keyword.strip() if keyword else None
+        if not kw:
+            kw = None
 
-        eligible.sort(key=lambda t: (
-            bool(getattr(t[0], "is_urgent", False)),
-            t[0].planned_delivery_date,
-        ))
+        # 3. 「可发送」资格 + 过滤 + 分页全部下沉到 SQL（有 APPROVED 报价 ∩ 可发送状态）
+        total = await self.parts.count_outsource_sendable(
+            part_ids_in=approved_part_ids,
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+        )
+        if total == 0:
+            return ApprovedForSendListOut(
+                items=[], total=0, limit=limit, offset=offset,
+            )
+        page_parts = await self.parts.list_outsource_sendable(
+            part_ids_in=approved_part_ids,
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+            limit=limit, offset=offset,
+        )
 
-        total = len(eligible)
-        page = eligible[offset : offset + limit]
+        # 4. 批查 process（零件 next_process + 报价 process）/ company / customer
+        need_proc_ids: set[int] = set()
+        for p in page_parts:
+            if p.next_process_id is not None:
+                need_proc_ids.add(p.next_process_id)
+            q = quotes_by_part.get(p.id)
+            if q is not None:
+                need_proc_ids.add(q.process_id)
+        proc_map = {
+            pr.id: pr
+            for pr in (
+                await self.processes.list_by_ids(list(need_proc_ids))
+                if need_proc_ids else []
+            )
+        }
+        company_ids = {
+            quotes_by_part[p.id].outsource_company_id
+            for p in page_parts if p.id in quotes_by_part
+        }
+        company_map = {
+            c.id: c
+            for c in (
+                await self.companies.list_by_ids(list(company_ids))
+                if company_ids else []
+            )
+        }
+        cust_cache = await self._preload_customer_cache(
+            [p.customer_id for p in page_parts if p.customer_id is not None]
+        )
 
-        # 6. 拼装 ApprovedQuoteForSendItem
+        # 5. 同步拼装 ApprovedQuoteForSendItem（无 await 在循环里）
         items: list[ApprovedQuoteForSendItem] = []
-        for p, next_proc_name in page:
-            q_for_part = [q for q in all_quotes if q.part_id == p.id]
-            if not q_for_part:
+        for p in page_parts:
+            q = quotes_by_part.get(p.id)
+            if q is None:
                 continue
-            q = q_for_part[0]
-            company = await self.companies.get_by_id(q.outsource_company_id)
-            process = await self.processes.get_by_id(q.process_id)
+            next_proc = (
+                proc_map.get(p.next_process_id)
+                if p.next_process_id is not None else None
+            )
+            company = company_map.get(q.outsource_company_id)
+            process = proc_map.get(q.process_id)
+            customer_path: str | None = None
+            if p.customer_id is not None and p.customer_id in cust_cache:
+                customer_path = self._make_customer_path_cached(
+                    cust_cache[p.customer_id], cust_cache,
+                )
             items.append(ApprovedQuoteForSendItem(
                 part_id=p.id,
                 part_serial_no=p.serial_no,
@@ -537,32 +543,15 @@ class OutsourceQuoteService:
                     if p.planned_delivery_date else None
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
-                customer_path=None,
+                customer_path=customer_path,
                 next_process_id=p.next_process_id,
-                next_process_name=next_proc_name,  # 零件的下一道，不是外协工序
+                next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
                 process_id=q.process_id,
                 process_name=process.name if process else None,
                 price=q.price,
             ))
-
-        # 客户路径（一次性查 + cache）
-        cust_map: dict[int, TCustomer] = {}
-        cust_ids_needed = {p.customer_id for p, _ in page if p.customer_id is not None}
-        if cust_ids_needed:
-            cust_rows = await self.customers.list_by_ids(list(cust_ids_needed))
-            cust_map = {c.id: c for c in cust_rows}
-            parent_ids = {c.parent_id for c in cust_map.values() if c.parent_id}
-            if parent_ids:
-                parent_rows = await self.customers.list_by_ids(list(parent_ids))
-                cust_map.update({c.id: c for c in parent_rows})
-        for it in items:
-            p_obj = next((p for p, _ in page if p.id == it.part_id), None)
-            if p_obj and p_obj.customer_id and p_obj.customer_id in cust_map:
-                it.customer_path = await self._make_customer_path(  # ← 必须 await
-                    cust_map[p_obj.customer_id], cust_map,
-                )
 
         return ApprovedForSendListOut(
             items=items, total=total, limit=limit, offset=offset,
@@ -593,25 +582,36 @@ class OutsourceQuoteService:
         customer_id: str | None,
         keyword: str | None,
     ) -> list[int] | None:
-        """根据 customer_id / keyword 算出 part_id 集合；None 表示不限。"""
-        base_ids: list[int] | None = None
+        """根据 customer_id / keyword 算出真实 part_id 集合；None 表示不限。
+
+        customer + keyword 一起作为 PartRepository 过滤条件（同一次查询），
+        返回的是真正的 t_part.id（历史 bug：曾把 customer_id 当 part_id 用）。
+        无 500 截断（先 count 再按 count 取全量 id）。
+        """
+        customer_ids_in: list[int] | None = None
         if customer_id:
             cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
             if cid_int is None:
                 return []
-            base_ids = await self._expand_customer_ids(cid_int)
-        if keyword:
-            rows = await self.parts.list_with_filters(
-                keyword=keyword,
-                include_deleted=False,
-                limit=500, offset=0,
-            )
-            kw_ids = [p.id for p in rows]
-            if base_ids is None:
-                return kw_ids
-            base_set = set(base_ids)
-            return [i for i in kw_ids if i in base_set]
-        return base_ids
+            customer_ids_in = await self._expand_customer_ids(cid_int)
+
+        kw = keyword.strip() if keyword else None
+        if not kw:
+            kw = None
+
+        if customer_ids_in is None and kw is None:
+            return None
+
+        total = await self.parts.count_with_filters(
+            customer_ids_in=customer_ids_in, keyword=kw,
+        )
+        if total == 0:
+            return []
+        rows = await self.parts.list_with_filters(
+            customer_ids_in=customer_ids_in, keyword=kw,
+            limit=total, offset=0,
+        )
+        return [p.id for p in rows]
 
     async def _search_quotes(
         self,
@@ -626,97 +626,114 @@ class OutsourceQuoteService:
         limit: int,
         offset: int,
     ) -> tuple[list[TOutsourceQuote], int]:
-        # 单 part_id 直接走 repo
-        if part_filter_ids is None:
-            rows = await self.quotes.list_with_filters(
-                status=status,
-                statuses=statuses,
-                part_id=part_id,
-                outsource_company_id=outsource_company_id,
-                sort_by=sort_by, sort_dir=sort_dir,
-                limit=limit, offset=offset,
-            )
-            total = await self.quotes.count_with_filters(
-                status=status, statuses=statuses,
-                part_id=part_id, outsource_company_id=outsource_company_id,
-            )
-            return rows, total
-
-        # 多 part_id 遍历（业务量小）
-        out: list[TOutsourceQuote] = []
-        for pid in part_filter_ids:
-            sub = await self.quotes.list_with_filters(
-                status=status, statuses=statuses, part_id=pid,
-                outsource_company_id=outsource_company_id,
-                sort_by=sort_by, sort_dir=sort_dir,
-                limit=200, offset=0,
-            )
-            out.extend(sub)
-        out.sort(
-            key=lambda q: (
-                q.created_at if sort_by == OutsourceQuoteSortKey.CREATED_AT else (
-                    q.price if sort_by == OutsourceQuoteSortKey.PRICE else (
-                        q.reviewed_at or q.created_at
-                    )
-                )
-            ),
-            reverse=(sort_dir == SortDir.DESC),
+        """一次 list + 一次 count（part_ids_in 收敛到匹配零件；排序/分页全在 SQL）。"""
+        rows = await self.quotes.list_with_filters(
+            status=status,
+            statuses=statuses,
+            part_id=part_id,
+            part_ids_in=part_filter_ids,
+            outsource_company_id=outsource_company_id,
+            sort_by=sort_by, sort_dir=sort_dir,
+            limit=limit, offset=offset,
         )
-        total = len(out)
-        return out[offset : offset + limit], total
-
-    async def _list_all_approved_quotes(self) -> list[TOutsourceQuote]:
-        """直接走 session 拿全部 APPROVED 报价（小数据量假设）。"""
-        session: AsyncSession = self.quotes.session
-        from sqlalchemy import select as _select
-        stmt = _select(TOutsourceQuote).where(
-            TOutsourceQuote.deleted_at.is_(None),
-            TOutsourceQuote.status == OutsourceQuoteStatus.APPROVED.value,
-        ).order_by(
-            TOutsourceQuote.part_id.asc(),
-            TOutsourceQuote.created_at.desc(),
+        total = await self.quotes.count_with_filters(
+            status=status,
+            statuses=statuses,
+            part_id=part_id,
+            part_ids_in=part_filter_ids,
+            outsource_company_id=outsource_company_id,
         )
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return rows, total
 
     async def _to_out(self, q: TOutsourceQuote) -> OutsourceQuoteOut:
-        part = await self.parts.get_by_id(q.part_id)
-        company = await self.companies.get_by_id(q.outsource_company_id)
-        process = await self.processes.get_by_id(q.process_id)
+        """单条序列化（详情 / 写响应用）——薄包装 _to_out_many，避免两套逻辑。"""
+        items = await self._to_out_many([q])
+        return items[0]
 
-        customer_path: str | None = None
-        if part and part.customer_id:
-            cust = await self.customers.get_by_id(part.customer_id)
-            if cust:
-                customer_path = await self._make_customer_path(cust)
+    async def _to_out_many(
+        self, quotes: list[TOutsourceQuote],
+    ) -> list[OutsourceQuoteOut]:
+        """批量序列化：part / company / process / customer 各一次批查，
+        循环内无 await —— 把报价一览的 N+1（每行 3~5 次 get_by_id）压成常数条查询。
+        """
+        if not quotes:
+            return []
+        part_ids = list({q.part_id for q in quotes})
+        company_ids = list({q.outsource_company_id for q in quotes})
+        process_ids = list({q.process_id for q in quotes})
 
-        return OutsourceQuoteOut(
-            id=q.id,
-            version=q.version,
-            part_id=q.part_id,
-            outsource_company_id=q.outsource_company_id,
-            process_id=q.process_id,
-            price=q.price,
-            note=q.note,
-            status=q.status,
-            submitted_at=q.submitted_at,
-            reviewed_at=q.reviewed_at,
-            review_note=q.review_note,
-            created_at=q.created_at,
-            updated_at=q.updated_at,
-            part_serial_no=part.serial_no if part else None,
-            part_drawing_no=part.drawing_no if part else None,
-            part_name=part.name if part else None,
-            outsource_company_name=company.name if company else None,
-            process_code=process.code if process else None,
-            process_name=process.name if process else None,
-            customer_path=customer_path,
+        part_map = {p.id: p for p in await self.parts.list_by_ids(part_ids)}
+        company_map = {
+            c.id: c for c in await self.companies.list_by_ids(company_ids)
+        }
+        proc_map = {
+            pr.id: pr for pr in await self.processes.list_by_ids(process_ids)
+        }
+        cust_cache = await self._preload_customer_cache(
+            [p.customer_id for p in part_map.values() if p.customer_id]
         )
 
-    async def _make_customer_path(
-        self, cust: TCustomer, cache: dict | None = None,
+        out: list[OutsourceQuoteOut] = []
+        for q in quotes:
+            part = part_map.get(q.part_id)
+            company = company_map.get(q.outsource_company_id)
+            process = proc_map.get(q.process_id)
+            customer_path: str | None = None
+            if part and part.customer_id and part.customer_id in cust_cache:
+                customer_path = self._make_customer_path_cached(
+                    cust_cache[part.customer_id], cust_cache,
+                )
+            out.append(OutsourceQuoteOut(
+                id=q.id,
+                version=q.version,
+                part_id=q.part_id,
+                outsource_company_id=q.outsource_company_id,
+                process_id=q.process_id,
+                price=q.price,
+                note=q.note,
+                status=q.status,
+                submitted_at=q.submitted_at,
+                reviewed_at=q.reviewed_at,
+                review_note=q.review_note,
+                created_at=q.created_at,
+                updated_at=q.updated_at,
+                part_serial_no=part.serial_no if part else None,
+                part_drawing_no=part.drawing_no if part else None,
+                part_name=part.name if part else None,
+                outsource_company_name=company.name if company else None,
+                process_code=process.code if process else None,
+                process_name=process.name if process else None,
+                customer_path=customer_path,
+            ))
+        return out
+
+    async def _preload_customer_cache(
+        self, leaf_ids: list[int],
+    ) -> dict[int, TCustomer]:
+        """按客户树深度逐层批量预载（list_by_ids），供 _make_customer_path_cached 用。
+
+        v1 客户树只有 2 层，通常 1~2 次查询即可覆盖全部祖先。
+        """
+        cache: dict[int, TCustomer] = {}
+        frontier = list({cid for cid in leaf_ids if cid is not None})
+        while frontier:
+            rows = await self.customers.list_by_ids(frontier)
+            if not rows:
+                break
+            for c in rows:
+                cache[c.id] = c
+            next_frontier: list[int] = []
+            for c in rows:
+                pid = c.parent_id
+                if pid and pid not in cache and pid not in next_frontier:
+                    next_frontier.append(pid)
+            frontier = next_frontier
+        return cache
+
+    def _make_customer_path_cached(
+        self, cust: TCustomer, cache: dict[int, TCustomer],
     ) -> str | None:
-        cache = cache or {}
+        """纯内存拼客户路径（不再逐条 get_by_id）。cache 缺祖先则安全截断。"""
         cur: TCustomer | None = cust
         path: list[str] = []
         seen: set[int] = set()
@@ -725,9 +742,6 @@ class OutsourceQuoteService:
             path.append(cur.name)
             if cur.parent_id is None:
                 break
-            if cur.parent_id in cache:
-                cur = cache[cur.parent_id]
-            else:
-                cur = await self.customers.get_by_id(cur.parent_id)
+            cur = cache.get(cur.parent_id)
         path.reverse()
         return " / ".join(path) if path else None

@@ -584,50 +584,112 @@ class TestListApprovedForSend:
     async def test_customer_path_is_string_not_coroutine(
         self, svc, mock_quotes, mock_companies, mock_processes, mock_customers,
     ):
-        """回归：approved-for-send 返回 items 的 customer_path 必须是 str/None。"""
-        # 1 个 APPROVED 报价（外协工序 = OUTSOURCE 类别）
+        """回归：approved-for-send 返回 items 的 customer_path 必须是 str/None。
+
+        2026-07-20 重构后：list_all_approved + list_outsource_sendable(part_ids_in)
+        + 批量 list_by_ids，customer_path 走 _preload_customer_cache 纯内存拼接。
+        """
+        from datetime import date
+
+        # 1 个 APPROVED 报价（part_id=100 / company=10 / process=20）
         quote = _make_quote(status="APPROVED")
-        mock_quotes.session = MagicMock()
-        # _list_all_approved_quotes 直接走 session.execute → mock 出 quote 列表
-        mock_quotes.session.execute = AsyncMock(return_value=MagicMock(
-            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[quote]))),
-        ))
+        mock_quotes.list_all_approved = AsyncMock(return_value=[quote])
 
-        # 1 个 PENDING 零件（无客户，方便让 customer_path 走 cust_map 缺省分支）
-        pending_part = _make_part()
-        # 1 个 IN_PROCESS/PRODUCTION_SHELF + next_process=OUTSOURCE 类别
-        in_process_part = _make_part(id=200)
-        in_process_part.id = 200
-        in_process_part.status = "IN_PROCESS"
-        in_process_part.location = "PRODUCTION_SHELF"
-        in_process_part.customer_id = None  # 不让 _make_customer_path 触发
-        # next_process_id 默认是 0，_make_process 返回的 process 已是 OUTSOURCE
-        in_process_part.next_process_id = _make_process().id
+        # 命中的可发送零件（挂 L2 客户 501）
+        part = _make_part(id=100, customer_id=501)
+        part.status = "PENDING"
+        part.location = "OFFICE"
+        part.next_process_id = 20
+        part.is_urgent = False
+        part.planned_delivery_date = date(2026, 7, 20)
+        svc.parts.count_outsource_sendable = AsyncMock(return_value=1)
+        svc.parts.list_outsource_sendable = AsyncMock(return_value=[part])
 
-        svc.parts.list_with_filters = AsyncMock(
-            return_value=[pending_part, in_process_part],
-        )
-        # L2 客户：让 _make_customer_path 真走一次（避免空路径侥幸通过）
+        # 两层客户：list_by_ids 按 frontier 逐层返回
         from model.customer import TCustomer
         parent = TCustomer(id=500, name="法拉电子", parent_id=None)
         child = TCustomer(id=501, name="三厂", parent_id=500)
-        # 给其中一个 part 关联到 child
-        pending_part.customer_id = 501
         mock_customers.list_by_ids = AsyncMock(side_effect=lambda ids: {
             (501,): [child],
             (500,): [parent],
-        }.get(tuple(ids) or (), []))
+        }.get(tuple(ids), []))
 
-        svc.companies.get_by_id = AsyncMock(return_value=_make_company())
-        svc.processes.get_by_id = AsyncMock(return_value=_make_process())
+        svc.companies.list_by_ids = AsyncMock(return_value=[_make_company()])
+        svc.processes.list_by_ids = AsyncMock(return_value=[_make_process()])
 
         out = await svc.list_approved_for_send(limit=20, offset=0)
 
-        # 关键断言：没有 coroutine 漏进 customer_path
+        assert len(out.items) == 1
         for it in out.items:
             assert it.customer_path is None or isinstance(it.customer_path, str), (
                 f"customer_path 是 {type(it.customer_path).__name__}，应该是 str/None"
             )
+        assert out.items[0].customer_path == "法拉电子 / 三厂"
+
+    async def test_no_get_by_id_in_send_list(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+    ):
+        """N+1 回归：发送列表拼装不得逐条 get_by_id（process/company 走批查）。"""
+        from datetime import date
+
+        quotes = [
+            _make_quote(id=i, part_id=100 + i, process_id=20, outsource_company_id=10)
+            for i in range(5)
+        ]
+        mock_quotes.list_all_approved = AsyncMock(return_value=quotes)
+
+        parts = []
+        for i in range(5):
+            p = _make_part(id=100 + i, customer_id=None)
+            p.status = "PENDING"
+            p.location = "OFFICE"
+            p.next_process_id = 20
+            p.is_urgent = False
+            p.planned_delivery_date = date(2026, 7, 20)
+            parts.append(p)
+        svc.parts.count_outsource_sendable = AsyncMock(return_value=len(parts))
+        svc.parts.list_outsource_sendable = AsyncMock(return_value=parts)
+        svc.processes.list_by_ids = AsyncMock(return_value=[_make_process()])
+        svc.companies.list_by_ids = AsyncMock(return_value=[_make_company()])
+
+        out = await svc.list_approved_for_send(limit=50, offset=0)
+
+        assert len(out.items) == 5
+        assert svc.processes.get_by_id.await_count == 0
+        assert svc.companies.get_by_id.await_count == 0
+        assert svc.parts.get_by_id.await_count == 0
+        # process/company 各只批查一次
+        svc.processes.list_by_ids.assert_awaited_once()
+        svc.companies.list_by_ids.assert_awaited_once()
+
+
+class TestListQuotesNoN1:
+    async def test_list_quotes_uses_batch_not_get_by_id(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+    ):
+        """报价一览序列化走 _to_out_many 批查，禁止逐行 get_by_id。"""
+        from schema.outsource_quote import OutsourceQuoteListQuery
+
+        q1 = _make_quote(id=1, part_id=100)
+        q2 = _make_quote(id=2, part_id=101)
+        mock_quotes.list_with_filters = AsyncMock(return_value=[q1, q2])
+        mock_quotes.count_with_filters = AsyncMock(return_value=2)
+
+        p1 = _make_part(id=100, customer_id=None)
+        p2 = _make_part(id=101, customer_id=None)
+        svc.parts.list_by_ids = AsyncMock(return_value=[p1, p2])
+        svc.companies.list_by_ids = AsyncMock(return_value=[_make_company()])
+        svc.processes.list_by_ids = AsyncMock(return_value=[_make_process()])
+
+        out = await svc.list_quotes(OutsourceQuoteListQuery())
+
+        assert len(out.items) == 2
+        assert out.total == 2
+        svc.parts.list_by_ids.assert_awaited_once()
+        assert svc.parts.get_by_id.await_count == 0
+        assert svc.companies.get_by_id.await_count == 0
+        assert svc.processes.get_by_id.await_count == 0
+
 
 
 # =============================================================================
@@ -636,38 +698,25 @@ class TestListApprovedForSend:
 
 
 class TestSearchQuotesStatusesMulti:
-    async def test_statuses_array_passed_through(
+    async def test_keyword_passed_through_to_part_repo(
         self, svc, mock_quotes, mock_parts,
     ):
         from schema.outsource_quote import OutsourceQuoteListQuery
         from model.enums import OutsourceQuoteStatus
 
-        # 准备：1 个 part 关联 1 个 quote
-        quote = _make_quote()
-        mock_quotes.session = MagicMock()
-        mock_quotes.session.execute = AsyncMock(return_value=MagicMock(
-            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[quote]))),
-        ))
-
-        # 业务场景：先 listParts 拿 part_ids（service 会先调 part_repo）
-        svc.parts.list_with_filters = AsyncMock(return_value=[])
+        # keyword 非空 → _resolve_part_ids 先调 part_repo.count_with_filters；
+        # 返回 0 → 无匹配零件 → list_quotes 直接短路返回空（不再 N+1 逐 part 查报价）。
+        svc.parts.count_with_filters = AsyncMock(return_value=0)
 
         q = OutsourceQuoteListQuery(
             statuses=[OutsourceQuoteStatus.DRAFT, OutsourceQuoteStatus.APPROVED],
-        )
-        # part_filter_ids is None if customer_id is None
-        # → 走 _search_quotes 直接传 list_with_filters / count_with_filters
-        # 我们让 part_filter_ids = [] 来短路（避免全链路 mock）
-        from service.outsource_quote import OutsourceQuoteService
-        # 用 keyword 不为空 → 走 _resolve_part_ids → list_with_filters（无结果）
-        q2 = OutsourceQuoteListQuery(
-            statuses=[OutsourceQuoteStatus.DRAFT, OutsourceQuoteStatus.APPROVED],
             keyword="NOMATCH",
         )
-        out = await svc.list_quotes(q2)
+        out = await svc.list_quotes(q)
         assert out.items == []
         assert out.total == 0
-        # 验证 svc 把 list 传给了 part_repo（_resolve_part_ids 路径）
-        call_kwargs = svc.parts.list_with_filters.call_args.kwargs
+        # keyword 已传给 part_repo（_resolve_part_ids 路径）
+        call_kwargs = svc.parts.count_with_filters.call_args.kwargs
         assert call_kwargs.get("keyword") == "NOMATCH"
+
 

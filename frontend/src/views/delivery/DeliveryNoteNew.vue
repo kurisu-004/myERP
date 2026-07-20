@@ -107,6 +107,12 @@
           </template>
         </el-table-column>
 
+<el-table-column prop="applicant_name" label="申请人" width="100" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :class="{ muted: !row.applicant_name }">{{ row.applicant_name || '—' }}</span>
+          </template>
+        </el-table-column>
+
         <el-table-column
           prop="order_no"
           label="订单号"
@@ -134,6 +140,10 @@
           width="70"
           align="right"
         />
+
+<el-table-column prop="unit_price" label="单价" width="90" align="right">
+          <template #default="{ row }">{{ row.unit_price }}</template>
+        </el-table-column>
 
         <!-- 客户列：列头 popover + el-tree-select -->
         <el-table-column label="分厂/客户" min-width="180" show-overflow-tooltip>
@@ -183,6 +193,12 @@
             <span v-if="row.customer_path">{{ row.customer_path }}</span>
             <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
             <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+
+<el-table-column prop="request_date" label="请购日期" width="110">
+          <template #default="{ row }">
+            <span :class="{ muted: !row.request_date }">{{ row.request_date || '—' }}</span>
           </template>
         </el-table-column>
 

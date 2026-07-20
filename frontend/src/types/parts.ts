@@ -72,7 +72,13 @@ export interface PartListItem {
   serial_no: string | null
   name: string
   drawing_no: string
+  /** 申请人姓名快照 */
+  applicant_name: string | null
   quantity: number
+  /** 单价 */
+  unit_price: number
+  /** 请购日期 */
+  request_date: string
   planned_delivery_date: string
   actual_delivery_date: string | null
   is_urgent: boolean

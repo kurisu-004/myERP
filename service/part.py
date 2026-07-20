@@ -170,6 +170,7 @@ class PartService:
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
+            has_outsource_history=query.has_outsource_history,
             sort_by=query.sort_by,
             sort_dir=query.sort_dir,
             limit=query.limit,
@@ -180,6 +181,7 @@ class PartService:
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
+            has_outsource_history=query.has_outsource_history,
         )
         items = await self._to_list_out(rows)
         return PartListOut(
@@ -1988,7 +1990,10 @@ class PartService:
                     serial_no=p.serial_no,
                     name=p.name,
                     drawing_no=p.drawing_no,
+                    applicant_name=p.applicant_name,
                     quantity=p.quantity,
+                    unit_price=p.unit_price,
+                    request_date=p.request_date,
                     planned_delivery_date=p.planned_delivery_date,
                     actual_delivery_date=p.actual_delivery_date,
                     is_urgent=p.is_urgent,

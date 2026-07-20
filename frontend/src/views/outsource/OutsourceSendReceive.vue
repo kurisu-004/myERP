@@ -30,8 +30,6 @@ import {
   type SendToOutsourcePayload,
   type PartItem,
   listParts,
-  listPartEvents,
-  type PartEvent,
 } from '@/api/parts'
 import type { ApprovedQuoteForSendItem } from '@/types/outsource'
 import type { PartListItem } from '@/types/parts'
@@ -499,63 +497,46 @@ function onReceivingPageSizeChange(size: number): void {
 // Tab 3：已接收历史
 // ============================================================
 const receivedItems = ref<PartListItem[]>([])
-const receivedAllParts = ref<PartListItem[]>([])
-const receivedEventsCache = new Map<string, PartEvent[]>()
+const receivedTotal = ref(0)
 const receivedLoading = ref(false)
 const receivedError = ref<string | null>(null)
 const receivedFilter = reactive({ keyword: '', customer_id: '' })
 const receivedPage = ref(1)
 const receivedPageSize = ref(20)
 
-/** 加载「已接收历史」：拉取已离开 OUTSOURCE 状态的全部零件，
- *  前端按 part.events 是否有 SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE_INSPECTED
- *  事件判定「曾外协过」。本实现只取 page=1，limit=200 一次性拉回；
- *  如未来量大可改为后端 GET /parts?has_outsource_history=true。 */
+// 「已接收历史」=「曾外协过」+ 已离开 OUTSOURCE（不等于 PENDING/OUTSOURCE/PROGRAMMING/CANCELLED）
+// 与 refreshReceiving 对称：一次 listParts + 服务端分页，无 N+1。
+const RECEIVED_STATUSES = [
+  'IN_PROCESS',
+  'INSPECTION',
+  'READY_TO_SHIP',
+  'DELIVERED',
+  'COMPLETED',
+] as const
+
 async function refreshReceived(): Promise<void> {
   receivedLoading.value = true
   receivedError.value = null
   try {
     const r = await listParts({
+      statuses: [...RECEIVED_STATUSES],
       keyword: receivedFilter.keyword || undefined,
       customer_id: receivedFilter.customer_id || undefined,
-      limit: 200,
-      offset: 0,
+      has_outsource_history: true,
+      limit: receivedPageSize.value,
+      offset: (receivedPage.value - 1) * receivedPageSize.value,
     })
-    receivedAllParts.value = r.items
-    // 拉取每个 part 的事件，标记「曾外协过」
-    const filtered: PartListItem[] = []
-    for (const p of r.items) {
-      let events: PartEvent[] = receivedEventsCache.get(p.id) ?? []
-      if (events.length === 0) {
-        try {
-          events = await listPartEvents(p.id)
-          receivedEventsCache.set(p.id, events)
-        } catch {
-          events = []
-        }
-      }
-      const hadOutsource = events.some((e) =>
-        e.event_type === 'SENT_TO_OUTSOURCE'
-        || e.event_type === 'RECEIVED_FROM_OUTSOURCE'
-        || e.event_type === 'INSPECTED' && (e.note ?? '').includes('外协'),
-      )
-      if (hadOutsource) filtered.push(p)
-    }
-    receivedItems.value = filtered
+    receivedItems.value = r.items
+    receivedTotal.value = r.total
   } catch (e) {
     receivedItems.value = []
-    receivedAllParts.value = []
+    receivedTotal.value = 0
     receivedError.value = (e as Error).message ?? '加载已接收历史失败'
     ElMessage.error(receivedError.value)
   } finally {
     receivedLoading.value = false
   }
 }
-
-const receivedPageItems = computed(() => {
-  const start = (receivedPage.value - 1) * receivedPageSize.value
-  return receivedItems.value.slice(start, start + receivedPageSize.value)
-})
 
 function onReceivedSearch(): void {
   receivedPage.value = 1
@@ -564,13 +545,13 @@ function onReceivedSearch(): void {
 function onReceivedReset(): void {
   receivedFilter.keyword = ''
   receivedFilter.customer_id = ''
-  receivedEventsCache.clear()
   receivedPage.value = 1
   void refreshReceived()
 }
 function onReceivedPageSizeChange(size: number): void {
   receivedPageSize.value = size
   receivedPage.value = 1
+  void refreshReceived()
 }
 
 function goPartDetail(row: PartListItem): void {
@@ -860,11 +841,11 @@ watch(activeTab, async (t) => {
             </el-select>
             <el-button type="primary" @click="onReceivedSearch">查询</el-button>
             <el-button @click="onReceivedReset">重置</el-button>
-            <span v-if="receivedItems.length > 0" class="total-hint">共 {{ receivedItems.length }} 条</span>
+            <span v-if="receivedTotal > 0" class="total-hint">共 {{ receivedTotal }} 条</span>
           </div>
           <el-table
             v-loading="receivedLoading"
-            :data="receivedPageItems"
+            :data="receivedItems"
             stripe
             border
             size="small"
@@ -895,11 +876,11 @@ watch(activeTab, async (t) => {
             v-model:current-page="receivedPage"
             v-model:page-size="receivedPageSize"
             :page-sizes="[20, 50, 100]"
-            :total="receivedItems.length"
+            :total="receivedTotal"
             layout="total, sizes, prev, pager, next, jumper"
             background
             size="small"
-            @current-change="() => {}"
+            @current-change="refreshReceived"
             @size-change="onReceivedPageSizeChange"
           />
         </el-tab-pane>
