@@ -50,14 +50,18 @@
       </div>
 
       <!-- 列表态 -->
-      <el-table
+      <ResponsiveList
         v-else
-        :data="staged"
+        :items="staged"
+        row-key="uid"
+        empty-text="暂无待新增零件"
+        :card-class="(row) => (row.isUrgent ? 'rl-card--urgent' : '')"
         border
         stripe
         size="small"
         :row-class-name="rowClassName"
         @row-click="onRowPreview"
+        @card-click="onRowPreview"
       >
         <el-table-column type="index" label="#" width="50" />
         <el-table-column label="图号" width="130">
@@ -93,7 +97,41 @@
             <el-button link type="danger" size="small" @click.stop="onRemoveRow((row as StagedEntry).uid)">删除</el-button>
           </template>
         </el-table-column>
-      </el-table>
+
+        <!-- 手机卡片 -->
+        <template #card="{ row }">
+          <div class="rl-card-head">
+            <span class="rl-card-title">{{ (row as StagedEntry).name }}</span>
+            <el-tag v-if="(row as StagedEntry).isUrgent" type="danger" size="small" effect="dark">加急</el-tag>
+          </div>
+          <div class="rl-card-sub">
+            图号 {{ (row as StagedEntry).drawingNo || '—' }}
+          </div>
+          <div class="rl-kv">
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">数量</span>
+              <span class="rl-kv__val">{{ (row as StagedEntry).quantity }}</span>
+            </div>
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">计划交期</span>
+              <span class="rl-kv__val">{{ (row as StagedEntry).plannedDeliveryDate || '—' }}</span>
+            </div>
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">申请人</span>
+              <span class="rl-kv__val">{{ (row as StagedEntry).applicantName || '—' }}</span>
+            </div>
+            <div class="rl-kv__item rl-kv__item--full">
+              <span class="rl-kv__key">客户</span>
+              <span class="rl-kv__val">{{ (row as StagedEntry).customerLabel || '—' }}</span>
+            </div>
+          </div>
+          <div class="rl-card-actions">
+            <el-button link type="primary" size="small" @click.stop="openDrawingPreview(row as StagedEntry)">图纸预览</el-button>
+            <el-button link type="primary" size="small" @click.stop="onRowPreview(row as StagedEntry)">查看</el-button>
+            <el-button link type="danger" size="small" @click.stop="onRemoveRow((row as StagedEntry).uid)">删除</el-button>
+          </div>
+        </template>
+      </ResponsiveList>
 
       <div class="staging-footer">
         <el-button :disabled="staged.length === 0 || submitting" @click="onClearAll">
@@ -115,7 +153,9 @@
     <el-dialog
       v-model="addDialogVisible"
       :title="editingUid ? '编辑零件' : '添加零件'"
-      width="900px"
+      :width="addDlg.width.value"
+      :top="addDlg.top.value"
+      :fullscreen="addDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onDialogClosed"
     >
@@ -126,21 +166,21 @@
         label-width="100px"
         label-position="right"
       >
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="图号" prop="drawingNo">
               <el-input v-model="form.drawingNo" placeholder="例如：LT39822" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="名称" prop="name">
               <el-input v-model="form.name" placeholder="请输入品名 / 零件名称" />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="客户" prop="customerId">
               <el-cascader
                 v-model="form.customerId"
@@ -152,8 +192,8 @@
                 @change="onCustomerChange"
               />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="申请人" prop="applicantName">
               <el-autocomplete
                 v-model="form.applicantName"
@@ -169,24 +209,24 @@
                 @select="onApplicantSelect"
               />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="数量" prop="quantity">
               <el-input-number v-model="form.quantity" :min="1" :step="1" controls-position="right" style="width: 100%" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="加急">
               <el-switch v-model="form.isUrgent" />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="请购日期" prop="requestDate">
               <el-date-picker
                 v-model="form.requestDate"
@@ -196,8 +236,8 @@
                 style="width: 100%"
               />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="计划交期" prop="plannedDeliveryDate">
               <el-date-picker
                 v-model="form.plannedDeliveryDate"
@@ -207,17 +247,17 @@
                 style="width: 100%"
               />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
         <!-- 送货单字段（PR-F 2026-07-17） -->
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="订单号">
               <el-input v-model="form.orderNo" placeholder="如 6200037950（可选）" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="系统交期">
               <el-date-picker
                 v-model="form.systemDeliveryDate"
@@ -227,8 +267,8 @@
                 style="width: 100%"
               />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
         <el-form-item label="备注">
           <el-input v-model="form.note" placeholder="文员手填备注（可选，送货单可见）" />
@@ -283,8 +323,14 @@
     </el-dialog>
 
     <!-- 预览 Dialog（只读） -->
-    <el-dialog v-model="previewDialogVisible" title="预览零件" width="720px">
-      <el-descriptions v-if="previewing" :column="2" border>
+    <el-dialog
+      v-model="previewDialogVisible"
+      title="预览零件"
+      :width="previewDlg.width.value"
+      :top="previewDlg.top.value"
+      :fullscreen="previewDlg.fullscreen.value"
+    >
+      <el-descriptions v-if="previewing" :column="previewDescCol" border>
         <el-descriptions-item label="图号">{{ previewing.drawingNo }}</el-descriptions-item>
         <el-descriptions-item label="名称">{{ previewing.name }}</el-descriptions-item>
         <el-descriptions-item label="申请人">{{ previewing.applicantName || '—' }}</el-descriptions-item>
@@ -326,12 +372,23 @@ import {
 } from 'element-plus'
 import { DocumentAdd, Picture, Plus, Upload } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
 import { batchCreateParts, type PartBatchFilePayload, type PartCreatePayload } from '@/api/parts'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createApplicant } from '@/api/applicant'
 import { useApplicantSearch } from '@/composables/useApplicantSearch'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 
 const router = useRouter()
+
+// ============ 响应式 ============
+const { isMobile } = useBreakpoint()
+const previewDescCol = computed(() => (isMobile.value ? 1 : 2))
+
+// 各 dialog 独立的响应式宽度（保留桌面固定 px）
+const addDlg = useDialogSize({ desktopWidth: 900, fullscreenOnMobile: true })
+const previewDlg = useDialogSize({ desktopWidth: 720, fullscreenOnMobile: true })
 
 // ============ 客户树 ============
 const customers = ref<Customer[]>([])

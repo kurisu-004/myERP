@@ -14,7 +14,7 @@
             size="small"
             border
             stripe
-            height="100%"
+            :height="isMobile ? 280 : '100%'"
           >
             <el-table-column prop="code" label="代码" width="120" />
             <el-table-column prop="name" label="名称" min-width="120" />
@@ -23,14 +23,14 @@
         <!-- 右:映射工序 -->
         <div class="right">
           <div class="right-title">
-            <span>{{ selectedWT ? `「${selectedWT.name}」可执行的工序` : '请选择工种' }}</span>
+            <span>{{ mappingTitle }}</span>
             <el-button
               v-if="selectedWT"
               type="primary" size="small"
               :loading="saving"
               :disabled="!dirty"
               @click="onSave"
-            >保存映射</el-button>
+            >{{ isMobile ? '保存' : '保存映射' }}</el-button>
           </div>
           <el-checkbox-group v-model="selectedProcessIds" v-loading="loadingMapping" class="proc-group">
             <el-checkbox
@@ -58,13 +58,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listWorkTypes, getWorkTypeProcesses, setWorkTypeProcesses } from '@/api/workType'
 import { listProcesses } from '@/api/process'
 import type { WorkType, WorkTypeWithProcesses } from '@/types/workType'
 import type { Process } from '@/types/process'
 import { PROCESS_CATEGORY_LABEL } from '@/types/process'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 
 const workTypes = ref<WorkType[]>([])
 const processes = ref<Process[]>([])
@@ -77,6 +80,9 @@ const loadingMapping = ref(false)
 const saving = ref(false)
 
 const dirty = ref(false)
+const mappingTitle = computed(() => (
+  selectedWT.value ? `「${selectedWT.value.name}」可执行的工序` : '请选择工种'
+))
 
 async function fetchWorkTypes(): Promise<void> {
   loadingWT.value = true
@@ -115,7 +121,6 @@ async function onSelectWT(row: WorkType): Promise<void> {
 }
 
 // 监听选中变化,标记 dirty
-import { watch } from 'vue'
 watch(selectedProcessIds, (v) => {
   if (!selectedWT.value) return
   const a = [...v].sort()
@@ -161,4 +166,52 @@ onMounted(async () => {
   :deep(.el-checkbox__label) { width: 100%; }
 }
 .proc-label { display: inline-flex; align-items: center; }
+
+@include until(md) {
+  .wt-proc {
+    height: auto;
+    min-height: 0;
+  }
+
+  .layout-card {
+    flex: none;
+    :deep(.el-card__body) { height: auto; }
+  }
+
+  .layout {
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+  }
+
+  .left {
+    flex: none;
+    width: 100%;
+  }
+
+  .left :deep(.el-table) {
+    height: 280px !important;
+  }
+
+  .right {
+    flex: none;
+    min-height: 320px;
+    overflow: visible;
+  }
+
+  .right-title {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .proc-group {
+    min-height: 0;
+    max-height: 420px;
+  }
+
+  .proc-label {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+}
 </style>

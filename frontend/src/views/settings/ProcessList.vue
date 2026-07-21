@@ -19,30 +19,67 @@
       </el-form>
     </el-card>
 
-    <el-card shadow="never">
-      <el-table :data="rows" v-loading="loading" stripe border size="small">
-        <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="code" label="代码" width="120" />
-        <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column label="类别" width="100">
-          <template #default="{ row }">
-            <el-tag :type="(row as Process).category === 'INHOUSE' ? 'primary' : 'warning'" size="small">
-              {{ PROCESS_CATEGORY_LABEL[(row as Process).category] }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="sort_order" label="排序" width="80" />
-        <el-table-column label="操作" width="180" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="onEdit(row as Process)">编辑</el-button>
-            <el-button link type="danger" size="small" @click="onDelete(row as Process)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+    <ResponsiveList
+      :items="rows"
+      :loading="loading"
+      row-key="id"
+      empty-text="暂无工序"
+      stripe
+      border
+      size="small"
+    >
+      <el-table-column type="index" label="#" width="50" />
+      <el-table-column prop="code" label="代码" width="120" />
+      <el-table-column prop="name" label="名称" min-width="160" />
+      <el-table-column label="类别" width="100">
+        <template #default="{ row }">
+          <el-tag :type="(row as Process).category === 'INHOUSE' ? 'primary' : 'warning'" size="small">
+            {{ PROCESS_CATEGORY_LABEL[(row as Process).category] }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="sort_order" label="排序" width="80" />
+      <el-table-column label="操作" width="180" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="onEdit(row as Process)">编辑</el-button>
+          <el-button link type="danger" size="small" @click="onDelete(row as Process)">删除</el-button>
+        </template>
+      </el-table-column>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑工序' : '新增工序'" width="460px" @closed="onDialogClosed">
-      <el-form :model="form" label-width="80px">
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <span class="rl-card-title">{{ row.name }}</span>
+          <el-tag :type="row.category === 'INHOUSE' ? 'primary' : 'warning'" size="small">
+            {{ PROCESS_CATEGORY_LABEL[(row as Process).category] }}
+          </el-tag>
+        </div>
+        <div class="rl-card-sub">代码 {{ row.code }}</div>
+        <div class="rl-kv">
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">排序</span>
+            <span class="rl-kv__val">{{ row.sort_order }}</span>
+          </div>
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">描述</span>
+            <span class="rl-kv__val">{{ row.description || '—' }}</span>
+          </div>
+        </div>
+        <div class="rl-card-actions">
+          <el-button link type="primary" size="small" @click="onEdit(row as Process)">编辑</el-button>
+          <el-button link type="danger" size="small" @click="onDelete(row as Process)">删除</el-button>
+        </div>
+      </template>
+    </ResponsiveList>
+
+    <el-dialog
+      v-model="dialogVisible"
+      :title="dialogTitle"
+      :width="dialogSize.width.value"
+      :top="dialogSize.top.value"
+      :fullscreen="dialogSize.fullscreen.value"
+      @closed="onDialogClosed"
+    >
+      <el-form :model="form" label-width="80px" :label-position="isMobile ? 'top' : 'right'">
         <el-form-item label="代码" required>
           <el-input v-model="form.code" :disabled="!!editing" placeholder="如 车 / 铣 / CNC / 热处理" />
         </el-form-item>
@@ -71,9 +108,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   createProcess,
   listProcesses,
@@ -82,6 +122,9 @@ import {
 } from '@/api/process'
 import type { Process, ProcessCategory } from '@/types/process'
 import { PROCESS_CATEGORY_LABEL } from '@/types/process'
+
+const { isMobile } = useBreakpoint()
+const dialogSize = useDialogSize({ desktopWidth: 460 })
 
 const loading = ref(false)
 const saving = ref(false)
@@ -92,6 +135,7 @@ const search = reactive<{ code_like: string; category: ProcessCategory | undefin
 })
 const dialogVisible = ref(false)
 const editing = ref<Process | null>(null)
+const dialogTitle = computed(() => (editing.value ? '编辑工序' : '新增工序'))
 const form = reactive<{
   code: string; name: string; category: ProcessCategory
   sort_order: number; description: string
@@ -189,4 +233,21 @@ onMounted(fetchList)
 
 <style lang="scss" scoped>
 .process-list { display: flex; flex-direction: column; gap: 12px; }
+
+@include until(sm) {
+  .filter-card :deep(.el-form--inline) {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .filter-card :deep(.el-form-item) {
+    margin-right: 0;
+  }
+
+  .filter-card :deep(.el-form-item:nth-child(-n + 2)),
+  .filter-card :deep(.el-form-item:nth-child(-n + 2) .el-input),
+  .filter-card :deep(.el-form-item:nth-child(-n + 2) .el-select) {
+    width: 100% !important;
+  }
+}
 </style>

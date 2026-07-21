@@ -53,7 +53,15 @@
     </el-card>
 
     <el-card shadow="never">
-      <el-table :data="rows" v-loading="loading" stripe border size="small">
+      <ResponsiveList
+        :items="rows"
+        :loading="loading"
+        row-key="id"
+        empty-text="暂无申请人"
+        stripe
+        border
+        size="small"
+      >
         <el-table-column type="index" label="#" width="50" />
         <el-table-column prop="name" label="姓名" min-width="160" />
         <el-table-column label="所属一级客户" min-width="180">
@@ -72,13 +80,33 @@
             <el-button link type="danger" size="small" @click="onDelete(row as Applicant)">删除</el-button>
           </template>
         </el-table-column>
-      </el-table>
+
+        <!-- 手机卡片 -->
+        <template #card="{ row, index }">
+          <div class="rl-card-head">
+            <span class="rl-card-title">#{{ index + 1 }} · {{ row.name }}</span>
+          </div>
+          <div class="rl-card-sub">{{ row.customer_name || '—' }}</div>
+          <div class="rl-kv">
+            <div class="rl-kv__item rl-kv__item--full">
+              <span class="rl-kv__key">创建时间</span>
+              <span class="rl-kv__val">{{ formatDate(row.created_at) || '—' }}</span>
+            </div>
+          </div>
+          <div class="rl-card-actions">
+            <el-button link type="primary" size="small" @click="onEdit(row as Applicant)">编辑</el-button>
+            <el-button link type="danger" size="small" @click="onDelete(row as Applicant)">删除</el-button>
+          </div>
+        </template>
+      </ResponsiveList>
     </el-card>
 
     <el-dialog
       v-model="dialogVisible"
       :title="editing ? '编辑申请人' : '新增申请人'"
-      width="480px"
+      :width="applicantDlg.width.value"
+      :top="applicantDlg.top.value"
+      :fullscreen="applicantDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onDialogClosed"
     >
@@ -121,6 +149,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import { listCustomers, type Customer } from '@/api/customer'
 import {
   createApplicant,
@@ -129,6 +160,8 @@ import {
   updateApplicant,
 } from '@/api/applicant'
 import type { Applicant } from '@/types/applicant'
+
+const { isMobile } = useBreakpoint()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -183,6 +216,7 @@ interface FormState {
   customerId: string
 }
 const formRef = ref<FormInstance>()
+const applicantDlg = useDialogSize({ desktopWidth: 480 })
 const dialogVisible = ref(false)
 const editing = ref<Applicant | null>(null)
 const form = reactive<FormState>({ name: '', customerId: '' })

@@ -39,55 +39,117 @@
       </el-form>
     </el-card>
 
-    <el-card shadow="never" class="table-card">
-      <el-table :data="rows" v-loading="loading" stripe border size="small">
-        <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="badge_code" label="工牌码" width="160" />
-        <el-table-column prop="name" label="姓名" min-width="120" />
-        <el-table-column label="工种" min-width="120">
-          <template #default="{ row }">
-            <el-tag v-if="(row as Worker).work_type_id" size="small" type="primary">
-              {{ workTypeNameById[(row as Worker).work_type_id!] || '...' }}
-            </el-tag>
-            <span v-else style="color: #c0c4cc">未分配</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="(row as Worker).is_active ? 'success' : 'info'" effect="light" size="small">
-              {{ (row as Worker).is_active ? '在职' : '停用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" min-width="170" />
-        <el-table-column prop="updated_at" label="更新时间" min-width="170" />
-        <el-table-column label="操作" width="220" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="onEdit(row as Worker)">编辑</el-button>
-            <el-button
-              v-if="(row as Worker).is_active"
-              link
-              type="warning"
-              size="small"
-              @click="onDeactivate(row as Worker)"
-            >停用</el-button>
-            <el-button
-              v-else
-              link
-              type="success"
-              size="small"
-              @click="onReactivate(row as Worker)"
-            >启用</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+    <ResponsiveList
+      :items="rows"
+      :loading="loading"
+      row-key="id"
+      empty-text="暂无工人"
+      stripe
+      border
+      size="small"
+    >
+      <el-table-column type="index" label="#" width="50" />
+      <el-table-column prop="badge_code" label="工牌码" width="160" />
+      <el-table-column prop="name" label="姓名" min-width="120" />
+      <el-table-column label="工种" min-width="120">
+        <template #default="{ row }">
+          <el-tag v-if="(row as Worker).work_type_id" size="small" type="primary">
+            {{ workTypeNameById[(row as Worker).work_type_id!] || '...' }}
+          </el-tag>
+          <span v-else style="color: #c0c4cc">未分配</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="100">
+        <template #default="{ row }">
+          <el-tag :type="(row as Worker).is_active ? 'success' : 'info'" effect="light" size="small">
+            {{ (row as Worker).is_active ? '在职' : '停用' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="created_at" label="创建时间" min-width="170" />
+      <el-table-column prop="updated_at" label="更新时间" min-width="170" />
+      <el-table-column label="操作" width="220" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="onEdit(row as Worker)">编辑</el-button>
+          <el-button
+            v-if="(row as Worker).is_active"
+            link
+            type="warning"
+            size="small"
+            @click="onDeactivate(row as Worker)"
+          >停用</el-button>
+          <el-button
+            v-else
+            link
+            type="success"
+            size="small"
+            @click="onReactivate(row as Worker)"
+          >启用</el-button>
+        </template>
+      </el-table-column>
+
+      <!-- 手机卡片 -->
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <span class="rl-card-title">{{ (row as Worker).name }}</span>
+          <el-tag
+            :type="(row as Worker).is_active ? 'success' : 'info'"
+            effect="light"
+            size="small"
+          >
+            {{ (row as Worker).is_active ? '在职' : '停用' }}
+          </el-tag>
+        </div>
+        <div class="rl-card-sub">工牌码 {{ (row as Worker).badge_code }}</div>
+        <div class="rl-kv">
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">工种</span>
+            <span class="rl-kv__val">
+              <el-tag
+                v-if="(row as Worker).work_type_id"
+                size="small"
+                type="primary"
+              >
+                {{ workTypeNameById[(row as Worker).work_type_id!] || '...' }}
+              </el-tag>
+              <span v-else class="muted">未分配</span>
+            </span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">创建时间</span>
+            <span class="rl-kv__val">{{ (row as Worker).created_at }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">更新时间</span>
+            <span class="rl-kv__val">{{ (row as Worker).updated_at }}</span>
+          </div>
+        </div>
+        <div class="rl-card-actions">
+          <el-button link type="primary" size="small" @click="onEdit(row as Worker)">编辑</el-button>
+          <el-button
+            v-if="(row as Worker).is_active"
+            link
+            type="warning"
+            size="small"
+            @click="onDeactivate(row as Worker)"
+          >停用</el-button>
+          <el-button
+            v-else
+            link
+            type="success"
+            size="small"
+            @click="onReactivate(row as Worker)"
+          >启用</el-button>
+        </div>
+      </template>
+    </ResponsiveList>
 
     <!-- 新增/编辑弹窗 -->
     <el-dialog
       v-model="dialogVisible"
       :title="editing ? '编辑工人' : '新增工人'"
-      width="420px"
+      :width="workerDlg.width.value"
+      :top="workerDlg.top.value"
       @closed="onDialogClosed"
     >
       <el-form :model="form" label-width="80px" ref="formRef">
@@ -124,6 +186,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   createWorker,
   deactivateWorker,
@@ -161,6 +225,8 @@ const form = reactive<{ badge_code: string; name: string; work_type_id: string |
   work_type_id: null,
 })
 const formRef = ref<{ validate: () => Promise<boolean> } | null>(null)
+// 弹窗尺寸：桌面 420px，手机 92vw + 6vh
+const workerDlg = useDialogSize({ desktopWidth: 420 })
 
 async function fetchList(): Promise<void> {
   loading.value = true
@@ -279,4 +345,5 @@ onMounted(async () => {
 <style lang="scss" scoped>
 .worker-list { display: flex; flex-direction: column; gap: 12px; }
 .filter-card :deep(.el-card__body) { padding-bottom: 0; }
+.muted { color: var(--text-secondary); }
 </style>

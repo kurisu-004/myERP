@@ -18,13 +18,13 @@
 <template>
   <div class="customer-list">
     <el-card shadow="never" class="filter-card">
-      <el-form inline>
+      <el-form inline class="customer-filter-form">
         <el-form-item label="客户名">
           <el-input
             v-model="search.keyword"
             placeholder="按客户名过滤"
             clearable
-            style="width: 220px"
+            style="width: 100%; max-width: 260px"
             @keyup.enter="applyFilter"
             @clear="applyFilter"
           />
@@ -97,7 +97,8 @@
     <el-dialog
       v-model="dialogVisible"
       :title="dialogTitle"
-      width="480px"
+      :width="customerDlg.width.value"
+      :top="customerDlg.top.value"
       :close-on-click-modal="false"
       @closed="onDialogClosed"
     >
@@ -197,6 +198,7 @@ import {
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   createCustomer,
   listCustomers,
@@ -218,6 +220,9 @@ const loading = ref(false)
 const saving = ref(false)
 const customers = ref<Customer[]>([])
 const search = reactive({ keyword: '' })
+
+// 弹窗尺寸：桌面 480px，手机 92vw + 6vh
+const customerDlg = useDialogSize({ desktopWidth: 480 })
 
 // ===== 树形组装（沿用 AssemblyList / PartBatchNew 的模式） =====
 const tree = computed<TreeNode[]>(() => {
@@ -502,5 +507,18 @@ onMounted(fetchList)
 }
 :deep(.el-tree-node__content:hover .tree-row__actions) {
   opacity: 1;
+}
+
+/* 手机/平板无 hover：常显行尾操作按钮，方便触屏点击 */
+@include until(md) {
+  :deep(.tree-row__actions) {
+    opacity: 1 !important;
+  }
+}
+
+/* 筛选表单在窄屏宽度自适应：form-item 内按钮过多时可换行 */
+.customer-filter-form :deep(.el-form-item__content) {
+  flex-wrap: wrap;
+  gap: 6px;
 }
 </style>

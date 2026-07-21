@@ -60,5 +60,7 @@ watch(
 <style lang="scss" scoped>
 .barcode-svg {
   display: block;
+  max-width: 100%;
+  height: auto;
 }
 </style>

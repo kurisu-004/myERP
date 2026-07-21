@@ -62,7 +62,7 @@
         </div>
       </template>
 
-      <el-descriptions :column="3" border>
+      <el-descriptions :column="descCol" border>
         <el-descriptions-item label="序列号">
           <span v-if="detail.assembly.serial_no" class="mono">{{ detail.assembly.serial_no }}</span>
           <el-tag v-else size="small" type="info" effect="plain">暂无（旧数据）</el-tag>
@@ -160,8 +160,11 @@
           </div>
         </div>
       </template>
-      <el-table
-        :data="detail?.children ?? []"
+      <ResponsiveList
+        :items="detail?.children ?? []"
+        row-key="id"
+        empty-text="暂无子零件"
+        :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
         border
         stripe
         size="small"
@@ -213,14 +216,66 @@
             </el-button>
           </template>
         </el-table-column>
-      </el-table>
+
+        <!-- 手机卡片 -->
+        <template #card="{ row }">
+          <div class="rl-card-head">
+            <span class="rl-card-title">
+              <el-link
+                v-if="childDrawingMap[row.id]"
+                type="primary"
+                @click="onChildDrawingClick(row, childDrawingMap[row.id]!)"
+              >
+                {{ row.drawing_no }}
+              </el-link>
+              <span v-else>{{ row.drawing_no }}</span>
+            </span>
+            <el-tag :type="partStatusTagType(row.status)" size="small">
+              {{ partStatusLabel(row.status) }}
+            </el-tag>
+          </div>
+          <div class="rl-card-sub">
+            {{ row.name }}
+          </div>
+          <div class="rl-kv">
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">序列号</span>
+              <span class="rl-kv__val">
+                <el-tag v-if="row.serial_no" type="success" size="small" effect="dark">
+                  {{ row.serial_no }}
+                </el-tag>
+                <span v-else class="muted">未分配</span>
+              </span>
+            </div>
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">数量</span>
+              <span class="rl-kv__val">{{ row.quantity }}</span>
+            </div>
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">计划交期</span>
+              <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+            </div>
+            <div class="rl-kv__item rl-kv__item--full">
+              <span class="rl-kv__key">所在位置</span>
+              <span class="rl-kv__val">{{ row.current_holder_display || '—' }}</span>
+            </div>
+          </div>
+          <div class="rl-card-actions">
+            <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">
+              详情
+            </el-button>
+          </div>
+        </template>
+      </ResponsiveList>
     </el-card>
 
     <!-- 编辑元数据对话框（CLERK + MANAGER） -->
     <el-dialog
       v-model="editVisible"
       title="编辑装配件元数据"
-      width="640px"
+      :width="editDlg.width.value"
+      :top="editDlg.top.value"
+      :fullscreen="editDlg.fullscreen.value"
       :close-on-click-modal="false"
       destroy-on-close
     >
@@ -306,7 +361,9 @@
     <el-dialog
       v-model="confirmVisible"
       :title="confirmAction === 'cancel' ? '取消装配件' : '删除装配件'"
-      width="480px"
+      :width="confirmDlg.width.value"
+      :top="confirmDlg.top.value"
+      :fullscreen="confirmDlg.fullscreen.value"
       :close-on-click-modal="false"
     >
       <p class="confirm-hint">
@@ -363,7 +420,9 @@
     <el-dialog
       v-model="addChildVisible"
       title="添加子件"
-      width="480px"
+      :width="addChildDlg.width.value"
+      :top="addChildDlg.top.value"
+      :fullscreen="addChildDlg.fullscreen.value"
       :close-on-click-modal="false"
     >
       <p class="confirm-hint">
@@ -427,10 +486,22 @@ import {
   type OrderStatus,
 } from '@/types/parts'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
+import ResponsiveList from '@/components/ResponsiveList.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { hasRole } = useAuthSession()
+
+// ============ 响应式 ============
+const { isMobile, isTablet } = useBreakpoint()
+const descCol = computed(() => (isMobile.value ? 1 : isTablet.value ? 2 : 3))
+
+// 各 dialog 独立的响应式宽度（保留桌面固定 px）
+const editDlg = useDialogSize({ desktopWidth: 640, fullscreenOnMobile: true })
+const confirmDlg = useDialogSize({ desktopWidth: 480, fullscreenOnMobile: true })
+const addChildDlg = useDialogSize({ desktopWidth: 480, fullscreenOnMobile: true })
 
 // 权限：取消 / 添加子件 / 上传 PDF = CLERK+；删除 = MANAGER-only。
 const canCancel = computed(

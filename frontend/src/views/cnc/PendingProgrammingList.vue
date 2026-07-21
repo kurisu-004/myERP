@@ -49,95 +49,139 @@
       </div>
     </el-card>
 
-    <div class="sheet-wrapper">
-      <el-table
-        :data="items"
-        v-loading="loading"
-        stripe
-        border
-        style="width: 100%"
-        size="small"
-        :row-class-name="rowClassName"
-        :empty-text="emptyText"
+    <ResponsiveList
+      :items="items"
+      :loading="loading"
+      row-key="id"
+      :empty-text="emptyText"
+      :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
+      stripe
+      border
+      size="small"
+      :row-class-name="rowClassName"
+    >
+      <el-table-column
+        prop="serial_no"
+        label="序列号"
+        width="110"
+        fixed="left"
+        show-overflow-tooltip
       >
-        <el-table-column
-          prop="serial_no"
-          label="序列号"
-          width="110"
-          fixed="left"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="drawing_no"
-          label="图号"
-          width="130"
-          fixed="left"
-          show-overflow-tooltip
-        />
-
-        <el-table-column
-          prop="name"
-          label="名称"
-          min-width="200"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <router-link :to="`/parts/${row.id}`" class="name-link">
-              {{ row.name }}
-            </router-link>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="quantity" label="数量" width="80" align="right" />
-
-        <el-table-column
-          prop="planned_delivery_date"
-          label="计划交期"
-          width="120"
-        />
-
-        <el-table-column label="客户" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="row.customer_path">{{ row.customer_path }}</span>
-            <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="240" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              link
-              type="primary"
-              size="small"
-              @click="$router.push(`/parts/${row.id}`)"
-            >详情</el-button>
-            <el-button
-              link
-              type="success"
-              size="small"
-              :loading="row._releasing"
-              @click="openReleaseDialog(row as PartListItem)"
-            >下发</el-button>
-            <el-button
-              link
-              type="warning"
-              size="small"
-              @click="openFilesDrawer(row as PartListItem)"
-            >文件</el-button>
-          </template>
-        </el-table-column>
-
-        <template #empty>
-          <el-empty :description="emptyText" />
+        <template #default="{ row }">
+          <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
-      </el-table>
-    </div>
+      </el-table-column>
+
+      <el-table-column
+        prop="drawing_no"
+        label="图号"
+        width="130"
+        fixed="left"
+        show-overflow-tooltip
+      />
+
+      <el-table-column
+        prop="name"
+        label="名称"
+        min-width="200"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <router-link :to="`/parts/${row.id}`" class="name-link">
+            {{ row.name }}
+          </router-link>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="quantity" label="数量" width="80" align="right" />
+
+      <el-table-column
+        prop="planned_delivery_date"
+        label="计划交期"
+        width="120"
+      />
+
+      <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.customer_path">{{ row.customer_path }}</span>
+          <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="操作" width="240" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            @click="$router.push(`/parts/${row.id}`)"
+          >详情</el-button>
+          <el-button
+            link
+            type="success"
+            size="small"
+            :loading="row._releasing"
+            @click="openReleaseDialog(row as PartListItem)"
+          >下发</el-button>
+          <el-button
+            link
+            type="warning"
+            size="small"
+            @click="openFilesDrawer(row as PartListItem)"
+          >文件</el-button>
+        </template>
+      </el-table-column>
+
+      <!-- 手机卡片 -->
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <router-link :to="`/parts/${row.id}`" class="rl-card-title name-link">
+            {{ row.name }}
+          </router-link>
+        </div>
+        <div class="rl-card-sub">
+          图号 {{ row.drawing_no || '—' }} · 序列号 {{ row.serial_no || '—' }}
+        </div>
+        <div class="rl-kv">
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__val">{{ row.quantity }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">计划交期</span>
+            <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">客户</span>
+            <span class="rl-kv__val">
+              {{ row.customer_path || row.customer_name || '—' }}
+            </span>
+          </div>
+        </div>
+        <div class="rl-card-actions">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            @click="$router.push(`/parts/${row.id}`)"
+          >详情</el-button>
+          <el-button
+            link
+            type="success"
+            size="small"
+            :loading="row._releasing"
+            @click="openReleaseDialog(row as PartListItem)"
+          >下发</el-button>
+          <el-button
+            link
+            type="warning"
+            size="small"
+            @click="openFilesDrawer(row as PartListItem)"
+          >文件</el-button>
+        </div>
+      </template>
+    </ResponsiveList>
 
     <div class="pagination">
       <el-pagination
@@ -145,7 +189,8 @@
         v-model:page-size="pageSize"
         :page-sizes="[20, 50, 100]"
         :total="total"
-        layout="total, sizes, prev, pager, next, jumper"
+        :layout="paginationLayout"
+        :pager-count="isMobile ? 5 : 7"
         background
         size="small"
         @current-change="fetchList"
@@ -157,7 +202,9 @@
     <el-dialog
       v-model="releaseDialogVisible"
       title="下发到生产 — 选择目标货架与下一道工序"
-      width="560px"
+      :width="releaseDlg.width.value"
+      :top="releaseDlg.top.value"
+      :fullscreen="releaseDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onReleaseDialogClosed"
     >
@@ -287,6 +334,9 @@ import {
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   listPendingProgramming,
   releaseFromProgramming,
@@ -315,6 +365,12 @@ const pageSize = ref(20)
 const search = reactive({ keyword: '' })
 
 const emptyText = computed(() => errorMsg.value ?? '暂无待编程零件')
+
+const { isMobile } = useBreakpoint()
+// 手机上分页收窄为 prev/pager/next，桌面保留完整布局
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 function rowClassName({ row }: { row: PartListItem }): string {
   return row.is_urgent ? 'row-urgent' : ''
@@ -375,6 +431,7 @@ onBeforeUnmount(() => {
 })
 
 // ============ 下发到生产 对话框 ============
+const releaseDlg = useDialogSize({ desktopWidth: 560 })
 const releaseDialogVisible = ref(false)
 const releaseTarget = ref<RowState | null>(null)
 const releaseShelfId = ref<string>('')
@@ -576,7 +633,7 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .pending-programming {
   padding: 0;
 }
@@ -603,6 +660,10 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
 }
 .name-link {
   color: var(--el-color-primary);

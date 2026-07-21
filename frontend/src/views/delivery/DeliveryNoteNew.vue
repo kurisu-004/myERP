@@ -50,70 +50,110 @@
       </div>
     </el-card>
 
-    <div class="sheet-wrapper">
-      <el-table
-        :data="items"
-        v-loading="loading"
-        stripe
-        border
-        style="width: 100%"
-        size="small"
-        row-key="id"
-        :empty-text="emptyText"
-        :row-class-name="rowClassName"
-        @selection-change="onSelectionChange"
-      >
-        <el-table-column type="selection" width="55" />
+    <ResponsiveList
+      :items="items"
+      :loading="loading"
+      row-key="id"
+      :empty-text="emptyText"
+      :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
+      stripe
+      border
+      style="width: 100%"
+      size="small"
+      :row-class-name="rowClassName"
+      @selection-change="onSelectionChange"
+    >
+      <el-table-column type="selection" width="55" />
 
-        <el-table-column prop="serial_no" label="流水号" width="100" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="drawing_no" label="图号" width="130" show-overflow-tooltip />
-
-        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">
-            <router-link :to="`/parts/${row.id}`" class="name-link">{{ row.name }}</router-link>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="order_no" label="订单号" width="130" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ muted: !row.order_no }">{{ row.order_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="system_delivery_date" label="系统交期" width="110">
-          <template #default="{ row }">
-            <span :class="{ muted: !row.system_delivery_date }">{{ row.system_delivery_date || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="quantity" label="数量" width="70" align="right" />
-
-        <el-table-column label="分厂/客户" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="row.customer_path">{{ row.customer_path }}</span>
-            <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="planned_delivery_date" label="计划交期" width="110" />
-
-        <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ muted: !row.note }">{{ row.note || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <template #empty>
-          <el-empty :description="emptyText" />
+      <el-table-column prop="serial_no" label="流水号" width="100" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
-      </el-table>
-    </div>
+      </el-table-column>
+
+      <el-table-column prop="drawing_no" label="图号" width="130" show-overflow-tooltip />
+
+      <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <router-link :to="`/parts/${row.id}`" class="name-link">{{ row.name }}</router-link>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="order_no" label="订单号" width="130" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :class="{ muted: !row.order_no }">{{ row.order_no || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="system_delivery_date" label="系统交期" width="110">
+        <template #default="{ row }">
+          <span :class="{ muted: !row.system_delivery_date }">{{ row.system_delivery_date || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="quantity" label="数量" width="70" align="right" />
+
+      <el-table-column label="分厂/客户" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.customer_path">{{ row.customer_path }}</span>
+          <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="planned_delivery_date" label="计划交期" width="110" />
+
+      <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :class="{ muted: !row.note }">{{ row.note || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <!-- 手机卡片：手写 el-checkbox 复刻 el-table 选择列的体验 -->
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <el-checkbox
+            :model-value="isRowSelected(row as PartListItem)"
+            class="dn-card-check"
+            @change="(v: boolean | string | number) => onCardSelectionChange(row as PartListItem, Boolean(v))"
+          >
+            <router-link :to="`/parts/${row.id}`" class="rl-card-title name-link">
+              {{ row.name }}
+            </router-link>
+          </el-checkbox>
+          <span v-if="row.is_urgent" class="dn-urgent-badge">加急</span>
+        </div>
+        <div class="rl-card-sub">
+          图号 {{ row.drawing_no || '—' }} · 流水号 {{ row.serial_no || '—' }}
+        </div>
+        <div class="rl-kv">
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">分厂/客户</span>
+            <span class="rl-kv__val">{{ row.customer_path || row.customer_name || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__val">{{ row.quantity }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">订单号</span>
+            <span class="rl-kv__val">{{ row.order_no || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">系统交期</span>
+            <span class="rl-kv__val">{{ row.system_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">计划交期</span>
+            <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div v-if="row.note" class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">备注</span>
+            <span class="rl-kv__val">{{ row.note }}</span>
+          </div>
+        </div>
+      </template>
+    </ResponsiveList>
 
     <div class="bottom-bar">
       <div class="bar-info">
@@ -141,6 +181,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, RefreshLeft, Search } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
 import { listParts, type ListPartsParams } from '@/api/parts'
 import type { PartListItem } from '@/types/parts'
 import { generateDeliveryNote } from '@/api/deliveryNote'
@@ -238,6 +279,21 @@ function onSelectionChange(rows: PartListItem[]): void {
   selectedRows.value = rows
 }
 
+// 手机卡片自管选择（el-table @selection-change 仅桌面触发）
+function isRowSelected(row: PartListItem): boolean {
+  return selectedRows.value.some((r) => r.id === row.id)
+}
+
+function onCardSelectionChange(row: PartListItem, checked: boolean): void {
+  if (checked) {
+    if (!isRowSelected(row)) {
+      selectedRows.value = [...selectedRows.value, row]
+    }
+  } else {
+    selectedRows.value = selectedRows.value.filter((r) => r.id !== row.id)
+  }
+}
+
 function onSelectAll(): void {
   selectedRows.value = [...items.value]
 }
@@ -316,6 +372,27 @@ onMounted(() => {
   background: #fff;
   border-radius: 6px;
   padding: 8px 0;
+}
+/* ResponsiveList 内部已自带 .rl-table-wrap 等价样式，这里不再使用 .sheet-wrapper。
+   保留规则避免桌面切换瞬时样式抖动。 */
+
+/* 手机卡片复刻 el-table 选择列 + 加急徽标 */
+.dn-card-check {
+  flex: 1;
+  min-width: 0;
+}
+.dn-card-check :deep(.el-checkbox__label) {
+  flex: 1;
+  min-width: 0;
+}
+.dn-urgent-badge {
+  flex-shrink: 0;
+  background: #f56c6c;
+  color: #fff;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
 }
 .bottom-bar {
   display: flex;

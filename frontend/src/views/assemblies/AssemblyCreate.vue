@@ -32,8 +32,8 @@
       >
         <div class="section-title">装配件信息</div>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="总图图号" prop="drawing_no">
               <el-input
                 v-model="form.drawing_no"
@@ -41,8 +41,8 @@
                 clearable
               />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="装配体名称" prop="name">
               <el-input
                 v-model="form.name"
@@ -50,11 +50,11 @@
                 clearable
               />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
+        <div class="form-grid">
+          <div>
             <el-form-item label="客户" prop="customer_id">
               <el-cascader
                 v-model="form.customer_id"
@@ -72,8 +72,8 @@
                 @change="onCustomerChange"
               />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          </div>
+          <div>
             <el-form-item label="申请人">
               <el-autocomplete
                 v-model="form.applicant_name"
@@ -89,11 +89,11 @@
                 @select="onApplicantSelect"
               />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
-        <el-row :gutter="16">
-          <el-col :span="8">
+        <div class="form-grid">
+          <div>
             <el-form-item label="请购日期" prop="request_date">
               <el-date-picker
                 v-model="form.request_date"
@@ -103,8 +103,8 @@
                 style="width: 100%"
               />
             </el-form-item>
-          </el-col>
-          <el-col :span="8">
+          </div>
+          <div>
             <el-form-item label="计划交期" prop="planned_delivery_date">
               <el-date-picker
                 v-model="form.planned_delivery_date"
@@ -114,13 +114,13 @@
                 style="width: 100%"
               />
             </el-form-item>
-          </el-col>
-          <el-col :span="8">
+          </div>
+          <div>
             <el-form-item label="加急">
               <el-switch v-model="form.is_urgent" />
             </el-form-item>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
         <el-form-item label="总装 PDF">
           <el-upload
@@ -158,58 +158,59 @@
           </span>
         </div>
 
-        <el-table
-          v-if="pdfBlobUrl"
-          :data="form.children"
-          border
-          size="small"
-          empty-text="PDF 解析中…"
-        >
-          <el-table-column type="index" label="#" width="50" />
-          <el-table-column label="图号" min-width="140">
-            <template #default="{ row, $index }">
-              <el-form-item
-                :prop="`children.${$index}.drawing_no`"
-                :rules="childRules.drawing_no"
-                :show-message="false"
-                style="margin-bottom: 0"
-              >
-                <el-input v-model="row.drawing_no" size="small" />
-              </el-form-item>
-            </template>
-          </el-table-column>
-          <el-table-column label="名称" min-width="160">
-            <template #default="{ row, $index }">
-              <el-form-item
-                :prop="`children.${$index}.name`"
-                :rules="childRules.name"
-                :show-message="false"
-                style="margin-bottom: 0"
-              >
-                <el-input v-model="row.name" size="small" />
-              </el-form-item>
-            </template>
-          </el-table-column>
-          <el-table-column label="数量" width="90">
-            <template #default="{ row }">
-              <el-input-number
-                v-model="row.quantity"
-                :min="1"
-                :step="1"
-                size="small"
-                controls-position="right"
-                style="width: 100%"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="120" align="center" fixed="right">
-            <template #default="{ row, $index }">
-              <el-button link type="primary" size="small" @click="onPreviewChild(row, $index)">
-                预览图纸
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+        <div v-if="pdfBlobUrl" class="sheet-wrapper">
+          <el-table
+            :data="form.children"
+            border
+            size="small"
+            empty-text="PDF 解析中…"
+          >
+            <el-table-column type="index" label="#" width="50" />
+            <el-table-column label="图号" min-width="140">
+              <template #default="{ row, $index }">
+                <el-form-item
+                  :prop="`children.${$index}.drawing_no`"
+                  :rules="childRules.drawing_no"
+                  :show-message="false"
+                  style="margin-bottom: 0"
+                >
+                  <el-input v-model="row.drawing_no" size="small" />
+                </el-form-item>
+              </template>
+            </el-table-column>
+            <el-table-column label="名称" min-width="160">
+              <template #default="{ row, $index }">
+                <el-form-item
+                  :prop="`children.${$index}.name`"
+                  :rules="childRules.name"
+                  :show-message="false"
+                  style="margin-bottom: 0"
+                >
+                  <el-input v-model="row.name" size="small" />
+                </el-form-item>
+              </template>
+            </el-table-column>
+            <el-table-column label="数量" width="90">
+              <template #default="{ row }">
+                <el-input-number
+                  v-model="row.quantity"
+                  :min="1"
+                  :step="1"
+                  size="small"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" align="center" fixed="right">
+              <template #default="{ row, $index }">
+                <el-button link type="primary" size="small" @click="onPreviewChild(row, $index)">
+                  预览图纸
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </el-form>
 
       <div class="form-footer">
@@ -631,5 +632,14 @@ async function onSubmit(): Promise<void> {
 }
 :deep(.el-form-item) {
   margin-bottom: 16px;
+}
+
+/* 子零件表格（带内联编辑）：桌面原样，小屏横向滚动 */
+.sheet-wrapper {
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px;
+  overflow-x: auto;
 }
 </style>

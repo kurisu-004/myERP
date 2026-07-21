@@ -4,7 +4,13 @@
       <h2>账号管理</h2>
       <el-button type="primary" @click="showCreate = true">新增账号</el-button>
     </div>
-    <el-table :data="items" v-loading="loading" stripe>
+    <ResponsiveList
+      :items="items"
+      :loading="loading"
+      row-key="id"
+      empty-text="暂无账号"
+      stripe
+    >
       <el-table-column prop="username" label="用户名" min-width="120" />
       <el-table-column prop="full_name" label="姓名" min-width="100" />
       <el-table-column label="角色" min-width="200">
@@ -32,14 +38,64 @@
           </el-popconfirm>
         </template>
       </el-table-column>
-    </el-table>
-    <el-pagination
-      v-model:current-page="page" :page-size="size" :total="total" layout="total, prev, next"
-      @change="fetchData" style="margin-top:16px; justify-content:flex-end"
-    />
+
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <span class="rl-card-title">{{ (row as UserOut).username }}</span>
+          <el-tag :type="(row as UserOut).is_active ? 'success' : 'danger'" size="small">
+            {{ (row as UserOut).is_active ? '启用' : '停用' }}
+          </el-tag>
+        </div>
+        <div class="rl-card-sub">{{ (row as UserOut).full_name || '未填写姓名' }}</div>
+        <div class="rl-kv">
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">角色</span>
+            <span class="rl-kv__val role-tags">
+              <el-tag
+                v-for="r in (row as UserOut).roles"
+                :key="r.id"
+                size="small"
+                :type="r.scope_type ? 'warning' : 'primary'"
+              >
+                {{ r.role }}{{ r.shelf_code ? ` @${r.shelf_code}` : '' }}
+              </el-tag>
+              <span v-if="!(row as UserOut).roles.length" class="no-roles">无角色</span>
+            </span>
+          </div>
+        </div>
+        <div class="rl-card-actions">
+          <el-button link size="small" @click="openRoles(row)">角色</el-button>
+          <el-button link size="small" @click="editUser(row)">编辑</el-button>
+          <el-popconfirm title="确认重置为默认密码 changeme？" width="240" @confirm="doReset(String((row as UserOut).id))">
+            <template #reference><el-button link size="small" type="warning">重置密码</el-button></template>
+          </el-popconfirm>
+          <el-popconfirm v-if="(row as UserOut).is_active" title="确认停用？" @confirm="doDeactivate(String((row as UserOut).id))">
+            <template #reference><el-button link size="small" type="danger">停用</el-button></template>
+          </el-popconfirm>
+        </div>
+      </template>
+    </ResponsiveList>
+    <div class="pagination">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="size"
+        :page-sizes="[20, 50, 100]"
+        :total="total"
+        :layout="paginationLayout"
+        :pager-count="isMobile ? 5 : 7"
+        @current-change="fetchData"
+        @size-change="onPageSizeChange"
+      />
+    </div>
 
     <!-- create / edit dialog -->
-    <el-dialog v-model="showCreate" :title="editingUser ? '编辑账号' : '新增账号'" width="420px" @closed="resetForm">
+    <el-dialog
+      v-model="showCreate"
+      :title="editingUser ? '编辑账号' : '新增账号'"
+      :width="userDlg.width.value"
+      :top="userDlg.top.value"
+      @closed="resetForm"
+    >
       <el-form ref="userFormRef" :model="userForm" :rules="userRules" label-width="80px">
         <el-form-item label="用户名" prop="username"><el-input v-model="userForm.username" :disabled="!!editingUser" /></el-form-item>
         <el-form-item label="姓名" prop="full_name"><el-input v-model="userForm.full_name" /></el-form-item>
@@ -52,7 +108,12 @@
     </el-dialog>
 
     <!-- role dialog -->
-    <el-dialog v-model="showRoles" title="角色管理" width="560px">
+    <el-dialog
+      v-model="showRoles"
+      title="角色管理"
+      :width="rolesDlg.width.value"
+      :top="rolesDlg.top.value"
+    >
       <p style="margin-bottom:8px">当前角色（{{ roleUser?.username }}）：</p>
       <div v-for="r in roleList" :key="r.id" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <el-tag size="small">{{ r.role }}{{ r.shelf_code ? ` @${r.shelf_code}` : '' }}</el-tag>
@@ -109,6 +170,16 @@ import { listShelves } from '@/api/shelves'
 import type { UserOut, UserRoleOut } from '@/types/user'
 import type { Shelf } from '@/types/shelf'
 import { InfoFilled } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
+
+const { isMobile } = useBreakpoint()
+const userDlg = useDialogSize({ desktopWidth: 420 })
+const rolesDlg = useDialogSize({ desktopWidth: 560 })
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 const items = ref<UserOut[]>([])
 const loading = ref(false)
@@ -154,6 +225,12 @@ async function fetchData() {
     const res = await listUsers({ limit: size.value, offset: (page.value - 1) * size.value })
     items.value = res.items; total.value = res.total
   } finally { loading.value = false }
+}
+
+function onPageSizeChange(value: number) {
+  size.value = value
+  page.value = 1
+  void fetchData()
 }
 
 function resetForm() { userForm.username = ''; userForm.password = ''; userForm.full_name = ''; editingUser.value = null }
@@ -241,6 +318,20 @@ onMounted(fetchData)
 <style lang="scss" scoped>
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; h2 { margin: 0; font-size: 18px; } }
 .no-roles { color: #c0c4cc; font-size: 13px; }
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
+}
+.role-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 .scope-hint {
   display: flex;
   align-items: center;

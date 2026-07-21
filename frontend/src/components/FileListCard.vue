@@ -485,6 +485,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 10px;
+
+  @include until(sm) {
+    grid-template-columns: 1fr;
+  }
 }
 .file-item {
   display: flex;
