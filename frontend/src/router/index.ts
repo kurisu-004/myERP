@@ -51,20 +51,6 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '新建零件', menuCode: 'parts_new', breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '新建零件' }] },
       },
       {
-        path: 'parts/new/bid-import',
-        name: 'PartsBidImport',
-        component: () => import('@/views/parts/PartBidImport.vue'),
-        meta: {
-          title: '从应标 Excel 导入',
-          menuCode: 'parts_new',
-          breadcrumb: [
-            { label: '订单管理', path: '/parts' },
-            { label: '新建零件', path: '/parts/new' },
-            { label: '从应标 Excel 导入' },
-          ],
-        },
-      },
-      {
         path: 'parts/:id(\\d+)',
         name: 'PartsDetail',
         component: () => import('@/views/parts/PartDetail.vue'),
@@ -150,12 +136,6 @@ const routes: RouteRecordRaw[] = [
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),
         meta: { title: '装配件一览', icon: 'Connection', menuCode: 'assemblies_list', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览' }] },
-      },
-      {
-        path: 'assemblies/new',
-        name: 'AssemblyCreate',
-        component: () => import('@/views/assemblies/AssemblyCreate.vue'),
-        meta: { title: '新建装配件', menuCode: 'assemblies_new', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览', path: '/assemblies' }, { label: '新建' }] },
       },
       {
         path: 'delivery-notes/new',

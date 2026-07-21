@@ -278,6 +278,10 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             has_outsource_history=None,
+            request_date_from=None,
+            request_date_to=None,
+            system_delivery_date_from=None,
+            system_delivery_date_to=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -289,6 +293,10 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             has_outsource_history=None,
+            request_date_from=None,
+            request_date_to=None,
+            system_delivery_date_from=None,
+            system_delivery_date_to=None,
         )
         assert isinstance(result, PartListOut)
         assert len(result.items) == 1
@@ -331,6 +339,10 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             has_outsource_history=None,
+            request_date_from=None,
+            request_date_to=None,
+            system_delivery_date_from=None,
+            system_delivery_date_to=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -366,6 +378,10 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             has_outsource_history=None,
+            request_date_from=None,
+            request_date_to=None,
+            system_delivery_date_from=None,
+            system_delivery_date_to=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -458,6 +474,94 @@ class TestListParts:
 
         call_kwargs = mock_parts.list_with_filters.await_args.kwargs
         assert call_kwargs["sort_by"] == PartSortKey.NAME
+
+    # ============================================================
+    # PR-F 2026-07-21：日期区间筛选 + 新增 sort_by
+    # ============================================================
+    async def test_filter_by_request_date_range_forwarded(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """request_date_from / request_date_to 透传到 repository。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(
+            request_date_from=date(2026, 7, 1),
+            request_date_to=date(2026, 7, 31),
+        )
+
+        await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["request_date_from"] == date(2026, 7, 1)
+        assert call_kwargs["request_date_to"] == date(2026, 7, 31)
+        # count 也得带上
+        count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert count_kwargs["request_date_from"] == date(2026, 7, 1)
+        assert count_kwargs["request_date_to"] == date(2026, 7, 31)
+
+    async def test_filter_by_system_delivery_date_range_forwarded(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """system_delivery_date_from / system_delivery_date_to 透传。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(
+            system_delivery_date_from=date(2026, 8, 1),
+            system_delivery_date_to=date(2026, 8, 31),
+        )
+
+        await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["system_delivery_date_from"] == date(2026, 8, 1)
+        assert call_kwargs["system_delivery_date_to"] == date(2026, 8, 31)
+
+    async def test_sort_by_request_date_forwarded(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """sort_by=REQUEST_DATE 透传（2026-07-21 PR-F 新增枚举值）。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(sort_by=PartSortKey.REQUEST_DATE, sort_dir=SortDir.DESC)
+
+        await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["sort_by"] == PartSortKey.REQUEST_DATE
+        assert call_kwargs["sort_dir"] == SortDir.DESC
+
+    async def test_sort_by_system_delivery_date_forwarded(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """sort_by=SYSTEM_DELIVERY_DATE 透传。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(sort_by=PartSortKey.SYSTEM_DELIVERY_DATE)
+
+        await service.list_parts(query)
+
+        call_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert call_kwargs["sort_by"] == PartSortKey.SYSTEM_DELIVERY_DATE
 
     async def test_keyword_forwarded_non_none(
         self,

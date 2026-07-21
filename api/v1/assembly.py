@@ -85,27 +85,6 @@ async def list_assemblies(
     )
 
 
-@router.post(
-    "",
-    response_model=AssemblyCreateResult,
-    status_code=http_status.HTTP_201_CREATED,
-    summary="创建装配件（可同时上传总装 PDF + 生成子零件；也可先建空装配体再到详情页补充）",
-    dependencies=_assembly_write_dep,
-)
-async def create_assembly(
-    data: str = Form(..., description="AssemblyCreateRequest 的 JSON 字符串"),
-    file: UploadFile | None = File(default=None, description="总装 PDF（可选；不传则创建空装配体）"),
-    svc: AssemblyService = Depends(get_assembly_service),
-) -> AssemblyCreateResult:
-    payload = AssemblyCreateRequest.model_validate_json(data)
-    pdf_bytes = await file.read() if file is not None else b""
-    return await svc.create_assembly(
-        payload,
-        pdf_bytes=pdf_bytes if pdf_bytes else None,
-        pdf_filename=file.filename if file is not None else None,
-    )
-
-
 @router.get(
     "/{assembly_id}",
     response_model=AssemblyDetail,

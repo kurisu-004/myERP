@@ -44,6 +44,7 @@ export const ORDER_STATUS_TAG_TYPE: Record<OrderStatus, 'info' | 'warning' | 'su
 export type PartSortKey =
   | 'PLANNED_DELIVERY_DATE'
   | 'REQUEST_DATE'
+  | 'SYSTEM_DELIVERY_DATE'
   | 'CREATED_AT'
   | 'SERIAL_NO'
   | 'DRAWING_NO'
@@ -61,6 +62,8 @@ export const PART_SORT_PROP_MAP: Record<string, PartSortKey> = {
   drawing_no: 'DRAWING_NO',
   name: 'NAME',
   planned_delivery_date: 'PLANNED_DELIVERY_DATE',
+  request_date: 'REQUEST_DATE',
+  system_delivery_date: 'SYSTEM_DELIVERY_DATE',
 }
 
 /** 列表展示用窄出参（与 PartItem 不同，无 holder/next_process/assembly_id）。 */

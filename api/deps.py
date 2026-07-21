@@ -294,6 +294,7 @@ def get_part_service(
         applicants=ApplicantRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         files=PartFileRepository(session),
+        assemblies=AssemblyRepository(session),  # 2026-07-21：create_parts_tree 写 t_assembly
         outsource_companies=OutsourceCompanyRepository(session),
         outsource_company_process=OutsourceCompanyProcessRepository(session),
         outsource_quotes=OutsourceQuoteRepository(session),

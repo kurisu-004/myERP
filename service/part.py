@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime
+from decimal import Decimal
 
 from fastapi import status as http_status
 
@@ -22,9 +23,10 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
-from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
+from model import TAssembly, TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone
 from repository.applicant import ApplicantRepository
+from repository.assembly import AssemblyRepository
 from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
@@ -45,6 +47,12 @@ from schema.part import (
     PartBatchCreateItemFailure,
     PartBatchCreateRequest,
     PartBatchCreateResult,
+    PartBatchTreeAssembly,
+    PartBatchTreeAssemblyResult,
+    PartBatchTreeItem,
+    PartBatchTreePartResult,
+    PartBatchTreeRequest,
+    PartBatchTreeResult,
     PartCreateRequest,
     PartEventOut,
     PartListItem,
@@ -58,13 +66,37 @@ from schema.part import (
     ReceiveToInspectionRequest,
     SendToOutsourceRequest,
 )
+from schema.assembly import AssemblyOut
+from schema._types import IdStr, IdStrNonNull
+from schema.part_file import PartFileOut
 from service._id_parse import parse_snowflake_id
 from service._session_refresh import refresh_for_state_machine
+from service.applicant import ApplicantService
 from service.part_file import PartFileService
 from utils.id_gen import new_id
 
 Broadcaster = Callable[[], Awaitable[None]]
 EventBroadcaster = Callable[[str, dict], Awaitable[None]]
+
+
+def _item_to_part_create_request(item: PartBatchTreeItem) -> PartCreateRequest:
+    """PartBatchTreeItem → PartCreateRequest。`create_parts_tree` 调单页 PDF 时复用 `create_part` 走标准路径。"""
+    return PartCreateRequest(
+        name=item.name,
+        drawing_no=item.drawing_no,
+        applicant_name=item.applicant_name,
+        applicant_id=item.applicant_id,
+        quantity=item.quantity,
+        unit_price=Decimal("0"),
+        total_price=Decimal("0"),
+        request_date=item.request_date,
+        planned_delivery_date=item.planned_delivery_date,
+        is_urgent=item.is_urgent,
+        order_no=item.order_no,
+        system_delivery_date=item.system_delivery_date,
+        note=item.note,
+        customer_id=item.customer_id,
+    )
 
 
 def _parse_status(value: str | PartStatus | None) -> PartStatus | None:
@@ -110,6 +142,7 @@ class PartService:
         applicants: ApplicantRepository | None = None,
         shelf_process_repo: ShelfProcessRepository | None = None,
         files: PartFileRepository | None = None,
+        assemblies: "AssemblyRepository | None" = None,  # 2026-07-21：create_parts_tree 用
         outsource_companies: OutsourceCompanyRepository | None = None,
         outsource_company_process: OutsourceCompanyProcessRepository | None = None,
         outsource_quotes: OutsourceQuoteRepository | None = None,
@@ -131,6 +164,7 @@ class PartService:
         self.applicants = applicants  # 可选：用于根据 applicant_id 解析 applicant_name
         self.shelf_process_repo = shelf_process_repo  # 可选：用于放回时校验工序属于货架
         self.files = files  # 可选：批量新建零件时上传 PDF 图纸
+        self.assemblies = assemblies  # 2026-07-21：可选：create_parts_tree 写 t_assembly
         self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
         self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
         self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御 + mark_used）
@@ -172,6 +206,10 @@ class PartService:
             is_urgent=query.is_urgent,
             keyword=query.keyword,
             has_outsource_history=query.has_outsource_history,
+            request_date_from=query.request_date_from,
+            request_date_to=query.request_date_to,
+            system_delivery_date_from=query.system_delivery_date_from,
+            system_delivery_date_to=query.system_delivery_date_to,
             sort_by=query.sort_by,
             sort_dir=query.sort_dir,
             limit=query.limit,
@@ -183,6 +221,10 @@ class PartService:
             is_urgent=query.is_urgent,
             keyword=query.keyword,
             has_outsource_history=query.has_outsource_history,
+            request_date_from=query.request_date_from,
+            request_date_to=query.request_date_to,
+            system_delivery_date_from=query.system_delivery_date_from,
+            system_delivery_date_to=query.system_delivery_date_to,
         )
         items = await self._to_list_out(rows)
         return PartListOut(
@@ -545,6 +587,373 @@ class PartService:
                     )
             created.append(out)
         return PartBatchCreateResult(created=created, failed=[])
+
+    async def create_parts_tree(
+        self,
+        payload: PartBatchTreeRequest,
+        *,
+        file_payloads_by_pdf_index: dict[int, tuple[bytes, str, str | None]],
+        part_files: PartFileService,
+        applicants: ApplicantService,
+    ) -> PartBatchTreeResult:
+        """批量树形创建：单页 PDF → 独立零件；多页 PDF → 装配件 + 子件。
+
+        流程：
+          1. 前置校验：customer / 多页约束 / master 数量；失败 → `failed` 列表，0 写盘。
+          2. Excel 申请人兜底：applicant_id 缺 + name 非空 → bulk_get_or_create 回填。
+          3. 主循环（按 pdf_index）：
+             - 单页 → create_part + DRAWING 上传；
+             - 多页 → acquire serial + 写 t_assembly + 逐 page 拆 + 写子件 + DRAWING 上传 +
+               若有 master_item → ASSEMBLY_MASTER 上传。
+          4. 事务边界：与 caller 共享 session；任一 upload 抛 BizError → 整批回滚。
+
+        2026-07-21 新增。`POST /parts/batch-with-pdfs` 调用本方法。
+        """
+        if self.assemblies is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing assembly repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ===== 1. 前置校验 =====
+        from collections import defaultdict
+        items_by_pdf: dict[int, list[PartBatchTreeItem]] = defaultdict(list)
+        for it in payload.items:
+            items_by_pdf[it.pdf_index].append(it)
+
+        failed: list[PartBatchCreateItemFailure] = []
+
+        # 校验：items 数量必须与 PDF 文件对齐（每个 pdf_index 至少有对应文件）
+        for pdf_index in items_by_pdf.keys():
+            if pdf_index not in file_payloads_by_pdf_index:
+                failed.append(PartBatchCreateItemFailure(
+                    index=pdf_index,
+                    message=f"未找到 pdf_index={pdf_index} 对应的 PDF 文件",
+                ))
+
+        # 校验：customer_id 存在 + 必须是叶子节点
+        customer_cache: dict[int, TCustomer | None] = {}
+        parent_cache: dict[int, TCustomer | None] = {}
+        all_customer_ids: set[str] = set()
+        all_customer_ids.update(it.customer_id for it in payload.items)
+        all_customer_ids.update(a.customer_id for a in payload.assemblies)
+        for cid_str in all_customer_ids:
+            cid_int = parse_snowflake_id(cid_str, field_name="customer_id")
+            if cid_int is None:
+                failed.append(PartBatchCreateItemFailure(
+                    index=0, message=f"customer {cid_str!r} not found",
+                ))
+                continue
+            if cid_int not in customer_cache:
+                customer_cache[cid_int] = await self.customers.get_by_id(cid_int)
+            cust = customer_cache[cid_int]
+            if cust is None:
+                failed.append(PartBatchCreateItemFailure(
+                    index=0, message=f"customer {cid_str!r} not found",
+                ))
+                continue
+            if cust.parent_id is None:
+                failed.append(PartBatchCreateItemFailure(
+                    index=0,
+                    message=(
+                        f"customer {cid_str!r} 是一级客户（无 parent_id），"
+                        "请选二级叶子节点"
+                    ),
+                ))
+
+        # 校验：多页 PDF 约束 + master 数量 + assembly_uid 必填
+        asm_by_uid: dict[str, PartBatchTreeAssembly] = {
+            a.uid: a for a in payload.assemblies
+        }
+        for pdf_index, pages in items_by_pdf.items():
+            if len(pages) > 1:
+                # 多页：必须是相同 assembly_uid
+                uids = {p.assembly_uid for p in pages}
+                if len(uids) != 1 or None in uids:
+                    failed.append(PartBatchCreateItemFailure(
+                        index=pdf_index,
+                        message=f"PDF {pdf_index} 多页但 assembly_uid 不一致",
+                    ))
+                    continue
+                asm_uid = pages[0].assembly_uid
+                if asm_uid not in asm_by_uid:
+                    failed.append(PartBatchCreateItemFailure(
+                        index=pdf_index,
+                        message=f"PDF {pdf_index} 的 assembly_uid={asm_uid} 未在 assemblies 中找到",
+                    ))
+                    continue
+                master_count = sum(1 for p in pages if p.is_master)
+                if master_count > 1:
+                    failed.append(PartBatchCreateItemFailure(
+                        index=pdf_index,
+                        message=f"PDF {pdf_index} 有 {master_count} 个 is_master=true，至多 1 个",
+                    ))
+                    continue
+                if len(pages) > 100:
+                    failed.append(PartBatchCreateItemFailure(
+                        index=pdf_index,
+                        message=f"PDF {pdf_index} 拆出 {len(pages)} 页 > 100",
+                    ))
+                    continue
+
+        if failed:
+            return PartBatchTreeResult.model_construct(
+                standalone_parts=[], assemblies=[], failed=failed,
+            )
+
+        # ===== 2. 申请人兜底（按 L1 根去重 bulk） =====
+        # 注意：前端 Excel 模式已经预调过 bulkGetOrCreateApplicants；此处只兜底漏网。
+        bulk_items_map: dict[tuple[str, int], None] = {}  # (name, l1_root_id) -> None (占位)
+        for it in payload.items:
+            if it.applicant_name and not it.applicant_id:
+                cid_int = parse_snowflake_id(it.customer_id, field_name="customer_id")
+                cust = customer_cache[cid_int]
+                parent = cust.parent_id
+                l1_root_id = parent if parent else cust.id
+                # 解析 L1
+                if parent:
+                    if parent not in parent_cache:
+                        parent_cache[parent] = await self.customers.get_by_id(parent)
+                    l1_root_id = parent_cache[parent].id if parent_cache[parent] else cust.id
+                bulk_items_map.setdefault((it.applicant_name, l1_root_id), None)
+
+        if bulk_items_map:
+            from schema.applicant import BulkApplicantItem
+            bulk_items = [
+                BulkApplicantItem(name=name, customer_id=str(l1_root_id))
+                for (name, l1_root_id) in bulk_items_map.keys()
+            ]
+            await applicants.bulk_get_or_create(bulk_items)
+
+        # ===== 3. 主循环（按 pdf_index 顺序） =====
+        from model.enums import PartFileKind, PartStatus
+        from utils.pdf import split_pdf as _split_pdf
+
+        standalone_results: list[PartBatchTreePartResult] = []
+        assembly_results: list[PartBatchTreeAssemblyResult] = []
+
+        for pdf_index, pages in items_by_pdf.items():
+            pdf_bytes, fname, ctype = file_payloads_by_pdf_index[pdf_index]
+
+            if len(pages) == 1:
+                # === 单页 → 独立零件 ===
+                page = pages[0]
+                part_out = await self.create_part(_item_to_part_create_request(page))
+                # 上传 DRAWING
+                await part_files.upload(
+                    owner_id=part_out.id,
+                    kind=PartFileKind.DRAWING,
+                    data=pdf_bytes,
+                    original_filename=fname,
+                    content_type=ctype,
+                )
+                # 写 CREATED 事件（create_part 内部已写，此处无需重复）
+                # broadcast PART_CREATED
+                if self.event_broadcaster:
+                    try:
+                        await self.event_broadcaster("PART_CREATED", {
+                            "part_id": part_out.id,
+                            "drawing_no": part_out.drawing_no,
+                            "name": part_out.name,
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
+                standalone_results.append(PartBatchTreePartResult(
+                    uid=f"single-{pdf_index}",
+                    kind="part",
+                    part=part_out,
+                ))
+                continue
+
+            # === 多页 → 装配件 + 子件 ===
+            asm_meta = asm_by_uid[pages[0].assembly_uid]
+            cid_int = parse_snowflake_id(asm_meta.customer_id, field_name="customer_id")
+            cust = customer_cache[cid_int]
+            parent = cust.parent_id
+            root_customer = parent_cache[parent] if parent else cust
+            if parent and root_customer is None:
+                root_customer = await self.customers.get_by_id(parent)
+            code = resolve_root_prefix(root_customer)
+            assembly_serial = await self.serial_counters.acquire_serial(code)
+
+            master_pages = [p for p in pages if p.is_master]
+            master_page = master_pages[0] if master_pages else None
+            asm_drawing_no = (
+                (master_page.drawing_no if master_page else None)
+                or asm_meta.drawing_no
+                or f"BATCH-{pdf_index:03d}"
+            )
+            asm_name = (
+                (master_page.name if master_page else None)
+                or asm_meta.name
+                or f"批量装配件{pdf_index}"
+            )
+
+            asm = TAssembly(
+                id=new_id(),
+                drawing_no=asm_drawing_no,
+                name=asm_name,
+                applicant_name=(master_page.applicant_name if master_page else None)
+                or asm_meta.applicant_name,
+                customer_id=cid_int,
+                request_date=asm_meta.request_date,
+                planned_delivery_date=asm_meta.planned_delivery_date,
+                actual_delivery_date=None,
+                is_urgent=asm_meta.is_urgent,
+                status=PartStatus.PENDING.value,
+                serial_no=assembly_serial,
+            )
+            if self._user_id is not None:
+                asm.created_by = self._user_id
+                asm.updated_by = self._user_id
+            await self.assemblies.create(asm)
+
+            # 拆分 PDF
+            try:
+                all_pages = _split_pdf(pdf_bytes)
+            except Exception as exc:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_FILE_UPLOAD_FAILED,
+                    message=f"PDF {pdf_index} 解析失败：{exc}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                ) from exc
+
+            child_results: list[PartBatchTreePartResult] = []
+            child_files: list = []
+            for idx, page in enumerate(pages, start=1):
+                if page.page_index >= len(all_pages):
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message=(
+                            f"PDF {pdf_index} 仅 {len(all_pages)} 页，"
+                            f"但 page_index={page.page_index}"
+                        ),
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                page_bytes = all_pages[page.page_index]
+                child_id = new_id()
+                child_serial = f"{assembly_serial}-{idx:02d}"
+                tpart = TPart(
+                    id=child_id,
+                    serial_no=child_serial,
+                    name=page.name,
+                    drawing_no=page.drawing_no,
+                    applicant_name=(
+                        page.applicant_name or asm_meta.applicant_name or "(未知)"
+                    ),
+                    quantity=page.quantity,
+                    unit_price=Decimal("0"),
+                    total_price=Decimal("0"),
+                    request_date=asm_meta.request_date,
+                    planned_delivery_date=(
+                        page.planned_delivery_date or asm_meta.planned_delivery_date
+                    ),
+                    actual_delivery_date=None,
+                    order_no=page.order_no,
+                    system_delivery_date=page.system_delivery_date,
+                    note=page.note,
+                    is_urgent=(page.is_urgent or asm_meta.is_urgent),
+                    customer_id=cid_int,
+                    assembly_id=asm.id,
+                    status=PartStatus.PENDING.value,
+                )
+                if self._user_id is not None:
+                    tpart.created_by = self._user_id
+                    tpart.updated_by = self._user_id
+                await self.parts.create(tpart)
+
+                f_out = await part_files.upload(
+                    owner_id=child_id,
+                    kind=PartFileKind.DRAWING,
+                    data=page_bytes,
+                    original_filename=f"{asm_drawing_no}_p{page.page_index + 1}.pdf",
+                    content_type="application/pdf",
+                )
+                child_files.append(f_out)
+
+                # 写 CREATED 事件
+                await self.events.create(TPartEvent(
+                    id=new_id(),
+                    part_id=child_id,
+                    worker_id=None,
+                    event_type=PartEventType.CREATED.value,
+                    from_status=None,
+                    to_status=PartStatus.PENDING.value,
+                    drawing_code=None,
+                    badge_code=None,
+                    note=None,
+                    created_by=self._user_id,
+                ))
+
+                child_results.append(PartBatchTreePartResult(
+                    uid=f"{asm_meta.uid}-{page.page_index}",
+                    kind="assembly_child",
+                    part=(await self._to_out([tpart]))[0],
+                ))
+
+            # master 文件（仅当用户选了 is_master）
+            master_file = None
+            if master_page is not None:
+                master_bytes = all_pages[master_page.page_index]
+                master_file = await part_files.upload(
+                    owner_id=asm.id,
+                    kind=PartFileKind.ASSEMBLY_MASTER,
+                    data=master_bytes,
+                    original_filename=f"{asm_drawing_no}_master.pdf",
+                    content_type="application/pdf",
+                )
+
+            # 装配体输出
+            assembly_out = AssemblyOut.model_construct(
+                id=IdStrNonNull(str(asm.id)),
+                version=asm.version,
+                serial_no=asm.serial_no,
+                drawing_no=asm.drawing_no,
+                name=asm.name,
+                applicant_name=asm.applicant_name,
+                customer_id=IdStrNonNull(str(asm.customer_id)),
+                customer_name=None,
+                customer_path=None,
+                parent_customer_name=None,
+                request_date=asm.request_date,
+                planned_delivery_date=asm.planned_delivery_date,
+                actual_delivery_date=asm.actual_delivery_date,
+                is_urgent=asm.is_urgent,
+                status=asm.status,
+                child_count=len(child_results),
+                created_at=asm.created_at,
+                updated_at=asm.updated_at,
+            )
+            assembly_results.append(PartBatchTreeAssemblyResult.model_construct(
+                uid=asm_meta.uid,
+                assembly=assembly_out,
+                master_file=master_file,
+                children=child_results,
+                child_files=child_files,
+            ))
+
+            # 广播
+            if self.event_broadcaster:
+                try:
+                    await self.event_broadcaster("ASSEMBLY_CREATED", {
+                        "assembly_id": asm.id,
+                        "drawing_no": asm.drawing_no,
+                        "name": asm.name,
+                        "child_count": len(child_results),
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # 2026-07-21：PartBatchTreeResult 含 "AssemblyOut" / "PartFileOut" 前向引用，
+        # 用 model_construct() 直接构造（跳过 Pydantic 校验），因为 forward refs 在
+        # schema.part 模块加载期尚未绑定到 AssemblyOut / PartFileOut。
+        # 端到端校验由 FastAPI response_model 在序列化时统一执行。
+        return PartBatchTreeResult.model_construct(
+            standalone_parts=standalone_results,
+            assemblies=assembly_results,
+            failed=[],
+        )
 
     async def update_part(
         self, part_id: int, data: PartUpdateRequest

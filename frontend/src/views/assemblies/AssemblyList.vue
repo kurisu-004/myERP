@@ -41,9 +41,9 @@
           <span>筛选</span>
         </el-button>
 
-        <el-button v-if="!isInspector" type="primary" @click="$router.push('/assemblies/new')">
+        <el-button v-if="!isInspector" type="primary" @click="$router.push('/parts/new?tab=pdf')">
           <el-icon><Plus /></el-icon>
-          <span>新建装配件</span>
+          <span>新建零件 / 装配件</span>
         </el-button>
 
         <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
