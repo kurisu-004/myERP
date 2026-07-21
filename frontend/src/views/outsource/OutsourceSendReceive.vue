@@ -14,6 +14,9 @@ import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Promotion } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import { listApprovedForSend } from '@/api/outsource'
 import { listCustomers, type Customer } from '@/api/customer'
 import { listShelves } from '@/api/shelves'
@@ -38,6 +41,12 @@ type TabName = 'sendable' | 'receiving' | 'received'
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useBreakpoint()
+const sendDlg = useDialogSize({ desktopWidth: 520 })
+const receiveDlg = useDialogSize({ desktopWidth: 560 })
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 // ============================================================
 // Tab 状态（URL ?tab= 同步）
@@ -683,13 +692,15 @@ watch(activeTab, async (t) => {
             <el-button @click="onSendableReset">重置</el-button>
             <span v-if="sendableTotal > 0" class="total-hint">共 {{ sendableTotal }} 条</span>
           </div>
-          <el-table
-            v-loading="sendableLoading"
-            :data="sendableItems"
+          <ResponsiveList
+            :items="sendableItems"
+            :loading="sendableLoading"
+            row-key="part_id"
+            :empty-text="sendableError ?? '暂无符合条件的可发送零件'"
+            :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
             stripe
             border
             size="small"
-            :empty-text="sendableError ?? '暂无符合条件的可发送零件'"
           >
             <el-table-column prop="part_serial_no" label="序列号" width="100" />
             <el-table-column prop="part_drawing_no" label="图号" width="120" />
@@ -727,18 +738,72 @@ watch(activeTab, async (t) => {
                 >发送</el-button>
               </template>
             </el-table-column>
-          </el-table>
-          <el-pagination
-            v-model:current-page="sendablePage"
-            v-model:page-size="sendablePageSize"
-            :page-sizes="[20, 50, 100]"
-            :total="sendableTotal"
-            layout="total, sizes, prev, pager, next, jumper"
-            background
-            size="small"
-            @current-change="refreshSendable"
-            @size-change="onSendablePageSizeChange"
-          />
+
+            <template #card="{ row }">
+              <div class="rl-card-head">
+                <span class="rl-card-title">{{ (row as ApprovedQuoteForSendItem).part_name || '未命名零件' }}</span>
+                <el-tag v-if="(row as ApprovedQuoteForSendItem).is_urgent" type="danger" size="small">加急</el-tag>
+              </div>
+              <div class="rl-card-sub">
+                图号 {{ (row as ApprovedQuoteForSendItem).part_drawing_no || '—' }} · 序列号 {{ (row as ApprovedQuoteForSendItem).part_serial_no || '—' }}
+              </div>
+              <div class="rl-kv">
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">数量</span>
+                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).quantity ?? '—' }}</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">计划交期</span>
+                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).planned_delivery_date || '—' }}</span>
+                </div>
+                <div class="rl-kv__item rl-kv__item--full">
+                  <span class="rl-kv__key">客户</span>
+                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).customer_path || '—' }}</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">下一道工序</span>
+                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).next_process_name || '—' }}</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">单价</span>
+                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).price }} 元</span>
+                </div>
+                <div class="rl-kv__item rl-kv__item--full">
+                  <span class="rl-kv__key">外协公司</span>
+                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).outsource_company_name || '—' }}</span>
+                </div>
+              </div>
+              <div class="rl-card-actions">
+                <el-tooltip
+                  v-if="!canSend(row as ApprovedQuoteForSendItem)"
+                  content="该零件当前状态 / 位置 / 工序不满足发送条件"
+                  placement="top"
+                >
+                  <span><el-button size="small" disabled>发送</el-button></span>
+                </el-tooltip>
+                <el-button
+                  v-else
+                  size="small"
+                  type="primary"
+                  @click="openSend(row as ApprovedQuoteForSendItem)"
+                >发送</el-button>
+              </div>
+            </template>
+          </ResponsiveList>
+          <div class="pagination">
+            <el-pagination
+              v-model:current-page="sendablePage"
+              v-model:page-size="sendablePageSize"
+              :page-sizes="[20, 50, 100]"
+              :total="sendableTotal"
+              :layout="paginationLayout"
+              :pager-count="isMobile ? 5 : 7"
+              background
+              size="small"
+              @current-change="refreshSendable"
+              @size-change="onSendablePageSizeChange"
+            />
+          </div>
         </el-tab-pane>
 
         <!-- ====================== Tab 2: 待接收 ====================== -->
@@ -768,13 +833,15 @@ watch(activeTab, async (t) => {
             <el-button @click="onReceivingReset">重置</el-button>
             <span v-if="receivingTotal > 0" class="total-hint">共 {{ receivingTotal }} 条</span>
           </div>
-          <el-table
-            v-loading="receivingLoading"
-            :data="receivingItems"
+          <ResponsiveList
+            :items="receivingItems"
+            :loading="receivingLoading"
+            row-key="id"
+            :empty-text="receivingError ?? '暂无待接收的零件'"
+            :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
             stripe
             border
             size="small"
-            :empty-text="receivingError ?? '暂无待接收的零件'"
           >
             <el-table-column prop="serial_no" label="序列号" width="100" />
             <el-table-column prop="drawing_no" label="图号" width="120" />
@@ -802,18 +869,52 @@ watch(activeTab, async (t) => {
                 >接收</el-button>
               </template>
             </el-table-column>
-          </el-table>
-          <el-pagination
-            v-model:current-page="receivingPage"
-            v-model:page-size="receivingPageSize"
-            :page-sizes="[20, 50, 100]"
-            :total="receivingTotal"
-            layout="total, sizes, prev, pager, next, jumper"
-            background
-            size="small"
-            @current-change="refreshReceiving"
-            @size-change="onReceivingPageSizeChange"
-          />
+
+            <template #card="{ row }">
+              <div class="rl-card-head">
+                <span class="rl-card-title">{{ (row as PartListItem).name }}</span>
+                <el-tag type="warning" size="small">外协中</el-tag>
+              </div>
+              <div class="rl-card-sub">
+                图号 {{ (row as PartListItem).drawing_no || '—' }} · 序列号 {{ (row as PartListItem).serial_no || '—' }}
+              </div>
+              <div class="rl-kv">
+                <div class="rl-kv__item rl-kv__item--full">
+                  <span class="rl-kv__key">客户</span>
+                  <span class="rl-kv__val">{{ (row as PartListItem).customer_path || '—' }}</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">当前状态</span>
+                  <span class="rl-kv__val">外协中</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">下一道工序</span>
+                  <span class="rl-kv__val">—</span>
+                </div>
+              </div>
+              <div class="rl-card-actions">
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click="openReceive(row as PartListItem)"
+                >接收</el-button>
+              </div>
+            </template>
+          </ResponsiveList>
+          <div class="pagination">
+            <el-pagination
+              v-model:current-page="receivingPage"
+              v-model:page-size="receivingPageSize"
+              :page-sizes="[20, 50, 100]"
+              :total="receivingTotal"
+              :layout="paginationLayout"
+              :pager-count="isMobile ? 5 : 7"
+              background
+              size="small"
+              @current-change="refreshReceiving"
+              @size-change="onReceivingPageSizeChange"
+            />
+          </div>
         </el-tab-pane>
 
         <!-- ====================== Tab 3: 已接收历史 ====================== -->
@@ -843,13 +944,15 @@ watch(activeTab, async (t) => {
             <el-button @click="onReceivedReset">重置</el-button>
             <span v-if="receivedTotal > 0" class="total-hint">共 {{ receivedTotal }} 条</span>
           </div>
-          <el-table
-            v-loading="receivedLoading"
-            :data="receivedItems"
+          <ResponsiveList
+            :items="receivedItems"
+            :loading="receivedLoading"
+            row-key="id"
+            :empty-text="receivedError ?? '暂无已接收的零件'"
+            :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
             stripe
             border
             size="small"
-            :empty-text="receivedError ?? '暂无已接收的零件'"
           >
             <el-table-column prop="serial_no" label="序列号" width="100" />
             <el-table-column prop="drawing_no" label="图号" width="120" />
@@ -871,24 +974,60 @@ watch(activeTab, async (t) => {
                 >详情</el-button>
               </template>
             </el-table-column>
-          </el-table>
-          <el-pagination
-            v-model:current-page="receivedPage"
-            v-model:page-size="receivedPageSize"
-            :page-sizes="[20, 50, 100]"
-            :total="receivedTotal"
-            layout="total, sizes, prev, pager, next, jumper"
-            background
-            size="small"
-            @current-change="refreshReceived"
-            @size-change="onReceivedPageSizeChange"
-          />
+
+            <template #card="{ row }">
+              <div class="rl-card-head">
+                <span class="rl-card-title">{{ (row as PartListItem).name }}</span>
+                <el-tag size="small" effect="plain">{{ (row as PartListItem).status }}</el-tag>
+              </div>
+              <div class="rl-card-sub">
+                图号 {{ (row as PartListItem).drawing_no || '—' }} · 序列号 {{ (row as PartListItem).serial_no || '—' }}
+              </div>
+              <div class="rl-kv">
+                <div class="rl-kv__item rl-kv__item--full">
+                  <span class="rl-kv__key">客户</span>
+                  <span class="rl-kv__val">{{ (row as PartListItem).customer_path || '—' }}</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">计划交期</span>
+                  <span class="rl-kv__val">{{ (row as PartListItem).planned_delivery_date || '—' }}</span>
+                </div>
+              </div>
+              <div class="rl-card-actions">
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="goPartDetail(row as PartListItem)"
+                >详情</el-button>
+              </div>
+            </template>
+          </ResponsiveList>
+          <div class="pagination">
+            <el-pagination
+              v-model:current-page="receivedPage"
+              v-model:page-size="receivedPageSize"
+              :page-sizes="[20, 50, 100]"
+              :total="receivedTotal"
+              :layout="paginationLayout"
+              :pager-count="isMobile ? 5 : 7"
+              background
+              size="small"
+              @current-change="refreshReceived"
+              @size-change="onReceivedPageSizeChange"
+            />
+          </div>
         </el-tab-pane>
       </el-tabs>
     </el-card>
 
     <!-- 发送 dialog -->
-    <el-dialog v-model="sendDialogVisible" title="确认发送外协" width="520">
+    <el-dialog
+      v-model="sendDialogVisible"
+      title="确认发送外协"
+      :width="sendDlg.width.value"
+      :top="sendDlg.top.value"
+    >
       <el-descriptions v-if="sendTarget" :column="1" border>
         <el-descriptions-item label="序列号">{{ sendTarget.part_serial_no }}</el-descriptions-item>
         <el-descriptions-item label="图号">{{ sendTarget.part_drawing_no }}</el-descriptions-item>
@@ -909,7 +1048,8 @@ watch(activeTab, async (t) => {
     <el-dialog
       v-model="receiveDialogVisible"
       title="接收外协件"
-      width="560"
+      :width="receiveDlg.width.value"
+      :top="receiveDlg.top.value"
       :close-on-click-modal="false"
       @closed="onReceiveDialogClosed"
     >
@@ -1018,6 +1158,15 @@ watch(activeTab, async (t) => {
 }
 .muted {
   color: var(--text-secondary);
+}
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
 }
 :deep(.el-tabs__content) {
   overflow: visible;

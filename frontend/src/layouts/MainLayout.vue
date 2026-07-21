@@ -1,7 +1,7 @@
 <template>
   <el-container class="main-layout">
-    <!-- 左侧菜单栏 -->
-    <el-aside :width="isCollapse ? '64px' : '220px'" class="sidebar">
+    <!-- 左侧菜单栏（≥md 持久显示；<md 收进抽屉） -->
+    <el-aside v-if="!isMobile" :width="isCollapse ? '64px' : '220px'" class="sidebar">
       <div class="logo">
         <el-icon class="logo-icon"><Box /></el-icon>
         <span v-show="!isCollapse" class="logo-text">myERP</span>
@@ -30,53 +30,91 @@
     <el-container>
       <!-- 右侧顶部栏 -->
       <el-header class="header">
-        <div class="header-left">
-          <el-button
-            link
-            class="collapse-btn"
-            @click="toggleCollapse"
-          >
-            <el-icon :size="20">
-              <Fold v-if="!isCollapse" />
-              <Expand v-else />
-            </el-icon>
-          </el-button>
-
-          <el-breadcrumb separator="/" class="breadcrumb">
-            <el-breadcrumb-item
-              v-for="(item, idx) in breadcrumbItems"
-              :key="idx"
-              :to="item.to"
+        <!-- 手机：左侧 = 个人信息；右侧 = 汉堡（右手拇指易触达） -->
+        <!-- 桌面：左侧 = 折叠按钮 + 面包屑；右侧 = 刷新 + 个人信息 -->
+        <div class="header-left" :class="{ 'header-left--mobile': isMobile }">
+          <template v-if="isMobile">
+            <el-dropdown trigger="click" @command="handleUserCmd" class="header-user-dd">
+              <div class="user-info">
+                <el-avatar :size="32" class="user-avatar" />
+                <el-icon class="user-caret"><ArrowDown /></el-icon>
+              </div>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item disabled>
+                    {{ userInfo.name }}
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="change-password">
+                    <el-icon><Lock /></el-icon>修改密码
+                  </el-dropdown-item>
+                  <el-dropdown-item command="logout">
+                    <el-icon><SwitchButton /></el-icon>退出登录
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <span class="page-title">{{ pageTitle }}</span>
+          </template>
+          <template v-else>
+            <el-button
+              link
+              class="collapse-btn"
+              @click="onNavToggle"
             >
-              {{ item.label }}
-            </el-breadcrumb-item>
-          </el-breadcrumb>
+              <el-icon :size="20">
+                <Fold v-if="!isCollapse" />
+                <Expand v-else />
+              </el-icon>
+            </el-button>
+
+            <el-breadcrumb separator="/" class="breadcrumb">
+              <el-breadcrumb-item
+                v-for="(item, idx) in breadcrumbItems"
+                :key="idx"
+                :to="item.to"
+              >
+                {{ item.label }}
+              </el-breadcrumb-item>
+            </el-breadcrumb>
+          </template>
         </div>
 
         <div class="header-right">
-          <el-tooltip content="刷新" placement="bottom">
-            <el-button link @click="reload">
-              <el-icon :size="18"><Refresh /></el-icon>
-            </el-button>
-          </el-tooltip>
+          <template v-if="!isMobile">
+            <el-tooltip content="刷新" placement="bottom">
+              <el-button link @click="reload">
+                <el-icon :size="18"><Refresh /></el-icon>
+              </el-button>
+            </el-tooltip>
 
-          <el-dropdown trigger="click" @command="handleUserCmd">
-            <div class="user-info">
-              <el-avatar :size="32" class="user-avatar" />
-              <span class="user-name">{{ userInfo.name }}</span>
-              <el-icon><ArrowDown /></el-icon>
-            </div>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="change-password">
-                  <el-icon><Lock /></el-icon>修改密码
-                </el-dropdown-item>
-                <el-dropdown-item divided command="logout">
-                  <el-icon><SwitchButton /></el-icon>退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+            <el-dropdown trigger="click" @command="handleUserCmd">
+              <div class="user-info">
+                <el-avatar :size="32" class="user-avatar" />
+                <span class="user-name">{{ userInfo.name }}</span>
+                <el-icon><ArrowDown /></el-icon>
+              </div>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="change-password">
+                    <el-icon><Lock /></el-icon>修改密码
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="logout">
+                    <el-icon><SwitchButton /></el-icon>退出登录
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+
+          <!-- 手机：右侧只放汉堡（拇指易触达） -->
+          <el-button
+            v-if="isMobile"
+            link
+            class="collapse-btn collapse-btn--mobile"
+            @click="onNavToggle"
+          >
+            <el-icon :size="22"><Menu /></el-icon>
+          </el-button>
         </div>
       </el-header>
 
@@ -88,15 +126,16 @@
           </transition>
         </router-view>
       </el-main>
-
-      <!-- 备案栏：ICP + 公安网安备 -->
-      <el-footer height="40px" class="site-footer">
-        <BeianFooter />
-      </el-footer>
     </el-container>
 
     <!-- 修改密码弹窗 -->
-    <el-dialog v-model="showChangePwd" title="修改密码" width="420px" @closed="resetPwdForm">
+    <el-dialog
+      v-model="showChangePwd"
+      title="修改密码"
+      :width="pwdDlg.width.value"
+      :top="pwdDlg.top.value"
+      @closed="resetPwdForm"
+    >
       <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="90px">
         <el-form-item label="原密码" prop="oldPassword">
           <el-input v-model="pwdForm.oldPassword" type="password" show-password placeholder="请输入原密码" />
@@ -114,21 +153,53 @@
       </template>
     </el-dialog>
 
+    <!-- 手机侧栏抽屉（<md） -->
+    <el-drawer
+      v-if="isMobile"
+      v-model="mobileNavOpen"
+      direction="ltr"
+      :size="260"
+      :with-header="false"
+      append-to-body
+      class="mobile-nav-drawer"
+    >
+      <div class="logo">
+        <el-icon class="logo-icon"><Box /></el-icon>
+        <span class="logo-text">myERP</span>
+      </div>
+      <el-menu
+        :default-active="activeMenu"
+        background-color="var(--sidebar-bg)"
+        text-color="var(--sidebar-text)"
+        active-text-color="var(--sidebar-text-active)"
+        class="sidebar-menu"
+        menu-trigger="click"
+        router
+        @select="onMenuSelect"
+      >
+        <template v-if="menuList.length > 0">
+          <MenuTreeItem v-for="m in menuList" :key="m.id" :menu="m" />
+        </template>
+        <div v-else class="sidebar-empty">暂无可用菜单</div>
+      </el-menu>
+    </el-drawer>
+
     <!-- 全局业务事件横幅：Teleport 到 body，右上角浮层 -->
     <NotificationBanner />
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import BeianFooter from '@/components/BeianFooter.vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
-  Box, Fold, Expand, Refresh, ArrowDown, Lock, SwitchButton,
+  Box, Fold, Expand, Menu, Refresh, ArrowDown, Lock, SwitchButton,
 } from '@element-plus/icons-vue'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import { me as apiMe, changeMyPassword } from '@/api/auth'
 import MenuTreeItem from '@/layouts/components/MenuTreeItem.vue'
 import type { CurrentUser } from '@/types/user'
@@ -138,7 +209,10 @@ type UserCmd = 'change-password' | 'logout'
 const route = useRoute()
 const router = useRouter()
 
+const { isMobile } = useBreakpoint()
+
 const isCollapse = ref(false)
+const mobileNavOpen = ref(false)
 const currentUser = ref<CurrentUser | null>(null)
 const { logout, menus } = useAuthSession()
 
@@ -147,6 +221,8 @@ const menuList = computed(() => menus())
 const userInfo = computed(() => ({ name: currentUser.value?.full_name || currentUser.value?.username || '未登录' }))
 
 const activeMenu = computed<string>(() => route.path)
+
+const pageTitle = computed<string>(() => route.meta?.title || 'myERP')
 
 const breadcrumbItems = computed<{ label: string; to?: string }[]>(() => {
   const raw = route.meta?.breadcrumb ?? []
@@ -157,7 +233,20 @@ const breadcrumbItems = computed<{ label: string; to?: string }[]>(() => {
   }))
 })
 
-const toggleCollapse = (): void => { isCollapse.value = !isCollapse.value }
+// 顶栏按钮：手机开抽屉；桌面切折叠
+const onNavToggle = (): void => {
+  if (isMobile.value) mobileNavOpen.value = !mobileNavOpen.value
+  else isCollapse.value = !isCollapse.value
+}
+// 抽屉内点菜单项后关闭
+const onMenuSelect = (): void => { mobileNavOpen.value = false }
+
+// 路由变化 / 切回桌面时收起抽屉
+watch(() => route.fullPath, () => { mobileNavOpen.value = false })
+watch(isMobile, (m) => { if (!m) mobileNavOpen.value = false })
+
+// 修改密码弹窗尺寸
+const pwdDlg = useDialogSize({ desktopWidth: 420 })
 
 const reload = (): void => { ElMessage.success('刷新成功'); router.go(0) }
 
@@ -383,14 +472,105 @@ onMounted(async () => {
   background-color: var(--content-bg);
   padding: 16px;
   overflow: auto;
+
+  @include until(md) {
+    padding: 12px;
+  }
+  @include until(sm) {
+    padding: 8px;
+  }
 }
 
-.site-footer {
-  background-color: #fff;
-  border-top: 1px solid #ebeef5;
-  padding: 0;
-  display: flex;
-  align-items: center;
+/* 手机顶栏更紧凑 */
+@include until(sm) {
+  .header {
+    padding: 0 12px;
+  }
+  .header-left {
+    gap: 8px;
+    min-width: 0;
+  }
+  .header-right {
+    gap: 4px;
+  }
+  /* 手机隐藏用户名，仅留头像 */
+  .user-info .user-name {
+    display: none;
+  }
+  .user-info {
+    padding: 4px;
+  }
+}
+
+.page-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 手机侧栏抽屉：抽屉体去内边距，沿用侧栏配色（整块深色填满，无白边） */
+.mobile-nav-drawer {
+  /* 抽屉外层与抽屉框都设为 100% 高度，避免它只按内容尺寸 */
+  :deep(.el-overlay),
+  :deep(.el-drawer),
+  :deep(.el-drawer__rtl),
+  :deep(.el-drawer__ltr) {
+    height: 100% !important;
+  }
+  :deep(.el-drawer) {
+    background-color: var(--sidebar-bg);
+  }
+  :deep(.el-drawer__body) {
+    padding: 0;
+    background-color: var(--sidebar-bg);
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+}
+
+/* 抽屉内 menu 占满剩余高度（避免下方白边） */
+.mobile-nav-drawer {
+  :deep(.sidebar-menu),
+  :deep(.el-menu--vertical),
+  :deep(.el-menu--vertical > ul[role="menubar"]) {
+    flex: 1 1 auto;
+    min-height: 0;
+    border-right: none;
+    width: 100%;
+  }
+  :deep(.el-menu-item),
+  :deep(.el-sub-menu__title) {
+    width: 100%;
+  }
+}
+
+/* 手机 header 翻转：左侧 user，右侧汉堡 */
+.header-left--mobile {
+  flex-direction: row-reverse; /* 头像放最左；title 紧跟其后 */
+  gap: 10px;
+}
+.header-left--mobile .header-user-dd {
+  display: inline-flex;
+}
+.header-left--mobile .page-title {
+  flex: 1;
+  min-width: 0; /* 让 ellipsis 生效 */
+  font-size: 15px;
+}
+.user-caret {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.collapse-btn--mobile {
+  font-size: 22px;
+  color: var(--text-regular);
+  padding: 4px 6px;
 }
 
 .fade-enter-active,

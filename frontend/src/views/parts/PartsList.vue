@@ -1,13 +1,21 @@
 <!--
   PartsList.vue
 
-  零件一览表。
+  零件一览表（mobile-responsive，2026-07-21 合并 master + worktree-mobile-responsive）。
 
-  - 顶部：图号/名称搜索框 + Reset 按钮 + 共 N 条
-  - 所有筛选（状态、加急、客户）下沉到 el-table-column 表头内的 popover
-  - 序列号/图号/名称/计划交期 均可点表头排序；默认按计划交期升序
-  - is_urgent=true 的行整行红底 #fde2e2（dashboard 同款）
-  - 下一道工序 / 装配 列已移除（信息放到详情页）
+  桌面（≥md）：
+    - el-table 撑开；表头 popover 筛选（状态 / 加急 / 客户）；序列号/图号/名称/计划交期均可点表头排序
+    - 行内编辑（MANAGER + CLERK）：drawing_no/name/applicant_name/quantity/unit_price/
+      request_date/planned_delivery_date/system_delivery_date/order_no/note/is_urgent
+      全部就地改、保存；INSPECTOR 看不到「编辑 / 下发 / 批量打印 / 应标导入」按钮
+    - 批量打印图纸（iframe）
+    - 加急行红底 #fde2e2
+
+  手机（<md）：
+    - ResponsiveList 改走卡片流，卡片只展示关键字段（序列号 / 图号 / 数量 / 计划交期 /
+      客户 / 所在位置 + 操作）
+    - 表头 popover 折叠为底部弹出抽屉（el-drawer direction="btt"）；筛选按钮带激活高亮
+    - 批量打印 hidden（依赖 iframe）；其余功能保留
 -->
 <template>
   <div class="parts-list">
@@ -31,13 +39,28 @@
           <span>重置</span>
         </el-button>
 
-        <el-button v-if="!isInspector" @click="router.push('/parts/new/bid-import')">
+        <!-- 手机筛选入口（桌面走表头 popover） -->
+        <el-button
+          v-if="isMobile"
+          :type="anyFilterActive ? 'primary' : 'default'"
+          plain
+          @click="openMobileFilter"
+        >
+          <el-icon><Filter /></el-icon>
+          <span>筛选</span>
+        </el-button>
+
+        <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）-->
+        <el-button
+          v-if="!isInspector"
+          @click="router.push('/parts/new/bid-import')"
+        >
           <el-icon><Document /></el-icon>
           <span>从应标 Excel 导入</span>
         </el-button>
 
-        <!-- 批量打印图纸 toggle（2026-07-17 接入；2026-07-20 INSPECTOR 不可见） -->
-        <template v-if="!isInspector">
+        <!-- 批量打印图纸 toggle（2026-07-17 接入；2026-07-20 INSPECTOR 不可见；手机隐藏依赖 iframe） -->
+        <template v-if="!isInspector && !isMobile">
           <el-button
             v-if="!batchMode"
             type="success"
@@ -64,377 +87,421 @@
       </div>
     </el-card>
 
-    <div class="sheet-wrapper">
-      <el-table
-        :data="items"
-        v-loading="loading"
-        stripe
-        border
-        style="width: 100%"
-        size="small"
-        :default-sort="defaultSort"
-        :row-class-name="rowClassName"
-        row-key="id"
-        @sort-change="onSortChange"
-        @selection-change="onSelectionChange"
-        :empty-text="emptyText"
+    <ResponsiveList
+      :items="items"
+      :loading="loading"
+      row-key="id"
+      :empty-text="emptyText"
+      :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
+      stripe
+      border
+      size="small"
+      :default-sort="defaultSort"
+      :row-class-name="rowClassName"
+      @sort-change="onSortChange"
+      @selection-change="onSelectionChange"
+    >
+      <el-table-column
+        v-if="batchMode"
+        type="selection"
+        width="55"
+        :reserve-selection="true"
+      />
+
+      <el-table-column
+        prop="serial_no"
+        label="序列号"
+        width="110"
+        fixed="left"
+        sortable="custom"
+        show-overflow-tooltip
       >
-        <el-table-column
-          v-if="batchMode"
-          type="selection"
-          width="55"
-          :reserve-selection="true"
-        />
-        <el-table-column
-          prop="serial_no"
-          label="序列号"
-          width="110"
-          fixed="left"
-          sortable="custom"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="drawing_no"
-          label="图号"
-          width="130"
-          fixed="left"
-          sortable="custom"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <el-input
-              v-if="editingId === row.id"
-              v-model="editBuffer.drawing_no"
-              size="small"
-            />
-            <span v-else>{{ row.drawing_no }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="name"
-          label="名称"
-          min-width="200"
-          sortable="custom"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <el-input
-              v-if="editingId === row.id"
-              v-model="editBuffer.name"
-              size="small"
-            />
-            <router-link v-else :to="`/parts/${row.id}`" class="name-link">
-              {{ row.name }}
-            </router-link>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="申请人" width="110" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-input
-              v-if="editingId === row.id"
-              v-model="editBuffer.applicant_name"
-              size="small"
-            />
-            <span v-else>{{ row.applicant_name || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="数量" width="110" align="right">
-          <template #default="{ row }">
-            <el-input-number
-              v-if="editingId === row.id"
-              v-model="editBuffer.quantity"
-              :min="1"
-              :precision="0"
-              :controls="false"
-              size="small"
-              style="width: 90px"
-            />
-            <span v-else>{{ row.quantity }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="单价" width="120" align="right">
-          <template #default="{ row }">
-            <el-input-number
-              v-if="editingId === row.id"
-              v-model="editBuffer.unit_price"
-              :min="0"
-              :precision="2"
-              :step="0.01"
-              :controls="false"
-              size="small"
-              style="width: 100px"
-            />
-            <span v-else>{{ row.unit_price }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="请购日期" width="150">
-          <template #default="{ row }">
-            <el-date-picker
-              v-if="editingId === row.id"
-              v-model="editBuffer.request_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              size="small"
-              style="width: 138px"
-              :clearable="false"
-            />
-            <span v-else>{{ row.request_date }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="planned_delivery_date"
-          label="计划交期"
-          width="150"
-          sortable="custom"
-        >
-          <template #default="{ row }">
-            <el-date-picker
-              v-if="editingId === row.id"
-              v-model="editBuffer.planned_delivery_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              size="small"
-              style="width: 138px"
-              :clearable="false"
-            />
-            <span v-else>{{ row.planned_delivery_date }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="系统交期" width="150">
-          <template #default="{ row }">
-            <el-date-picker
-              v-if="editingId === row.id"
-              v-model="editBuffer.system_delivery_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              size="small"
-              style="width: 138px"
-              clearable
-            />
-            <span v-else>{{ row.system_delivery_date || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="订单号" width="130" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-input
-              v-if="editingId === row.id"
-              v-model="editBuffer.order_no"
-              size="small"
-            />
-            <span v-else>{{ row.order_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="备注" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-input
-              v-if="editingId === row.id"
-              v-model="editBuffer.note"
-              size="small"
-            />
-            <span v-else>{{ row.note || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="加急" width="80" align="center">
-          <template #default="{ row }">
-            <el-switch
-              v-if="editingId === row.id"
-              v-model="editBuffer.is_urgent"
-              size="small"
-            />
-            <el-tag
-              v-else-if="row.is_urgent"
-              type="danger"
-              effect="plain"
-              size="small"
-            >加急</el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-
-        <el-table-column
-          label="状态"
-          width="140"
-          align="center"
-        >
-          <template #header>
-            <span class="header-cell">
-              <span>状态</span>
-              <el-popover
-                :width="220"
-                placement="bottom-start"
-                trigger="click"
-                :show-arrow="false"
-                v-model:visible="statusPopoverVisible"
-                @show="syncStatusDraft"
-              >
-                <template #reference>
-                  <el-icon
-                    class="filter-icon"
-                    :class="{ active: statusFilterActive }"
-                  >
-                    <Filter />
-                  </el-icon>
-                </template>
-                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
-                  多选状态 + 「仅加急」叠加加急过滤
-                </div>
-                <el-checkbox-group v-model="statusDraft">
-                  <el-checkbox
-                    v-for="opt in statusOptions"
-                    :key="opt.value"
-                    :value="opt.value"
-                    :label="opt.label"
-                  />
-                </el-checkbox-group>
-                <el-checkbox
-                  v-model="statusUrgentDraft"
-                  label="仅加急"
-                  style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-color-lighter)"
-                />
-                <div class="filter-actions">
-                  <el-button size="small" link @click="resetStatusDraft">重置</el-button>
-                  <el-button
-                    size="small"
-                    type="primary"
-                    @click="confirmStatusFilter"
-                  >确定</el-button>
-                </div>
-              </el-popover>
-            </span>
-          </template>
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(row.status)"
-              effect="plain"
-              size="small"
-            >
-              {{ statusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="客户" min-width="180" show-overflow-tooltip>
-          <template #header>
-            <span class="header-cell">
-              <span>客户</span>
-              <el-popover
-                :width="280"
-                placement="bottom-start"
-                trigger="click"
-                :show-arrow="false"
-                v-model:visible="customerPopoverVisible"
-                @show="syncCustomerDraft"
-              >
-                <template #reference>
-                  <el-icon
-                    class="filter-icon"
-                    :class="{ active: search.customerId !== '' }"
-                  >
-                    <Filter />
-                  </el-icon>
-                </template>
-                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
-                  选一级客户自动级联其下二级客户
-                </div>
-                <el-tree-select
-                  v-model="customerDraft"
-                  :data="customerTree"
-                  node-key="id"
-                  :props="{ label: 'name', children: 'children' }"
-                  check-strictly
-                  clearable
-                  filterable
-                  placeholder="选择客户"
-                  :teleported="false"
-                  style="width: 100%"
-                  @clear="customerDraft = null"
-                />
-                <div class="filter-actions">
-                  <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
-                  <el-button
-                    size="small"
-                    type="primary"
-                    @click="confirmCustomerFilter"
-                  >确定</el-button>
-                </div>
-              </el-popover>
-            </span>
-          </template>
-          <template #default="{ row }">
-            <span v-if="row.customer_path">{{ row.customer_path }}</span>
-            <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="所在位置" width="150" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="row.location === 'PRODUCTION_SHELF' && row.shelf_code">
-              货架 {{ row.shelf_code }}
-            </span>
-            <span v-else-if="row.location === 'INSPECTION_SHELF' && row.shelf_code">
-              品检 {{ row.shelf_code }}
-            </span>
-            <span v-else-if="row.location === 'WORKER' && row.worker_name">
-              {{ row.worker_name }}
-            </span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="160" fixed="right">
-          <template #default="{ row }">
-<template v-if="editingId === row.id">
-              <el-button
-                link
-                type="primary"
-                size="small"
-                :loading="savingEdit"
-                @click="saveEdit(row as PartListItem)"
-              >保存</el-button>
-              <el-button link size="small" @click="cancelEdit">取消</el-button>
-            </template>
-            <template v-else>
-              <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
-              <el-button
-                v-if="canEdit"
-                link
-                type="warning"
-                size="small"
-                @click="startEdit(row as PartListItem)"
-              >编辑</el-button>
-              <el-button
-                v-if="!isInspector && row.status === 'PENDING'"
-                link
-                type="success"
-                size="small"
-                @click="onDispatch(row as PartListItem)"
-              >下发</el-button>
-            </template>
-          </template>
-        </el-table-column>
-
-        <template #empty>
-          <el-empty :description="emptyText" />
+        <template #default="{ row }">
+          <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
-      </el-table>
-    </div>
+      </el-table-column>
+
+      <el-table-column
+        prop="drawing_no"
+        label="图号"
+        width="130"
+        fixed="left"
+        sortable="custom"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.drawing_no"
+            size="small"
+          />
+          <span v-else>{{ row.drawing_no }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="name"
+        label="名称"
+        min-width="200"
+        sortable="custom"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.name"
+            size="small"
+          />
+          <router-link v-else :to="`/parts/${row.id}`" class="name-link">
+            {{ row.name }}
+          </router-link>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="申请人" width="110" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.applicant_name"
+            size="small"
+          />
+          <span v-else>{{ row.applicant_name || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="数量" width="110" align="right">
+        <template #default="{ row }">
+          <el-input-number
+            v-if="editingId === row.id"
+            v-model="editBuffer.quantity"
+            :min="1"
+            :precision="0"
+            :controls="false"
+            size="small"
+            style="width: 90px"
+          />
+          <span v-else>{{ row.quantity }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="单价" width="120" align="right">
+        <template #default="{ row }">
+          <el-input-number
+            v-if="editingId === row.id"
+            v-model="editBuffer.unit_price"
+            :min="0"
+            :precision="2"
+            :step="0.01"
+            :controls="false"
+            size="small"
+            style="width: 100px"
+          />
+          <span v-else>{{ row.unit_price }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="请购日期" width="150">
+        <template #default="{ row }">
+          <el-date-picker
+            v-if="editingId === row.id"
+            v-model="editBuffer.request_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            size="small"
+            style="width: 138px"
+            :clearable="false"
+          />
+          <span v-else>{{ row.request_date }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="planned_delivery_date"
+        label="计划交期"
+        width="150"
+        sortable="custom"
+      >
+        <template #default="{ row }">
+          <el-date-picker
+            v-if="editingId === row.id"
+            v-model="editBuffer.planned_delivery_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            size="small"
+            style="width: 138px"
+            :clearable="false"
+          />
+          <span v-else>{{ row.planned_delivery_date }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="系统交期" width="150">
+        <template #default="{ row }">
+          <el-date-picker
+            v-if="editingId === row.id"
+            v-model="editBuffer.system_delivery_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            size="small"
+            style="width: 138px"
+            clearable
+          />
+          <span v-else>{{ row.system_delivery_date || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="订单号" width="130" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.order_no"
+            size="small"
+          />
+          <span v-else>{{ row.order_no || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="备注" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.note"
+            size="small"
+          />
+          <span v-else>{{ row.note || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="加急" width="80" align="center">
+        <template #default="{ row }">
+          <el-switch
+            v-if="editingId === row.id"
+            v-model="editBuffer.is_urgent"
+            size="small"
+          />
+          <el-tag
+            v-else-if="row.is_urgent"
+            type="danger"
+            effect="plain"
+            size="small"
+          >加急</el-tag>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        label="状态"
+        width="140"
+        align="center"
+      >
+        <template #header>
+          <span class="header-cell">
+            <span>状态</span>
+            <el-popover
+              :width="220"
+              placement="bottom-start"
+              trigger="click"
+              :show-arrow="false"
+              v-model:visible="statusPopoverVisible"
+              @show="syncStatusDraft"
+            >
+              <template #reference>
+                <el-icon
+                  class="filter-icon"
+                  :class="{ active: statusFilterActive }"
+                >
+                  <Filter />
+                </el-icon>
+              </template>
+              <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                多选状态 + 「仅加急」叠加加急过滤
+              </div>
+              <el-checkbox-group v-model="statusDraft">
+                <el-checkbox
+                  v-for="opt in statusOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </el-checkbox-group>
+              <el-checkbox
+                v-model="statusUrgentDraft"
+                label="仅加急"
+                style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-color-lighter)"
+              />
+              <div class="filter-actions">
+                <el-button size="small" link @click="resetStatusDraft">重置</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click="confirmStatusFilter"
+                >确定</el-button>
+              </div>
+            </el-popover>
+          </span>
+        </template>
+        <template #default="{ row }">
+          <el-tag
+            :type="statusTagType(row.status)"
+            effect="plain"
+            size="small"
+          >
+            {{ statusLabel(row.status) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+        <template #header>
+          <span class="header-cell">
+            <span>客户</span>
+            <el-popover
+              :width="280"
+              placement="bottom-start"
+              trigger="click"
+              :show-arrow="false"
+              v-model:visible="customerPopoverVisible"
+              @show="syncCustomerDraft"
+            >
+              <template #reference>
+                <el-icon
+                  class="filter-icon"
+                  :class="{ active: search.customerId !== '' }"
+                >
+                  <Filter />
+                </el-icon>
+              </template>
+              <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                选一级客户自动级联其下二级客户
+              </div>
+              <el-tree-select
+                v-model="customerDraft"
+                :data="customerTree"
+                node-key="id"
+                :props="{ label: 'name', children: 'children' }"
+                check-strictly
+                clearable
+                filterable
+                placeholder="选择客户"
+                :teleported="false"
+                style="width: 100%"
+                @clear="customerDraft = null"
+              />
+              <div class="filter-actions">
+                <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click="confirmCustomerFilter"
+                >确定</el-button>
+              </div>
+            </el-popover>
+          </span>
+        </template>
+        <template #default="{ row }">
+          <span v-if="row.customer_path">{{ row.customer_path }}</span>
+          <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="所在位置" width="150" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.location === 'PRODUCTION_SHELF' && row.shelf_code">
+            货架 {{ row.shelf_code }}
+          </span>
+          <span v-else-if="row.location === 'INSPECTION_SHELF' && row.shelf_code">
+            品检 {{ row.shelf_code }}
+          </span>
+          <span v-else-if="row.location === 'WORKER' && row.worker_name">
+            {{ row.worker_name }}
+          </span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="操作" width="160" fixed="right">
+        <template #default="{ row }">
+          <template v-if="editingId === row.id">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="savingEdit"
+              @click="saveEdit(row as PartListItem)"
+            >保存</el-button>
+            <el-button link size="small" @click="cancelEdit">取消</el-button>
+          </template>
+          <template v-else>
+            <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
+            <el-button
+              v-if="canEdit"
+              link
+              type="warning"
+              size="small"
+              @click="startEdit(row as PartListItem)"
+            >编辑</el-button>
+            <el-button
+              v-if="!isInspector && row.status === 'PENDING'"
+              link
+              type="success"
+              size="small"
+              @click="onDispatch(row as PartListItem)"
+            >下发</el-button>
+          </template>
+        </template>
+      </el-table-column>
+
+      <!-- 手机卡片：关键字段 + 操作按钮 -->
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <router-link :to="`/parts/${row.id}`" class="rl-card-title name-link">
+            {{ row.name }}
+          </router-link>
+          <el-tag :type="statusTagType(row.status)" effect="plain" size="small">
+            {{ statusLabel(row.status) }}
+          </el-tag>
+        </div>
+        <div class="rl-card-sub">
+          图号 {{ row.drawing_no || '—' }} · 序列号 {{ row.serial_no || '—' }}
+        </div>
+        <div class="rl-kv">
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__val">{{ row.quantity }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">计划交期</span>
+            <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">客户</span>
+            <span class="rl-kv__val">{{ row.customer_path || row.customer_name || '—' }}</span>
+          </div>
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">所在位置</span>
+            <span class="rl-kv__val">{{ locationText(row) }}</span>
+          </div>
+        </div>
+        <div class="rl-card-actions">
+          <el-button link type="primary" size="small" @click="router.push(`/parts/${row.id}`)">详情</el-button>
+          <el-button
+            v-if="canEdit"
+            link
+            type="warning"
+            size="small"
+            @click="startEdit(row as PartListItem)"
+          >编辑</el-button>
+          <el-button
+            v-if="!isInspector && row.status === 'PENDING'"
+            link
+            type="success"
+            size="small"
+            @click="onDispatch(row as PartListItem)"
+          >下发</el-button>
+        </div>
+      </template>
+    </ResponsiveList>
 
     <!-- 批量打印图纸 — 底部 action bar（2026-07-17；2026-07-20 INSPECTOR 不可见） -->
     <div v-if="!isInspector && batchMode" class="batch-bar">
@@ -467,7 +534,8 @@
         v-model:page-size="pageSize"
         :page-sizes="[10, 20, 50, 100]"
         :total="total"
-        layout="total, sizes, prev, pager, next, jumper"
+        :layout="paginationLayout"
+        :pager-count="isMobile ? 5 : 7"
         background
         size="small"
         @current-change="fetchList"
@@ -479,7 +547,8 @@
     <el-dialog
       v-model="dispatchVisible"
       :title="dispatchMode === 'cnc' ? '发送至 CNC 编程' : '下发零件'"
-      width="480px"
+      :width="dispatchDlg.width.value"
+      :top="dispatchDlg.top.value"
       @closed="onDispatchClosed"
     >
       <el-form label-width="96px">
@@ -542,6 +611,48 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 手机筛选抽屉：承载桌面表头 popover 的同款筛选（状态 + 加急 + 客户） -->
+    <el-drawer
+      v-model="mobileFilterOpen"
+      title="筛选"
+      direction="btt"
+      size="72%"
+    >
+      <div class="mobile-filter">
+        <div class="mf-section">
+          <div class="mf-label">状态</div>
+          <el-checkbox-group v-model="statusDraft" class="mf-status">
+            <el-checkbox
+              v-for="opt in statusOptions"
+              :key="opt.value"
+              :value="opt.value"
+              :label="opt.label"
+            />
+          </el-checkbox-group>
+          <el-checkbox v-model="statusUrgentDraft" label="仅加急" class="mf-urgent" />
+        </div>
+        <div class="mf-section">
+          <div class="mf-label">客户</div>
+          <el-tree-select
+            v-model="customerDraft"
+            :data="customerTree"
+            node-key="id"
+            :props="{ label: 'name', children: 'children' }"
+            check-strictly
+            clearable
+            filterable
+            placeholder="选择客户"
+            style="width: 100%"
+            @clear="customerDraft = null"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="resetMobileFilter">重置</el-button>
+        <el-button type="primary" @click="confirmMobileFilter">确定</el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -557,6 +668,9 @@ import {
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   listParts,
   placeOnShelf,
@@ -593,6 +707,7 @@ const canEdit = hasRole('MANAGER') || hasRole('CLERK')
 const { tree: customerTree } = useCustomerTree()
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useBreakpoint()
 
 interface SearchState {
   keyword: string
@@ -669,6 +784,41 @@ function confirmCustomerFilter(): void {
   search.customerId = customerDraft.value ?? ''
   customerPopoverVisible.value = false
   onSearch()
+}
+
+// ============ 手机筛选抽屉 ============
+const mobileFilterOpen = ref(false)
+const anyFilterActive = computed(() => statusFilterActive.value || customerFilterActive.value)
+
+function openMobileFilter(): void {
+  syncStatusDraft()
+  syncCustomerDraft()
+  mobileFilterOpen.value = true
+}
+function confirmMobileFilter(): void {
+  search.statuses = [...statusDraft.value]
+  search.isUrgent = statusUrgentDraft.value ? true : null
+  search.customerId = customerDraft.value ?? ''
+  mobileFilterOpen.value = false
+  onSearch()
+}
+function resetMobileFilter(): void {
+  statusDraft.value = []
+  statusUrgentDraft.value = false
+  customerDraft.value = null
+  search.statuses = []
+  search.isUrgent = null
+  search.customerId = ''
+  mobileFilterOpen.value = false
+  onSearch()
+}
+
+// 手机卡片「所在位置」文案（与桌面列同款逻辑）
+function locationText(row: PartListItem): string {
+  if (row.location === 'PRODUCTION_SHELF' && row.shelf_code) return `货架 ${row.shelf_code}`
+  if (row.location === 'INSPECTION_SHELF' && row.shelf_code) return `品检 ${row.shelf_code}`
+  if (row.location === 'WORKER' && row.worker_name) return row.worker_name
+  return '—'
 }
 
 // ============ 表格 / 排序 ============
@@ -754,6 +904,11 @@ const defaultSort = computed<{ prop: string; order: SortOrder }>(() => ({
 }))
 
 const emptyText = computed(() => errorMsg.value ?? '暂无符合条件的零件')
+
+// 手机上分页收窄为 prev/pager/next，桌面保留完整布局
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 function statusLabel(s: OrderStatus): string {
   return ORDER_STATUS_LABEL[s] ?? s
@@ -986,6 +1141,7 @@ async function saveEdit(row: PartListItem): Promise<void> {
 const shelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
 const dispatchVisible = ref(false)
+const dispatchDlg = useDialogSize({ desktopWidth: 480 })
 const dispatchShelfId = ref<string | null>(null)
 const dispatchNextProcessId = ref<string | null>(null)
 const dispatchPartId = ref<string | null>(null)
@@ -1095,6 +1251,37 @@ async function onDispatchConfirm(): Promise<void> {
   justify-content: flex-end;
   align-items: center;
   padding: 0 4px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
+}
+
+/* 手机筛选抽屉 */
+.mobile-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.mf-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mf-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.mf-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mf-urgent {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
 }
 
 /* 批量打印底部 action bar（仿 DeliveryNoteNew 范式） */

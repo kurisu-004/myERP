@@ -6,6 +6,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   approveOutsourceQuote,
   createOutsourceQuote,
@@ -44,6 +47,13 @@ import {
 
 const { user, hasRole } = useAuthSession()
 const roleMap = computed(() => rolesArrayToMap(user.value?.roles ?? []))
+const { isMobile } = useBreakpoint()
+const createDlg = useDialogSize({ desktopWidth: 640, fullscreenOnMobile: true })
+const reviewDlg = useDialogSize({ desktopWidth: 480 })
+const previewDlg = useDialogSize({ desktopWidth: 900, fullscreenOnMobile: true })
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 /** 按角色注入默认 statuses：
  *  - CLERK 默认 DRAFT（待他提交审核的）
@@ -113,6 +123,30 @@ function resetCustomerDraft(): void {
 function confirmCustomerFilter(): void {
   search.customerId = customerDraft.value ?? ''
   customerPopoverVisible.value = false
+  onSearch()
+}
+
+// 手机筛选抽屉：复用桌面表头 popover 的草稿状态
+const mobileFilterOpen = ref(false)
+const anyFilterActive = computed(() => statusFilterActive.value || customerFilterActive.value)
+
+function openMobileFilter(): void {
+  syncStatusDraft()
+  syncCustomerDraft()
+  mobileFilterOpen.value = true
+}
+function confirmMobileFilter(): void {
+  search.statuses = [...statusDraft.value]
+  search.customerId = customerDraft.value ?? ''
+  mobileFilterOpen.value = false
+  onSearch()
+}
+function resetMobileFilter(): void {
+  statusDraft.value = []
+  customerDraft.value = null
+  search.statuses = []
+  search.customerId = ''
+  mobileFilterOpen.value = false
   onSearch()
 }
 
@@ -523,6 +557,16 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         </el-button>
 
         <el-button
+          v-if="isMobile"
+          :type="anyFilterActive ? 'primary' : 'default'"
+          plain
+          @click="openMobileFilter"
+        >
+          <el-icon><Filter /></el-icon>
+          <span>筛选</span>
+        </el-button>
+
+        <el-button
           v-if="canCreate(roleMap)"
           type="success"
           @click="openCreate"
@@ -535,17 +579,19 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
     </el-card>
 
     <el-card shadow="never">
-      <el-table
-        v-loading="loading"
-        :data="items"
+      <ResponsiveList
+        :items="items"
+        :loading="loading"
+        row-key="id"
+        :empty-text="emptyText"
         stripe
         border
         size="small"
         :default-sort="defaultSort"
-        :empty-text="emptyText"
         :row-class-name="drawingRowClass"
         @sort-change="onSortChange"
         @row-click="onRowClick"
+        @card-click="onRowClick"
       >
         <el-table-column
           prop="part_serial_no"
@@ -739,23 +785,91 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             >删除</el-button>
           </template>
         </el-table-column>
-      </el-table>
 
-      <el-pagination
-        v-model:current-page="page"
-        v-model:page-size="pageSize"
-        :page-sizes="[20, 50, 100]"
-        :total="total"
-        layout="total, sizes, prev, pager, next, jumper"
-        background
-        size="small"
-        @current-change="refresh"
-        @size-change="onPageSizeChange"
-      />
+        <template #card="{ row }">
+          <div class="rl-card-head">
+            <span class="rl-card-title">{{ (row as OutsourceQuote).part_name || '未命名零件' }}</span>
+            <el-tag
+              :type="(statusTagType((row as OutsourceQuote).status) || 'info') as 'info' | 'success' | 'warning' | 'danger'"
+              size="small"
+              effect="plain"
+            >
+              {{ statusLabel((row as OutsourceQuote).status) }}
+            </el-tag>
+          </div>
+          <div class="rl-card-sub">
+            图号 {{ (row as OutsourceQuote).part_drawing_no || '—' }} · 序列号 {{ (row as OutsourceQuote).part_serial_no || '—' }}
+          </div>
+          <div class="rl-kv">
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">外协公司</span>
+              <span class="rl-kv__val">{{ (row as OutsourceQuote).outsource_company_name || '—' }}</span>
+            </div>
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">工序</span>
+              <span class="rl-kv__val">{{ (row as OutsourceQuote).process_code || '—' }}</span>
+            </div>
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">单价</span>
+              <span class="rl-kv__val">{{ (row as OutsourceQuote).price }} 元</span>
+            </div>
+            <div class="rl-kv__item rl-kv__item--full">
+              <span class="rl-kv__key">客户</span>
+              <span class="rl-kv__val">{{ (row as OutsourceQuote).customer_path || '—' }}</span>
+            </div>
+          </div>
+          <div class="rl-card-actions">
+            <el-button
+              v-if="canEdit((row as OutsourceQuote), roleMap)"
+              size="small"
+              @click.stop="onSubmit((row as OutsourceQuote))"
+            >提交审核</el-button>
+            <el-button
+              v-if="canApprove((row as OutsourceQuote), roleMap)"
+              size="small"
+              type="success"
+              @click.stop="openApprove((row as OutsourceQuote))"
+            >通过</el-button>
+            <el-button
+              v-if="canReject((row as OutsourceQuote), roleMap)"
+              size="small"
+              type="danger"
+              @click.stop="openReject((row as OutsourceQuote))"
+            >拒绝</el-button>
+            <el-button
+              v-if="canSoftDelete((row as OutsourceQuote), roleMap)"
+              size="small"
+              type="danger"
+              @click.stop="onDelete((row as OutsourceQuote))"
+            >删除</el-button>
+          </div>
+        </template>
+      </ResponsiveList>
+
+      <div class="pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :page-sizes="[20, 50, 100]"
+          :total="total"
+          :layout="paginationLayout"
+          :pager-count="isMobile ? 5 : 7"
+          background
+          size="small"
+          @current-change="refresh"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </el-card>
 
     <!-- 新建 DRAFT 报价 -->
-    <el-dialog v-model="showCreate" title="新建外协报价（DRAFT）" width="640">
+    <el-dialog
+      v-model="showCreate"
+      title="新建外协报价（DRAFT）"
+      :width="createDlg.width.value"
+      :top="createDlg.top.value"
+      :fullscreen="createDlg.fullscreen.value"
+    >
       <el-form
         ref="createFormRef"
         :model="createForm"
@@ -819,7 +933,12 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
     </el-dialog>
 
     <!-- 通过 -->
-    <el-dialog v-model="showApprove" title="审批通过" width="480">
+    <el-dialog
+      v-model="showApprove"
+      title="审批通过"
+      :width="reviewDlg.width.value"
+      :top="reviewDlg.top.value"
+    >
       <el-form label-width="100px">
         <el-form-item label="审批意见">
           <el-input v-model="reviewNote" type="textarea" placeholder="可留空" />
@@ -832,7 +951,12 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
     </el-dialog>
 
     <!-- 拒绝 -->
-    <el-dialog v-model="showReject" title="审批拒绝（必填原因）" width="480">
+    <el-dialog
+      v-model="showReject"
+      title="审批拒绝（必填原因）"
+      :width="reviewDlg.width.value"
+      :top="reviewDlg.top.value"
+    >
       <el-form label-width="100px">
         <el-form-item label="拒绝原因" required>
           <el-input v-model="reviewNote" type="textarea" />
@@ -848,7 +972,9 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
     <el-dialog
       v-model="drawingPreviewVisible"
       :title="drawingPreviewTitle"
-      fullscreen
+      :width="previewDlg.width.value"
+      :top="previewDlg.top.value"
+      :fullscreen="previewDlg.fullscreen.value"
       :close-on-click-modal="false"
       :destroy-on-close="true"
       append-to-body
@@ -871,6 +997,47 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
       </div>
       <p v-else class="muted">无可预览内容</p>
     </el-dialog>
+
+    <!-- 手机筛选抽屉：承载桌面状态 / 客户列头筛选 -->
+    <el-drawer
+      v-model="mobileFilterOpen"
+      title="筛选"
+      direction="btt"
+      size="72%"
+    >
+      <div class="mobile-filter">
+        <div class="mf-section">
+          <div class="mf-label">状态</div>
+          <el-checkbox-group v-model="statusDraft" class="mf-status">
+            <el-checkbox
+              v-for="opt in statusOptions"
+              :key="opt.value"
+              :value="opt.value"
+              :label="opt.label"
+            />
+          </el-checkbox-group>
+        </div>
+        <div class="mf-section">
+          <div class="mf-label">客户</div>
+          <el-tree-select
+            v-model="customerDraft"
+            :data="customerTree"
+            node-key="id"
+            :props="{ label: 'name', children: 'children' }"
+            check-strictly
+            clearable
+            filterable
+            placeholder="选择客户"
+            style="width: 100%"
+            @clear="customerDraft = null"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="resetMobileFilter">重置</el-button>
+        <el-button type="primary" @click="confirmMobileFilter">确定</el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -899,6 +1066,37 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
   font-size: 13px;
   color: var(--text-secondary);
   margin-left: auto;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
+}
+
+.mobile-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.mf-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mf-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.mf-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .header-cell {

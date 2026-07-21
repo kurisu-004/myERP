@@ -1,0 +1,102 @@
+<!--
+  ResponsiveList.vue
+
+  响应式列表容器：
+  - ≥md（平板/桌面）：渲染 <el-table>，默认插槽承载既有 <el-table-column>（桌面端零改动，
+    表头 popover 筛选 / 排序 / 固定列 / 选择列全部原样保留）。所有 el-table 的 props/事件
+    通过 $attrs 透传（stripe / border / size / default-sort / row-class-name /
+    @sort-change / @selection-change ...）。
+  - <md（手机）：不渲染表格，改为卡片流，由 #card 作用域插槽 { row, index } 定制每张卡片。
+
+  统一处理 loading（v-loading）与空态（emptyText → el-empty），故各视图不再需要
+  el-table 上的 #empty 插槽。
+-->
+<template>
+  <div class="responsive-list">
+    <!-- 桌面：表格 -->
+    <div v-if="!isMobile" v-loading="loading" class="rl-table-wrap">
+      <el-table :data="items" :row-key="rowKey" style="width: 100%" v-bind="$attrs">
+        <slot />
+        <template #empty>
+          <el-empty :description="emptyText" />
+        </template>
+      </el-table>
+    </div>
+
+    <!-- 手机：卡片流 -->
+    <div v-else v-loading="loading" class="rl-cards">
+      <el-card
+        v-for="(row, index) in items"
+        :key="rowKeyOf(row, index)"
+        shadow="never"
+        class="rl-card"
+        :class="cardClassOf(row)"
+        @click="emit('card-click', row, index)"
+      >
+        <slot name="card" :row="row" :index="index" />
+      </el-card>
+      <el-empty v-if="!loading && items.length === 0" :description="emptyText" />
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+defineOptions({ inheritAttrs: false })
+
+const props = withDefaults(
+  defineProps<{
+    items: any[]
+    loading?: boolean
+    rowKey?: string
+    emptyText?: string
+    /** 卡片额外 class：字符串或按行计算（如加急高亮） */
+    cardClass?: string | ((row: any) => string)
+  }>(),
+  {
+    loading: false,
+    rowKey: 'id',
+    emptyText: '暂无数据',
+    cardClass: '',
+  },
+)
+
+const emit = defineEmits<{
+  (e: 'card-click', row: any, index: number): void
+}>()
+
+const { isMobile } = useBreakpoint()
+
+function rowKeyOf(row: any, index: number): string | number {
+  const k = row?.[props.rowKey]
+  return k ?? index
+}
+
+function cardClassOf(row: any): string {
+  return typeof props.cardClass === 'function' ? props.cardClass(row) : props.cardClass
+}
+</script>
+
+<style lang="scss" scoped>
+.rl-table-wrap {
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px;
+  overflow-x: auto;
+}
+
+.rl-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 60px;
+}
+
+.rl-card {
+  :deep(.el-card__body) {
+    padding: 12px 14px;
+  }
+}
+</style>

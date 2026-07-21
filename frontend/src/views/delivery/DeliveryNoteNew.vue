@@ -6,11 +6,12 @@
   - 客户筛选走列头 popover（用 useCustomerTree 的 el-tree-select，与 PartsList 同款）
   - 加急筛选：本视图走 inline 复选框（READY_TO_SHIP 状态下加急不是主要过滤维度，简化 UX）
   - el-table 多选 + 顶部「全选当前页 / 清空选择 / 已选 N 件」
-  - 列：选择 | 流水号 | 图号 | 名称 | 订单号 | 系统交期 | 数量 | 分厂/客户 | 计划交期 | 备注
+  - 列：选择 | 流水号 | 图号 | 名称 | 申请人 | 订单号 | 系统交期 | 数量 | 单价 | 分厂/客户 | 请购日期 | 计划交期 | 备注
   - 加急行整行红底（与 PartsList 同款 row-urgent）
   - 顶部模板选择：自动 / 法拉 / 路达（el-radio-button 三段）
     「自动」= 后端按客户前缀分发；显式选法拉/路达时强制要求与零件所属 L1 root 一致
   - 「生成送货单」按钮 → 调 generateDeliveryNote(ids, template) 拿 Blob → 触发下载
+  - 移动端：ResponsiveList 渲染为卡片流（手机 <md 走卡片，桌面 ≥md 走表格）
 -->
 <template>
   <div class="delivery-note-new">
@@ -58,182 +59,234 @@
       </div>
     </el-card>
 
-    <div class="sheet-wrapper">
-      <el-table
-        :data="items"
-        v-loading="loading"
-        stripe
-        border
-        style="width: 100%"
-        size="small"
-        :default-sort="defaultSort"
-        :row-class-name="rowClassName"
-        row-key="id"
-        :empty-text="emptyText"
-        @sort-change="onSortChange"
-        @selection-change="onSelectionChange"
+    <ResponsiveList
+      :items="items"
+      :loading="loading"
+      row-key="id"
+      :empty-text="emptyText"
+      :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
+      stripe
+      border
+      style="width: 100%"
+      size="small"
+      :default-sort="defaultSort"
+      :row-class-name="rowClassName"
+      @sort-change="onSortChange"
+      @selection-change="onSelectionChange"
+    >
+      <el-table-column type="selection" width="55" />
+
+      <el-table-column
+        prop="serial_no"
+        label="流水号"
+        width="110"
+        show-overflow-tooltip
+        sortable="custom"
       >
-        <el-table-column type="selection" width="55" />
-
-        <el-table-column
-          prop="serial_no"
-          label="流水号"
-          width="110"
-          show-overflow-tooltip
-          sortable="custom"
-        >
-          <template #default="{ row }">
-            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="drawing_no"
-          label="图号"
-          width="130"
-          show-overflow-tooltip
-          sortable="custom"
-        />
-
-        <el-table-column
-          prop="name"
-          label="名称"
-          min-width="200"
-          show-overflow-tooltip
-          sortable="custom"
-        >
-          <template #default="{ row }">
-            <router-link :to="`/parts/${row.id}`" class="name-link">{{ row.name }}</router-link>
-          </template>
-        </el-table-column>
-
-<el-table-column prop="applicant_name" label="申请人" width="100" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ muted: !row.applicant_name }">{{ row.applicant_name || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="order_no"
-          label="订单号"
-          width="130"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <span :class="{ muted: !row.order_no }">{{ row.order_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="system_delivery_date"
-          label="系统交期"
-          width="110"
-        >
-          <template #default="{ row }">
-            <span :class="{ muted: !row.system_delivery_date }">{{ row.system_delivery_date || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="quantity"
-          label="数量"
-          width="70"
-          align="right"
-        />
-
-<el-table-column prop="unit_price" label="单价" width="90" align="right">
-          <template #default="{ row }">{{ row.unit_price }}</template>
-        </el-table-column>
-
-        <!-- 客户列：列头 popover + el-tree-select -->
-        <el-table-column label="分厂/客户" min-width="180" show-overflow-tooltip>
-          <template #header>
-            <span class="header-cell">
-              <span>分厂/客户</span>
-              <el-popover
-                :width="280"
-                placement="bottom-start"
-                trigger="click"
-                :show-arrow="false"
-                v-model:visible="customerPopoverVisible"
-                @show="syncCustomerDraft"
-              >
-                <template #reference>
-                  <el-icon
-                    class="filter-icon"
-                    :class="{ active: customerFilterActive }"
-                  >
-                    <Filter />
-                  </el-icon>
-                </template>
-                <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
-                  选一级客户自动级联其下二级客户
-                </div>
-                <el-tree-select
-                  v-model="customerDraft"
-                  :data="customerTree"
-                  node-key="id"
-                  :props="{ label: 'name', children: 'children' }"
-                  check-strictly
-                  clearable
-                  filterable
-                  placeholder="选择客户"
-                  :teleported="false"
-                  style="width: 100%"
-                  @clear="customerDraft = null"
-                />
-                <div class="filter-actions">
-                  <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
-                  <el-button size="small" type="primary" @click="confirmCustomerFilter">确定</el-button>
-                </div>
-              </el-popover>
-            </span>
-          </template>
-          <template #default="{ row }">
-            <span v-if="row.customer_path">{{ row.customer_path }}</span>
-            <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-<el-table-column prop="request_date" label="请购日期" width="110">
-          <template #default="{ row }">
-            <span :class="{ muted: !row.request_date }">{{ row.request_date || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="planned_delivery_date"
-          label="计划交期"
-          width="120"
-          show-overflow-tooltip
-          sortable="custom"
-        />
-
-        <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ muted: !row.note }">{{ row.note || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <template #empty>
-          <el-empty :description="emptyText" />
+        <template #default="{ row }">
+          <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
-      </el-table>
+      </el-table-column>
 
-      <div class="pagination">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :page-sizes="[20, 50, 100, 200]"
-          :total="total"
-          layout="total, sizes, prev, pager, next, jumper"
-          background
-          size="small"
-          @current-change="onPageChange"
-          @size-change="onPageSizeChange"
-        />
-      </div>
+      <el-table-column
+        prop="drawing_no"
+        label="图号"
+        width="130"
+        show-overflow-tooltip
+        sortable="custom"
+      />
+
+      <el-table-column
+        prop="name"
+        label="名称"
+        min-width="200"
+        show-overflow-tooltip
+        sortable="custom"
+      >
+        <template #default="{ row }">
+          <router-link :to="`/parts/${row.id}`" class="name-link">{{ row.name }}</router-link>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="applicant_name" label="申请人" width="100" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :class="{ muted: !row.applicant_name }">{{ row.applicant_name || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="order_no"
+        label="订单号"
+        width="130"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <span :class="{ muted: !row.order_no }">{{ row.order_no || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="system_delivery_date"
+        label="系统交期"
+        width="110"
+      >
+        <template #default="{ row }">
+          <span :class="{ muted: !row.system_delivery_date }">{{ row.system_delivery_date || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="quantity"
+        label="数量"
+        width="70"
+        align="right"
+      />
+
+      <el-table-column prop="unit_price" label="单价" width="90" align="right">
+        <template #default="{ row }">{{ row.unit_price }}</template>
+      </el-table-column>
+
+      <!-- 客户列：列头 popover + el-tree-select -->
+      <el-table-column label="分厂/客户" min-width="180" show-overflow-tooltip>
+        <template #header>
+          <span class="header-cell">
+            <span>分厂/客户</span>
+            <el-popover
+              :width="280"
+              placement="bottom-start"
+              trigger="click"
+              :show-arrow="false"
+              v-model:visible="customerPopoverVisible"
+              @show="syncCustomerDraft"
+            >
+              <template #reference>
+                <el-icon
+                  class="filter-icon"
+                  :class="{ active: customerFilterActive }"
+                >
+                  <Filter />
+                </el-icon>
+              </template>
+              <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                选一级客户自动级联其下二级客户
+              </div>
+              <el-tree-select
+                v-model="customerDraft"
+                :data="customerTree"
+                node-key="id"
+                :props="{ label: 'name', children: 'children' }"
+                check-strictly
+                clearable
+                filterable
+                placeholder="选择客户"
+                :teleported="false"
+                style="width: 100%"
+                @clear="customerDraft = null"
+              />
+              <div class="filter-actions">
+                <el-button size="small" link @click="resetCustomerDraft">重置</el-button>
+                <el-button size="small" type="primary" @click="confirmCustomerFilter">确定</el-button>
+              </div>
+            </el-popover>
+          </span>
+        </template>
+        <template #default="{ row }">
+          <span v-if="row.customer_path">{{ row.customer_path }}</span>
+          <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="request_date" label="请购日期" width="110">
+        <template #default="{ row }">
+          <span :class="{ muted: !row.request_date }">{{ row.request_date || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="planned_delivery_date"
+        label="计划交期"
+        width="120"
+        show-overflow-tooltip
+        sortable="custom"
+      />
+
+      <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :class="{ muted: !row.note }">{{ row.note || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <!-- 手机卡片：手写 el-checkbox 复刻 el-table 选择列的体验 -->
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <el-checkbox
+            :model-value="isRowSelected(row as PartListItem)"
+            class="dn-card-check"
+            @change="(v: boolean | string | number) => onCardSelectionChange(row as PartListItem, Boolean(v))"
+          >
+            <router-link :to="`/parts/${row.id}`" class="rl-card-title name-link">
+              {{ row.name }}
+            </router-link>
+          </el-checkbox>
+          <span v-if="row.is_urgent" class="dn-urgent-badge">加急</span>
+        </div>
+        <div class="rl-card-sub">
+          图号 {{ row.drawing_no || '—' }} · 流水号 {{ row.serial_no || '—' }}
+        </div>
+        <div class="rl-kv">
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">分厂/客户</span>
+            <span class="rl-kv__val">{{ row.customer_path || row.customer_name || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__val">{{ row.quantity }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">单价</span>
+            <span class="rl-kv__val">{{ row.unit_price ?? '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">申请人</span>
+            <span class="rl-kv__val">{{ row.applicant_name || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">订单号</span>
+            <span class="rl-kv__val">{{ row.order_no || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">系统交期</span>
+            <span class="rl-kv__val">{{ row.system_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">请购日期</span>
+            <span class="rl-kv__val">{{ row.request_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">计划交期</span>
+            <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div v-if="row.note" class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">备注</span>
+            <span class="rl-kv__val">{{ row.note }}</span>
+          </div>
+        </div>
+      </template>
+    </ResponsiveList>
+
+    <div class="pagination">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :page-sizes="[20, 50, 100, 200]"
+        :total="total"
+        layout="total, sizes, prev, pager, next, jumper"
+        background
+        size="small"
+        @current-change="onPageChange"
+        @size-change="onPageSizeChange"
+      />
     </div>
 
     <div class="bottom-bar">
@@ -262,6 +315,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
 import { listParts, type ListPartsParams } from '@/api/parts'
 import {
   PART_SORT_PROP_MAP,
@@ -424,6 +478,21 @@ function onSelectionChange(rows: PartListItem[]): void {
   selectedRows.value = rows
 }
 
+// 手机卡片自管选择（el-table @selection-change 仅桌面触发）
+function isRowSelected(row: PartListItem): boolean {
+  return selectedRows.value.some((r) => r.id === row.id)
+}
+
+function onCardSelectionChange(row: PartListItem, checked: boolean): void {
+  if (checked) {
+    if (!isRowSelected(row)) {
+      selectedRows.value = [...selectedRows.value, row]
+    }
+  } else {
+    selectedRows.value = selectedRows.value.filter((r) => r.id !== row.id)
+  }
+}
+
 function onSelectAll(): void {
   selectedRows.value = [...items.value]
 }
@@ -522,16 +591,34 @@ onMounted(() => {
   color: var(--text-secondary);
   font-size: 13px;
 }
-.sheet-wrapper {
-  background: #fff;
-  border-radius: 6px;
-  padding: 8px 0;
-}
 .pagination {
   display: flex;
   justify-content: flex-end;
   padding: 12px 16px 0;
 }
+
+/* ResponsiveList 内部已自带 .rl-table-wrap 等价样式，这里不再使用 .sheet-wrapper。
+   保留规则避免桌面切换瞬时样式抖动。 */
+
+/* 手机卡片复刻 el-table 选择列 + 加急徽标 */
+.dn-card-check {
+  flex: 1;
+  min-width: 0;
+}
+.dn-card-check :deep(.el-checkbox__label) {
+  flex: 1;
+  min-width: 0;
+}
+.dn-urgent-badge {
+  flex-shrink: 0;
+  background: #f56c6c;
+  color: #fff;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
 .bottom-bar {
   display: flex;
   align-items: center;

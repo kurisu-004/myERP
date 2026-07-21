@@ -26,7 +26,15 @@
     </el-card>
 
     <el-card shadow="never">
-      <el-table :data="rows" v-loading="loading" stripe border size="small">
+      <ResponsiveList
+        :items="rows"
+        :loading="loading"
+        row-key="id"
+        empty-text="暂无外协公司"
+        stripe
+        border
+        size="small"
+      >
         <el-table-column type="index" label="#" width="50" />
         <el-table-column prop="name" label="公司名" min-width="160" />
         <el-table-column prop="contact_name" label="联系人" min-width="100">
@@ -58,14 +66,42 @@
             <el-button link type="danger" size="small" @click="onDelete(row as OutsourceCompany)">删除</el-button>
           </template>
         </el-table-column>
-      </el-table>
-      <div class="table-footer">
+
+        <template #card="{ row }">
+          <div class="rl-card-head">
+            <span class="rl-card-title">{{ (row as OutsourceCompany).name }}</span>
+            <el-tag :type="(row as OutsourceCompany).is_active ? 'success' : 'info'" size="small">
+              {{ (row as OutsourceCompany).is_active ? '启用' : '停用' }}
+            </el-tag>
+          </div>
+          <div class="rl-card-sub">
+            {{ (row as OutsourceCompany).contact_name || '暂无联系人' }}
+          </div>
+          <div class="rl-kv">
+            <div class="rl-kv__item">
+              <span class="rl-kv__key">联系电话</span>
+              <span class="rl-kv__val">{{ (row as OutsourceCompany).contact_phone || '—' }}</span>
+            </div>
+            <div class="rl-kv__item rl-kv__item--full">
+              <span class="rl-kv__key">地址</span>
+              <span class="rl-kv__val">{{ (row as OutsourceCompany).address || '—' }}</span>
+            </div>
+          </div>
+          <div class="rl-card-actions">
+            <el-button link type="primary" size="small" @click="onEdit(row as OutsourceCompany)">编辑</el-button>
+            <el-button link type="warning" size="small" @click="onManageProcesses(row as OutsourceCompany)">维护工序</el-button>
+            <el-button link type="danger" size="small" @click="onDelete(row as OutsourceCompany)">删除</el-button>
+          </div>
+        </template>
+      </ResponsiveList>
+      <div class="pagination">
         <el-pagination
           v-model:current-page="search.offset"
           v-model:page-size="search.limit"
           :total="total"
           :page-sizes="[50, 100, 200]"
-          layout="total, sizes, prev, pager, next, jumper"
+          :layout="paginationLayout"
+          :pager-count="isMobile ? 5 : 7"
           @size-change="fetchList"
           @current-change="fetchList"
         />
@@ -76,7 +112,8 @@
     <el-dialog
       v-model="dialogVisible"
       :title="editing ? '编辑外协公司' : '新增外协公司'"
-      width="520px"
+      :width="companyDlg.width.value"
+      :top="companyDlg.top.value"
       :close-on-click-modal="false"
       @closed="onDialogClosed"
     >
@@ -121,7 +158,8 @@
     <el-dialog
       v-model="manageDialogVisible"
       :title="managing ? `维护「${managing.name}」的工序能力` : ''"
-      width="520px"
+      :width="companyDlg.width.value"
+      :top="companyDlg.top.value"
       :close-on-click-modal="false"
       @closed="onManageDialogClosed"
     >
@@ -150,9 +188,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   createOutsourceCompany,
   getOutsourceCompany,
@@ -164,6 +205,12 @@ import {
 import type { OutsourceCompany } from '@/types/outsource'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
+
+const { isMobile } = useBreakpoint()
+const companyDlg = useDialogSize({ desktopWidth: 520 })
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 const loading = ref(false)
 const saving = ref(false)
@@ -365,7 +412,15 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .outsource-list { display: flex; flex-direction: column; gap: 12px; }
-.table-footer { display: flex; justify-content: flex-end; margin-top: 12px; }
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
+}
 .process-check-group {
   display: flex;
   flex-direction: column;

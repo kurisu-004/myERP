@@ -1,15 +1,19 @@
 <!--
   PendingProgrammingList.vue — 待编程一览（status=PROGRAMMING 的零件）
 
-  业务背景（2026-07-14）
+  业务背景（2026-07-14 / 2026-07-20）
   ====================
   - 菜单侧：CNC 编程员专属入口；侧栏只挂「待编程一览」（顶层菜单）。
   - 数据侧：调 GET /parts/pending-programming（status=PROGRAMMING 已硬编码于后端）。
-  - 两个动作：
+  - 两个动作（2026-07-20 移除「文件」按钮 + el-drawer，理由：「df6b4d8 引入的过度设计」）
     * 「详情」 → 跳 /parts/{id}（PartDetail 页内有图纸下载 / G 代码上传 / 设定单上传）
     * 「下发到生产」 → 弹 el-dialog 同时选 PRODUCTION 货架 + 下一道工序，
       调 POST /parts/{id}/release-from-programming（PROGRAMMING → IN_PROCESS）。
       后端要求必须先上传 G_CODE + SETUP_SHEET，否则 400；前端 catch 后 ElMessage.error。
+  - 移动端适配（2026-07-21）：
+    * 表格用 ResponsiveList 包裹，< md 自动改为卡片流
+    * 分页 layout 按 isMobile 切换（手机只保留 prev/pager/next）
+    * 下发到生产 el-dialog 用 useDialogSize（手机近全屏）
   - 加急行整行红底 #fde2e2（与 PartsList / InspectionPending 同款）。
   - 自动刷新（10s）按需勾选。
 -->
@@ -46,89 +50,127 @@
       </div>
     </el-card>
 
-    <div class="sheet-wrapper">
-      <el-table
-        :data="items"
-        v-loading="loading"
-        stripe
-        border
-        style="width: 100%"
-        size="small"
-        :row-class-name="rowClassName"
-        :empty-text="emptyText"
+    <ResponsiveList
+      :items="items"
+      :loading="loading"
+      row-key="id"
+      :empty-text="emptyText"
+      :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
+      stripe
+      border
+      size="small"
+      :row-class-name="rowClassName"
+    >
+      <el-table-column
+        prop="serial_no"
+        label="序列号"
+        width="110"
+        fixed="left"
+        show-overflow-tooltip
       >
-        <el-table-column
-          prop="serial_no"
-          label="序列号"
-          width="110"
-          fixed="left"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          prop="drawing_no"
-          label="图号"
-          width="130"
-          fixed="left"
-          show-overflow-tooltip
-        />
-
-        <el-table-column
-          prop="name"
-          label="名称"
-          min-width="200"
-          show-overflow-tooltip
-        >
-          <template #default="{ row }">
-            <router-link :to="`/parts/${row.id}`" class="name-link">
-              {{ row.name }}
-            </router-link>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="quantity" label="数量" width="80" align="right" />
-
-        <el-table-column
-          prop="planned_delivery_date"
-          label="计划交期"
-          width="120"
-        />
-
-        <el-table-column label="客户" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="row.customer_path">{{ row.customer_path }}</span>
-            <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="160" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              link
-              type="primary"
-              size="small"
-              @click="$router.push(`/parts/${row.id}`)"
-            >详情</el-button>
-            <el-button
-              link
-              type="success"
-              size="small"
-              :loading="row._releasing"
-              @click="openReleaseDialog(row as PartListItem)"
-            >下发</el-button>
-          </template>
-        </el-table-column>
-
-        <template #empty>
-          <el-empty :description="emptyText" />
+        <template #default="{ row }">
+          <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
-      </el-table>
-    </div>
+      </el-table-column>
+
+      <el-table-column
+        prop="drawing_no"
+        label="图号"
+        width="130"
+        fixed="left"
+        show-overflow-tooltip
+      />
+
+      <el-table-column
+        prop="name"
+        label="名称"
+        min-width="200"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <router-link :to="`/parts/${row.id}`" class="name-link">
+            {{ row.name }}
+          </router-link>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="quantity" label="数量" width="80" align="right" />
+
+      <el-table-column
+        prop="planned_delivery_date"
+        label="计划交期"
+        width="120"
+      />
+
+      <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.customer_path">{{ row.customer_path }}</span>
+          <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="操作" width="160" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            @click="$router.push(`/parts/${row.id}`)"
+          >详情</el-button>
+          <el-button
+            link
+            type="success"
+            size="small"
+            :loading="row._releasing"
+            @click="openReleaseDialog(row as PartListItem)"
+          >下发</el-button>
+        </template>
+      </el-table-column>
+
+      <!-- 手机卡片（2026-07-21 同步 master 的「2 个动作」） -->
+      <template #card="{ row }">
+        <div class="rl-card-head">
+          <router-link :to="`/parts/${row.id}`" class="rl-card-title name-link">
+            {{ row.name }}
+          </router-link>
+        </div>
+        <div class="rl-card-sub">
+          图号 {{ row.drawing_no || '—' }} · 序列号 {{ row.serial_no || '—' }}
+        </div>
+        <div class="rl-kv">
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__val">{{ row.quantity }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">计划交期</span>
+            <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item rl-kv__item--full">
+            <span class="rl-kv__key">客户</span>
+            <span class="rl-kv__val">
+              {{ row.customer_path || row.customer_name || '—' }}
+            </span>
+          </div>
+        </div>
+        <div class="rl-card-actions">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            @click="$router.push(`/parts/${row.id}`)"
+          >详情</el-button>
+          <el-button
+            link
+            type="success"
+            size="small"
+            :loading="row._releasing"
+            @click="openReleaseDialog(row as PartListItem)"
+          >下发</el-button>
+        </div>
+      </template>
+    </ResponsiveList>
 
     <div class="pagination">
       <el-pagination
@@ -136,7 +178,8 @@
         v-model:page-size="pageSize"
         :page-sizes="[20, 50, 100]"
         :total="total"
-        layout="total, sizes, prev, pager, next, jumper"
+        :layout="paginationLayout"
+        :pager-count="isMobile ? 5 : 7"
         background
         size="small"
         @current-change="fetchList"
@@ -148,7 +191,9 @@
     <el-dialog
       v-model="releaseDialogVisible"
       title="下发到生产 — 选择目标货架与下一道工序"
-      width="560px"
+      :width="releaseDlg.width.value"
+      :top="releaseDlg.top.value"
+      :fullscreen="releaseDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onReleaseDialogClosed"
     >
@@ -233,6 +278,9 @@ import {
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
+import ResponsiveList from '@/components/ResponsiveList.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 import {
   listPendingProgramming,
   releaseFromProgramming,
@@ -259,6 +307,12 @@ const pageSize = ref(20)
 const search = reactive({ keyword: '' })
 
 const emptyText = computed(() => errorMsg.value ?? '暂无待编程零件')
+
+const { isMobile } = useBreakpoint()
+// 手机上分页收窄为 prev/pager/next，桌面保留完整布局
+const paginationLayout = computed(() =>
+  isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
 
 function rowClassName({ row }: { row: PartListItem }): string {
   return row.is_urgent ? 'row-urgent' : ''
@@ -319,6 +373,7 @@ onBeforeUnmount(() => {
 })
 
 // ============ 下发到生产 对话框 ============
+const releaseDlg = useDialogSize({ desktopWidth: 560 })
 const releaseDialogVisible = ref(false)
 const releaseTarget = ref<RowState | null>(null)
 const releaseShelfId = ref<string>('')
@@ -426,7 +481,7 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .pending-programming {
   padding: 0;
 }
@@ -444,15 +499,14 @@ onMounted(() => {
   color: var(--text-secondary);
   font-size: 13px;
 }
-.sheet-wrapper {
-  background: #fff;
-  border-radius: 6px;
-  padding: 8px 0;
-}
 .pagination {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+
+  @include until(sm) {
+    justify-content: center;
+  }
 }
 .name-link {
   color: var(--el-color-primary);

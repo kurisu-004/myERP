@@ -11,7 +11,7 @@
     <el-card shadow="never" class="info-card" v-loading="infoLoading">
       <template v-if="part">
         <template v-if="editing">
-          <el-descriptions :column="3" border>
+          <el-descriptions :column="descCol" border>
             <el-descriptions-item label="序列号">
               <span v-if="part.serial_no" class="mono">{{ part.serial_no }}</span>
               <span v-else class="muted">—</span>
@@ -68,7 +68,7 @@
         </template>
 
         <template v-else>
-          <el-descriptions :column="3" border>
+          <el-descriptions :column="descCol" border>
             <el-descriptions-item label="序列号">
               <span v-if="part.serial_no" class="mono">{{ part.serial_no }}</span>
               <span v-else class="muted">—</span>
@@ -162,7 +162,7 @@
           </el-button>
         </div>
       </template>
-      <el-descriptions v-if="assemblyDetail" :column="3" border>
+      <el-descriptions v-if="assemblyDetail" :column="descCol" border>
         <el-descriptions-item label="总图图号">
           <span class="mono">{{ assemblyDetail.assembly.drawing_no }}</span>
         </el-descriptions-item>
@@ -504,7 +504,9 @@
     <el-dialog
       v-model="receiveOutsourceDialogVisible"
       title="外协回收 — 选择目标生产货架与下一道工序"
-      width="560px"
+      :width="receiveOutsourceDlg.width.value"
+      :top="receiveOutsourceDlg.top.value"
+      :fullscreen="receiveOutsourceDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onReceiveOutsourceDialogClosed"
     >
@@ -565,7 +567,9 @@
     <el-dialog
       v-model="failInspDialogVisible"
       title="品检打回 — 选择目标生产货架"
-      width="480px"
+      :width="failInspDlg.width.value"
+      :top="failInspDlg.top.value"
+      :fullscreen="failInspDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onFailInspDialogClosed"
     >
@@ -608,7 +612,13 @@
     </el-dialog>
 
     <!-- 取消 / 删除确认对话框 -->
-    <el-dialog v-model="confirmVisible" :title="confirmTitle" width="420px">
+    <el-dialog
+      v-model="confirmVisible"
+      :title="confirmTitle"
+      :width="confirmDlg.width.value"
+      :top="confirmDlg.top.value"
+      :fullscreen="confirmDlg.fullscreen.value"
+    >
       <div class="confirm-body">
         <p class="confirm-hint">{{ confirmHint }}</p>
         <el-form label-width="80px">
@@ -633,7 +643,14 @@
     </el-dialog>
 
     <!-- 下发到 CNC 货架对话框（PROGRAMMING → IN_PROCESS） -->
-    <el-dialog v-model="releaseVisible" title="下发到 CNC 货架" width="440px" @closed="onReleaseClosed">
+    <el-dialog
+      v-model="releaseVisible"
+      title="下发到 CNC 货架"
+      :width="releaseDlg.width.value"
+      :top="releaseDlg.top.value"
+      :fullscreen="releaseDlg.fullscreen.value"
+      @closed="onReleaseClosed"
+    >
       <el-form label-width="96px">
         <el-form-item label="目标货架" required>
           <el-select
@@ -681,7 +698,9 @@
     <el-dialog
       v-model="showQuoteCreate"
       title="新建外协报价（DRAFT）"
-      width="640px"
+      :width="quoteCreateDlg.width.value"
+      :top="quoteCreateDlg.top.value"
+      :fullscreen="quoteCreateDlg.fullscreen.value"
       :close-on-click-modal="false"
       @closed="onQuoteCreateDialogClosed"
     >
@@ -808,10 +827,23 @@ import {
 } from '@/api/assembly'
 import { useAuthSession } from '@/composables/useAuthSession'
 import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useDialogSize } from '@/composables/useDialogSize'
 
 const route = useRoute()
 const router = useRouter()
 const partId = ref<string>(String(route.params.id ?? ''))
+
+// ============ 响应式 ============
+const { isMobile, isTablet } = useBreakpoint()
+const descCol = computed(() => (isMobile.value ? 1 : isTablet.value ? 2 : 3))
+
+// 各 dialog 独立的响应式宽度（保留桌面固定 px）
+const receiveOutsourceDlg = useDialogSize({ desktopWidth: 560, fullscreenOnMobile: true })
+const failInspDlg = useDialogSize({ desktopWidth: 480, fullscreenOnMobile: true })
+const confirmDlg = useDialogSize({ desktopWidth: 420 })
+const releaseDlg = useDialogSize({ desktopWidth: 440, fullscreenOnMobile: true })
+const quoteCreateDlg = useDialogSize({ desktopWidth: 640, fullscreenOnMobile: true })
 
 // ============ 数据 ============
 const part = ref<PartItem | null>(null)
@@ -1714,6 +1746,11 @@ function onViewQuoteDetail(_q: OutsourceQuote): void {
     border: 1px solid var(--el-border-color-lighter);
     border-radius: 4px;
     font-size: 13px;
+
+    @include until(sm) {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
   }
   .cnc-name {
     overflow: hidden;

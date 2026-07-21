@@ -1,0 +1,43 @@
+// 手机优先断点（mobile-first）——值必须与 src/composables/useBreakpoint.ts 的 BREAKPOINTS 同步
+$bp-xs: 0;
+$bp-sm: 480px;
+$bp-md: 768px;
+$bp-lg: 1024px;
+$bp-xl: 1280px;
+$bp-2xl: 1536px;
+
+// min-width 媒体查询（手机优先：默认样式面向 xs，向上叠加）
+@mixin from($name) {
+  @if $name == xs {
+    @content;
+  } @else if $name == sm {
+    @media (min-width: $bp-sm) { @content; }
+  } @else if $name == md {
+    @media (min-width: $bp-md) { @content; }
+  } @else if $name == lg {
+    @media (min-width: $bp-lg) { @content; }
+  } @else if $name == xl {
+    @media (min-width: $bp-xl) { @content; }
+  } @else if $name == 2xl {
+    @media (min-width: $bp-2xl) { @content; }
+  } @else {
+    @error "Unknown breakpoint: #{$name}";
+  }
+}
+
+// max-width 媒体查询（向下：面向桌面收窄的场景）
+@mixin until($name) {
+  @if $name == sm {
+    @media (max-width: #{$bp-sm - 1px}) { @content; }
+  } @else if $name == md {
+    @media (max-width: #{$bp-md - 1px}) { @content; }
+  } @else if $name == lg {
+    @media (max-width: #{$bp-lg - 1px}) { @content; }
+  } @else if $name == xl {
+    @media (max-width: #{$bp-xl - 1px}) { @content; }
+  } @else if $name == 2xl {
+    @media (max-width: #{$bp-2xl - 1px}) { @content; }
+  } @else {
+    @error "Unknown breakpoint: #{$name}";
+  }
+}
