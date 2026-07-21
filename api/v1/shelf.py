@@ -1,11 +1,12 @@
 """货架管理端点。
 
 路由结构（与 /customers、/work-types 一致的 read/write 双 router 拆分）：
-- **读端点**（GET）：MANAGER + CLERK + CNC_PROGRAMMER。
-  文员下发零件 / 编程员下达 / 扫码台取件 / 用户管理下拉等业务页都要拉货架列表。
+- **读端点**（GET）：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT + INSPECTOR。
+  文员下发零件 / 编程员下达 / 扫码台取件 / 用户管理下拉等业务页都要拉货架列表；
+  INSPECTOR 在外协发送/接收 + 待品检品检打回弹框需要货架下拉（PR-I 2026-07-20）。
 - **写端点**（POST 创建 / 更新 / 软删）：MANAGER-only。
-  货架是组织结构资源，只允许管理员改动；CLERK / CNC_PROGRAMMER 通过现有菜单
-  （订单管理、待编程一览、扫码台）只读使用。
+  货架是组织结构资源，只允许管理员改动；CLERK / CNC_PROGRAMMER / INSPECTOR
+  通过现有菜单（订单管理、待编程一览、扫码台、待品检、外协发送接收）只读使用。
 
 货架本身不带账号；账号与货架的多对多关系通过 t_user_role 维护，
 见 /api/v1/users/{user_id}/roles。
@@ -40,9 +41,11 @@ from service.shelf import ShelfService
 from service.shelf_process import ShelfProcessService
 
 # ============================================================
-# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT
+# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT + INSPECTOR
 # （SHELF_ACCOUNT 在 2026-07-10 加入：共享 HMI 扫码台需要拉货架详情来渲染
-#  PICK_UP / RETURN 卡片网格；写入仍由 write_router MANAGER-only 控制）
+#  PICK_UP / RETURN 卡片网格；
+#  INSPECTOR 在 PR-I 2026-07-20 加入：外协发送/接收 + 待品检品检打回弹框需要货架下拉；
+#  写入仍由 write_router MANAGER-only 控制）
 # ============================================================
 read_router = APIRouter(
     prefix="/shelves",
@@ -53,6 +56,7 @@ read_router = APIRouter(
             UserRole.CLERK,
             UserRole.CNC_PROGRAMMER,
             UserRole.SHELF_ACCOUNT,
+            UserRole.INSPECTOR,
         ))
     ],
 )

@@ -1,8 +1,9 @@
 """客户管理 API。
 
 路由结构：
-- 读端点 (`GET /customers`)：MANAGER + CLERK + CNC_PROGRAMMER 共享，
-  文员/编程员要拉客户列表做筛选。
+- 读端点 (`GET /customers`)：MANAGER + CLERK + CNC_PROGRAMMER + INSPECTOR
+  共享，文员/编程员要拉客户列表做筛选；INSPECTOR 在外协发送/接收 + 报价
+  页的客户下拉也读这一份（PR-I 2026-07-20）。
 - CRUD 端点（POST / 单条 GET / update / soft-delete）：MANAGER + CLERK。
   与申请人目录一致（user 拍板"MANAGER + CLERK 都可写"）。
 
@@ -22,7 +23,8 @@ from schema.customer import (
 from service import CustomerService
 
 # ============================================================
-# 读路由：开放给 MANAGER + CLERK + CNC_PROGRAMMER
+# 读路由：开放给 MANAGER + CLERK + CNC_PROGRAMMER + INSPECTOR
+# （PR-I 2026-07-20：INSPECTOR 外协发送/接收 + 报价页需要客户下拉）
 # ============================================================
 read_router = APIRouter(
     prefix="/customers",
@@ -30,6 +32,7 @@ read_router = APIRouter(
     dependencies=[
         Depends(require_roles(
             UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+            UserRole.INSPECTOR,
         ))
     ],
 )

@@ -1,8 +1,9 @@
 """工序 (Process) 路由。
 
 路由结构（与 /customers、/shelves、/work-types 一致的 read/write 双 router 拆分）：
-- **读端点**（GET）：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT。
-  文员 / 编程员 / 共享 HMI 扫码台（下拉用）都要拉工序列表。
+- **读端点**（GET）：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT + INSPECTOR。
+  文员 / 编程员 / 共享 HMI 扫码台（下拉用）都要拉工序列表；INSPECTOR 在外协
+  发送/接收页选择「下一 INHOUSE 工序」也要拉工序列表（PR-I 2026-07-20）。
 - **写端点**（POST 创建 / 更新 / 软删）：MANAGER-only。
   工序是组织结构资源，只允许管理员改动；其他角色只读使用。
 """
@@ -21,8 +22,9 @@ from schema.process import (
 from service import ProcessService
 
 # ============================================================
-# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT
-# （SHELF_ACCOUNT 在 2026-07-10 加入：共享 HMI 扫码台需要拉工序下拉）
+# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT + INSPECTOR
+# （SHELF_ACCOUNT 在 2026-07-10 加入：共享 HMI 扫码台需要拉工序下拉；
+#  INSPECTOR 在 PR-I 2026-07-20 加入：外协发送/接收页要选下一 INHOUSE 工序）
 # ============================================================
 read_router = APIRouter(
     prefix="/processes",
@@ -33,6 +35,7 @@ read_router = APIRouter(
             UserRole.CLERK,
             UserRole.CNC_PROGRAMMER,
             UserRole.SHELF_ACCOUNT,
+            UserRole.INSPECTOR,
         ))
     ],
 )
@@ -43,7 +46,7 @@ _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
 @read_router.get(
     "",
     response_model=ProcessListOut,
-    summary="工序列表（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT）",
+    summary="工序列表（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT / INSPECTOR）",
 )
 async def list_processes(
     code_like: str | None = Query(default=None),

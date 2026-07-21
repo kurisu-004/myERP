@@ -195,13 +195,16 @@ async def add_assembly_child(
     return child_out.model_dump(mode="json")
 
 
-# ---------- 子件反查（MANAGER + CLERK + CNC_PROGRAMMER） ----------
+# ---------- 子件反查（MANAGER + CLERK + CNC_PROGRAMMER + INSPECTOR） ----------
+# （INSPECTOR 在 PR-I 2026-07-20 加入：PartDetail 页对装配件子件反查父装配件
+#  时会调此端点；INSPECTOR 已经能访问装配体 list/detail/files）
 child_router = APIRouter(
     prefix="/parts",
     tags=["零件管理"],
     dependencies=[
         Depends(require_roles(
             UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER,
+            UserRole.INSPECTOR,
         ))
     ],
 )
