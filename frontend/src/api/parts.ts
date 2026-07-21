@@ -2,6 +2,7 @@
 // 所有 ID 在前端是字符串（雪花 ID 经后端 IdStr 序列化）。
 
 import { api } from '@/api/http'
+import type { PartFileItem } from '@/types/part_file'
 import type {
   OrderStatus,
   PartEventType,
@@ -68,6 +69,12 @@ export interface ListPartsParams {
    * / INSPECTED + note ILIKE '%外协%'）。
    */
   has_outsource_history?: boolean
+  /** 2026-07-21 PR-F：请购日期区间（含端点；任一端点为空表示半开） */
+  request_date_from?: string
+  request_date_to?: string
+  /** 2026-07-21 PR-F：系统交期区间（含端点；任一端点为空表示半开；NULL 字段视为落在区间内） */
+  system_delivery_date_from?: string
+  system_delivery_date_to?: string
   sort_by?: PartSortKey
   sort_dir?: SortDir
   limit?: number
@@ -293,6 +300,87 @@ export async function batchCreateParts(
     if (f) form.append('files', f.data, f.filename)
   })
   const resp = await api.post<PartBatchResult>('/parts/batch', form)
+  return resp.data
+}
+
+// ===== 2026-07-21：批量树形创建（PDF 批量上传，单页=独立零件，多页=装配件+子件） =====
+
+export interface PartBatchTreeAssemblyFE {
+  uid: string
+  drawing_no: string | null
+  name: string | null
+  applicant_name: string | null
+  applicant_id: string | null
+  customer_id: string
+  request_date: string
+  planned_delivery_date: string
+  system_delivery_date?: string | null
+  order_no?: string | null
+  note?: string | null
+  is_urgent: boolean
+}
+
+export interface PartBatchTreeItemFE {
+  pdf_index: number
+  page_index: number
+  assembly_uid: string | null
+  is_master: boolean
+  drawing_no: string
+  name: string
+  applicant_name: string | null
+  applicant_id: string | null
+  quantity: number
+  customer_id: string
+  request_date: string
+  planned_delivery_date: string
+  system_delivery_date?: string | null
+  order_no?: string | null
+  note?: string | null
+  is_urgent: boolean
+}
+
+export interface PartBatchTreePartResultFE {
+  uid: string
+  kind: 'part' | 'assembly_child'
+  part: PartItem
+}
+
+export interface PartBatchTreeAssemblyResultFE {
+  uid: string
+  assembly: {
+    id: string
+    serial_no: string | null
+    drawing_no: string
+    name: string
+    status: string
+    child_count: number
+  }
+  master_file: PartFileItem | null
+  children: PartBatchTreePartResultFE[]
+  child_files: PartFileItem[]
+}
+
+export interface PartBatchTreeResultFE {
+  standalone_parts: PartBatchTreePartResultFE[]
+  assemblies: PartBatchTreeAssemblyResultFE[]
+  failed: PartBatchFailure[]
+}
+
+/**
+ * 批量树形创建：单页 PDF → 独立零件；多页 PDF → 装配件 + 子件。
+ * 文件按 `pdf_index` 隐式对齐 `items`（frontend 端按上传顺序记录）。
+ */
+export async function batchCreatePartsWithPdfs(
+  items: PartBatchTreeItemFE[],
+  assemblies: PartBatchTreeAssemblyFE[],
+  files: PartBatchFilePayload[],
+): Promise<PartBatchTreeResultFE> {
+  const form = new FormData()
+  form.append('data', JSON.stringify({ items, assemblies }))
+  files.forEach((f) => {
+    if (f.data) form.append('files', f.data, f.filename)
+  })
+  const resp = await api.post<PartBatchTreeResultFE>('/parts/batch-with-pdfs', form)
   return resp.data
 }
 

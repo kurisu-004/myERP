@@ -1,11 +1,17 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
 from schema._types import IdStr, IdStrNonNull
+
+# 仅为 Pydantic 类型注解（TYPE_CHECKING 守卫）做静态类型提示；
+# 真正的运行时前向引用通过 model_rebuild() 配合 module globals 解析。
+if TYPE_CHECKING:
+    from schema.assembly import AssemblyOut
+    from schema.part_file import PartFileOut
 
 
 class PartListQuery(BaseModel):
@@ -28,6 +34,11 @@ class PartListQuery(BaseModel):
             "INSPECTED+note ILIKE '%外协%' 判定；2026-07-20 新增，外协接收历史页用）"
         ),
     )
+    # —— PR-F 日期区间筛选（2026-07-21 新增）——
+    request_date_from: date | None = Field(default=None, description="请购日期区间起点（含）")
+    request_date_to: date | None = Field(default=None, description="请购日期区间终点（含）")
+    system_delivery_date_from: date | None = Field(default=None, description="系统交期区间起点（含）")
+    system_delivery_date_to: date | None = Field(default=None, description="系统交期区间终点（含）")
     sort_by: PartSortKey = Field(
         default=PartSortKey.PLANNED_DELIVERY_DATE, description="排序字段"
     )
@@ -266,6 +277,135 @@ class PartBatchCreateResult(BaseModel):
 
     created: list[PartOut]
     failed: list[PartBatchCreateItemFailure]
+
+
+# ============================================================
+# 批量树形创建（PDF 自动按页拆分，单页=独立零件，多页=装配件+子件）
+# ============================================================
+class PartBatchTreeItem(BaseModel):
+    """批量树形创建的单条节点（PDF 拆分后每个单页对应一条）。
+
+    - `pdf_index` / `page_index` 由前端基于「解析并预览」步骤生成。
+    - `assembly_uid` 在多页 PDF 的所有 page 间共享；单页 PDF 时填 null。
+    - `is_master=True` 表示当前页作为该 PDF 的总装图上传（kind=ASSEMBLY_MASTER）；
+      多页 PDF 最多 1 条为 True。
+    """
+
+    pdf_index: int = Field(ge=0, description="0-based 对应上传 PDF 数组下标")
+    page_index: int = Field(ge=0, description="0-based 对应 PDF 内的页码（0 = 第 1 页）")
+    assembly_uid: str | None = Field(
+        default=None,
+        description="所属装配件的客户端 uid（同 PDF 内所有 page 必须共享）；单页 PDF 填 null",
+    )
+    is_master: bool = Field(
+        default=False,
+        description="True：当前页作为该 PDF 的总装图上传（kind=ASSEMBLY_MASTER）",
+    )
+    # —— 元数据 ——
+    drawing_no: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    applicant_name: str | None = Field(default=None, max_length=50)
+    applicant_id: str | None = Field(default=None, description="申请人 id（雪花 ID 字符串）")
+    quantity: int = Field(default=1, ge=1)
+    customer_id: str = Field(description="二级叶子客户 id（雪花 ID 字符串）")
+    request_date: date
+    planned_delivery_date: date
+    # —— 送货单字段（PR-F 2026-07-17，可空；用户也可留空，后续 update）——
+    order_no: str | None = Field(default=None, max_length=30, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注")
+    is_urgent: bool = False
+
+    @field_validator("drawing_no", "name", "applicant_name")
+    @classmethod
+    def _strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None
+
+
+class PartBatchTreeAssembly(BaseModel):
+    """一个多页 PDF 对应一个虚拟装配件元数据（前端组装，服务端用其 uid 聚合）。"""
+
+    uid: str = Field(description="前端 uid，与 PartBatchTreeItem.assembly_uid 对齐")
+    drawing_no: str | None = Field(
+        default=None, max_length=100,
+        description="总图图号（仅当 is_master=true 时必填；未选允许空）",
+    )
+    name: str | None = Field(
+        default=None, max_length=200,
+        description="装配体名称（仅当 is_master=true 时必填）",
+    )
+    applicant_name: str | None = Field(default=None, max_length=50)
+    applicant_id: str | None = Field(default=None)
+    customer_id: str = Field(description="二级叶子客户 id（雪花 ID 字符串）")
+    request_date: date
+    planned_delivery_date: date
+    # 装配体层目前不写 order_no/system_delivery_date（t_assembly 无这两列），
+    # 但 schema 接受以便前端统一处理。
+    order_no: str | None = Field(default=None, max_length=30, description="订单号（装配体层 schema 接受，DB 不写）")
+    system_delivery_date: date | None = Field(default=None, description="系统交期（装配体层 schema 接受，DB 不写）")
+    note: str | None = Field(default=None, max_length=500, description="备注")
+    is_urgent: bool = False
+
+    @field_validator("drawing_no", "name", "applicant_name")
+    @classmethod
+    def _strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else None
+
+
+class PartBatchTreeRequest(BaseModel):
+    """批量树形创建请求体（multipart 中的 `data` JSON 字符串）。"""
+
+    items: list[PartBatchTreeItem] = Field(
+        min_length=1, max_length=1000,
+        description="所有 PDF 的所有页面展开成的列表（单页 PDF 只有 1 条）",
+    )
+    assemblies: list[PartBatchTreeAssembly] = Field(
+        default_factory=list,
+        description="多页 PDF 的装配件元数据；单页 PDF 没有装配体，列表为空",
+    )
+
+
+class PartBatchTreePartResult(BaseModel):
+    """创建好的单条零件（含 t_part.id + serial_no）。"""
+
+    uid: str = Field(
+        description="前端回传的临时 id（单页 PDF 用 page_index 字符串；多页用 assembly_uid+'-'+page_index）",
+    )
+    kind: Literal["part", "assembly_child"] = Field(
+        description="part = 单页独立零件；assembly_child = 多页装配体子件",
+    )
+    part: PartOut
+
+
+class PartBatchTreeAssemblyResult(BaseModel):
+    """创建好的装配体（如有）。"""
+
+    uid: str
+    assembly: "AssemblyOut"
+    master_file: "PartFileOut | None" = Field(
+        description="kind=ASSEMBLY_MASTER 的图纸；用户未选 master 时为 null",
+    )
+    children: list[PartBatchTreePartResult]
+    child_files: list["PartFileOut"]
+
+
+class PartBatchTreeResult(BaseModel):
+    """批量树形创建结果。"""
+
+    standalone_parts: list[PartBatchTreePartResult] = Field(
+        description="单页 PDF 对应的独立零件列表（无 assembly_id）",
+    )
+    assemblies: list[PartBatchTreeAssemblyResult] = Field(
+        description="多页 PDF 对应的装配件 + 子件列表",
+    )
+    failed: list[PartBatchCreateItemFailure] = Field(
+        default_factory=list,
+        description="整体前置校验失败明细（与 /parts/batch 同款结构）",
+    )
+
+
+# Pydantic v2 自动延迟解析 string forward refs（"AssemblyOut" / "PartFileOut"），
+# 真正使用时再从 sys.modules / globals 找；无需显式 model_rebuild()。
 
 
 # ============================================================

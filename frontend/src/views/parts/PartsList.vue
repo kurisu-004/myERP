@@ -39,6 +39,67 @@
           <span>重置</span>
         </el-button>
 
+        <!-- 日期筛选弹窗（2026-07-21 PR-F：按请购日期 / 系统交期区间筛选） -->
+        <el-popover
+          :width="320"
+          placement="bottom-start"
+          trigger="click"
+          :show-arrow="false"
+          v-model:visible="dateFilterVisible"
+          @show="syncDateDraft"
+        >
+          <template #reference>
+            <el-button :type="anyDateFilterActive ? 'primary' : 'default'" plain>
+              <el-icon><Calendar /></el-icon>
+              <span>日期筛选</span>
+            </el-button>
+          </template>
+          <el-form size="small" label-width="80px">
+            <el-form-item label="请购日期">
+              <div class="date-range">
+                <el-date-picker
+                  v-model="dateDraft.requestFrom"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  placeholder="起点"
+                  style="width: 110px"
+                />
+                <span>~</span>
+                <el-date-picker
+                  v-model="dateDraft.requestTo"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  placeholder="终点"
+                  style="width: 110px"
+                />
+              </div>
+            </el-form-item>
+            <el-form-item label="系统交期">
+              <div class="date-range">
+                <el-date-picker
+                  v-model="dateDraft.systemFrom"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  placeholder="起点"
+                  style="width: 110px"
+                />
+                <span>~</span>
+                <el-date-picker
+                  v-model="dateDraft.systemTo"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  placeholder="终点"
+                  style="width: 110px"
+                />
+              </div>
+            </el-form-item>
+          </el-form>
+          <div class="filter-actions">
+            <el-button size="small" link @click="resetDateFilter">重置</el-button>
+            <el-button size="small" type="primary" @click="applyDateFilter">确定</el-button>
+          </div>
+        </el-popover>
+
         <!-- 手机筛选入口（桌面走表头 popover） -->
         <el-button
           v-if="isMobile"
@@ -53,10 +114,10 @@
         <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）-->
         <el-button
           v-if="!isInspector"
-          @click="router.push('/parts/new/bid-import')"
+          @click="router.push('/parts/new?tab=pdf')"
         >
           <el-icon><Document /></el-icon>
-          <span>从应标 Excel 导入</span>
+          <span>从 PDF/Excel 批量导入</span>
         </el-button>
 
         <!-- 批量打印图纸 toggle（2026-07-17 接入；2026-07-20 INSPECTOR 不可见；手机隐藏依赖 iframe） -->
@@ -200,7 +261,12 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="请购日期" width="150">
+      <el-table-column
+        prop="request_date"
+        label="请购日期"
+        width="150"
+        sortable="custom"
+      >
         <template #default="{ row }">
           <el-date-picker
             v-if="editingId === row.id"
@@ -235,7 +301,12 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="系统交期" width="150">
+      <el-table-column
+        prop="system_delivery_date"
+        label="系统交期"
+        width="150"
+        sortable="custom"
+      >
         <template #default="{ row }">
           <el-date-picker
             v-if="editingId === row.id"
@@ -727,6 +798,12 @@ interface SearchState {
   statuses: OrderStatus[]
   isUrgent: boolean | null
   customerId: string
+  /** 2026-07-21 PR-F：请购日期区间（含端点；空串=无限制） */
+  requestDateFrom: string
+  requestDateTo: string
+  /** 2026-07-21 PR-F：系统交期区间（含端点；空串=无限制） */
+  systemDeliveryDateFrom: string
+  systemDeliveryDateTo: string
 }
 function initialSearch(): SearchState {
   return {
@@ -736,6 +813,10 @@ function initialSearch(): SearchState {
       : ['IN_PROCESS', 'REPAIRING'],
     isUrgent: null,
     customerId: '',
+    requestDateFrom: '',
+    requestDateTo: '',
+    systemDeliveryDateFrom: '',
+    systemDeliveryDateTo: '',
   }
 }
 const search = reactive<SearchState>(initialSearch())
@@ -748,6 +829,58 @@ const statusFilterActive = computed(
   () => search.statuses.length > 0 || search.isUrgent === true,
 )
 const customerFilterActive = computed(() => search.customerId !== '')
+const anyDateFilterActive = computed(
+  () =>
+    !!search.requestDateFrom ||
+    !!search.requestDateTo ||
+    !!search.systemDeliveryDateFrom ||
+    !!search.systemDeliveryDateTo,
+)
+
+// ============ 日期筛选弹窗（2026-07-21 PR-F） ============
+const dateFilterVisible = ref(false)
+const dateDraft = reactive<{
+  requestFrom: string
+  requestTo: string
+  systemFrom: string
+  systemTo: string
+}>({
+  requestFrom: '',
+  requestTo: '',
+  systemFrom: '',
+  systemTo: '',
+})
+
+function syncDateDraft(): void {
+  dateDraft.requestFrom = search.requestDateFrom
+  dateDraft.requestTo = search.requestDateTo
+  dateDraft.systemFrom = search.systemDeliveryDateFrom
+  dateDraft.systemTo = search.systemDeliveryDateTo
+}
+
+function resetDateFilter(): void {
+  dateDraft.requestFrom = ''
+  dateDraft.requestTo = ''
+  dateDraft.systemFrom = ''
+  dateDraft.systemTo = ''
+  search.requestDateFrom = ''
+  search.requestDateTo = ''
+  search.systemDeliveryDateFrom = ''
+  search.systemDeliveryDateTo = ''
+  dateFilterVisible.value = false
+  page.value = 1
+  void fetchList()
+}
+
+function applyDateFilter(): void {
+  search.requestDateFrom = dateDraft.requestFrom
+  search.requestDateTo = dateDraft.requestTo
+  search.systemDeliveryDateFrom = dateDraft.systemFrom
+  search.systemDeliveryDateTo = dateDraft.systemTo
+  dateFilterVisible.value = false
+  page.value = 1
+  void fetchList()
+}
 
 // ============ 状态列头 popover（draft + 确定/重置） ============
 // draft 完全用 OrderStatus 类型（用 string 存「仅加急」标记已删除）；
@@ -940,6 +1073,10 @@ function buildParams(): ListPartsParams {
     statuses: search.statuses.length > 0 ? search.statuses : undefined,
     is_urgent: search.isUrgent ?? undefined,
     keyword: search.keyword.trim() || undefined,
+    request_date_from: search.requestDateFrom || undefined,
+    request_date_to: search.requestDateTo || undefined,
+    system_delivery_date_from: search.systemDeliveryDateFrom || undefined,
+    system_delivery_date_to: search.systemDeliveryDateTo || undefined,
     sort_by: sortBy.value,
     sort_dir: sortDir.value,
     limit: pageSize.value,

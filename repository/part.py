@@ -78,6 +78,10 @@ class PartRepository:
         is_urgent: bool | None = None,
         keyword: str | None = None,
         has_outsource_history: bool | None = None,
+        request_date_from=None,
+        request_date_to=None,
+        system_delivery_date_from=None,
+        system_delivery_date_to=None,
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
@@ -91,20 +95,32 @@ class PartRepository:
             is_urgent=is_urgent,
             keyword=keyword,
             has_outsource_history=has_outsource_history,
+            request_date_from=request_date_from,
+            request_date_to=request_date_to,
+            system_delivery_date_from=system_delivery_date_from,
+            system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
         )
         sort_col = {
             PartSortKey.PLANNED_DELIVERY_DATE: TPart.planned_delivery_date,
             PartSortKey.REQUEST_DATE: TPart.request_date,
+            PartSortKey.SYSTEM_DELIVERY_DATE: TPart.system_delivery_date,
             PartSortKey.CREATED_AT: TPart.created_at,
             PartSortKey.SERIAL_NO: TPart.serial_no,
             PartSortKey.DRAWING_NO: TPart.drawing_no,
             PartSortKey.NAME: TPart.name,
         }[sort_by]
+        # 2026-07-21：可空列（system_delivery_date）排序时 NULL 排末尾（PG NULLS LAST 行为）
         if sort_dir == SortDir.ASC:
-            stmt = stmt.order_by(sort_col.asc(), TPart.id.desc())
+            if sort_by == PartSortKey.SYSTEM_DELIVERY_DATE:
+                stmt = stmt.order_by(sort_col.asc().nulls_last(), TPart.id.desc())
+            else:
+                stmt = stmt.order_by(sort_col.asc(), TPart.id.desc())
         else:
-            stmt = stmt.order_by(sort_col.desc(), TPart.id.desc())
+            if sort_by == PartSortKey.SYSTEM_DELIVERY_DATE:
+                stmt = stmt.order_by(sort_col.desc().nulls_last(), TPart.id.desc())
+            else:
+                stmt = stmt.order_by(sort_col.desc(), TPart.id.desc())
         stmt = stmt.limit(limit).offset(offset)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -118,6 +134,10 @@ class PartRepository:
         is_urgent: bool | None = None,
         keyword: str | None = None,
         has_outsource_history: bool | None = None,
+        request_date_from=None,
+        request_date_to=None,
+        system_delivery_date_from=None,
+        system_delivery_date_to=None,
         include_deleted: bool = False,
     ) -> int:
         stmt = self._build_filter_stmt(
@@ -127,6 +147,10 @@ class PartRepository:
             is_urgent=is_urgent,
             keyword=keyword,
             has_outsource_history=has_outsource_history,
+            request_date_from=request_date_from,
+            request_date_to=request_date_to,
+            system_delivery_date_from=system_delivery_date_from,
+            system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
         ).with_only_columns(func.count(TPart.id))
         result = await self.session.execute(stmt)
@@ -475,6 +499,10 @@ class PartRepository:
         is_urgent: bool | None,
         keyword: str | None,
         has_outsource_history: bool | None,
+        request_date_from=None,
+        request_date_to=None,
+        system_delivery_date_from=None,
+        system_delivery_date_to=None,
         include_deleted: bool,
     ):
         stmt = select(TPart)
@@ -501,6 +529,28 @@ class PartRepository:
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
                 )
+        # 2026-07-21：PR-F 日期区间筛选（请购日期 / 系统交期）。
+        # 仅端点非 None 时加条件；端点为 None 表示半开区间。
+        # 系统交期可空（PR-F 字段 NULL=未设置），区间包含 NULL 时也会命中。
+        # 用 BETWEEN（含端点）；如只要单向 < 或 >，传 None 即可。
+        if request_date_from is not None:
+            stmt = stmt.where(TPart.request_date >= request_date_from)
+        if request_date_to is not None:
+            stmt = stmt.where(TPart.request_date <= request_date_to)
+        if system_delivery_date_from is not None:
+            stmt = stmt.where(
+                or_(
+                    TPart.system_delivery_date.is_(None),
+                    TPart.system_delivery_date >= system_delivery_date_from,
+                )
+            )
+        if system_delivery_date_to is not None:
+            stmt = stmt.where(
+                or_(
+                    TPart.system_delivery_date.is_(None),
+                    TPart.system_delivery_date <= system_delivery_date_to,
+                )
+            )
         # 2026-07-20：外协接收历史页（曾外协过判定）与列表 SQL 合一。
         # EXISTS 子查询命中 `t_part_event` 复合索引 `(part_id, created_at)`，
         # list + count 共用同一谓词，行为完全对齐。

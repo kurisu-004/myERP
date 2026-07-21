@@ -1,7 +1,15 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status as http_status
 from pydantic import BaseModel, Field
 
-from api.deps import get_part_file_repository, get_part_repository, get_part_service
+from api.deps import (
+    get_applicant_service,
+    get_part_file_service,
+    get_part_file_repository,
+    get_part_repository,
+    get_part_service,
+)
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import (
@@ -19,6 +27,8 @@ from schema.part import (
     FailInspectionRequest,
     PartBatchCreateRequest,
     PartBatchCreateResult,
+    PartBatchTreeRequest,
+    PartBatchTreeResult,
     PartCreateRequest,
     PartEventOut,
     PartListOut,
@@ -33,6 +43,8 @@ from schema.part import (
 )
 from service import PartService
 from service._id_parse import parse_snowflake_id
+from service.applicant import ApplicantService
+from service.part_file import PartFileService
 from service.printing import build_part_print_pdf, build_parts_print_pdf_batch
 from core.time import now_naive
 
@@ -104,6 +116,10 @@ async def list_parts(
             "2026-07-20 新增；按下发/接收/外协相关事件 EXISTS 判定）"
         ),
     ),
+    request_date_from: date | None = Query(default=None, description="请购日期区间起点（含）"),
+    request_date_to: date | None = Query(default=None, description="请购日期区间终点（含）"),
+    system_delivery_date_from: date | None = Query(default=None, description="系统交期区间起点（含）"),
+    system_delivery_date_to: date | None = Query(default=None, description="系统交期区间终点（含）"),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -119,6 +135,10 @@ async def list_parts(
             is_urgent=is_urgent,
             keyword=keyword,
             has_outsource_history=has_outsource_history,
+            request_date_from=request_date_from,
+            request_date_to=request_date_to,
+            system_delivery_date_from=system_delivery_date_from,
+            system_delivery_date_to=system_delivery_date_to,
             sort_by=PartSortKey(sort_by),
             sort_dir=SortDir(sort_dir),
             limit=limit,
@@ -178,6 +198,51 @@ async def create_parts_batch(
     else:
         file_payloads = [None] * len(payload.items)
     return await svc.create_parts_batch(payload, file_payloads=file_payloads)
+
+
+@router.post(
+    "/batch-with-pdfs",
+    response_model=PartBatchTreeResult,
+    summary=(
+        "批量树形创建（PDF 自动按页拆分；单页 PDF=独立零件；"
+        "多页 PDF=装配件+子件，可选 master）（MANAGER / CLERK）"
+    ),
+    description=(
+        "multipart/form-data：`data` 是 PartBatchTreeRequest 的 JSON 字符串；"
+        "`files` 是 PDF 数组，按 items[i].pdf_index 对齐。"
+        "单页 PDF：items 一条 → 1 个独立零件（kind=DRAWING）。"
+        "多页 PDF：assemblies 一条 + items N 条 → 1 个装配件 + N 个子件，"
+        "其中 is_master=true 的那条作为 ASSEMBLY_MASTER 上传，"
+        "其它作为各子件 DRAWING 上传。"
+        "任一上传失败 → 整批回滚；前置校验失败 → 返回 failed 列表（不写盘）。"
+        "2026-07-21 新增；替代已退役的 POST /assemblies。"
+    ),
+    dependencies=_office_dep,
+)
+async def create_parts_tree(
+    data: str = Form(..., description="PartBatchTreeRequest 的 JSON 字符串"),
+    files: list[UploadFile] | None = File(
+        default=None,
+        description="PDF 数组，按 items[i].pdf_index 对齐；可少于 items 长度（缺位报 failed）。",
+    ),
+    svc: PartService = Depends(get_part_service),
+    part_file_svc: PartFileService = Depends(get_part_file_service),
+    applicant_svc: ApplicantService = Depends(get_applicant_service),
+) -> PartBatchTreeResult:
+    payload = PartBatchTreeRequest.model_validate_json(data)
+    file_payloads: dict[int, tuple[bytes, str, str | None]] = {}
+    if files:
+        for idx, f in enumerate(files):
+            raw = await f.read()
+            file_payloads[idx] = (
+                raw, f.filename or f"page-{idx}.pdf", f.content_type,
+            )
+    return await svc.create_parts_tree(
+        payload,
+        file_payloads_by_pdf_index=file_payloads,
+        part_files=part_file_svc,
+        applicants=applicant_svc,
+    )
 
 
 @router.post(
