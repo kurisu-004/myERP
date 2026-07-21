@@ -380,26 +380,39 @@ class PartStateMachine(StateChart):
     def on_fail_inspection(
         self,
         shelf=None,
+        process=None,
         event_repo=None,
         *,
+        note: str | None = None,
         created_by: int | None = None,
         **_,
     ):
         """品检不通过：打回生产货架（INSPECTION → ON_SHELF）。
 
-        与 on_complete_repair 区别：本路径不经过 REPAIRING 状态，直接回到 ON_SHELF
-        （DB status='IN_PROCESS', location='PRODUCTION_SHELF'）；next_process_id
-        由 service 在调本方法前清空，文员重新下发时再选工序。
+        2026-07-21 改：接受 `process` 与可选 `note`（品检员填的不合格原因）。
+        next_process_id 由 service 在调本方法**前**写入
+        （不再清空；保留 inspector 指定的下一道工序）。
+        `note` 拼接为 `"打回到货架：<code> 下一工序：<code> | 备注：<note>"`，
+        受 `t_part_event.note` String(500) 上限保护；旧事件不带 ` | 备注：`
+        部分也能正确显示。
         """
         if event_repo and self.model:
             shelf_code = shelf.code if shelf and hasattr(shelf, "code") else ""
-            note = f"打回到货架：{shelf_code}" if shelf_code else "打回到原货架"
+            process_code = process.code if process and hasattr(process, "code") else ""
+            base = (
+                f"打回到货架：{shelf_code} 下一工序：{process_code}".strip()
+                or "打回到原货架"
+            )
+            if note:
+                final_note = (f"{base} | 备注：{note}")[:500]
+            else:
+                final_note = base
             event_repo.add(TPartEvent(
                 part_id=self.model.id,
                 event_type=PartEventType.INSPECTION_FAILED,
                 from_status=PartStatus.INSPECTION,
                 to_status=PartStatus.IN_PROCESS,
-                note=note,
+                note=final_note,
                 created_by=created_by,
             ))
 

@@ -222,6 +222,12 @@ class PartRepository:
         - next_process_id IS NULL（未指定下一道工序）OR
           next_process_id IN mapped_process_ids（被该工种可领）
 
+        2026-07-21 改：在 SELECT 里附加标量子查询，取该 part 最新一条
+        `INSPECTION_FAILED` 事件的 `note`（品检打回备注），作为
+        TPart 的 transient 属性 `last_inspection_fail_note` 返回，供
+        service 层 `_to_out` 写入 `PartOut.last_inspection_fail_note`。
+        transient 属性不会被 SQLAlchemy 视为 dirty。
+
         排序：is_urgent DESC（加急优先）, planned_delivery_date ASC（临期优先）,
               id DESC（稳定排序）。
 
@@ -229,8 +235,19 @@ class PartRepository:
         """
         if not mapped_process_ids:
             return []
+        last_fail_note_subq = (
+            select(TPartEvent.note)
+            .where(
+                TPartEvent.part_id == TPart.id,
+                TPartEvent.event_type == PartEventType.INSPECTION_FAILED.value,
+                TPartEvent.deleted_at.is_(None),
+            )
+            .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
         stmt = (
-            select(TPart)
+            select(TPart, last_fail_note_subq.label("last_inspection_fail_note"))
             .where(
                 TPart.status == "IN_PROCESS",
                 TPart.location == "PRODUCTION_SHELF",
@@ -249,7 +266,12 @@ class PartRepository:
             TPart.id.desc(),
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        parts: list[TPart] = []
+        for row in result.all():
+            part = row[0]
+            part.last_inspection_fail_note = row[1]  # transient attr
+            parts.append(part)
+        return parts
 
     async def list_for_work_type_all_shelves(
         self,
@@ -264,6 +286,9 @@ class PartRepository:
         1. 去掉 `current_holder_id == shelf_id` 单架过滤，改为可选
            `shelf_ids` 多架过滤（None = 全架；空 list = 永远空）；
         2. 前端按 `current_holder_id` 在卡片网格里分组。
+
+        2026-07-21 改：同样附加 last_inspection_fail_note 标量子查询（与
+        list_for_work_type 一致）。
 
         过滤条件：
         - status = 'IN_PROCESS'
@@ -282,8 +307,19 @@ class PartRepository:
             return []
         if shelf_ids is not None and not shelf_ids:
             return []
+        last_fail_note_subq = (
+            select(TPartEvent.note)
+            .where(
+                TPartEvent.part_id == TPart.id,
+                TPartEvent.event_type == PartEventType.INSPECTION_FAILED.value,
+                TPartEvent.deleted_at.is_(None),
+            )
+            .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
         stmt = (
-            select(TPart)
+            select(TPart, last_fail_note_subq.label("last_inspection_fail_note"))
             .where(
                 TPart.status == "IN_PROCESS",
                 TPart.location == "PRODUCTION_SHELF",
@@ -303,7 +339,12 @@ class PartRepository:
             TPart.id.desc(),
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        parts: list[TPart] = []
+        for row in result.all():
+            part = row[0]
+            part.last_inspection_fail_note = row[1]
+            parts.append(part)
+        return parts
 
     # ===== 申请人引用计数（软删前 BIZ_APPLICANT_IN_USE 校验）=====
     async def count_by_applicant_name_in_customers(

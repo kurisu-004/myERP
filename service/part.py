@@ -41,6 +41,7 @@ from repository.work_type import WorkTypeRepository
 from repository.work_type_process import WorkTypeProcessRepository
 from repository.worker import WorkerRepository
 from schema.part import (
+    FailInspectionRequest,
     PartBatchCreateItemFailure,
     PartBatchCreateRequest,
     PartBatchCreateResult,
@@ -1662,11 +1663,21 @@ class PartService:
         items = await self._to_out([part])
         return items[0]
 
-    async def fail_inspection(self, part_id: int, shelf_id: int) -> PartOut:
-        """INSPECTION -> IN_PROCESS：品检不通过，打回生产货架。
+    async def fail_inspection(
+        self, part_id: int, data: FailInspectionRequest,
+    ) -> PartOut:
+        """INSPECTION -> IN_PROCESS：品检不通过，打回生产货架（含备注）。
 
-        与 complete_repair 的区别：本路径不经过 REPAIRING 状态，直接回 ON_SHELF；
-        next_process_id 清空，由文员在重新下发时指定下一道工序。
+        2026-07-21 改：
+        - 接受 `FailInspectionRequest`（shelf_id + next_process_id + note）。
+        - 通过 `_validate_production_shelf_and_process` 一次性校验 shelf 存在 /
+          active / PRODUCTION + process 存在 + **`t_shelf_process` 映射**
+          （与 `place_on_shelf` / `release_from_programming` 对齐，
+          缺映射抛 `BIZ_SHELF_PROCESS_NOT_MAPPED` 422）。
+        - **保留** `part.next_process_id = data.next_process_id`（旧逻辑是清空，
+          由文员 place-on-shelf 再选；现在品检员一并指定，工人可直接领取）。
+        - note 通过 `sm.fail_inspection(..., note=data.note)` 透传到
+          `on_fail_inspection` 回调，写入 `TPartEvent.note`，事件历史一览可见。
         """
         part = await self.parts.get_by_id(part_id)
         if part is None:
@@ -1684,32 +1695,18 @@ class PartService:
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        shelf = await self.shelves.get_by_id(shelf_id)
-        if shelf is None or shelf.deleted_at is not None:
-            raise BizError(
-                code=ErrCode.BIZ_SHELF_NOT_FOUND,
-                message=f"shelf {shelf_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        if not shelf.is_active:
-            raise BizError(
-                code=ErrCode.BIZ_SHELF_IN_USE,
-                message=f"shelf {shelf.code!r} is inactive",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        if shelf.zone != ShelfZone.PRODUCTION.value:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message=(
-                    f"shelf {shelf.code!r} is zone={shelf.zone!r}; "
-                    f"fail_inspection requires PRODUCTION"
-                ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        part.next_process_id = None  # 清空，由文员重新下发时再选
+        shelf_id_int = parse_snowflake_id(data.shelf_id, field_name="shelf_id")
+        process_id_int = parse_snowflake_id(
+            data.next_process_id, field_name="next_process_id",
+        )
+        shelf, process = await self._validate_production_shelf_and_process(
+            shelf_id_int, process_id_int,
+        )
+        part.next_process_id = process.id  # 保留 inspector 指定的下一道工序
         part.sm.fail_inspection(
-            shelf=shelf, event_repo=self.events,
+            shelf=shelf, process=process, event_repo=self.events,
             created_by=self._user_id,
+            note=data.note,
         )
         part.updated_by = self._user_id
         await self.parts.update(part)
@@ -1905,6 +1902,9 @@ class PartService:
                     next_process_name=process_map.get(int(p.next_process_id))
                     if p.next_process_id
                     else None,
+                    # 2026-07-21：transient 属性，仅 list_for_work_type* 路径会填；
+                    # 其它 ORM（如 place_on_shelf、cancel、pick_up）getattr 默认 None。
+                    last_inspection_fail_note=getattr(p, "last_inspection_fail_note", None),
                 )
             )
         return out

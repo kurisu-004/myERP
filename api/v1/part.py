@@ -16,6 +16,7 @@ from model.enums import PartEventType, UserRole
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
 from schema.part import (
+    FailInspectionRequest,
     PartBatchCreateRequest,
     PartBatchCreateResult,
     PartCreateRequest,
@@ -378,20 +379,21 @@ async def pass_part_inspection(
 @router.post(
     "/{part_id}/fail-inspection",
     response_model=PartOut,
-    summary="INSPECTION → IN_PROCESS：品检不通过，打回生产货架（MANAGER / CLERK / INSPECTOR）",
+    summary="INSPECTION → IN_PROCESS：品检不通过，打回生产货架（含备注，MANAGER / CLERK / INSPECTOR）",
     description=(
-        "品检员/文员在 INSPECTION 状态下点击打回，指定目标生产货架；"
-        "next_process_id 清空，零件回到 IN_PROCESS/ON_SHELF，文员重新下发时"
-        "再选下一道工序。"
+        "2026-07-21 改：品检员在 INSPECTION 状态下点击打回，同时指定目标生产货架 + 下一道工序；"
+        "service 端校验 `t_shelf_process` 映射（`BIZ_SHELF_PROCESS_NOT_MAPPED` 422，"
+        "与 place_on_shelf / release_from_programming 对齐）。可选 `note` 写"
+        "入 t_part_event.note，事件历史一览与工人扫码领取列表均可见。"
     ),
     dependencies=_inspector_dep,
 )
 async def fail_part_inspection(
     part_id: int,
-    shelf_id: int = Query(..., description="目标生产货架 id（必须 zone=PRODUCTION）"),
+    payload: FailInspectionRequest,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.fail_inspection(part_id, shelf_id)
+    return await svc.fail_inspection(part_id, payload)
 
 
 @router.post(

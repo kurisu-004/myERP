@@ -87,6 +87,7 @@
             :class="{
               'is-selected': selectedPart?.id === p.id,
               'is-urgent': p.is_urgent,
+              'is-inspection-failed': !!p.last_inspection_fail_note,
             }"
             @click="onSelect(p)"
           >
@@ -114,6 +115,13 @@
                   effect="dark"
                   class="urgent-pulse"
                 >加急</el-tag>
+                <el-tag
+                  v-if="p.last_inspection_fail_note"
+                  type="warning"
+                  size="small"
+                  effect="dark"
+                  class="fail-pulse"
+                >品检打回</el-tag>
                 <span class="delivery-date" :class="deliveryUrgencyClass(p.planned_delivery_date)">
                   <el-icon><Calendar /></el-icon>
                   {{ formatDate(p.planned_delivery_date) }}
@@ -127,6 +135,13 @@
               <div class="part-line-name">
                 <span class="part-name">{{ p.name }}</span>
                 <span v-if="p.customer_path" class="customer">· {{ p.customer_path }}</span>
+              </div>
+
+              <!-- 2.5) 2026-07-21：品检打回备注（仅 last_inspection_fail_note 非空时显示） -->
+              <div v-if="p.last_inspection_fail_note" class="inspection-fail-note">
+                <el-icon class="fail-note-icon"><Warning /></el-icon>
+                <span class="fail-note-label">品检备注</span>
+                <span class="fail-note-text">{{ p.last_inspection_fail_note }}</span>
               </div>
 
               <!-- 3) 数量 + 货架码 -->
@@ -555,6 +570,24 @@ function backToBadge(): void {
   box-shadow: 0 0 0 2px #67c23a inset;
 }
 
+/* 2026-07-21：品检打回件 —— 橙色边框 + 浅橙背景；与加急红、加急选中绿视觉区分 */
+.part-row.is-inspection-failed {
+  background: #fdf6ec;
+  border-color: #e6a23c;
+  border-left-color: #e6a23c;
+}
+.part-row.is-inspection-failed.is-selected {
+  background: #fdf6ec;
+  border-color: #67c23a;
+  box-shadow: 0 0 0 2px #67c23a inset;
+}
+/* 加急 + 品检打回同时命中 → 加急样式优先（红底），但保留橙色左边框作为"打回"标识 */
+.part-row.is-urgent.is-inspection-failed {
+  background: #fef0f0;
+  border-color: #f56c6c;
+  border-left: 4px solid #e6a23c;
+}
+
 .part-row-main { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
 .preview-btn { position: absolute !important; top: 8px; right: 10px; z-index: 1; }
 
@@ -590,6 +623,43 @@ function backToBadge(): void {
 }
 .urgent-pulse {
   animation: urgentPulse 1.2s ease-in-out infinite;
+}
+
+/* 2026-07-21：品检打回备注卡片 —— 浅橙底 + 深橙文字（与「快要到期」chip 同色系） */
+.inspection-fail-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: rgba(230, 162, 60, 0.10);
+  border: 1px solid #faecd8;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #8a5a1f;
+  word-break: break-all;
+}
+.inspection-fail-note .fail-note-icon {
+  color: #e6a23c;
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.inspection-fail-note .fail-note-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.inspection-fail-note .fail-note-text {
+  flex: 1;
+  min-width: 0;
+}
+@keyframes failPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.fail-pulse {
+  animation: failPulse 1.6s ease-in-out infinite;
 }
 
 .preview-loading {

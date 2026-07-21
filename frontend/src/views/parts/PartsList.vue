@@ -559,27 +559,14 @@
           </el-radio-group>
         </el-form-item>
         <template v-if="dispatchMode === 'direct'">
-          <el-form-item label="目标货架" required>
-            <el-select
-              v-model="dispatchShelfId"
-              placeholder="选择生产货架"
-              style="width: 100%"
-              filterable
-            >
-              <el-option
-                v-for="s in filteredShelves"
-                :key="s.id"
-                :label="s.name"
-                :value="s.id"
-              />
-            </el-select>
-          </el-form-item>
+          <!-- 2026-07-21：先选下一道工序，再选目标货架；货架候选按映射过滤 -->
           <el-form-item label="下一道工序" required>
             <el-select
               v-model="dispatchNextProcessId"
-              placeholder="选择工序（必填）"
+              placeholder="请先选择下一道工序"
               style="width: 100%"
               filterable
+              clearable
             >
               <el-option
                 v-for="p in filteredProcesses"
@@ -587,6 +574,32 @@
                 :label="`${p.code} / ${p.name}`"
                 :value="p.id"
               />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="目标货架" required>
+            <el-select
+              v-model="dispatchShelfId"
+              placeholder="先选工序；货架候选按映射过滤"
+              style="width: 100%"
+              filterable
+              clearable
+              :disabled="!dispatchNextProcessId"
+            >
+              <el-option
+                v-for="s in filteredShelves"
+                :key="s.id"
+                :label="s.name"
+                :value="s.id"
+              />
+              <template #empty>
+                <span class="muted">
+                  {{
+                    dispatchNextProcessId
+                      ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                      : '请先选择下一道工序'
+                  }}
+                </span>
+              </template>
             </el-select>
           </el-form-item>
         </template>

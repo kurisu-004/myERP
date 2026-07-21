@@ -122,6 +122,14 @@ class PartOut(BaseModel):
         default=None,
         description="下一道工序名称（NULL = 未设置；避免前端再查 processes 表）",
     )
+    last_inspection_fail_note: str | None = Field(
+        default=None,
+        description=(
+            "最近一次品检打回事件的 note（含「打回到货架：xxx | 备注：xxx」格式，"
+            "由 LEFT JOIN LATERAL t_part_event 计算；工人扫码领取时显示，"
+            "2026-07-21 新增）"
+        ),
+    )
 
 
 class PartListItem(BaseModel):
@@ -279,6 +287,23 @@ class PlaceOnShelfRequest(BaseModel):
         if v <= 0:
             raise ValueError("must be > 0")
         return v
+
+
+class FailInspectionRequest(BaseModel):
+    """2026-07-21 新增：品检打回（INSPECTION → IN_PROCESS）。
+
+    - `shelf_id` 必须在 t_shelf 中存在 / is_active / zone=PRODUCTION。
+    - `next_process_id` 必填 —— 由品检员在下道工序下拉里指定，
+      service 端走 `_validate_production_shelf_and_process` 校验
+      `t_shelf_process` 映射（`BIZ_SHELF_PROCESS_NOT_MAPPED` 422），
+      行为与 `place_on_shelf` / `release_from_programming` 对齐。
+    - `note` 可选，品检员填不合格原因等；写入 `t_part_event.note`
+      （前缀 `"打回到货架：<code> 下一工序：<code> | 备注：<note>"`）。
+    """
+
+    shelf_id: IdStrNonNull
+    next_process_id: IdStrNonNull
+    note: str | None = Field(default=None, max_length=500, description="品检备注（不合格原因等）")
 
 
 class PartUpdateRequest(BaseModel):

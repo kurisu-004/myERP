@@ -187,10 +187,10 @@
       />
     </div>
 
-    <!-- 下发到生产 对话框：选目标生产货架 + 下一道工序 -->
+    <!-- 下发到生产 对话框：2026-07-21 改 —— 先选下一道工序，再选目标货架（按 shelf↔process 映射过滤） -->
     <el-dialog
       v-model="releaseDialogVisible"
-      title="下发到生产 — 选择目标货架与下一道工序"
+      title="下发到生产 — 先选下一道工序，再选目标货架"
       :width="releaseDlg.width.value"
       :top="releaseDlg.top.value"
       :fullscreen="releaseDlg.fullscreen.value"
@@ -204,26 +204,6 @@
       </div>
 
       <el-form label-width="110px" style="margin-top: 12px">
-        <el-form-item label="目标生产货架" required>
-          <el-radio-group
-            v-model="releaseShelfId"
-            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto"
-          >
-            <el-radio
-              v-for="s in filteredProductionShelves"
-              :key="s.id"
-              :value="String(s.id)"
-              :disabled="!s.is_active"
-            >
-              {{ s.code }} — {{ s.name }}
-              <span v-if="!s.is_active" class="muted">（已停用）</span>
-            </el-radio>
-            <span v-if="filteredProductionShelves.length === 0" class="muted">
-              没有可用生产货架
-            </span>
-          </el-radio-group>
-        </el-form-item>
-
         <el-form-item label="下一道工序" required>
           <el-radio-group
             v-model="releaseProcessId"
@@ -246,6 +226,31 @@
             </el-radio>
             <span v-if="filteredInhouseProcesses.length === 0" class="muted">
               没有 INHOUSE 工序，请先在「设置 → 工序管理」中新增
+            </span>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item label="目标生产货架" required>
+          <el-radio-group
+            v-model="releaseShelfId"
+            :disabled="!releaseProcessId"
+            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto"
+          >
+            <el-radio
+              v-for="s in filteredProductionShelves"
+              :key="s.id"
+              :value="String(s.id)"
+              :disabled="!s.is_active"
+            >
+              {{ s.code }} — {{ s.name }}
+              <span v-if="!s.is_active" class="muted">（已停用）</span>
+            </el-radio>
+            <span v-if="filteredProductionShelves.length === 0" class="muted">
+              {{
+                releaseProcessId
+                  ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                  : '没有可用生产货架'
+              }}
             </span>
           </el-radio-group>
         </el-form-item>

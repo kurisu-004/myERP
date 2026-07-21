@@ -563,10 +563,10 @@
       </template>
     </el-dialog>
 
-    <!-- 品检打回对话框（PartDetail 用，复用 releaseVisible 之外的独立状态） -->
+    <!-- 品检打回对话框（PartDetail 用）—— 2026-07-21 改：先选下一道工序，再选目标生产货架；可选品检备注 -->
     <el-dialog
       v-model="failInspDialogVisible"
-      title="品检打回 — 选择目标生产货架"
+      title="品检打回 — 选择下一道工序 + 目标生产货架"
       :width="failInspDlg.width.value"
       :top="failInspDlg.top.value"
       :fullscreen="failInspDlg.fullscreen.value"
@@ -574,29 +574,71 @@
       @closed="onFailInspDialogClosed"
     >
       <el-form label-width="96px">
-        <el-form-item label="目标生产货架" required>
-          <el-radio-group
-            v-model="failInspShelfId"
-            style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto"
+        <el-form-item label="下一道工序" required>
+          <el-select
+            v-model="failInspProcessId"
+            placeholder="请先选择下一道工序"
+            filterable
+            clearable
+            style="width: 100%"
           >
-            <el-radio
-              v-for="s in productionShelves"
+            <el-option
+              v-for="p in failInspFilteredProcesses"
+              :key="p.id"
+              :value="String(p.id)"
+              :label="`${p.code} — ${p.name}`"
+            >
+              {{ p.code }} — {{ p.name }}
+              <el-tag v-if="p.category === 'OUTSOURCE'" type="warning" size="small" effect="plain" class="opt-tag">
+                外协
+              </el-tag>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标生产货架" required>
+          <el-select
+            v-model="failInspShelfId"
+            placeholder="先选工序；货架候选按映射过滤"
+            filterable
+            clearable
+            style="width: 100%"
+            :disabled="!failInspProcessId"
+          >
+            <el-option
+              v-for="s in failInspFilteredShelves"
               :key="s.id"
               :value="String(s.id)"
+              :label="`${s.code} — ${s.name}`"
               :disabled="!s.is_active"
             >
               {{ s.code }} — {{ s.name }}
               <span v-if="!s.is_active" class="muted">（已停用）</span>
-            </el-radio>
-            <span v-if="productionShelves.length === 0" class="muted">
-              没有可用生产货架
-            </span>
-          </el-radio-group>
+            </el-option>
+            <template #empty>
+              <span class="muted">
+                {{
+                  failInspProcessId
+                    ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                    : '请先选择下一道工序'
+                }}
+              </span>
+            </template>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="品检备注">
+          <el-input
+            v-model="failInspNote"
+            type="textarea"
+            :rows="3"
+            :maxlength="500"
+            show-word-limit
+            placeholder="不合格原因 / 返修要点（写入事件历史，工人领取时可见）"
+          />
         </el-form-item>
         <el-alert
           type="info"
           :closable="false"
-          title="打回后零件回到「在生产货架上」状态，next_process_id 清空，文员重新下发时再选下一道工序。"
+          title="打回后零件回到「在生产货架上」状态，下一道工序与备注已写入事件历史；工人领取时可在卡片上看到备注。"
           show-icon
         />
       </el-form>
@@ -605,7 +647,7 @@
         <el-button
           type="warning"
           :loading="failInspSubmitting"
-          :disabled="!failInspShelfId"
+          :disabled="!failInspProcessId || !failInspShelfId"
           @click="onFailInspectionConfirm"
         >确认打回</el-button>
       </template>
@@ -642,7 +684,7 @@
       </template>
     </el-dialog>
 
-    <!-- 下发到 CNC 货架对话框（PROGRAMMING → IN_PROCESS） -->
+    <!-- 下发到 CNC 货架对话框（PROGRAMMING → IN_PROCESS）—— 2026-07-21 改：先选下一道工序再选目标货架 -->
     <el-dialog
       v-model="releaseVisible"
       title="下发到 CNC 货架"
@@ -652,27 +694,13 @@
       @closed="onReleaseClosed"
     >
       <el-form label-width="96px">
-        <el-form-item label="目标货架" required>
-          <el-select
-            v-model="releaseShelfId"
-            placeholder="选择生产货架"
-            style="width: 100%"
-            filterable
-          >
-            <el-option
-              v-for="s in releaseFilteredShelves"
-              :key="s.id"
-              :label="s.name"
-              :value="s.id"
-            />
-          </el-select>
-        </el-form-item>
         <el-form-item label="下一道工序" required>
           <el-select
             v-model="releaseNextProcessId"
-            placeholder="选择工序（必填）"
+            placeholder="请先选择下一道工序"
             style="width: 100%"
             filterable
+            clearable
           >
             <el-option
               v-for="p in releaseFilteredProcesses"
@@ -680,6 +708,32 @@
               :label="`${p.code} / ${p.name}`"
               :value="p.id"
             />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标货架" required>
+          <el-select
+            v-model="releaseShelfId"
+            placeholder="先选工序；货架候选按映射过滤"
+            style="width: 100%"
+            filterable
+            clearable
+            :disabled="!releaseNextProcessId"
+          >
+            <el-option
+              v-for="s in releaseFilteredShelves"
+              :key="s.id"
+              :label="s.name"
+              :value="s.id"
+            />
+            <template #empty>
+              <span class="muted">
+                {{
+                  releaseNextProcessId
+                    ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                    : '请先选择下一道工序'
+                }}
+              </span>
+            </template>
           </el-select>
         </el-form-item>
       </el-form>
@@ -1347,32 +1401,73 @@ async function onPassInspection(): Promise<void> {
   }
 }
 
+// 2026-07-21：品检打回对话框 —— 先选下一道工序，再选目标生产货架；可选品检备注。
 const failInspDialogVisible = ref(false)
+const failInspProcessId = ref<string>('')
 const failInspShelfId = ref<string>('')
+const failInspNote = ref<string>('')
 const failInspSubmitting = ref(false)
 
+// fail-inspection 用独立的 useShelfProcessFilter 实例（不复用 releaseVisible 的，
+// 因为两个对话框的 shelf/process ref 不同；共享 ref 会导致关闭弹窗互相影响）。
+const {
+  filteredShelves: failInspFilteredShelves,
+  filteredProcesses: failInspFilteredProcesses,
+  load: loadFailInspMap,
+} = useShelfProcessFilter(
+  productionShelves,
+  processes,
+  computed({
+    get: () => failInspShelfId.value || null,
+    set: (v) => { failInspShelfId.value = v ?? '' },
+  }),
+  computed({
+    get: () => failInspProcessId.value || null,
+    set: (v) => { failInspProcessId.value = v ?? '' },
+  }),
+)
+
 async function openFailInspectionDialog(): Promise<void> {
+  failInspProcessId.value = ''
   failInspShelfId.value = ''
-  if (productionShelves.value.length === 0) {
+  failInspNote.value = ''
+  // 与 releaseVisible 共享 productionShelves/processes 缓存；
+  // 若 releaseVisible 还没打开过，此处按需补加载。
+  if (productionShelves.value.length === 0 || processes.value.length === 0) {
     try {
-      const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
-      productionShelves.value = resp.items
+      const [shelfResp, procResp] = await Promise.all([
+        productionShelves.value.length === 0
+          ? listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
+          : Promise.resolve(null),
+        processes.value.length === 0
+          ? listProcesses({ limit: 200 })
+          : Promise.resolve(null),
+      ])
+      if (shelfResp) productionShelves.value = shelfResp.items
+      if (procResp) processes.value = procResp.items
     } catch {
-      productionShelves.value = []
+      // ignore（filteredXxx 走兜底全量）
     }
   }
+  void loadFailInspMap()
   failInspDialogVisible.value = true
 }
 
 function onFailInspDialogClosed(): void {
+  failInspProcessId.value = ''
   failInspShelfId.value = ''
+  failInspNote.value = ''
 }
 
 async function onFailInspectionConfirm(): Promise<void> {
-  if (!failInspShelfId.value) return
+  if (!failInspProcessId.value || !failInspShelfId.value) return
   failInspSubmitting.value = true
   try {
-    await failInspection(partId.value, failInspShelfId.value)
+    await failInspection(partId.value, {
+      shelf_id: failInspShelfId.value,
+      next_process_id: failInspProcessId.value,
+      note: failInspNote.value.trim() || null,
+    })
     ElMessage.success('已打回生产货架')
     failInspDialogVisible.value = false
     await fetchPart()
@@ -1581,6 +1676,9 @@ function onViewQuoteDetail(_q: OutsourceQuote): void {
 }
 .mono {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+.opt-tag {
+  margin-left: 6px;
 }
 
 .barcode-card {

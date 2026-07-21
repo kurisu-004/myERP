@@ -191,10 +191,10 @@
       />
     </div>
 
-    <!-- 品检打回对话框：选目标生产货架 -->
+    <!-- 品检打回对话框：先选下一道工序，再选目标生产货架（按 shelf↔process 映射过滤） -->
     <el-dialog
       v-model="failDialogVisible"
-      title="品检打回 — 选择目标生产货架"
+      title="品检打回 — 选择下一道工序 + 目标生产货架"
       :width="failDlg.width.value"
       :top="failDlg.top.value"
       :fullscreen="failDlg.fullscreen.value"
@@ -208,26 +208,74 @@
       </div>
 
       <el-form label-width="96px" style="margin-top: 12px">
+        <el-form-item label="下一道工序" required>
+          <el-select
+            v-model="failProcessId"
+            placeholder="请先选择下一道工序"
+            filterable
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="p in filteredProcesses"
+              :key="p.id"
+              :value="String(p.id)"
+              :label="`${p.code} — ${p.name}`"
+            >
+              {{ p.code }} — {{ p.name }}
+              <el-tag v-if="p.category === 'OUTSOURCE'" type="warning" size="small" effect="plain" class="opt-tag">
+                外协
+              </el-tag>
+            </el-option>
+          </el-select>
+        </el-form-item>
+
         <el-form-item label="目标生产货架" required>
-          <el-radio-group v-model="failShelfId" style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto">
-            <el-radio
-              v-for="s in productionShelves"
+          <el-select
+            v-model="failShelfId"
+            placeholder="先选工序；货架候选按映射过滤"
+            filterable
+            clearable
+            style="width: 100%"
+            :disabled="!failProcessId"
+          >
+            <el-option
+              v-for="s in filteredProductionShelves"
               :key="s.id"
               :value="String(s.id)"
+              :label="`${s.code} — ${s.name}`"
               :disabled="!s.is_active"
             >
               {{ s.code }} — {{ s.name }}
               <span v-if="!s.is_active" class="muted">（已停用）</span>
-            </el-radio>
-            <span v-if="productionShelves.length === 0" class="muted">
-              没有可用生产货架
-            </span>
-          </el-radio-group>
+            </el-option>
+            <template #empty>
+              <span class="muted">
+                {{
+                  failProcessId
+                    ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                    : '请先选择下一道工序'
+                }}
+              </span>
+            </template>
+          </el-select>
         </el-form-item>
+
+        <el-form-item label="品检备注">
+          <el-input
+            v-model="failNote"
+            type="textarea"
+            :rows="3"
+            :maxlength="500"
+            show-word-limit
+            placeholder="不合格原因 / 返修要点（写入事件历史，工人领取时可见）"
+          />
+        </el-form-item>
+
         <el-alert
           type="info"
           :closable="false"
-          title="打回后零件回到「在生产货架上」状态，next_process_id 清空，文员重新下发时再选下一道工序。"
+          title="打回后零件回到「在生产货架上」状态，下一道工序与备注已写入事件历史；工人领取时可在卡片上看到备注。"
           show-icon
         />
       </el-form>
@@ -237,7 +285,7 @@
         <el-button
           type="warning"
           :loading="failSubmitting"
-          :disabled="!failShelfId"
+          :disabled="!failProcessId || !failShelfId"
           @click="onFailConfirm"
         >确认打回</el-button>
       </template>
@@ -254,7 +302,12 @@ import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { failInspection, listParts, passInspection } from '@/api/parts'
 import type { ListPartsParams } from '@/api/parts'
+import { listShelves } from '@/api/shelves'
+import { listProcesses } from '@/api/process'
+import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import type { PartListItem } from '@/types/parts'
+import type { Shelf } from '@/types/shelf'
+import type { Process } from '@/types/process'
 
 // ============ 状态 ============
 interface RowState extends PartListItem {
@@ -364,50 +417,102 @@ async function onPass(row: RowState): Promise<void> {
 }
 
 // ============ 品检打回对话框 ============
-const failDlg = useDialogSize({ desktopWidth: 480 })
+// 2026-07-21 改：先选下一道工序，再选目标生产货架（按 shelf↔process 映射过滤）。
+// 同时支持可选「品检备注」，写入 t_part_event.note，事件历史与工人领取卡片均可见。
+const failDlg = useDialogSize({ desktopWidth: 520 })
 const failDialogVisible = ref(false)
 const failTarget = ref<PartListItem | null>(null)
+const failProcessId = ref<string>('')
 const failShelfId = ref<string>('')
+const failNote = ref<string>('')
 const failSubmitting = ref(false)
-const productionShelves = ref<{ id: string; code: string; name: string; is_active: boolean }[]>([])
-
-async function openFailDialog(row: RowState): Promise<void> {
-  failTarget.value = row
-  failShelfId.value = ''
-  failDialogVisible.value = true
-  if (productionShelves.value.length === 0) {
-    await loadProductionShelves()
-  }
-}
+const productionShelves = ref<Shelf[]>([])
+const processes = ref<Process[]>([])
+// 品检打回默认走 INHOUSE 工序（外协工序走 send_to_outsource 路径）；
+// 不强制过滤 category，避免业务上「品检后直接外协返修」分支被锁死。
+const {
+  filteredShelves: filteredProductionShelves,
+  filteredProcesses,
+  load: loadShelfProcessMap,
+} = useShelfProcessFilter(
+  productionShelves,
+  processes,
+  computed({
+    get: () => failShelfId.value || null,
+    set: (v) => { failShelfId.value = v ?? '' },
+  }),
+  computed({
+    get: () => failProcessId.value || null,
+    set: (v) => { failProcessId.value = v ?? '' },
+  }),
+)
 
 async function loadProductionShelves(): Promise<void> {
   try {
-    const { listShelves } = await import('@/api/shelves')
     const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
-    productionShelves.value = resp.items.map((s) => ({
-      id: String(s.id),
-      code: s.code,
-      name: s.name,
-      is_active: s.is_active,
-    }))
+    productionShelves.value = resp.items
   } catch (e) {
     ElMessage.error(`加载生产货架失败：${(e as Error).message}`)
     productionShelves.value = []
   }
 }
 
+async function loadProcesses(): Promise<void> {
+  try {
+    const resp = await listProcesses({ limit: 200 })
+    processes.value = resp.items
+  } catch (e) {
+    ElMessage.error(`加载工序失败：${(e as Error).message}`)
+    processes.value = []
+  }
+}
+
+async function openFailDialog(row: RowState): Promise<void> {
+  failTarget.value = row
+  failProcessId.value = ''
+  failShelfId.value = ''
+  failNote.value = ''
+  failDialogVisible.value = true
+  await Promise.all([
+    productionShelves.value.length === 0 ? loadProductionShelves() : Promise.resolve(),
+    processes.value.length === 0 ? loadProcesses() : Promise.resolve(),
+  ])
+  // shelves/processes 加载完后异步拉映射；映射未到位前 filteredXxx 走兜底全量
+  void loadShelfProcessMap()
+}
+
 function onFailDialogClosed(): void {
   failTarget.value = null
+  failProcessId.value = ''
   failShelfId.value = ''
+  failNote.value = ''
 }
 
 async function onFailConfirm(): Promise<void> {
-  if (!failTarget.value || !failShelfId.value) return
+  if (!failTarget.value || !failProcessId.value || !failShelfId.value) return
+  const row = failTarget.value
+  const shelfCode =
+    productionShelves.value.find((s) => String(s.id) === failShelfId.value)?.code ?? ''
+  const processCode =
+    processes.value.find((p) => String(p.id) === failProcessId.value)?.code ?? ''
+  try {
+    await ElMessageBox.confirm(
+      `确认打回「${row.name}」（${row.serial_no || row.drawing_no}）到生产货架 ${shelfCode}，下一道工序 ${processCode}？`,
+      '品检打回',
+      { type: 'warning', confirmButtonText: '确认打回', cancelButtonText: '取消' },
+    )
+  } catch {
+    return  // 用户取消
+  }
   failSubmitting.value = true
   try {
-    await failInspection(failTarget.value.id, failShelfId.value)
+    await failInspection(row.id, {
+      shelf_id: failShelfId.value,
+      next_process_id: failProcessId.value,
+      note: failNote.value.trim() || null,
+    })
     ElMessage.success(
-      `零件 ${failTarget.value.serial_no || failTarget.value.drawing_no} 已打回生产货架`,
+      `零件 ${row.serial_no || row.drawing_no} 已打回生产货架 ${shelfCode}`,
     )
     failDialogVisible.value = false
     await fetchList()
@@ -478,5 +583,8 @@ onMounted(() => {
   padding: 10px 14px;
   line-height: 1.8;
   font-size: 13px;
+}
+.opt-tag {
+  margin-left: 6px;
 }
 </style>

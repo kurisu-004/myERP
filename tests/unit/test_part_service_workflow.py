@@ -31,6 +31,7 @@ from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
 from repository.worker import WorkerRepository
 from schema.part import (
+    FailInspectionRequest,
     PartOut,
     PartPickUpRequest,
     PartScanRequest,
@@ -1146,41 +1147,83 @@ class TestPassInspection:
 class TestFailInspection:
     """``PartService.fail_inspection`` — INSPECTION → IN_PROCESS（打回生产货架）。
 
-    与 complete_repair 形状一致：先校验 shelf 存在/active/zone=PRODUCTION，
-    再清空 next_process_id（让文员重新下发时再选），最后调 sm.fail_inspection。
+    2026-07-21 改：
+    - 入参改为 ``FailInspectionRequest``（shelf_id + next_process_id + note）。
+    - 货架 + 工序 + 映射校验统一走 ``_validate_production_shelf_and_process``
+      （与 ``place_on_shelf`` / ``release_from_programming`` 对齐）。
+    - **保留** ``part.next_process_id``（不再清空；保留 inspector 指定的下一道工序）。
+    - ``note`` 通过 ``sm.fail_inspection(..., note=...)`` 透传到 ``on_fail_inspection``
+      回调，写入 ``t_part_event.note``。
     """
 
     async def test_normal(
         self,
         service: PartService,
         mock_parts: PartRepository,
-        mock_shelves: ShelfRepository,
         mock_events: PartEventRepository,
     ) -> None:
         part = _make_part(
             status="INSPECTION", location="INSPECTION_SHELF",
         )
-        # 模拟已有 next_process_id（应该被清空）
+        # 模拟已有 next_process_id（应该被覆盖为 inspector 指定的）
         part.next_process_id = 42
         shelf = _make_shelf()
+        # 构造一个 mock 工序对象；本测试只关心 next_process_id 被设为什么，
+        # 不进入 _validate_production_shelf_and_process 的真实校验
+        process_obj = MagicMock()
+        process_obj.id = 100
+        service._validate_production_shelf_and_process = AsyncMock(
+            return_value=(shelf, process_obj),
+        )
         mock_parts.get_by_id.return_value = part
-        mock_shelves.get_by_id.return_value = shelf
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
         service._check_parent_assembly = AsyncMock()
 
-        result = await service.fail_inspection(1001, shelf_id=1)
+        payload = FailInspectionRequest(
+            shelf_id="1", next_process_id="100",
+            note="尺寸超差需返修",
+        )
+        result = await service.fail_inspection(1001, payload)
 
         mock_parts.get_by_id.assert_awaited_once_with(1001)
-        mock_shelves.get_by_id.assert_awaited_once_with(1)
-        assert part.next_process_id is None  # 清空
+        service._validate_production_shelf_and_process.assert_awaited_once_with(1, 100)
+        assert part.next_process_id == 100  # 保留（覆盖原有 42）
         part.sm.fail_inspection.assert_called_once_with(
-            shelf=shelf, event_repo=mock_events,
-            created_by=None,
+            shelf=shelf, process=process_obj, event_repo=mock_events,
+            created_by=None, note="尺寸超差需返修",
         )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
         assert result is mock_out
+
+    async def test_normal_no_note(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+        mock_events: PartEventRepository,
+    ) -> None:
+        """不填备注时 note=None 透传（保持兼容旧行为）。"""
+        part = _make_part(status="INSPECTION")
+        shelf = _make_shelf()
+        process_obj = MagicMock()
+        process_obj.id = 100
+        service._validate_production_shelf_and_process = AsyncMock(
+            return_value=(shelf, process_obj),
+        )
+        mock_parts.get_by_id.return_value = part
+        service._to_out.return_value = [_make_part_out()]
+        service._check_parent_assembly = AsyncMock()
+
+        payload = FailInspectionRequest(
+            shelf_id="1", next_process_id="100", note=None,
+        )
+        await service.fail_inspection(1001, payload)
+
+        part.sm.fail_inspection.assert_called_once_with(
+            shelf=shelf, process=process_obj, event_repo=mock_events,
+            created_by=None, note=None,
+        )
 
     async def test_part_not_found(
         self,
@@ -1190,7 +1233,12 @@ class TestFailInspection:
         mock_parts.get_by_id.return_value = None
 
         with pytest.raises(BizError) as exc:
-            await service.fail_inspection(999, shelf_id=1)
+            await service.fail_inspection(
+                999,
+                FailInspectionRequest(
+                    shelf_id="1", next_process_id="100", note=None,
+                ),
+            )
 
         assert exc.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
@@ -1199,15 +1247,19 @@ class TestFailInspection:
         self,
         service: PartService,
         mock_parts: PartRepository,
-        mock_shelves: ShelfRepository,
     ) -> None:
         """非 INSPECTION 状态的零件调用 fail_inspection → 400。"""
         part = _make_part(status="READY_TO_SHIP")
         mock_parts.get_by_id.return_value = part
-        mock_shelves.get_by_id.return_value = _make_shelf()
+        # 不需要 mock _validate_production_shelf_and_process —— 状态校验先于它
 
         with pytest.raises(BizError) as exc:
-            await service.fail_inspection(1001, shelf_id=1)
+            await service.fail_inspection(
+                1001,
+                FailInspectionRequest(
+                    shelf_id="1", next_process_id="100", note=None,
+                ),
+            )
 
         assert exc.value.code == ErrCode.BIZ_INVALID_TRANSITION
         assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
@@ -1216,14 +1268,25 @@ class TestFailInspection:
         self,
         service: PartService,
         mock_parts: PartRepository,
-        mock_shelves: ShelfRepository,
     ) -> None:
+        """_validate_production_shelf_and_process 抛 BIZ_SHELF_NOT_FOUND → 直接透传。"""
         part = _make_part(status="INSPECTION")
         mock_parts.get_by_id.return_value = part
-        mock_shelves.get_by_id.return_value = None
+        service._validate_production_shelf_and_process = AsyncMock(
+            side_effect=BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message="shelf 99 not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            ),
+        )
 
         with pytest.raises(BizError) as exc:
-            await service.fail_inspection(1001, shelf_id=99)
+            await service.fail_inspection(
+                1001,
+                FailInspectionRequest(
+                    shelf_id="99", next_process_id="100", note=None,
+                ),
+            )
 
         assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
         assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
@@ -1232,14 +1295,24 @@ class TestFailInspection:
         self,
         service: PartService,
         mock_parts: PartRepository,
-        mock_shelves: ShelfRepository,
     ) -> None:
         part = _make_part(status="INSPECTION")
         mock_parts.get_by_id.return_value = part
-        mock_shelves.get_by_id.return_value = _make_shelf(is_active=False)
+        service._validate_production_shelf_and_process = AsyncMock(
+            side_effect=BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message="shelf inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            ),
+        )
 
         with pytest.raises(BizError) as exc:
-            await service.fail_inspection(1001, shelf_id=1)
+            await service.fail_inspection(
+                1001,
+                FailInspectionRequest(
+                    shelf_id="1", next_process_id="100", note=None,
+                ),
+            )
 
         assert exc.value.code == ErrCode.BIZ_SHELF_IN_USE
         assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
@@ -1248,20 +1321,55 @@ class TestFailInspection:
         self,
         service: PartService,
         mock_parts: PartRepository,
-        mock_shelves: ShelfRepository,
     ) -> None:
         """INSPECTION 区货架不允许打回（必须 PRODUCTION）。"""
         part = _make_part(status="INSPECTION")
         mock_parts.get_by_id.return_value = part
-        mock_shelves.get_by_id.return_value = _make_shelf(
-            zone=ShelfZone.INSPECTION.value
+        service._validate_production_shelf_and_process = AsyncMock(
+            side_effect=BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="shelf not PRODUCTION",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            ),
         )
 
         with pytest.raises(BizError) as exc:
-            await service.fail_inspection(1001, shelf_id=1)
+            await service.fail_inspection(
+                1001,
+                FailInspectionRequest(
+                    shelf_id="1", next_process_id="100", note=None,
+                ),
+            )
 
         assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
         assert exc.value.http_status == http_status.HTTP_400_BAD_REQUEST
+
+    async def test_shelf_process_not_mapped(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """shelf↔process 缺映射 → 422（与 place_on_shelf / release_from_programming 一致）。"""
+        part = _make_part(status="INSPECTION")
+        mock_parts.get_by_id.return_value = part
+        service._validate_production_shelf_and_process = AsyncMock(
+            side_effect=BizError(
+                code=ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED,
+                message="shelf A 未配置工序 X",
+                http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            ),
+        )
+
+        with pytest.raises(BizError) as exc:
+            await service.fail_inspection(
+                1001,
+                FailInspectionRequest(
+                    shelf_id="1", next_process_id="100", note=None,
+                ),
+            )
+
+        assert exc.value.code == ErrCode.BIZ_SHELF_PROCESS_NOT_MAPPED
+        assert exc.value.http_status == http_status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
 # ===================================================================

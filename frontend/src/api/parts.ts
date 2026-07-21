@@ -40,6 +40,13 @@ export interface PartItem {
   next_process_id: string | null
   /** 下一道工序名称（NULL = 未设置；由后端在 list/get 响应中带出） */
   next_process_name: string | null
+  /**
+   * 2026-07-21：该 part 最近一次品检打回（INSPECTION_FAILED）事件的 note。
+   * 格式：`"打回到货架：<code> 下一工序：<code> | 备注：<note>"`。
+   * 仅 PICK_UP 扫码列表返回（后端 list_for_work_type* 走 LEFT JOIN LATERAL 计算），
+   * 其它端点为 null。
+   */
+  last_inspection_fail_note?: string | null
 }
 
 export interface PartListResult {
@@ -307,15 +314,26 @@ export async function passInspection(id: string): Promise<PartItem> {
   return resp.data
 }
 
-/** INSPECTION → IN_PROCESS：品检不通过，打回生产货架。`shelfId` 必填（PRODUCTION 区）。 */
+/**
+ * 2026-07-21 改：品检打回（INSPECTION → IN_PROCESS）—— 三参 payload：
+ * shelf_id + next_process_id（保留为下一道工序，不再清空）+ note（品检备注）。
+ * 后端会校验 `t_shelf_process` 映射（缺映射返回 422）。
+ */
+export interface FailInspectionPayload {
+  shelf_id: string
+  /** 下一道工序 id（必填；保留为该 part 的下道工序，工人可直接领取） */
+  next_process_id: string
+  /** 品检员填的不合格原因等（写入 t_part_event.note，事件历史一览可见） */
+  note?: string | null
+}
+
 export async function failInspection(
   id: string,
-  shelfId: string,
+  payload: FailInspectionPayload,
 ): Promise<PartItem> {
   const resp = await api.post<PartItem>(
     `/parts/${id}/fail-inspection`,
-    null,
-    { params: { shelf_id: shelfId } },
+    payload,
   )
   return resp.data
 }
