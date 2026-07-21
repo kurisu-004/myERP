@@ -153,11 +153,11 @@
       </template>
     </el-dialog>
 
-    <!-- 手机侧栏抽屉（<md） -->
+    <!-- 手机侧栏抽屉（<md，从右侧滑出与顶栏右侧汉堡按钮对齐） -->
     <el-drawer
       v-if="isMobile"
       v-model="mobileNavOpen"
-      direction="ltr"
+      direction="rtl"
       :size="260"
       :with-header="false"
       append-to-body
@@ -547,6 +547,21 @@ onMounted(async () => {
   :deep(.el-menu-item),
   :deep(.el-sub-menu__title) {
     width: 100%;
+  }
+  /* 填满整个 drawer，去除 Element Plus 默认边框 / 外距 / 内边距（消除白色边） */
+  :deep(.el-menu),
+  :deep(.el-menu--vertical) {
+    border: none !important;
+  }
+  :deep(.el-menu--vertical > ul[role="menubar"]) {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  /* 嵌套子菜单展开后的子级 ul：去边框 / 外距，背景与侧栏深色保持一致 */
+  :deep(.el-sub-menu .el-menu) {
+    border: none !important;
+    margin: 0 !important;
+    background-color: #142d54 !important;
   }
 }
 
