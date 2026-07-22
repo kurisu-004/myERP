@@ -21,134 +21,140 @@
   <div class="parts-list">
     <el-card shadow="never" class="filter-card">
       <div class="filter-row">
-        <el-input
-          v-model="search.keyword"
-          placeholder="图号（含子串）/ 名称（前缀）"
-          clearable
-          style="width: 260px"
-          @keyup.enter="onSearch"
-          @clear="onSearch"
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
-
-        <!-- 订单号独立搜索框（2026-07-22） -->
-        <el-input
-          v-model="search.orderNo"
-          placeholder="订单号"
-          clearable
-          style="width: 160px"
-          @keyup.enter="onSearch"
-          @clear="onSearch"
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
-
-        <el-button @click="onReset">
-          <el-icon><RefreshLeft /></el-icon>
-          <span>重置</span>
-        </el-button>
-
-        <!-- 三个日期区间筛选（2026-07-22：请购日期 / 计划交期 / 系统交期，内联 daterange） -->
-        <div class="date-filter-item">
-          <span class="date-filter-label">请购日期</span>
-          <el-date-picker
-            v-model="requestDateRange"
-            type="daterange"
-            value-format="YYYY-MM-DD"
-            range-separator="~"
-            start-placeholder="起点"
-            end-placeholder="终点"
-            unlink-panels
+        <!-- 搜索组（2026-07-22：三组分类） -->
+        <div class="filter-group filter-group--search">
+          <el-input
+            v-model="search.keyword"
+            placeholder="图号（含子串）/ 名称（前缀）"
             clearable
-            style="width: 240px"
-            @change="onDateRangeChange"
-          />
-        </div>
-        <div class="date-filter-item">
-          <span class="date-filter-label">计划交期</span>
-          <el-date-picker
-            v-model="plannedDateRange"
-            type="daterange"
-            value-format="YYYY-MM-DD"
-            range-separator="~"
-            start-placeholder="起点"
-            end-placeholder="终点"
-            unlink-panels
+            style="width: 260px"
+            @keyup.enter="onSearch"
+            @clear="onSearch"
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+
+          <!-- 订单号独立搜索框（2026-07-22） -->
+          <el-input
+            v-model="search.orderNo"
+            placeholder="订单号"
             clearable
-            style="width: 240px"
-            @change="onDateRangeChange"
-          />
-        </div>
-        <div class="date-filter-item">
-          <span class="date-filter-label">系统交期</span>
-          <el-date-picker
-            v-model="systemDateRange"
-            type="daterange"
-            value-format="YYYY-MM-DD"
-            range-separator="~"
-            start-placeholder="起点"
-            end-placeholder="终点"
-            unlink-panels
-            clearable
-            style="width: 240px"
-            @change="onDateRangeChange"
-          />
+            style="width: 160px"
+            @keyup.enter="onSearch"
+            @clear="onSearch"
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+
+          <el-button @click="onReset">
+            <el-icon><RefreshLeft /></el-icon>
+            <span>重置</span>
+          </el-button>
         </div>
 
-        <!-- 手机筛选入口（桌面走表头 popover） -->
-        <el-button
-          v-if="isMobile"
-          :type="anyFilterActive ? 'primary' : 'default'"
-          plain
-          @click="openMobileFilter"
-        >
-          <el-icon><Filter /></el-icon>
-          <span>筛选</span>
-        </el-button>
+        <!-- 日期组（2026-07-22：三组分类） -->
+        <div class="filter-group filter-group--dates">
+          <div class="date-filter-item">
+            <span class="date-filter-label">请购日期</span>
+            <el-date-picker
+              v-model="requestDateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              range-separator="~"
+              start-placeholder="起点"
+              end-placeholder="终点"
+              unlink-panels
+              clearable
+              style="width: 240px"
+              @change="onDateRangeChange"
+            />
+          </div>
+          <div class="date-filter-item">
+            <span class="date-filter-label">计划交期</span>
+            <el-date-picker
+              v-model="plannedDateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              range-separator="~"
+              start-placeholder="起点"
+              end-placeholder="终点"
+              unlink-panels
+              clearable
+              style="width: 240px"
+              @change="onDateRangeChange"
+            />
+          </div>
+          <div class="date-filter-item">
+            <span class="date-filter-label">系统交期</span>
+            <el-date-picker
+              v-model="systemDateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              range-separator="~"
+              start-placeholder="起点"
+              end-placeholder="终点"
+              unlink-panels
+              clearable
+              style="width: 240px"
+              @change="onDateRangeChange"
+            />
+          </div>
+        </div>
 
-        <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）-->
-        <el-button
-          v-if="!isInspector"
-          @click="router.push('/parts/new?tab=pdf')"
-        >
-          <el-icon><Document /></el-icon>
-          <span>从 PDF/Excel 批量导入</span>
-        </el-button>
-
-        <!-- 批量打印图纸 toggle（2026-07-17 接入；2026-07-20 INSPECTOR 不可见；手机隐藏依赖 iframe） -->
-        <template v-if="!isInspector && !isMobile">
+        <!-- 操作组（2026-07-22：三组分类） -->
+        <div class="filter-group filter-group--actions">
+          <!-- 手机筛选入口（桌面走表头 popover） -->
           <el-button
-            v-if="!batchMode"
-            type="success"
+            v-if="isMobile"
+            :type="anyFilterActive ? 'primary' : 'default'"
             plain
-            @click="onEnterBatchMode"
+            @click="openMobileFilter"
           >
-            <el-icon><Printer /></el-icon>
-            <span>批量打印图纸</span>
+            <el-icon><Filter /></el-icon>
+            <span>筛选</span>
           </el-button>
-          <el-button
-            v-else
-            type="warning"
-            @click="onExitBatchMode"
-          >
-            <el-icon><Close /></el-icon>
-            <span>退出批量模式</span>
-          </el-button>
-        </template>
 
-        <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
-          编程员视图：默认查看「编程中」零件
-        </el-tag>
-        <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
+          <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）-->
+          <el-button
+            v-if="!isInspector"
+            @click="router.push('/parts/new?tab=pdf')"
+          >
+            <el-icon><Document /></el-icon>
+            <span>从 PDF/Excel 批量导入</span>
+          </el-button>
+
+          <!-- 批量打印 / 批量下发 toggle（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见；手机隐藏） -->
+          <template v-if="!isInspector && !isMobile">
+            <template v-if="!batchMode">
+              <el-button type="success" plain @click="onEnterBatchMode">
+                <el-icon><Printer /></el-icon>
+                <span>批量打印图纸</span>
+              </el-button>
+              <el-button type="primary" plain @click="onEnterBatchDispatchMode">
+                <el-icon><Promotion /></el-icon>
+                <span>批量下发</span>
+              </el-button>
+            </template>
+            <el-button v-else type="warning" @click="onExitBatchMode">
+              <el-icon><Close /></el-icon>
+              <span>退出批量模式</span>
+            </el-button>
+          </template>
+
+          <el-tag v-if="isCncProgrammer" type="warning" effect="plain" size="small">
+            编程员视图：默认查看「编程中」零件
+          </el-tag>
+          <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
+        </div>
       </div>
     </el-card>
 
     <ResponsiveList
+      ref="partsListRef"
       :items="items"
       :loading="loading"
       row-key="id"
@@ -159,14 +165,17 @@
       size="small"
       :default-sort="defaultSort"
       :row-class-name="rowClassName"
+      :row-style="{ cursor: batchMode ? 'pointer' : 'default' }"
       @sort-change="onSortChange"
       @selection-change="onSelectionChange"
+      @row-click="onBatchRowClick"
     >
       <el-table-column
         v-if="batchMode"
         type="selection"
         width="55"
         :reserve-selection="true"
+        :selectable="isBatchSelectable"
       />
 
       <el-table-column
@@ -580,21 +589,31 @@
       </template>
     </ResponsiveList>
 
-    <!-- 批量打印图纸 — 底部 action bar（2026-07-17；2026-07-20 INSPECTOR 不可见） -->
+    <!-- 批量打印 / 批量下发 — 底部 action bar（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见） -->
     <div v-if="!isInspector && batchMode" class="batch-bar">
       <div class="bar-info">
-        <span>已选 <strong>{{ selectedRows.length }}</strong> 件</span>
+        <span>已选 <strong>{{ selectedIds.size }}</strong> 件</span>
         <el-button link size="small" @click="onSelectAllPage">全选当前页</el-button>
         <el-button link size="small" @click="onClearSelection">清空选择</el-button>
       </div>
       <el-button
+        v-if="batchAction === 'print'"
         type="primary"
         :loading="batchPrinting"
-        :disabled="selectedRows.length === 0"
+        :disabled="selectedIds.size === 0"
         @click="onBatchPrint"
       >
         <el-icon><Printer /></el-icon>
-        <span>打印预览（{{ selectedRows.length }} 件）</span>
+        <span>打印预览（{{ selectedIds.size }} 件）</span>
+      </el-button>
+      <el-button
+        v-else
+        type="primary"
+        :disabled="selectedIds.size === 0"
+        @click="onOpenBatchDispatch"
+      >
+        <el-icon><Promotion /></el-icon>
+        <span>批量下发（{{ selectedIds.size }} 件）</span>
       </el-button>
     </div>
 
@@ -702,6 +721,92 @@
       </template>
     </el-dialog>
 
+    <!-- 批量下发对话框（2026-07-22）：下生产货架 / 发编程 两动作；状态独立于单件下发 -->
+    <el-dialog
+      v-model="batchDispatchVisible"
+      title="批量下发"
+      :width="dispatchDlg.width.value"
+      :top="dispatchDlg.top.value"
+      destroy-on-close
+    >
+      <el-form label-width="96px">
+        <el-form-item label="下发方式">
+          <el-radio-group v-model="batchDispatchAction">
+            <el-radio-button value="shelf">下生产货架</el-radio-button>
+            <el-radio-button value="programming">发编程</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="batchDispatchAction === 'shelf'">
+          <el-form-item label="下一道工序" required>
+            <el-select
+              v-model="batchDispatchNextProcessId"
+              placeholder="请先选择下一道工序"
+              style="width: 100%"
+              filterable
+              clearable
+            >
+              <el-option
+                v-for="p in batchFilteredProcesses"
+                :key="p.id"
+                :label="`${p.code} / ${p.name}`"
+                :value="p.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="目标货架" required>
+            <el-select
+              v-model="batchDispatchShelfId"
+              placeholder="先选工序；货架候选按映射过滤"
+              style="width: 100%"
+              filterable
+              clearable
+              :disabled="!batchDispatchNextProcessId"
+            >
+              <el-option
+                v-for="s in batchFilteredShelves"
+                :key="s.id"
+                :label="s.name"
+                :value="s.id"
+              />
+              <template #empty>
+                <span class="muted">
+                  {{
+                    batchDispatchNextProcessId
+                      ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                      : '请先选择下一道工序'
+                  }}
+                </span>
+              </template>
+            </el-select>
+          </el-form-item>
+        </template>
+        <el-alert
+          v-else
+          type="info"
+          :closable="false"
+          title="将所选零件发送至 CNC 编程环节，零件状态变为「编程中」。"
+          description="CNC 编程员在「待编程一览」中下载图纸、上传 G 代码后，会再下发到生产货架。"
+        />
+        <el-form-item>
+          <span class="muted">已选 <strong>{{ selectedIds.size }}</strong> 件 PENDING 零件将执行此操作</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchDispatchVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="batchDispatchSubmitting"
+          :disabled="
+            batchDispatchAction === 'shelf'
+            && (!batchDispatchShelfId || !batchDispatchNextProcessId)
+          "
+          @click="onBatchDispatchConfirm"
+        >
+          确认
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 手机筛选抽屉：承载桌面表头 popover 的同款筛选（状态 + 加急 + 客户） -->
     <el-drawer
       v-model="mobileFilterOpen"
@@ -747,7 +852,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -755,6 +860,7 @@ import {
   Document,
   Filter,
   Printer,
+  Promotion,
   RefreshLeft,
   Search,
 } from '@element-plus/icons-vue'
@@ -977,30 +1083,136 @@ const pageSize = ref(20)
 const sortBy = ref<PartSortKey>('PLANNED_DELIVERY_DATE')
 const sortDir = ref<SortDir>('ASC')
 
-// ============ 批量打印（2026-07-17 接入）============
+// ============ 批量打印 / 批量下发（2026-07-22 共享批量模式）============
+// 2026-07-22：拆为 batchAction（'print' | 'dispatch'）两个动作；共享 batchMode、selectedIds、
+// selectedRows、row-click 切换、PENDING 守卫（isBatchSelectable）。跨页选择由 selectedIds
+// 维护真实状态，selectedRows 仅做当前页镜像 + 跨页已选行快照。
 const batchMode = ref(false)
+const batchAction = ref<'print' | 'dispatch'>('print')
 const selectedRows = ref<PartListItem[]>([])
+/** 跨页选择真实状态来源：所有已选 PENDING 行的 id（含非当前页）。
+ * 2026-07-22 修复：必须用 reactive 包一层，否则模板里的 .size 不响应，count 永远 0、按钮永远 disabled。 */
+const selectedIds = reactive(new Set<string>())
 const batchPrinting = ref(false)
 const batchPrintIframeRef = ref<HTMLIFrameElement | null>(null)
 let batchPrintBlobUrl = ''
+/** ResponsiveList 内 el-table ref；用于 row-click 切换 / 全选 / 清空时同步 UI */
+const partsListRef = ref<InstanceType<typeof ResponsiveList> | null>(null)
+
+function isBatchSelectable(row: PartListItem): boolean {
+  return row.status === 'PENDING'
+}
+
+function clearAllSelection(): void {
+  selectedIds.clear()
+  selectedRows.value = []
+  partsListRef.value?.elTableRef?.clearSelection()
+}
 
 function onEnterBatchMode(): void {
+  batchAction.value = 'print'
   batchMode.value = true
-  selectedRows.value = []
+  clearAllSelection()
+}
+function onEnterBatchDispatchMode(): void {
+  batchAction.value = 'dispatch'
+  batchMode.value = true
+  clearAllSelection()
 }
 function onExitBatchMode(): void {
   batchMode.value = false
-  selectedRows.value = []
+  clearAllSelection()
 }
 function onSelectionChange(rows: PartListItem[]): void {
-  selectedRows.value = rows
+  // 按 ID 合并：先移除当前页所有 ID（不论是否还在 rows 中），再加入 rows 中 PENDING 行的 ID
+  const currentPageIds = new Set(items.value.map((r) => r.id))
+  for (const id of [...selectedIds]) {
+    if (currentPageIds.has(id)) selectedIds.delete(id)
+  }
+  for (const r of rows) {
+    if (isBatchSelectable(r)) selectedIds.add(r.id)
+  }
+  rebuildSelectedRows(rows)
 }
 function onSelectAllPage(): void {
-  // el-table 默认全选仅当前页；这里把当前页 items 视为全选
-  selectedRows.value = [...items.value]
+  // 只勾选当前页的 PENDING 行；非 PENDING 不参与
+  const table = partsListRef.value?.elTableRef
+  if (!table) return
+  for (const row of items.value) {
+    if (isBatchSelectable(row)) {
+      table.toggleRowSelection(row, true)
+      selectedIds.add(row.id)
+    }
+  }
+  rebuildSelectedRows(items.value)
 }
 function onClearSelection(): void {
-  selectedRows.value = []
+  clearAllSelection()
+}
+/** 重新构建 selectedRows：当前页用最新 row 对象，其他页保留既有快照。 */
+function rebuildSelectedRows(currentPageRows: PartListItem[]): void {
+  const pageMap = new Map(currentPageRows.map((r) => [r.id, r]))
+  const next: PartListItem[] = []
+  const seen = new Set<string>()
+  for (const id of selectedIds) {
+    const fromPage = pageMap.get(id)
+    if (fromPage) {
+      next.push(fromPage)
+    } else {
+      const fromSnapshot = selectedRows.value.find((r) => r.id === id)
+      if (fromSnapshot) next.push(fromSnapshot)
+    }
+    seen.add(id)
+  }
+  selectedRows.value = next
+}
+function onBatchRowClick(
+  row: PartListItem,
+  _column: unknown,
+  _event: MouseEvent,
+): void {
+  // 非批量模式 / 不可选行不响应
+  if (!batchMode.value) return
+  if (!isBatchSelectable(row)) return
+  const table = partsListRef.value?.elTableRef
+  if (!table) return
+  const shouldSelect = !selectedIds.has(row.id)
+  table.toggleRowSelection(row, shouldSelect)
+  // toggleRowSelection 不会同步触发 @selection-change（在已保留勾选状态下切换时
+  // 视实现可能不触发），所以这里手动维护 selectedIds/selectedRows。
+  if (shouldSelect) {
+    selectedIds.add(row.id)
+    if (!selectedRows.value.find((r) => r.id === row.id)) {
+      selectedRows.value = [...selectedRows.value, row]
+    }
+  } else {
+    selectedIds.delete(row.id)
+    selectedRows.value = selectedRows.value.filter((r) => r.id !== row.id)
+  }
+}
+/** fetchList 更新 items 后用 nextTick 恢复当前页 checkbox UI（不主动清空 selectedIds）。 */
+function restoreTableSelection(): void {
+  if (!batchMode.value) return
+  const table = partsListRef.value?.elTableRef
+  if (!table) return
+  // 清理：移除 selectedIds 中已不在当前 items 中或已变非 PENDING 的 id
+  const currentIds = new Set(items.value.map((r) => r.id))
+  for (const id of [...selectedIds]) {
+    if (!currentIds.has(id)) selectedIds.delete(id)
+  }
+  for (const r of items.value) {
+    if (!isBatchSelectable(r)) selectedIds.delete(r.id)
+  }
+  rebuildSelectedRows(items.value)
+  nextTick(() => {
+    if (!partsListRef.value?.elTableRef) return
+    partsListRef.value.elTableRef.clearSelection()
+    for (const row of items.value) {
+      if (selectedIds.has(row.id)) {
+        partsListRef.value.elTableRef.toggleRowSelection(row, true)
+      }
+    }
+  })
 }
 
 async function onBatchPrint(): Promise<void> {
@@ -1094,10 +1306,9 @@ async function fetchList(): Promise<void> {
     const resp = await listParts(buildParams())
     items.value = resp.items
     total.value = resp.total
-    // 批量模式下：剔除已不在当前页的失效勾选（仿 DeliveryNoteNew 模式）
+    // 批量模式下：剔除已不在当前页的失效勾选 + 恢复 UI（2026-07-22 跨页持久化）
     if (batchMode.value) {
-      const validIds = new Set(items.value.map((r) => r.id))
-      selectedRows.value = selectedRows.value.filter((r) => validIds.has(r.id))
+      restoreTableSelection()
     }
   } catch (e) {
     items.value = []
@@ -1376,6 +1587,104 @@ async function onDispatchConfirm(): Promise<void> {
     dispatchSubmitting.value = false
   }
 }
+
+// ============ 批量下发对话框（2026-07-22）============
+// 状态完全独立于单件下发（dispatchShelfId / dispatchNextProcessId），避免互相踩。
+const batchDispatchVisible = ref(false)
+const batchDispatchAction = ref<'shelf' | 'programming'>('shelf')
+const batchDispatchShelfId = ref<string | null>(null)
+const batchDispatchNextProcessId = ref<string | null>(null)
+const batchDispatchSubmitting = ref(false)
+const {
+  filteredShelves: batchFilteredShelves,
+  filteredProcesses: batchFilteredProcesses,
+  load: loadBatchShelfProcessMap,
+} = useShelfProcessFilter(
+  shelves,
+  processes,
+  batchDispatchShelfId,
+  batchDispatchNextProcessId,
+)
+
+async function onOpenBatchDispatch(): Promise<void> {
+  if (selectedIds.size === 0) {
+    ElMessage.warning('请先选择待下发零件')
+    return
+  }
+  batchDispatchAction.value = 'shelf'
+  batchDispatchShelfId.value = null
+  batchDispatchNextProcessId.value = null
+  // 货架/工序数据复用模块级缓存，按需首次加载
+  if (shelves.value.length === 0) {
+    try {
+      shelves.value = (await listShelves({
+        zone: 'PRODUCTION', is_active: true, limit: 200,
+      })).items
+    } catch { shelves.value = [] }
+  }
+  if (processes.value.length === 0) {
+    try {
+      processes.value = (await listProcesses({ limit: 200 })).items
+    } catch { processes.value = [] }
+  }
+  void loadBatchShelfProcessMap()
+  batchDispatchVisible.value = true
+}
+
+async function onBatchDispatchConfirm(): Promise<void> {
+  if (selectedIds.size === 0) return
+  if (batchDispatchAction.value === 'shelf'
+      && (!batchDispatchShelfId.value || !batchDispatchNextProcessId.value)) return
+  // 快照：迭代过程中会修改 selectedIds/selectedRows
+  const targets = selectedRows.value
+    .filter((r) => selectedIds.has(r.id))
+    .map((r) => ({ id: r.id, label: r.serial_no || r.drawing_no || r.id }))
+  if (targets.length === 0) {
+    ElMessage.warning('当前页没有已选零件，请翻到已选页或重新选择')
+    return
+  }
+
+  const failures: { label: string; message: string }[] = []
+  let successCount = 0
+  batchDispatchSubmitting.value = true
+  try {
+    for (const t of targets) {
+      try {
+        if (batchDispatchAction.value === 'programming') {
+          await sendToProgramming(t.id)
+        } else {
+          await placeOnShelf(
+            t.id, batchDispatchShelfId.value!, batchDispatchNextProcessId.value!,
+          )
+        }
+        successCount++
+        // 成功项：移出三个状态源
+        selectedIds.delete(t.id)
+        const tbl = partsListRef.value?.elTableRef
+        const row = items.value.find((r) => r.id === t.id)
+        if (tbl && row) tbl.toggleRowSelection(row, false)
+        selectedRows.value = selectedRows.value.filter((r) => r.id !== t.id)
+      } catch (e) {
+        failures.push({
+          label: t.label,
+          message: (e as Error).message ?? '未知错误',
+        })
+      }
+    }
+    if (successCount > 0) ElMessage.success(`成功下发 ${successCount} 件`)
+    if (failures.length > 0) {
+      ElMessage.error(
+        `失败 ${failures.length} 件：${failures
+          .map((f) => `${f.label}（${f.message}）`)
+          .join('；')}`,
+      )
+    }
+    if (failures.length === 0) batchDispatchVisible.value = false
+    await fetchList()  // 内部 nextTick → restoreTableSelection
+  } finally {
+    batchDispatchSubmitting.value = false
+  }
+}
 </script>
 
 <style lang="scss" scoped>
@@ -1391,11 +1700,45 @@ async function onDispatchConfirm(): Promise<void> {
   }
 }
 
+/* 2026-07-22：工具栏三组分类排列（搜索 / 日期 / 操作）。
+   外层 nowrap 让三组保持一行；组内 wrap 允许单个控件换行。
+   手机：整列堆叠，每组 width: 100%。 */
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
+  flex-wrap: nowrap;
+
+  @include until(sm) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
+
+  @include until(sm) {
+    width: 100%;
+  }
+}
+
+/* 操作组靠右 */
+.filter-group--actions {
+  margin-left: auto;
+
+  @include until(sm) {
+    margin-left: 0;
+  }
+}
+
+/* 日期组：组内 gap 稍大 */
+.filter-group--dates {
+  gap: 12px;
 }
 
 /* 2026-07-22：内联日期区间筛选（请购/计划/系统交期） */
@@ -1414,7 +1757,6 @@ async function onDispatchConfirm(): Promise<void> {
 .total-hint {
   font-size: 13px;
   color: var(--text-secondary);
-  margin-left: auto;
 }
 
 .sheet-wrapper {

@@ -15,7 +15,13 @@
   <div class="responsive-list">
     <!-- 桌面：表格 -->
     <div v-if="!isMobile" v-loading="loading" class="rl-table-wrap">
-      <el-table :data="items" :row-key="rowKey" style="width: 100%" v-bind="$attrs">
+      <el-table
+        ref="elTableRef"
+        :data="items"
+        :row-key="rowKey"
+        style="width: 100%"
+        v-bind="$attrs"
+      >
         <slot />
         <template #empty>
           <el-empty :description="emptyText" />
@@ -41,6 +47,8 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
+import type { TableInstance } from 'element-plus'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 defineOptions({ inheritAttrs: false })
@@ -76,6 +84,11 @@ function rowKeyOf(row: any, index: number): string | number {
 function cardClassOf(row: any): string {
   return typeof props.cardClass === 'function' ? props.cardClass(row) : props.cardClass
 }
+
+// 2026-07-22：暴露内部 el-table ref，父组件（PartsList）批量模式需调
+// toggleRowSelection / clearSelection 等实例方法。手机端不渲染表格，ref 为 null。
+const elTableRef = ref<TableInstance | null>(null)
+defineExpose({ elTableRef })
 </script>
 
 <style lang="scss" scoped>
