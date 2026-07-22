@@ -404,8 +404,10 @@ class PartBatchTreeResult(BaseModel):
     )
 
 
-# Pydantic v2 自动延迟解析 string forward refs（"AssemblyOut" / "PartFileOut"），
-# 真正使用时再从 sys.modules / globals 找；无需显式 model_rebuild()。
+# `PartBatchTree*` 的前向引用（"AssemblyOut" / "PartFileOut"）在 `schema/__init__.py`
+# 末尾解析，那里能保证 schema.assembly / schema.part_file 都已 full-load。
+# 这里不再做 model_rebuild，也不再做反向 import（曾经的 try/except 兜底会把
+# 循环 import 的失败静默吞成 PydanticUndefinedAnnotation）。
 
 
 # ============================================================
