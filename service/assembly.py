@@ -52,6 +52,7 @@ from schema.assembly import (
 )
 from schema.part_file import PartFileOut
 from service._id_parse import parse_snowflake_id
+from service._session_refresh import refresh_for_state_machine
 from service.part import PartService
 from service.part_file import (
     PartFileService,
@@ -836,6 +837,12 @@ class AssemblyService:
         # 释放装配体级流水号（NULL 即让 partial unique 索引腾位置）
         asm.serial_no = None
         await self.assemblies.session.flush()
+        # flush 后 updated_at 被 server-side onupdate 标 expired;
+        # _assembly_to_out_obj 同步读 asm.updated_at 会触发 MissingGreenlet
+        await refresh_for_state_machine(
+            self.assemblies.session, asm,
+            attrs=("updated_at", "version"),
+        )
 
         # dashboard 卡片立刻消失 + 通知横幅（不走 PartService.cancel,
         # 所以必须自己推）
@@ -967,6 +974,12 @@ class AssemblyService:
 
         asm.updated_by = self._user_id
         await self.assemblies.update(asm)
+        # flush 后 updated_at 被 server-side onupdate 标 expired;
+        # _assembly_to_out_obj 同步读 asm.updated_at 会触发 MissingGreenlet
+        await refresh_for_state_machine(
+            self.assemblies.session, asm,
+            attrs=("updated_at", "version"),
+        )
         # 异步刷一次 dashboard（名称 / 加急 / 客户变化影响卡片展示）
         await self._broadcast()
         return await self._build_detail(asm)
