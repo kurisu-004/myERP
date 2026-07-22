@@ -861,14 +861,7 @@ def _seed_inspector_users(bind) -> None:
 
 
 def _seed_delivery_note_menu(bind) -> None:
-    """送货单管理菜单（PR-G 2026-07-22：code 已从老 delivery_notes_new
-    重命名为 delivery_notes_manage，指向新管理页面 /delivery-notes）。
-    挂 order_group + MANAGER/CLERK 角色关联。
-
-    schema/000000000009 同时携带一条 UPDATE 把老库上
-    `delivery_notes_new` 老菜单改名为 `delivery_notes_manage`，
-    本 seed 文件直接插入新 code（与 schema/009 的 UPDATE 二选一执行）。
-    """
+    """delivery_notes_new 菜单（挂 order_group）+ MANAGER/CLERK 角色关联。"""
     parent_row = bind.execute(
         sa.text(
             "SELECT id FROM t_menu "
@@ -894,9 +887,9 @@ def _seed_delivery_note_menu(bind) -> None:
         {
             "id": new_id(),
             "parent_id": parent_id,
-            "code": "delivery_notes_manage",
-            "title": "送货单",
-            "path": "/delivery-notes",
+            "code": "delivery_notes_new",
+            "title": "生成送货单",
+            "path": "/delivery-notes/new",
             "icon": "Document",
             "sort_order": 30,
         },
@@ -905,7 +898,7 @@ def _seed_delivery_note_menu(bind) -> None:
     mid_row = bind.execute(
         sa.text(
             "SELECT id FROM t_menu "
-            "WHERE code='delivery_notes_manage' AND deleted_at IS NULL"
+            "WHERE code='delivery_notes_new' AND deleted_at IS NULL"
         )
     ).fetchone()
     if mid_row is None:
