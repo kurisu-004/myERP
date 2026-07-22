@@ -60,7 +60,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from '@element-plus/icons-vue'
-import { pdfjsLib } from '@/utils/pdfjs'
+import { pdfjsLib, PDF_CMAP_OPTIONS } from '@/utils/pdfjs'
 
 interface Props {
   url: string
@@ -87,7 +87,7 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const task = pdfjsLib.getDocument({ url: props.url })
+    const task = pdfjsLib.getDocument({ url: props.url, ...PDF_CMAP_OPTIONS })
     pdfDoc = await task.promise
     totalPages.value = pdfDoc.numPages
     if (page.value < 1) page.value = 1
