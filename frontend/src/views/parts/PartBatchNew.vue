@@ -371,30 +371,27 @@
         <p class="hint">
           拖拽多个 PDF 文件（命名格式 <code>图号_零件名称.pdf</code>），
           可同时拖入应标 Excel 文件（按图号匹配申请人/数量/加急等）。
-          单页 PDF = 独立零件；多页 PDF = 装配件 + 子件。
-          树形预览里可点选「总装图」单选。
+          多页 PDF 拆为候选页：勾选页可「合并为零件」或「合并为装配件」；
+          单页 PDF 直接进入独立零件表。可手动新增 / 删除条目。
         </p>
 
         <el-card shadow="never" class="pdf-form-card">
           <el-form :model="pdfForm" inline>
             <el-form-item label="L1 客户" required>
-              <el-cascader
-                v-model="pdfForm.customerId"
-                :options="customerTree"
-                :props="{ value: 'id', label: 'name', children: 'children', emitPath: false, checkStrictly: true }"
-                placeholder="选到二级叶子客户"
-                style="width: 200px"
+              <el-select
+                v-model="pdfForm.customerL1Id"
+                placeholder="选择一级客户"
+                filterable
                 clearable
-              />
-            </el-form-item>
-            <el-form-item label="申请人">
-              <el-autocomplete
-                v-model="pdfForm.applicantName"
-                :fetch-suggestions="(q, cb) => queryApplicant(q, cb)"
-                placeholder="申请人姓名（可选）"
-                clearable
-                style="width: 180px"
-              />
+                style="width: 240px"
+              >
+                <el-option
+                  v-for="c in l1Customers"
+                  :key="c.id"
+                  :label="c.name"
+                  :value="c.id"
+                />
+              </el-select>
             </el-form-item>
             <el-form-item label="请购日期">
               <el-date-picker
@@ -404,18 +401,6 @@
                 placeholder="默认今天"
                 style="width: 160px"
               />
-            </el-form-item>
-            <el-form-item label="计划交期">
-              <el-date-picker
-                v-model="pdfForm.plannedDeliveryDate"
-                type="date"
-                value-format="YYYY-MM-DD"
-                placeholder="默认请购 +7 天"
-                style="width: 160px"
-              />
-            </el-form-item>
-            <el-form-item label="加急">
-              <el-switch v-model="pdfForm.isUrgent" />
             </el-form-item>
           </el-form>
 
@@ -433,7 +418,7 @@
                 <el-icon class="el-icon--upload"><upload-filled /></el-icon>
                 <div class="el-upload__text">拖拽或点击上传 PDF（可多个）</div>
                 <template #tip>
-                  <div class="el-upload__tip">单页 PDF = 独立零件；多页 PDF = 装配件</div>
+                  <div class="el-upload__tip">多页 PDF 会自动拆为候选页</div>
                 </template>
               </el-upload>
             </el-col>
@@ -460,119 +445,495 @@
             <el-button
               type="primary"
               :disabled="pdfFiles.length === 0 || pdfBuildingTree"
-              @click="onBuildTree"
+              @click="rebuildFromUploads"
             >
               <el-icon><magic-stick /></el-icon>
-              <span>{{ pdfTree.length > 0 ? '重新解析预览' : '解析并预览' }}</span>
-            </el-button>
-            <el-button
-              type="success"
-              :disabled="pdfTree.length === 0 || pdfSubmitting"
-              @click="onSubmitPdfTree"
-            >
-              <el-icon><check /></el-icon>
-              <span>提交创建</span>
+              <span>{{ allPdfs.length > 0 ? '重新解析拆分' : '解析拆分' }}</span>
             </el-button>
             <span class="tree-stat">
-              共 {{ pdfStandaloneCount }} 个独立零件 + {{ pdfAssemblyCount }} 个装配件（{{ pdfChildCount }} 子件）
+              源文件 {{ allPdfs.length }} 个 · 独立零件 {{ standaloneParts.length }} 条 ·
+              装配件 {{ assemblies.length }} 个（共 {{ totalAssemblyChildren }} 子件）
             </span>
           </div>
         </el-card>
 
-        <el-card v-if="pdfTree.length > 0" shadow="never" class="pdf-tree-card">
+        <!-- ① 源文件区 -->
+        <el-card v-if="allPdfs.length > 0" shadow="never" class="pdf-source-card">
+          <div class="source-header">
+            <span class="title">源文件区</span>
+            <span class="hint-inline">
+              勾选页后用右侧按钮归组；勾选父级（PDF 文件名） = 全选该 PDF 全部页
+            </span>
+            <div class="source-actions">
+              <el-button
+                type="primary"
+                plain
+                :disabled="selectedPages.size === 0"
+                @click="mergeSelectedAsPart"
+              >
+                <el-icon><link /></el-icon>
+                <span>合并为零件</span>
+              </el-button>
+              <el-button
+                type="warning"
+                plain
+                :disabled="selectedPages.size < 2"
+                @click="mergeSelectedAsAssembly"
+              >
+                <el-icon><files /></el-icon>
+                <span>合并为装配件</span>
+              </el-button>
+              <el-button @click="clearSelection">清空选择</el-button>
+            </div>
+          </div>
+
           <el-table
-            :data="pdfTree"
-            row-key="uid"
+            ref="sourceTableRef"
+            :data="sourceTree"
+            row-key="id"
             :tree-props="{ children: 'children' }"
             default-expand-all
             border
-            class="pdf-tree-table"
+            class="pdf-source-table"
+            @selection-change="onSourceSelectionChange"
           >
-            <el-table-column label="类型 / 页码" width="140">
+            <el-table-column type="selection" width="55" />
+            <el-table-column label="PDF 文件名" min-width="280">
               <template #default="{ row }">
-                <el-tag v-if="row.kind === 'assembly'" type="warning" size="small">装配件</el-tag>
-                <el-tag v-else-if="row.kind === 'standalone'" type="info" size="small">独立零件</el-tag>
-                <el-tag v-else size="small">第 {{ row.page_index + 1 }} 页</el-tag>
+                <el-link
+                  type="primary"
+                  underline="never"
+                  class="filename-link"
+                  @click="previewSourceRow(row as SourceTreeRow)"
+                >
+                  {{ (row as SourceTreeRow).filename }}
+                </el-link>
               </template>
             </el-table-column>
-            <el-table-column label="PDF 文件名" min-width="200" show-overflow-tooltip>
+            <el-table-column label="页" width="60" align="center">
               <template #default="{ row }">
-                <span class="filename">{{ row.pdf_filename }}</span>
+                <span v-if="(row as SourceTreeRow).pageIndex === null">{{ (row as SourceTreeRow).totalPages }}</span>
+                <span v-else>{{ (row as SourceTreeRow).pageIndex! + 1 }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="图号" min-width="140">
+            <el-table-column label="操作" width="100" align="center">
               <template #default="{ row }">
-                <el-input
-                  v-model="row.drawing_no"
-                  size="small"
-                  :class="{ 'is-error': !row.drawing_no }"
-                  placeholder="必填"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column label="名称" min-width="160">
-              <template #default="{ row }">
-                <el-input v-model="row.name" size="small" placeholder="选填" />
-              </template>
-            </el-table-column>
-            <el-table-column v-if="hasNonStandalone" label="数量" width="90">
-              <template #default="{ row }">
-                <el-input-number
-                  v-if="row.kind !== 'assembly'"
-                  v-model="row.quantity"
-                  :min="1"
-                  size="small"
-                  controls-position="right"
-                />
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="申请人" min-width="120">
-              <template #default="{ row }">
-                <el-input v-model="row.applicant_name" size="small" />
-              </template>
-            </el-table-column>
-            <el-table-column label="加急" width="80" align="center">
-              <template #default="{ row }">
-                <el-switch v-model="row.is_urgent" />
-              </template>
-            </el-table-column>
-            <el-table-column label="订单编号" width="130">
-              <template #default="{ row }">
-                <el-input v-model="row.order_no" size="small" placeholder="客户系统编号" />
-              </template>
-            </el-table-column>
-            <el-table-column label="系统交期" width="150">
-              <template #default="{ row }">
-                <el-date-picker
-                  v-model="row.system_delivery_date"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  size="small"
-                  clearable
-                  placeholder="选填"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column label="备注" min-width="160">
-              <template #default="{ row }">
-                <el-input v-model="row.note" size="small" type="textarea" :rows="1" />
-              </template>
-            </el-table-column>
-            <el-table-column label="设为总装图" width="120" align="center">
-              <template #default="{ row }">
-                <el-radio
-                  v-if="row.kind === 'assembly_child'"
-                  v-model="row.assembly_uid_master_choice"
-                  :value="row.assembly_uid + ':' + row.page_index"
-                />
-                <span v-else class="muted">—</span>
+                <el-button
+                  v-if="(row as SourceTreeRow).pageIndex === null"
+                  link
+                  type="danger"
+                  @click="removePdf((row as SourceTreeRow).pdfSourceUid)"
+                >删除</el-button>
               </template>
             </el-table-column>
           </el-table>
         </el-card>
+
+        <!-- ② 独立零件表 + ③ 装配件表（上下堆叠） -->
+        <div v-if="allPdfs.length > 0">
+          <el-card shadow="never" class="pdf-standalone-card">
+              <div class="table-header">
+                <span class="title">独立零件（{{ standaloneParts.length }}）</span>
+                <el-button type="primary" plain size="small" @click="addManualPart">
+                  <el-icon><plus /></el-icon>
+                  <span>新增零件</span>
+                </el-button>
+              </div>
+              <el-table
+                :data="standaloneParts"
+                row-key="uid"
+                border
+                size="small"
+                empty-text="还没有独立零件。可在「源文件区」勾选页后合并，或直接新增。"
+                class="pdf-standalone-table"
+              >
+                <el-table-column label="图号" min-width="140">
+                  <template #default="{ row }">
+                    <el-input
+                      v-model="row.drawing_no"
+                      size="small"
+                      :class="{ 'is-error': !row.drawing_no }"
+                      placeholder="必填"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="名称" min-width="160">
+                  <template #default="{ row }">
+                    <el-input v-model="row.name" size="small" placeholder="选填" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="图纸" min-width="200" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <el-link
+                      type="primary"
+                      underline="never"
+                      class="filename-link"
+                      @click="previewStandalonePart(row as StandalonePartRow)"
+                    >
+                      {{ pdfSourceLabel(row.pdfSourceUid) }}
+                    </el-link>
+                  </template>
+                </el-table-column>
+                <el-table-column label="数量" width="90">
+                  <template #default="{ row }">
+                    <el-input-number
+                      v-model="row.quantity"
+                      :min="1"
+                      :max="9999"
+                      size="small"
+                      controls-position="right"
+                      style="width: 90px"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="计划交期" width="160">
+                  <template #default="{ row }">
+                    <el-date-picker
+                      v-model="row.planned_delivery_date"
+                      type="date"
+                      value-format="YYYY-MM-DD"
+                      size="small"
+                      clearable
+                      placeholder="选交期"
+                      style="width: 140px"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="分厂" min-width="160">
+                  <template #default="{ row }">
+                    <el-select
+                      v-model="row.customer_id"
+                      placeholder="选分厂"
+                      filterable
+                      clearable
+                      size="small"
+                      style="width: 150px"
+                      :disabled="l2Customers.length === 0"
+                      @change="(v: string) => onL2Change(row as StandalonePartRow, v)"
+                    >
+                      <el-option
+                        v-for="c in l2Customers"
+                        :key="c.id"
+                        :label="c.name"
+                        :value="c.id"
+                      />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column label="申请人" min-width="160">
+                  <template #default="{ row }">
+                    <el-autocomplete
+                      v-model="row.applicant_name"
+                      :fetch-suggestions="(q: string, cb: any) => querySearch(q, cb)"
+                      :debounce="0"
+                      placeholder="选填"
+                      clearable
+                      size="small"
+                      style="width: 150px"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="加急" width="70" align="center">
+                  <template #default="{ row }">
+                    <el-switch v-model="row.is_urgent" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="备注" min-width="140">
+                  <template #default="{ row }">
+                    <el-input v-model="row.note" size="small" type="textarea" :rows="1" placeholder="选填" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="120" align="center" fixed="right">
+                  <template #default="{ row }">
+                    <el-button
+                      v-if="row.mergedFrom && row.mergedFrom.length > 1"
+                      link
+                      type="warning"
+                      size="small"
+                      @click="splitStandalonePart(row as StandalonePartRow)"
+                    >拆分</el-button>
+                    <el-button link type="danger" size="small" @click="removeStandalonePart(row.uid)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+            <el-card shadow="never" class="pdf-assembly-card">
+              <div class="table-header">
+                <span class="title">装配件（{{ assemblies.length }}）</span>
+                <el-button type="primary" plain size="small" @click="addManualAssembly">
+                  <el-icon><plus /></el-icon>
+                  <span>新增装配件</span>
+                </el-button>
+              </div>
+              <el-table
+                :data="assemblies"
+                row-key="uid"
+                border
+                size="small"
+                empty-text="还没有装配件。可在「源文件区」勾选多页后合并，或直接新增。"
+                class="pdf-assembly-table"
+              >
+                <el-table-column type="expand">
+                  <template #default="{ row }">
+                    <el-table :data="row.children" size="small" :show-header="true" class="child-table">
+                      <el-table-column label="页" width="60" align="center">
+                        <template #default="{ row: c }">P{{ c.page_index + 1 }}</template>
+                      </el-table-column>
+                      <el-table-column label="图号" min-width="140">
+                        <template #default="{ row: c }">
+                          <el-input v-model="c.drawing_no" size="small" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="名称" min-width="140">
+                        <template #default="{ row: c }">
+                          <el-input v-model="c.name" size="small" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="数量" width="90">
+                        <template #default="{ row: c }">
+                          <el-input-number
+                            v-model="c.quantity"
+                            :min="1"
+                            :max="9999"
+                            size="small"
+                            controls-position="right"
+                            style="width: 90px"
+                          />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="计划交期" width="150">
+                        <template #default="{ row: c }">
+                          <el-date-picker
+                            v-model="c.planned_delivery_date"
+                            type="date"
+                            value-format="YYYY-MM-DD"
+                            size="small"
+                            clearable
+                            placeholder="选交期"
+                            style="width: 130px"
+                          />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="加急" width="70" align="center">
+                        <template #default="{ row: c }">
+                          <el-switch v-model="c.is_urgent" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="备注" min-width="120">
+                        <template #default="{ row: c }">
+                          <el-input v-model="c.note" size="small" type="textarea" :rows="1" placeholder="选填" />
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </template>
+                </el-table-column>
+                <el-table-column label="图号" min-width="140">
+                  <template #default="{ row }">
+                    <el-input v-model="row.drawing_no" size="small" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="名称" min-width="160">
+                  <template #default="{ row }">
+                    <el-input v-model="row.name" size="small" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="图纸" min-width="180" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <el-link
+                      type="primary"
+                      underline="never"
+                      class="filename-link"
+                      @click="previewPdfSourceByUid(row.pdfSourceUid)"
+                    >
+                      {{ pdfSourceLabel(row.pdfSourceUid) }}
+                    </el-link>
+                  </template>
+                </el-table-column>
+                <el-table-column label="分厂" min-width="160">
+                  <template #default="{ row }">
+                    <el-select
+                      v-model="row.customer_id"
+                      placeholder="选分厂"
+                      filterable
+                      clearable
+                      size="small"
+                      style="width: 150px"
+                      :disabled="l2Customers.length === 0"
+                      @change="(v: string) => onL2Change(row as AssemblyRow, v)"
+                    >
+                      <el-option
+                        v-for="c in l2Customers"
+                        :key="c.id"
+                        :label="c.name"
+                        :value="c.id"
+                      />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column label="申请人" min-width="160">
+                  <template #default="{ row }">
+                    <el-autocomplete
+                      v-model="row.applicant_name"
+                      :fetch-suggestions="(q: string, cb: any) => querySearch(q, cb)"
+                      :debounce="0"
+                      placeholder="选填"
+                      clearable
+                      size="small"
+                      style="width: 150px"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="装配图（总装图）" min-width="180">
+                  <template #default="{ row }">
+                    <el-select
+                      v-model="row.masterPageIndex"
+                      placeholder="无（清空即不指定）"
+                      clearable
+                      size="small"
+                      style="width: 170px"
+                    >
+                      <el-option
+                        v-for="c in row.children"
+                        :key="c.page_index"
+                        :label="`P${c.page_index + 1}（${c.drawing_no || '子件'}）`"
+                        :value="c.page_index"
+                      />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column label="计划交期" width="160">
+                  <template #default="{ row }">
+                    <el-date-picker
+                      v-model="row.planned_delivery_date"
+                      type="date"
+                      value-format="YYYY-MM-DD"
+                      size="small"
+                      clearable
+                      placeholder="选交期"
+                      style="width: 140px"
+                      @change="(v: string) => onAsmPlannedChange(row as AssemblyRow, v)"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="备注" min-width="140">
+                  <template #default="{ row }">
+                    <el-input v-model="row.note" size="small" type="textarea" :rows="1" placeholder="选填" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="子件数" width="70" align="center">
+                  <template #default="{ row }">{{ row.children.length }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="80" align="center" fixed="right">
+                  <template #default="{ row }">
+                    <el-button link type="danger" size="small" @click="removeAssembly(row.uid)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+        </div>
+
+    <!-- 提交按钮：放在装配件表下方（form-card 顶部仅保留解析拆分）。 -->
+    <div v-if="allPdfs.length > 0" class="pdf-footer-actions">
+      <el-button
+        type="success"
+        size="large"
+        :disabled="(standaloneParts.length === 0 && assemblies.length === 0) || pdfSubmitting"
+        @click="onSubmitPdfTree"
+      >
+        <el-icon><check /></el-icon>
+        <span>提交创建（{{ standaloneParts.length }} 个零件 + {{ assemblies.length }} 个装配件）</span>
+      </el-button>
+    </div>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- PDF 文件名点击触发的全屏预览（Tab 2）。blob URL 生命周期见
+         openPdfPreview / closePdfPreview。 -->
+    <el-dialog
+      v-model="pdfPreviewVisible"
+      :title="pdfPreviewing?.title ?? 'PDF 预览'"
+      fullscreen
+      destroy-on-close
+      :before-close="closePdfPreview"
+    >
+      <PdfViewer
+        v-if="pdfPreviewing?.url"
+        :url="pdfPreviewing.url"
+        :page="pdfPreviewing.page"
+      />
+    </el-dialog>
+
+    <!-- 手动新增零件 dialog -->
+    <el-dialog
+      v-model="manualPartDialogVisible"
+      title="新增独立零件"
+      width="520px"
+      destroy-on-close
+    >
+      <el-form :model="manualPartForm" label-width="80px">
+        <el-form-item label="图号" required>
+          <el-input v-model="manualPartForm.drawing_no" placeholder="必填" />
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input v-model="manualPartForm.name" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="图纸" required>
+          <el-upload
+            accept=".pdf"
+            :auto-upload="false"
+            :file-list="manualPartFileList"
+            :on-change="onManualPartFileChange"
+            :on-remove="onManualPartFileRemove"
+            :show-file-list="true"
+          >
+            <el-button>选择 PDF</el-button>
+            <template #tip>
+              <div class="el-upload__tip">单文件 · 与源文件区无关</div>
+            </template>
+          </el-upload>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualPartDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!manualPartFormValid" @click="confirmManualPart">添加</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 手动新增装配件 dialog -->
+    <el-dialog
+      v-model="manualAsmDialogVisible"
+      title="新增装配件"
+      width="520px"
+      destroy-on-close
+    >
+      <el-form :model="manualAsmForm" label-width="80px">
+        <el-form-item label="图号" required>
+          <el-input v-model="manualAsmForm.drawing_no" placeholder="必填" />
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input v-model="manualAsmForm.name" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="图纸" required>
+          <el-upload
+            accept=".pdf"
+            :auto-upload="false"
+            :file-list="manualAsmFileList"
+            :on-change="onManualAsmFileChange"
+            :on-remove="onManualAsmFileRemove"
+            :show-file-list="true"
+          >
+            <el-button>选择 PDF</el-button>
+            <template #tip>
+              <div class="el-upload__tip">上传后按页数自动生成子件</div>
+            </template>
+          </el-upload>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualAsmDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!manualAsmFormValid" @click="confirmManualAssembly">添加</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -608,6 +969,20 @@ const previewDlg = useDialogSize({ desktopWidth: 720, fullscreenOnMobile: true }
 
 // ============ 客户树 ============
 const customers = ref<Customer[]>([])
+/** Tab 2 PDF 批量上传专用：仅展示一级客户。Tab 1 手动录入仍走 cascader 全树。 */
+const l1Customers = computed(() =>
+  customers.value
+    .filter((c) => c.parent_id === null)
+    .map((c) => ({ id: c.id, name: c.name })),
+)
+/** Tab 2 分厂下拉专用：所选 L1 的二级子客户。 */
+const l2Customers = computed(() =>
+  pdfForm.customerL1Id
+    ? customers.value
+        .filter((c) => c.parent_id === pdfForm.customerL1Id)
+        .map((c) => ({ id: c.id, name: c.name }))
+    : [],
+)
 const customerTree = computed(() => {
   const roots = customers.value.filter((c) => c.parent_id === null)
   return roots.map((r) => ({
@@ -1108,9 +1483,9 @@ import {
   type PartBatchTreeItemFE,
   type PartBatchTreeAssemblyFE,
 } from '@/api/parts'
-import { bulkGetOrCreateApplicants } from '@/api/applicant'
 import { parseBidExcel, type BidRow } from '@/utils/bidExcelParser'
 import { parseDrawingFilename } from '@/utils/drawingFilename'
+import { pdfjsLib } from '@/utils/pdfjs'
 
 const route = useRoute()
 const activeTab = ref<string>(typeof route.query.tab === 'string' ? route.query.tab : 'manual')
@@ -1119,21 +1494,14 @@ watch(activeTab, (v) => {
 })
 
 interface PdfFormState {
-  customerId: string | null  // 叶子客户 id
-  applicantName: string
-  applicantId: string | null
+  /** 一级客户 id（Tab 2 必选；决定 serial_prefix 来源 + 二级客户候选范围）。 */
+  customerL1Id: string | null
   requestDate: string
-  plannedDeliveryDate: string
-  isUrgent: boolean
 }
 
 const pdfForm = reactive<PdfFormState>({
-  customerId: null,
-  applicantName: '',
-  applicantId: null,
+  customerL1Id: null,
   requestDate: todayIso(),
-  plannedDeliveryDate: '',
-  isUrgent: false,
 })
 
 // PDF / Excel 文件列表（el-upload 控件绑定）
@@ -1142,62 +1510,121 @@ const excelFiles = ref<UploadFile[]>([])
 const pdfBuildingTree = ref(false)
 const pdfSubmitting = ref(false)
 
-// 树预览数据结构
-type TreeAssembly = {
+// ============ 新数据模型（2026-07-22 重构） ============
+
+/** 源文件区表格的树节点。多页 PDF 是父节点，子页是 children。 */
+interface SourceTreeRow {
+  /** 顶层 = pdfSourceUid；子行 = `${pdfSourceUid}:p${pageIndex}`。 */
+  id: string
+  pdfSourceUid: string
+  /** null = PDF 顶层；>=0 = 子页。 */
+  pageIndex: number | null
+  filename: string
+  totalPages: number
+  children?: SourceTreeRow[]
+}
+
+/** 一份「图纸源」：上传的原始 PDF 或前端合成的新 PDF。 */
+interface PdfSource {
   uid: string
-  kind: 'assembly'
-  pdf_index: number
-  pdf_filename: string
-  total_pages: number
+  raw: Blob
+  filename: string
+  totalPages: number
+  /** true = 由 pdf-lib 合并产生；false = 原 PDF。 */
+  synthesized: boolean
+  /** 合成来源（仅 synthesized=true）。 */
+  synthesizedFrom?: { pdfUid: string; pageIndices: number[] }[]
+  /** 原始 PDF 的 uid（合成时记录）。 */
+  originPdfUid?: string
+}
+
+/** 独立零件表的一行。 */
+interface StandalonePartRow {
+  uid: string
+  pdfSourceUid: string
+  pageCount: number
+  /** 合成来源（仅 pageCount > 1）。 */
+  mergedFrom?: { pdfUid: string; pageIndex: number }[]
   drawing_no: string
   name: string
   applicant_name: string
-  customer_id: string
+  customer_id: string  // 二级客户 id（L2 leaf）；后端 customer_id 校验需要叶子节点
+  customer_name: string  // 显示用，提交时不发送
   request_date: string
   planned_delivery_date: string
   system_delivery_date: string | null
   order_no: string | null
   note: string | null
   is_urgent: boolean
-  children: TreeChild[]
-}
-type TreeChild = {
-  uid: string
-  kind: 'assembly_child' | 'standalone'
-  pdf_index: number
-  page_index: number
-  pdf_filename: string
-  drawing_no: string
-  name: string
-  applicant_name: string
   quantity: number
-  customer_id: string
+}
+
+/** 装配件子件。分厂 / 申请人由顶层 AssemblyRow 指定，提交时复制到每条 item。 */
+interface AssemblyChildRow {
+  uid: string
+  pdfSourceUid: string
+  page_index: number
+  drawing_no: string
+  name: string
+  quantity: number
+  is_urgent: boolean
+  request_date: string
+  planned_delivery_date: string
+  system_delivery_date: string | null
+  order_no: string | null
+  note: string | null
+}
+
+/** 装配件顶层行。 */
+interface AssemblyRow {
+  uid: string
+  pdfSourceUid: string
+  drawing_no: string
+  name: string
+  applicant_name: string
+  customer_id: string  // 二级客户 id（L2 leaf）
+  customer_name: string
   request_date: string
   planned_delivery_date: string
   system_delivery_date: string | null
   order_no: string | null
   note: string | null
   is_urgent: boolean
-  assembly_uid: string | null
-  assembly_uid_master_choice: string | null
+  masterPageIndex: number | null
+  children: AssemblyChildRow[]
 }
-type TreeRow = TreeAssembly | TreeChild
 
-const pdfTree = ref<TreeRow[]>([])
+const allPdfs = ref<PdfSource[]>([])
+/** 源文件区选中的页：key = `${pdfUid}:${pageIndex}`（pageIndex 0-based）。 */
+const selectedPages = ref<Set<string>>(new Set())
+const standaloneParts = ref<StandalonePartRow[]>([])
+const assemblies = ref<AssemblyRow[]>([])
 
-const hasNonStandalone = computed(() =>
-  pdfTree.value.some((r) => r.kind === 'assembly'),
+/** 只用于源文件区表格展示的原始（未合成）PDF。 */
+const originalPdfs = computed(() => allPdfs.value.filter((s) => !s.synthesized))
+const totalAssemblyChildren = computed(() =>
+  assemblies.value.reduce((sum, a) => sum + a.children.length, 0),
 )
-const pdfStandaloneCount = computed(() =>
-  pdfTree.value.filter((r) => r.kind === 'standalone').length,
-)
-const pdfAssemblyCount = computed(() =>
-  pdfTree.value.filter((r) => r.kind === 'assembly').length,
-)
-const pdfChildCount = computed(() =>
-  pdfTree.value
-    .filter((r): r is TreeAssembly => r.kind === 'assembly')
-    .reduce((sum, a) => sum + a.children.length, 0),
+
+/** 源文件区树状数据：仅显示多页 PDF（单页 PDF 已直接进独立零件表）。
+ *  多页 PDF → 1 父行 + N 子页。 */
+const sourceTree = computed<SourceTreeRow[]>(() =>
+  originalPdfs.value
+    .filter((src) => src.totalPages > 1)
+    .map((src) => ({
+      id: src.uid,
+      pdfSourceUid: src.uid,
+      pageIndex: null,
+      filename: src.filename,
+      totalPages: src.totalPages,
+      children: Array.from({ length: src.totalPages }, (_, i) => ({
+        id: `${src.uid}:p${i}`,
+        pdfSourceUid: src.uid,
+        pageIndex: i,
+        filename: `${src.filename}（第 ${i + 1} 页）`,
+        totalPages: src.totalPages,
+      })),
+    })),
 )
 
 // el-upload 钩子
@@ -1234,35 +1661,18 @@ function fileList(
   return [...current, file]
 }
 
-/** 申请人的 el-autocomplete 客户端过滤候选（按 root_customer_id 拉一次，内存过滤） */
-function queryApplicant(queryString: string, callback: (items: unknown[]) => void): void {
-  const q = (queryString || '').trim().toLowerCase()
-  const list = (applicantCandidates.value || []).map((a) => ({
-    id: a.id,
-    name: a.name,
-    value: a.name,
-  }))
-  const matched = q ? list.filter((a) => a.name.toLowerCase().includes(q)) : list.slice(0, 30)
-  callback(matched)
-}
-
-watch(() => pdfForm.customerId, async (v) => {
-  pdfForm.applicantName = ''
-  pdfForm.applicantId = null
-  await loadApplicantsForCustomer(v || null)
-})
-
-/** PDF 按页数动态读取（pdfjs-dist）。 */
+/** PDF 按页数动态读取（pdfjs-dist）。与 composables/usePdfPageCount.ts 同模式：
+ *  destroy() 在 PDFDocumentLoadingTask 上，不在 PDFDocumentProxy 上（旧实现
+ *  调 doc.destroy() 抛 "doc.destroy is not a function"）。 */
 async function countPdfPages(file: File): Promise<number> {
-  // 复用 usePdfPageCount 的实现；这里直接调避免拆组件
   const buf = await file.arrayBuffer()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfjs: any = await import('pdfjs-dist/build/pdf.mjs').catch(() => import('pdfjs-dist'))
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buf) })
-  const doc = await loadingTask.promise
-  await doc.cleanup()
-  await doc.destroy()
-  return doc.numPages as number
+  const task = pdfjsLib.getDocument({ data: buf })
+  try {
+    const doc = await task.promise
+    return doc.numPages
+  } finally {
+    await task.destroy()
+  }
 }
 
 async function readExcel(file: File): Promise<BidRow[]> {
@@ -1277,19 +1687,20 @@ async function readExcel(file: File): Promise<BidRow[]> {
   return parsed.rows
 }
 
-/** 点击「解析并预览」 */
-async function onBuildTree(): Promise<void> {
+/** 从 pdfFiles 重新构建 allPdfs + standaloneParts（不自动组成装配件）。
+ *  多页 PDF → 每页独立成一行；单页 PDF → 一行。 */
+async function rebuildFromUploads(): Promise<void> {
   if (pdfFiles.value.length === 0) {
     ElMessage.warning('请先上传 PDF')
     return
   }
-  if (!pdfForm.customerId) {
-    ElMessage.warning('请选择 L1 客户（叶子节点）')
+  if (!pdfForm.customerL1Id) {
+    ElMessage.warning('请选择一级客户')
     return
   }
   pdfBuildingTree.value = true
   try {
-    // Excel 解析（可选）
+    // 解析 Excel（可选）
     let excelByDrawingNo: Map<string, BidRow> | null = null
     if (excelFiles.value.length > 0) {
       const raw = excelFiles.value[0].raw as File | undefined
@@ -1299,125 +1710,52 @@ async function onBuildTree(): Promise<void> {
       }
     }
 
-    const out: TreeRow[] = []
-    let pdfIndex = 0
+    const sources: PdfSource[] = []
+    const rows: StandalonePartRow[] = []
+    const unparsedPdfNames: string[] = []
+
     for (const f of pdfFiles.value) {
       const raw = f.raw as File | undefined
       if (!raw) continue
       const fname = f.name
       const parsed = parseDrawingFilename(fname)
-      const pages = await countPdfPages(raw)
-
-      const applyExcel = (row: TreeChild): void => {
-        if (!excelByDrawingNo) return
-        const matched = excelByDrawingNo.get(row.drawing_no)
-        if (!matched) return
-        row.applicant_name = matched.applicantName || row.applicant_name
-        row.quantity = matched.quantity || row.quantity
-        row.is_urgent = matched.isUrgent ?? row.is_urgent
-        if (matched.plannedDeliveryDate) row.planned_delivery_date = matched.plannedDeliveryDate
-        if (matched.unitPrice) row.order_no = row.order_no  // 占位；不覆盖
+      if (!parsed.drawingNo && !parsed.partName) {
+        unparsedPdfNames.push(fname)
       }
-
-      if (pages === 1) {
-        out.push({
-          uid: `s-${pdfIndex}`,
-          kind: 'standalone',
-          pdf_index: pdfIndex,
-          page_index: 0,
-          pdf_filename: fname,
+      const totalPages = await countPdfPages(raw)
+      const pdfUid = `pdf-${f.uid}`
+      sources.push({
+        uid: pdfUid,
+        raw,
+        filename: fname,
+        totalPages,
+        synthesized: false,
+      })
+      if (totalPages === 1) {
+        // 单页 PDF → 自动进独立零件表
+        rows.push(makeStandaloneRow({
+          pdfSourceUid: pdfUid,
           drawing_no: parsed.drawingNo || '',
           name: parsed.partName || '',
-          applicant_name: pdfForm.applicantName || '',
-          quantity: 1,
-          customer_id: pdfForm.customerId!,
-          request_date: pdfForm.requestDate,
-          planned_delivery_date: pdfForm.plannedDeliveryDate || pdfForm.requestDate,
-          system_delivery_date: null,
-          order_no: null,
-          note: null,
-          is_urgent: pdfForm.isUrgent,
-          assembly_uid: null,
-          assembly_uid_master_choice: null,
-        })
-        applyExcel(out[out.length - 1] as TreeChild)
-      } else {
-        const asmUid = `a-${pdfIndex}`
-        const children: TreeChild[] = []
-        for (let i = 0; i < pages; i++) {
-          const child: TreeChild = {
-            uid: `${asmUid}-${i}`,
-            kind: 'assembly_child',
-            pdf_index: pdfIndex,
-            page_index: i,
-            pdf_filename: fname,
-            drawing_no: parsed.drawingNo
-              ? i === 0 ? parsed.drawingNo : `${parsed.drawingNo}-${String(i + 1).padStart(2, '0')}`
-              : '',
-            name: parsed.partName
-              ? i === 0 ? parsed.partName : `${parsed.partName}-${i + 1}`
-              : '',
-            applicant_name: pdfForm.applicantName || '',
-            quantity: 1,
-            customer_id: pdfForm.customerId!,
-            request_date: pdfForm.requestDate,
-            planned_delivery_date: pdfForm.plannedDeliveryDate || pdfForm.requestDate,
-            system_delivery_date: null,
-            order_no: null,
-            note: null,
-            is_urgent: pdfForm.isUrgent,
-            assembly_uid: asmUid,
-            assembly_uid_master_choice: null,
-          }
-          applyExcel(child)
-          children.push(child)
-        }
-        out.push({
-          uid: asmUid,
-          kind: 'assembly',
-          pdf_index: pdfIndex,
-          pdf_filename: fname,
-          total_pages: pages,
-          drawing_no: parsed.drawingNo || '',
-          name: parsed.partName || '',
-          applicant_name: pdfForm.applicantName || '',
-          customer_id: pdfForm.customerId!,
-          request_date: pdfForm.requestDate,
-          planned_delivery_date: pdfForm.plannedDeliveryDate || pdfForm.requestDate,
-          system_delivery_date: null,
-          order_no: null,
-          note: null,
-          is_urgent: pdfForm.isUrgent,
-          children,
-        })
+        }))
       }
-      pdfIndex++
+      // 多页 PDF 不预生成任何行；用户从源文件区显式选择页 → 合并
     }
 
-    // 兜底：申请人无 id 时批量新建（沿用 PartBidImport 模式）
-    if (pdfForm.applicantName && !pdfForm.applicantId) {
-      try {
-        const rootId = resolveRootCustomerId(pdfForm.customerId) || pdfForm.customerId
-        const out2 = await bulkGetOrCreateApplicants([
-          { name: pdfForm.applicantName, customer_id: rootId! },
-        ])
-        if (out2.length > 0) {
-          pdfForm.applicantId = out2[0].applicant_id
-          // 把树里所有行的 applicant_name 与 id 同步
-          const update = (r: TreeRow) => {
-            r.applicant_name = pdfForm.applicantName
-            if (r.kind === 'assembly') r.children.forEach(update)
-          }
-          pdfTree.value.forEach(update)
-          out.forEach(update)
-        }
-      } catch (e) {
-        ElMessage.warning(`申请人「${pdfForm.applicantName}」自动创建失败：${(e as Error).message}`)
-      }
-    }
+    allPdfs.value = sources
+    standaloneParts.value = rows
+    assemblies.value = []
+    selectedPages.value = new Set()
+    if (excelByDrawingNo) applyExcelToAll(excelByDrawingNo)
 
-    pdfTree.value = out
-    ElMessage.success(`已构建预览：${pdfStandaloneCount.value} 独立 + ${pdfAssemblyCount.value} 装配件`)
+    if (unparsedPdfNames.length > 0) {
+      ElMessage.warning(
+        `以下 ${unparsedPdfNames.length} 个 PDF 文件名无法识别图号/名称，请手动填写：` +
+          unparsedPdfNames.slice(0, 5).join('、') +
+          (unparsedPdfNames.length > 5 ? ' …' : ''),
+      )
+    }
+    ElMessage.success(`已解析：源 ${sources.length} 个 · 候选 ${rows.length} 页`)
   } catch (e) {
     ElMessage.error((e as Error).message ?? '解析失败')
   } finally {
@@ -1425,82 +1763,219 @@ async function onBuildTree(): Promise<void> {
   }
 }
 
+/** 用 Excel 行覆盖表内字段（applicant / quantity / urgent / planned_delivery_date + 分厂 L2）。 */
+function applyExcelToAll(excelByDrawingNo: Map<string, BidRow>): void {
+  for (const r of standaloneParts.value) {
+    const matched = excelByDrawingNo.get(r.drawing_no)
+    if (!matched) continue
+    r.applicant_name = matched.applicantName || r.applicant_name
+    r.quantity = matched.quantity || r.quantity
+    r.is_urgent = matched.isUrgent ?? r.is_urgent
+    if (matched.plannedDeliveryDate) r.planned_delivery_date = matched.plannedDeliveryDate
+    // 自动解析二级客户（分厂）
+    if (!r.customer_id) {
+      const l2Id = resolveL2CustomerId(matched.deptName)
+      if (l2Id) {
+        r.customer_id = l2Id
+        const c = customers.value.find((x) => x.id === l2Id)
+        r.customer_name = c?.name ?? ''
+      }
+    }
+  }
+  for (const a of assemblies.value) {
+    // 顶层分厂 / 申请人：用第一个能在 Excel 查到的 child 的行（child 不再各自持有这两个字段）
+    const firstHit = a.children
+      .map((c) => excelByDrawingNo.get(c.drawing_no))
+      .find((m): m is BidRow => !!m)
+    if (firstHit) {
+      if (!a.customer_id) {
+        const l2Id = resolveL2CustomerId(firstHit.deptName)
+        if (l2Id) {
+          a.customer_id = l2Id
+          const c = customers.value.find((x) => x.id === l2Id)
+          a.customer_name = c?.name ?? ''
+        }
+      }
+      a.applicant_name = firstHit.applicantName || a.applicant_name
+    }
+    // 子件只继承 quantity / urgent / planned_delivery_date（分厂 / 申请人在提交时从顶层复制）
+    for (const c of a.children) {
+      const matched = excelByDrawingNo.get(c.drawing_no)
+      if (!matched) continue
+      c.quantity = matched.quantity || c.quantity
+      c.is_urgent = matched.isUrgent ?? c.is_urgent
+      if (matched.plannedDeliveryDate) c.planned_delivery_date = matched.plannedDeliveryDate
+    }
+  }
+}
+
+/** 把 Excel 的「申请人所在一级部门名称」（如"二厂"）解析成 L2 客户 id。
+ *  仅在所选 L1 客户的子客户里查找。 */
+function resolveL2CustomerId(deptName: string): string | null {
+  if (!pdfForm.customerL1Id || !deptName) return null
+  const match = customers.value.find(
+    (c) => c.parent_id === pdfForm.customerL1Id && c.name.trim() === deptName.trim(),
+  )
+  return match?.id ?? null
+}
+
+/** 默认表单填充一个独立零件行。 */
+function makeStandaloneRow(opts: {
+  pdfSourceUid: string
+  drawing_no: string
+  name: string
+  pageCount?: number
+  mergedFrom?: { pdfUid: string; pageIndex: number }[]
+}): StandalonePartRow {
+  return {
+    uid: `part-${makeUid()}`,
+    pdfSourceUid: opts.pdfSourceUid,
+    pageCount: opts.pageCount ?? 1,
+    mergedFrom: opts.mergedFrom,
+    drawing_no: opts.drawing_no,
+    name: opts.name,
+    applicant_name: '',
+    customer_id: '',
+    customer_name: '',
+    request_date: pdfForm.requestDate,
+    planned_delivery_date: '',
+    system_delivery_date: null,
+    order_no: null,
+    note: null,
+    is_urgent: false,
+    quantity: 1,
+  }
+}
+
+/** 装配件子件默认填充（分厂 / 申请人由顶层 AssemblyRow 指定）。 */
+function makeAssemblyChild(opts: {
+  pdfSourceUid: string
+  pageIndex: number
+  drawing_no: string
+  name: string
+}): AssemblyChildRow {
+  return {
+    uid: `child-${makeUid()}`,
+    pdfSourceUid: opts.pdfSourceUid,
+    page_index: opts.pageIndex,
+    drawing_no: opts.drawing_no,
+    name: opts.name,
+    quantity: 1,
+    is_urgent: false,
+    request_date: pdfForm.requestDate,
+    planned_delivery_date: '',
+    system_delivery_date: null,
+    order_no: null,
+    note: null,
+  }
+}
+
 /** 点击「提交创建」 */
 async function onSubmitPdfTree(): Promise<void> {
-  if (pdfTree.value.length === 0) {
-    ElMessage.warning('请先解析预览')
+  if (standaloneParts.value.length === 0 && assemblies.value.length === 0) {
+    ElMessage.warning('请先解析上传')
+    return
+  }
+  // 前端兜底：所有 row 的 customer_id 必须有 L2 客户（后端强校验 L2-leaf）
+  const missing: string[] = []
+  for (const r of standaloneParts.value) {
+    if (!r.customer_id) missing.push(`独立零件 ${r.drawing_no || r.uid}`)
+  }
+  for (const a of assemblies.value) {
+    // 子件分厂继承自顶层 → 顶层 customer_id 校验已覆盖
+    if (!a.customer_id) missing.push(`装配件 ${a.drawing_no || a.uid}`)
+  }
+  if (missing.length > 0) {
+    ElMessage.warning(
+      `以下 ${missing.length} 行未指定分厂（二级客户），请补全后再提交：\n` +
+        missing.slice(0, 5).join('\n') +
+        (missing.length > 5 ? '\n…' : ''),
+    )
     return
   }
   pdfSubmitting.value = true
   try {
     const items: PartBatchTreeItemFE[] = []
-    const assemblies: PartBatchTreeAssemblyFE[] = []
-    for (const top of pdfTree.value) {
-      if (top.kind === 'assembly') {
-        assemblies.push({
-          uid: top.uid,
-          drawing_no: top.drawing_no || null,
-          name: top.name || null,
-          applicant_name: top.applicant_name,
-          applicant_id: pdfForm.applicantId,
-          customer_id: top.customer_id,
-          request_date: top.request_date,
-          planned_delivery_date: top.planned_delivery_date,
-          system_delivery_date: top.system_delivery_date,
-          order_no: top.order_no,
-          note: top.note,
-          is_urgent: top.is_urgent,
-        })
-        for (const c of top.children) {
-          items.push({
-            pdf_index: top.pdf_index,
-            page_index: c.page_index,
-            assembly_uid: top.uid,
-            is_master: c.assembly_uid_master_choice === `${top.uid}:${c.page_index}`,
-            drawing_no: c.drawing_no,
-            name: c.name || `子件${c.page_index + 1}`,
-            applicant_name: c.applicant_name,
-            applicant_id: pdfForm.applicantId,
-            quantity: c.quantity,
-            customer_id: c.customer_id,
-            request_date: c.request_date,
-            planned_delivery_date: c.planned_delivery_date,
-            system_delivery_date: c.system_delivery_date,
-            order_no: c.order_no,
-            note: c.note,
-            is_urgent: c.is_urgent,
-          })
-        }
-      } else {
+    const assembliesPayload: PartBatchTreeAssemblyFE[] = []
+    // files 按 allPdfs 顺序对齐（顺序即为后端的 pdf_index）
+    const files: PartBatchFilePayload[] = allPdfs.value.map((src) => ({
+      data: src.raw,
+      filename: src.filename,
+      contentType: 'application/pdf',
+    }))
+
+    // 独立零件：page_index 始终 0（合成 / 原 PDF 都按整体上传）
+    for (const r of standaloneParts.value) {
+      const pdfIndex = allPdfs.value.findIndex((s) => s.uid === r.pdfSourceUid)
+      if (pdfIndex < 0) {
+        ElMessage.error(`独立零件 ${r.drawing_no} 引用了已删除的图纸源`)
+        return
+      }
+      items.push({
+        pdf_index: pdfIndex,
+        page_index: 0,
+        assembly_uid: null,
+        is_master: false,
+        drawing_no: r.drawing_no,
+        name: r.name || r.drawing_no,
+        applicant_name: r.applicant_name,
+        applicant_id: null,
+        quantity: r.quantity,
+        customer_id: r.customer_id,
+        request_date: r.request_date,
+        planned_delivery_date: r.planned_delivery_date || r.request_date,
+        system_delivery_date: r.system_delivery_date,
+        order_no: r.order_no,
+        note: r.note,
+        is_urgent: r.is_urgent,
+      })
+    }
+
+    // 装配件 + 子件
+    for (const a of assemblies.value) {
+      const pdfIndex = allPdfs.value.findIndex((s) => s.uid === a.pdfSourceUid)
+      if (pdfIndex < 0) {
+        ElMessage.error(`装配件 ${a.drawing_no} 引用了已删除的图纸源`)
+        return
+      }
+      assembliesPayload.push({
+        uid: a.uid,
+        drawing_no: a.drawing_no || null,
+        name: a.name || null,
+        applicant_name: a.applicant_name,
+        applicant_id: null,
+        customer_id: a.customer_id,
+        request_date: a.request_date,
+        planned_delivery_date: a.planned_delivery_date || a.request_date,
+        system_delivery_date: a.system_delivery_date,
+        order_no: a.order_no,
+        note: a.note,
+        is_urgent: a.is_urgent,
+      })
+      for (const c of a.children) {
         items.push({
-          pdf_index: top.pdf_index,
-          page_index: top.page_index,
-          assembly_uid: null,
-          is_master: false,
-          drawing_no: top.drawing_no,
-          name: top.name || `零件${top.pdf_index + 1}`,
-          applicant_name: top.applicant_name,
-          applicant_id: pdfForm.applicantId,
-          quantity: top.quantity,
-          customer_id: top.customer_id,
-          request_date: top.request_date,
-          planned_delivery_date: top.planned_delivery_date,
-          system_delivery_date: top.system_delivery_date,
-          order_no: top.order_no,
-          note: top.note,
-          is_urgent: top.is_urgent,
+          pdf_index: pdfIndex,
+          page_index: c.page_index,
+          assembly_uid: a.uid,
+          is_master: a.masterPageIndex === c.page_index,
+          drawing_no: c.drawing_no,
+          name: c.name || `子件${c.page_index + 1}`,
+          // 分厂 / 申请人继承自装配件顶层
+          applicant_name: a.applicant_name,
+          applicant_id: null,
+          quantity: c.quantity,
+          customer_id: a.customer_id,
+          request_date: c.request_date,
+          planned_delivery_date: c.planned_delivery_date || c.request_date,
+          system_delivery_date: c.system_delivery_date,
+          order_no: c.order_no,
+          note: c.note,
+          is_urgent: c.is_urgent,
         })
       }
     }
 
-    // 文件按 pdf_index 顺序对齐
-    const orderedFiles: PartBatchFilePayload[] = []
-    for (let i = 0; i < pdfFiles.value.length; i++) {
-      const f = pdfFiles.value[i]
-      if (f.raw) orderedFiles.push({ data: f.raw as File, filename: f.name, contentType: (f.raw as File).type })
-    }
-
-    const res = await batchCreatePartsWithPdfs(items, assemblies, orderedFiles)
+    const res = await batchCreatePartsWithPdfs(items, assembliesPayload, files)
     if (res.failed && res.failed.length > 0) {
       const msgs = res.failed.slice(0, 5).map((f) => f.message).join('；')
       ElMessageBox.alert(
@@ -1514,7 +1989,10 @@ async function onSubmitPdfTree(): Promise<void> {
       `成功创建 ${res.standalone_parts.length} 个独立零件 + ${res.assemblies.length} 个装配件`,
     )
     // 清空 + 跳回
-    pdfTree.value = []
+    allPdfs.value = []
+    standaloneParts.value = []
+    assemblies.value = []
+    selectedPages.value.clear()
     pdfFiles.value = []
     excelFiles.value = []
     activeTab.value = 'manual'
@@ -1524,6 +2002,503 @@ async function onSubmitPdfTree(): Promise<void> {
   } finally {
     pdfSubmitting.value = false
   }
+}
+
+// ============ PDF 文件名点击预览（Tab 2） ============
+/** 弹窗内显示的 blob URL + 标题 + 起始页。blob URL 由 pdfFiles[i].raw →
+ * URL.createObjectURL 生成；关闭弹窗或组件卸载时 revoke，避免内存泄漏。 */
+interface PdfPreviewState {
+  url: string
+  title: string
+  page: number
+}
+
+const pdfPreviewing = ref<PdfPreviewState | null>(null)
+const pdfPreviewVisible = ref(false)
+
+/** 打开预览（通用入口）：传入 pdfSourceUid 和起始页（1-indexed）。 */
+function previewAt(pdfSourceUid: string, title: string, page: number): void {
+  if (pdfPreviewing.value) {
+    try { URL.revokeObjectURL(pdfPreviewing.value.url) } catch { /* ignore */ }
+  }
+  const src = allPdfs.value.find((s) => s.uid === pdfSourceUid)
+  if (!src) {
+    ElMessage.warning('PDF 不可用')
+    return
+  }
+  pdfPreviewing.value = {
+    url: URL.createObjectURL(src.raw),
+    title,
+    page,
+  }
+  pdfPreviewVisible.value = true
+}
+
+/** 关闭预览：revoke URL，清状态。el-dialog `:before-close` 会调。 */
+function closePdfPreview(): void {
+  if (pdfPreviewing.value) {
+    try { URL.revokeObjectURL(pdfPreviewing.value.url) } catch { /* ignore */ }
+    pdfPreviewing.value = null
+  }
+  pdfPreviewVisible.value = false
+}
+
+onBeforeUnmount(() => {
+  closePdfPreview()
+})
+
+// ============ 源文件区：勾选 + 归组 + 删除 ============
+
+/** 生成页 UID（用于 selectedPages Set）。 */
+function pageUid(pdfUid: string, pageIndex: number): string {
+  return `${pdfUid}:${pageIndex}`
+}
+
+/** 解析 Set 里的 key → pdfUid / pageIndex。 */
+function parsePageUid(key: string): { pdfUid: string; pageIndex: number } {
+  const last = key.lastIndexOf(':')
+  return { pdfUid: key.slice(0, last), pageIndex: Number(key.slice(last + 1)) }
+}
+
+function togglePageSelection(pdfUid: string, pageIndex: number, on: boolean): void {
+  const next = new Set(selectedPages.value)
+  const k = pageUid(pdfUid, pageIndex)
+  if (on) next.add(k)
+  else next.delete(k)
+  selectedPages.value = next
+}
+
+/** el-table type=selection 回调：把选中的 SourceTreeRow 扁平化成页 UID 集合。
+ *  顶层被选中 → 等价于「该 PDF 全部页」。 */
+function onSourceSelectionChange(rows: SourceTreeRow[]): void {
+  const next = new Set<string>()
+  for (const r of rows) {
+    if (r.pageIndex !== null) {
+      next.add(pageUid(r.pdfSourceUid, r.pageIndex))
+    } else {
+      const src = allPdfs.value.find((s) => s.uid === r.pdfSourceUid)
+      if (src) for (let p = 0; p < src.totalPages; p++) next.add(pageUid(r.pdfSourceUid, p))
+    }
+  }
+  selectedPages.value = next
+}
+
+/** 源文件区点击文件名预览。顶层 → 第 1 页；子页 → 对应页。 */
+function previewSourceRow(row: SourceTreeRow): void {
+  const page = row.pageIndex === null ? 1 : row.pageIndex + 1
+  previewAt(row.pdfSourceUid, `${row.filename} 预览`, page)
+}
+
+function togglePdfSelection(pdfUid: string, on: boolean): void {
+  const src = allPdfs.value.find((s) => s.uid === pdfUid)
+  if (!src) return
+  const next = new Set(selectedPages.value)
+  for (let p = 0; p < src.totalPages; p++) {
+    const k = pageUid(pdfUid, p)
+    if (on) next.add(k)
+    else next.delete(k)
+  }
+  selectedPages.value = next
+}
+
+function isPdfFullySelected(pdfUid: string): boolean {
+  const src = allPdfs.value.find((s) => s.uid === pdfUid)
+  if (!src || src.totalPages === 0) return false
+  for (let p = 0; p < src.totalPages; p++) {
+    if (!selectedPages.value.has(pageUid(pdfUid, p))) return false
+  }
+  return true
+}
+
+function isPdfPartiallySelected(pdfUid: string): boolean {
+  const src = allPdfs.value.find((s) => s.uid === pdfUid)
+  if (!src) return false
+  let any = false
+  for (let p = 0; p < src.totalPages; p++) {
+    if (selectedPages.value.has(pageUid(pdfUid, p))) {
+      any = true
+      break
+    }
+  }
+  return any && !isPdfFullySelected(pdfUid)
+}
+
+// el-table 类型来自 element-plus 类型导出，运行时为函数组件；用宽松类型包住
+const sourceTableRef = ref<{ clearSelection: () => void } | null>(null)
+
+function clearSelection(): void {
+  sourceTableRef.value?.clearSelection()
+  selectedPages.value = new Set()
+}
+
+/** 用 pdf-lib 合并 PDF 的指定页（0-based pageIndices）→ 新 PDF Blob。 */
+async function mergePages(raw: Blob, pageIndices: number[]): Promise<Blob> {
+  const { PDFDocument } = await import('pdf-lib')
+  const src = await PDFDocument.load(await raw.arrayBuffer())
+  const out = await PDFDocument.create()
+  const copied = await out.copyPages(src, pageIndices)
+  copied.forEach((p) => out.addPage(p))
+  const bytes = await out.save()
+  // pdf-lib save() 返回 Uint8Array<ArrayBufferLike>，TS 5+ 要求 BlobPart 严格是
+  // ArrayBuffer 类型；slice() 拷贝出独立 ArrayBuffer，避开 SharedArrayBuffer 误判。
+  return new Blob([bytes.slice().buffer as ArrayBuffer], { type: 'application/pdf' })
+}
+
+/** 把选中页按 pdfUid 分组。 */
+function selectedByPdf(): Map<string, number[]> {
+  const m = new Map<string, number[]>()
+  for (const k of selectedPages.value) {
+    const { pdfUid, pageIndex } = parsePageUid(k)
+    const arr = m.get(pdfUid) ?? []
+    arr.push(pageIndex)
+    m.set(pdfUid, arr)
+  }
+  for (const arr of m.values()) arr.sort((a, b) => a - b)
+  return m
+}
+
+/** 合并选中页 → 一个独立零件（同一 PDF）。 */
+async function mergeSelectedAsPart(): Promise<void> {
+  const byPdf = selectedByPdf()
+  if (byPdf.size === 0) {
+    ElMessage.warning('请先勾选页')
+    return
+  }
+  if (byPdf.size > 1) {
+    ElMessage.warning('合并为零件的页必须来自同一 PDF')
+    return
+  }
+  const [pdfUid, pageIndices] = [...byPdf.entries()][0]
+  const src = allPdfs.value.find((s) => s.uid === pdfUid)
+  if (!src) return
+
+  if (pageIndices.length === src.totalPages) {
+    // 全部页 → 直接复用原 PDF，无合成
+    standaloneParts.value.push(makeStandaloneRow({
+      pdfSourceUid: pdfUid,
+      drawing_no: parseDrawingFilename(src.filename).drawingNo || '',
+      name: parseDrawingFilename(src.filename).partName || '',
+    }))
+  } else {
+    // 部分页 → pdf-lib 合成
+    const merged = await mergePages(src.raw, pageIndices)
+    const newUid = `syn-${makeUid()}`
+    allPdfs.value.push({
+      uid: newUid,
+      raw: merged,
+      filename: `${stripExt(src.filename)}_p${pageIndices.map((i) => i + 1).join('+')}.pdf`,
+      totalPages: pageIndices.length,
+      synthesized: true,
+      synthesizedFrom: [{ pdfUid, pageIndices }],
+      originPdfUid: pdfUid,
+    })
+    standaloneParts.value.push(makeStandaloneRow({
+      pdfSourceUid: newUid,
+      pageCount: pageIndices.length,
+      mergedFrom: pageIndices.map((i) => ({ pdfUid, pageIndex: i })),
+      drawing_no: parseDrawingFilename(src.filename).drawingNo || '',
+      name: parseDrawingFilename(src.filename).partName || '',
+    }))
+  }
+  // 移除原 standalone 行（如果存在）
+  clearSelection()
+  ElMessage.success(`已合并 ${pageIndices.length} 页 → 独立零件`)
+}
+
+/** 合并选中页 → 一个装配件（同一 PDF，至少 2 页）。 */
+async function mergeSelectedAsAssembly(): Promise<void> {
+  const byPdf = selectedByPdf()
+  if (byPdf.size === 0) {
+    ElMessage.warning('请先勾选页')
+    return
+  }
+  if (byPdf.size > 1) {
+    ElMessage.warning('合并为装配件的页必须来自同一 PDF')
+    return
+  }
+  const [pdfUid, pageIndices] = [...byPdf.entries()][0]
+  if (pageIndices.length < 2) {
+    ElMessage.warning('合并为装配件至少需要 2 页')
+    return
+  }
+  const src = allPdfs.value.find((s) => s.uid === pdfUid)
+  if (!src) return
+  const parsed = parseDrawingFilename(src.filename)
+  const asmUid = `asm-${makeUid()}`
+  const children: AssemblyChildRow[] = pageIndices.map((pi) => {
+    const drawingNo = parsed.drawingNo
+      ? (pi === 0 ? parsed.drawingNo : `${parsed.drawingNo}-${String(pi + 1).padStart(2, '0')}`)
+      : ''
+    const name = parsed.partName
+      ? (pi === 0 ? parsed.partName : `${parsed.partName}-${pi + 1}`)
+      : ''
+    return makeAssemblyChild({
+      pdfSourceUid: pdfUid,
+      pageIndex: pi,
+      drawing_no: drawingNo,
+      name: name,
+    })
+  })
+  assemblies.value.push({
+    uid: asmUid,
+    pdfSourceUid: pdfUid,
+    drawing_no: parsed.drawingNo || '',
+    name: parsed.partName || '',
+    applicant_name: '',
+    customer_id: '',
+    customer_name: '',
+    request_date: pdfForm.requestDate,
+    planned_delivery_date: '',
+    system_delivery_date: null,
+    order_no: null,
+    note: null,
+    is_urgent: false,
+    masterPageIndex: null,
+    children,
+  })
+  clearSelection()
+  ElMessage.success(`已合并 ${pageIndices.length} 页 → 装配件`)
+}
+
+/** 拆分：把合成后的独立零件拆回 N 个单页行。 */
+function splitStandalonePart(row: StandalonePartRow): void {
+  if (!row.mergedFrom || row.mergedFrom.length === 0) return
+  // 找到原始 PDF
+  const originUid = row.mergedFrom[0].pdfUid
+  const src = allPdfs.value.find((s) => s.uid === originUid)
+  if (!src) {
+    ElMessage.error('原 PDF 已不存在，无法拆分')
+    return
+  }
+  // 按 pageIndex 排序，逐页创建独立行
+  const sorted = [...row.mergedFrom].sort((a, b) => a.pageIndex - b.pageIndex)
+  for (const m of sorted) {
+    const parsed = parseDrawingFilename(src.filename)
+    const drawingNo = parsed.drawingNo
+      ? (m.pageIndex === 0 ? parsed.drawingNo : `${parsed.drawingNo}-${String(m.pageIndex + 1).padStart(2, '0')}`)
+      : ''
+    const name = parsed.partName
+      ? (m.pageIndex === 0 ? parsed.partName : `${parsed.partName}-${m.pageIndex + 1}`)
+      : ''
+    standaloneParts.value.push(makeStandaloneRow({
+      pdfSourceUid: originUid,
+      drawing_no: drawingNo,
+      name: name,
+    }))
+  }
+  // 删除合成 PDF（若已合并成 part，且 part 是唯一引用）
+  const synthUid = row.pdfSourceUid
+  if (synthUid.startsWith('syn-')) {
+    allPdfs.value = allPdfs.value.filter((s) => s.uid !== synthUid)
+  }
+  standaloneParts.value = standaloneParts.value.filter((r) => r.uid !== row.uid)
+  ElMessage.success(`已拆回 ${sorted.length} 页`)
+}
+
+/** 删除一个原 PDF：连带删除合成 PDF + 引用它的所有 part / assembly。 */
+function removePdf(pdfUid: string): void {
+  if (!allPdfs.value.some((s) => s.uid === pdfUid)) return
+  // 1. 找出要删除的源：原 PDF + 它的所有合成派生
+  const removeUids = new Set<string>([pdfUid])
+  allPdfs.value.filter((s) => s.originPdfUid === pdfUid).forEach((s) => removeUids.add(s.uid))
+  // 2. 从 allPdfs 移除
+  allPdfs.value = allPdfs.value.filter((s) => !removeUids.has(s.uid))
+  // 3. 清理 standaloneParts
+  standaloneParts.value = standaloneParts.value.filter((r) => !removeUids.has(r.pdfSourceUid))
+  // 4. 清理 assemblies
+  assemblies.value = assemblies.value.filter((a) => !removeUids.has(a.pdfSourceUid))
+  // 5. 清理 selection
+  const next = new Set<string>()
+  for (const k of selectedPages.value) {
+    if (!removeUids.has(parsePageUid(k).pdfUid)) next.add(k)
+  }
+  selectedPages.value = next
+  // 6. 从 el-upload pdfFiles 移除原 UploadFile（pdfUid = "pdf-<uploadFileUid>"）
+  const uploadUid = pdfUid.startsWith('pdf-') ? pdfUid.slice(4) : null
+  if (uploadUid) {
+    pdfFiles.value = pdfFiles.value.filter((f) => String(f.uid) !== uploadUid)
+  }
+}
+
+function removeStandalonePart(uid: string): void {
+  const row = standaloneParts.value.find((r) => r.uid === uid)
+  if (!row) return
+  // 若是合成行，删除合成 PDF
+  if (row.pdfSourceUid.startsWith('syn-')) {
+    allPdfs.value = allPdfs.value.filter((s) => s.uid !== row.pdfSourceUid)
+  }
+  standaloneParts.value = standaloneParts.value.filter((r) => r.uid !== uid)
+}
+
+function removeAssembly(uid: string): void {
+  assemblies.value = assemblies.value.filter((a) => a.uid !== uid)
+}
+
+/** 展示用：把 PdfSource uid 翻译成可读文件名 + 页数。 */
+function pdfSourceLabel(uid: string): string {
+  const src = allPdfs.value.find((s) => s.uid === uid)
+  if (!src) return '(已删除)'
+  return src.synthesized
+    ? `${src.filename}（合成 ${src.totalPages} 页）`
+    : `${src.filename}（${src.totalPages} 页）`
+}
+
+/** 预览独立零件 / 装配件图纸。 */
+function previewStandalonePart(row: StandalonePartRow): void {
+  previewAt(row.pdfSourceUid, `${row.drawing_no || row.name} 预览`, 1)
+}
+function previewPdfSource(src: PdfSource): void {
+  previewAt(src.uid, `${src.filename} 预览`, 1)
+}
+function previewPdfSourceByUid(uid: string): void {
+  previewAt(uid, `${pdfSourceLabel(uid)} 预览`, 1)
+}
+
+function stripExt(name: string): string {
+  return name.replace(/\.pdf$/i, '')
+}
+
+/** 行（standalone / child）分厂下拉 onChange：同步 customer_name。 */
+function onL2Change(row: { customer_id: string; customer_name?: string }, v: string): void {
+  row.customer_id = v
+  const c = customers.value.find((x) => x.id === v)
+  row.customer_name = c?.name ?? ''
+}
+
+/** 装配件顶层计划交期改值 → 同步所有子件。简单覆盖语义：child 单独改后
+ *  下次顶层改会被覆盖（如需「记住 child 单独覆盖」需加 flag 字段，本轮不做）。 */
+function onAsmPlannedChange(asmRow: AssemblyRow, v: string): void {
+  asmRow.planned_delivery_date = v
+  for (const c of asmRow.children) c.planned_delivery_date = v
+}
+
+// ============ 手动新增零件 / 装配件 ============
+
+const manualPartDialogVisible = ref(false)
+const manualPartForm = reactive<{
+  drawing_no: string
+  name: string
+  file: File | null
+}>({ drawing_no: '', name: '', file: null })
+const manualPartFileList = computed<UploadFile[]>(() =>
+  manualPartForm.file
+    ? [{ uid: -1, name: manualPartForm.file.name, status: 'success', raw: manualPartForm.file as UploadFile['raw'] }]
+    : [],
+)
+const manualPartFormValid = computed(() =>
+  manualPartForm.drawing_no.trim().length > 0 && manualPartForm.file !== null,
+)
+
+function addManualPart(): void {
+  manualPartForm.drawing_no = ''
+  manualPartForm.name = ''
+  manualPartForm.file = null
+  manualPartDialogVisible.value = true
+}
+
+function onManualPartFileChange(file: UploadFile): void {
+  manualPartForm.file = (file.raw as File | undefined) ?? null
+}
+
+function onManualPartFileRemove(): void {
+  manualPartForm.file = null
+}
+
+async function confirmManualPart(): Promise<void> {
+  if (!manualPartFormValid.value) return
+  const f = manualPartForm.file!
+  const pdfUid = `manual-${makeUid()}`
+  allPdfs.value.push({
+    uid: pdfUid,
+    raw: f,
+    filename: f.name,
+    totalPages: 1,
+    synthesized: false,
+  })
+  standaloneParts.value.push(makeStandaloneRow({
+    pdfSourceUid: pdfUid,
+    drawing_no: manualPartForm.drawing_no.trim(),
+    name: manualPartForm.name.trim(),
+  }))
+  manualPartDialogVisible.value = false
+  ElMessage.success('已新增零件')
+}
+
+const manualAsmDialogVisible = ref(false)
+const manualAsmForm = reactive<{
+  drawing_no: string
+  name: string
+  file: File | null
+}>({ drawing_no: '', name: '', file: null })
+const manualAsmFileList = computed<UploadFile[]>(() =>
+  manualAsmForm.file
+    ? [{ uid: -2, name: manualAsmForm.file.name, status: 'success', raw: manualAsmForm.file as UploadFile['raw'] }]
+    : [],
+)
+const manualAsmFormValid = computed(() =>
+  manualAsmForm.drawing_no.trim().length > 0 && manualAsmForm.file !== null,
+)
+
+function addManualAssembly(): void {
+  manualAsmForm.drawing_no = ''
+  manualAsmForm.name = ''
+  manualAsmForm.file = null
+  manualAsmDialogVisible.value = true
+}
+
+function onManualAsmFileChange(file: UploadFile): void {
+  manualAsmForm.file = (file.raw as File | undefined) ?? null
+}
+
+function onManualAsmFileRemove(): void {
+  manualAsmForm.file = null
+}
+
+async function confirmManualAssembly(): Promise<void> {
+  if (!manualAsmFormValid.value) return
+  const f = manualAsmForm.file!
+  const totalPages = await countPdfPages(f)
+  const pdfUid = `manual-asm-${makeUid()}`
+  allPdfs.value.push({
+    uid: pdfUid,
+    raw: f,
+    filename: f.name,
+    totalPages,
+    synthesized: false,
+  })
+  const asmUid = `asm-${makeUid()}`
+  const children: AssemblyChildRow[] = []
+  for (let p = 0; p < totalPages; p++) {
+    children.push(makeAssemblyChild({
+      pdfSourceUid: pdfUid,
+      pageIndex: p,
+      drawing_no: totalPages === 1
+        ? manualAsmForm.drawing_no.trim()
+        : `${manualAsmForm.drawing_no.trim()}-${String(p + 1).padStart(2, '0')}`,
+      name: totalPages === 1
+        ? manualAsmForm.name.trim() || manualAsmForm.drawing_no.trim()
+        : `${manualAsmForm.name.trim() || manualAsmForm.drawing_no.trim()}-${p + 1}`,
+    }))
+  }
+  assemblies.value.push({
+    uid: asmUid,
+    pdfSourceUid: pdfUid,
+    drawing_no: manualAsmForm.drawing_no.trim(),
+    name: manualAsmForm.name.trim(),
+    applicant_name: '',
+    customer_id: '',
+    customer_name: '',
+    request_date: pdfForm.requestDate,
+    planned_delivery_date: '',
+    system_delivery_date: null,
+    order_no: null,
+    note: null,
+    is_urgent: false,
+    masterPageIndex: totalPages > 1 ? 0 : null,
+    children,
+  })
+  manualAsmDialogVisible.value = false
+  ElMessage.success(`已新增装配件（共 ${totalPages} 子件）`)
 }
 </script>
 
@@ -1539,6 +2514,12 @@ async function onSubmitPdfTree(): Promise<void> {
   font-size: 13px;
   margin: 0;
   padding: 0 4px;
+}
+
+.pdf-footer-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
 }
 
 .staging-card {
