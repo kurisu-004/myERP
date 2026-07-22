@@ -369,6 +369,7 @@ class TestPlaceOnShelf:
         mock_shelf_process_repo.list_process_ids_by_shelf.return_value = [42]
         mock_out = _make_part_out()
         service._to_out.return_value = [mock_out]
+        service._check_parent_assembly = AsyncMock()
 
         result = await service.place_on_shelf(
             1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42)
@@ -382,6 +383,8 @@ class TestPlaceOnShelf:
             created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
+        # 回归：上架（PENDING→IN_PROCESS）必须触发父装配件状态检查
+        service._check_parent_assembly.assert_awaited_once_with(part)
         assert result is mock_out
 
     async def test_part_not_found(
@@ -1763,6 +1766,76 @@ class TestCheckParentAssembly:
         mock_session.execute.assert_awaited_once()
         mock_parts.list_children.assert_awaited_once_with(123)
         mock_assembly.sm.complete.assert_called_once()
+
+    async def test_assembly_start_production(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """PENDING assembly + any child left PENDING → assembly.sm.start_production().
+
+        回归：这是本次 bug 的核心分支——子件上货架进入 IN_PROCESS 后，
+        父装配件必须从 PENDING 推进到 IN_PROCESS。
+        """
+        part = _make_part(assembly_id=123, status="IN_PROCESS")
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "PENDING"
+        mock_assembly.sm = MagicMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        # 一个子件已 IN_PROCESS，另一个仍 PENDING（尚未全部离开 PENDING）
+        child_in_process = _make_part(
+            part_id=2001, status="IN_PROCESS", assembly_id=123
+        )
+        child_pending = _make_part(
+            part_id=2002, status="PENDING", assembly_id=123
+        )
+        mock_parts.list_children = AsyncMock(
+            return_value=[child_in_process, child_pending]
+        )
+
+        await service._check_parent_assembly(part)
+
+        mock_parts.list_children.assert_awaited_once_with(123)
+        # 任一非取消子件离开 PENDING 即推进父件
+        mock_assembly.sm.start_production.assert_called_once()
+        mock_assembly.sm.complete.assert_not_called()
+
+    async def test_assembly_pending_all_children_pending_noop(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """PENDING assembly + all children still PENDING → no transition."""
+        part = _make_part(assembly_id=123, status="PENDING")
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "PENDING"
+        mock_assembly.sm = MagicMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        mock_parts.list_children = AsyncMock(return_value=[
+            _make_part(part_id=2001, status="PENDING", assembly_id=123),
+            _make_part(part_id=2002, status="PENDING", assembly_id=123),
+        ])
+
+        await service._check_parent_assembly(part)
+
+        mock_assembly.sm.start_production.assert_not_called()
+        mock_assembly.sm.complete.assert_not_called()
 
 
 # ===================================================================

@@ -1060,6 +1060,7 @@ class PartService:
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "PLACED_ON_SHELF",
@@ -1084,6 +1085,7 @@ class PartService:
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "SENT_TO_PROGRAMMING",
@@ -1248,6 +1250,7 @@ class PartService:
         await self.outsource_quotes.update(approved_quote)
 
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "SENT_TO_OUTSOURCE",
@@ -1293,6 +1296,7 @@ class PartService:
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "RECEIVED_FROM_OUTSOURCE",
@@ -1332,6 +1336,7 @@ class PartService:
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "RECEIVED_FROM_OUTSOURCE_INSPECTED",
@@ -1414,6 +1419,7 @@ class PartService:
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "CNC_RELEASED",
@@ -1634,6 +1640,7 @@ class PartService:
         part.updated_by = self._user_id
         await self.parts.update(part)
         await self._broadcast()
+        await self._check_parent_assembly(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "PICKED_UP",
@@ -1749,6 +1756,7 @@ class PartService:
             part.updated_by = self._user_id
             await self.parts.update(part)
             await self._broadcast()
+            await self._check_parent_assembly(part)
             items = await self._to_out([part])
             await self._broadcast_event(
                 "RETURNED",
@@ -1804,6 +1812,7 @@ class PartService:
             part.updated_by = self._user_id
             await self.parts.update(part)
             await self._broadcast()
+            await self._check_parent_assembly(part)
             items = await self._to_out([part])
             await self._broadcast_event(
                 "INSPECTED",
