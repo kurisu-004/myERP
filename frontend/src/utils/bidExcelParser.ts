@@ -174,6 +174,7 @@ export function parseBidExcel(
   const rows: BidRow[] = []
   const errors: ParseError[] = []
   const seenDrawingNo = new Set<string>()
+  let strayRowCount = 0
 
   for (let i = 0; i < rawRows.length; i++) {
     const raw = rawRows[i]
@@ -198,6 +199,22 @@ export function parseBidExcel(
       (s) => !s,
     )
     if (allEmpty) continue
+
+    // 残留行：仅「物料编号」一格有值、其他关键字段全空。典型成因是把
+    // 「E42xxx  名称」整体粘到物料编号单元格。静默跳过并计入文件级
+    // warning，避免向用户弹「Excel 解析告警：N 条（已忽略）」的噪音。
+    const strayLike =
+      !!drawingNo &&
+      !applicantName &&
+      !deptCode &&
+      !deptName &&
+      !partName &&
+      (quantityRaw == null || quantityRaw === '') &&
+      (deliveryDaysRaw == null || deliveryDaysRaw === '')
+    if (strayLike) {
+      strayRowCount++
+      continue
+    }
 
     const rowWarnings: string[] = []
     const rowErrors: string[] = []
@@ -272,5 +289,9 @@ export function parseBidExcel(
     })
   }
 
-  return { rows, errors, warnings: [] }
+  const warnings: string[] = []
+  if (strayRowCount > 0) {
+    warnings.push(`已忽略 ${strayRowCount} 行（仅含图号，疑似残留数据）`)
+  }
+  return { rows, errors, warnings }
 }

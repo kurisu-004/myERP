@@ -459,4 +459,53 @@ describe('parseBidExcel', () => {
     expect(r.drawingNo).toBe('D1')
     expect(r.partName).toBe('P1')
   })
+
+  it('silently skips stray rows where only 物料编号 is populated', () => {
+    // 行 18 类残留：把「E42xxx  名称」整体粘到物料编号单元格，其他关键
+    // 字段全空。期望：rows 只保留真实行、errors 为空、warnings 报「已忽略 N 行」。
+    const wb = buildWorkbook([
+      {
+        申请人: 'A',
+        申请人所在一级部门: 'F01',
+        申请人所在一级部门名称: '一厂',
+        物料编号: 'D1',
+        '货物(劳务)名称': 'P1',
+        紧急状态: '正常',
+        计划数量: 1,
+        含税单价: 0,
+        预估交期天数: 14,
+      },
+      {
+        // 残留：仅物料编号被粘进来（其它关键字段全空）
+        物料编号:
+          'E42JRM5502072101  MX55D压膜轮φ30（HSD45）（附报告）',
+      },
+    ])
+    const result = parseBidExcel(wb, TODAY)
+    expect(result.rows).toHaveLength(1)
+    expect(result.errors).toEqual([])
+    expect(result.warnings.some((w) => /已忽略 \d+ 行/.test(w))).toBe(true)
+  })
+
+  it('does NOT skip rows that have only drawing_no missing other fields (real errors)', () => {
+    // 反向断言：drawingNo 缺失 + 其他字段填了的行，依然应当走 rowErrors 路径，
+    // 不能被「残留行」规则误吞。rows 仍包含该行（带错误），errors 报「物料编号不能为空」。
+    const wb = buildWorkbook([
+      {
+        申请人: 'A',
+        申请人所在一级部门: 'F01',
+        申请人所在一级部门名称: '一厂',
+        '货物(劳务)名称': 'P1',
+        紧急状态: '正常',
+        计划数量: 1,
+        含税单价: 0,
+        预估交期天数: 14,
+      },
+    ])
+    const result = parseBidExcel(wb, TODAY)
+    expect(result.rows).toHaveLength(1)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0].message).toContain('物料编号不能为空')
+    expect(result.warnings).toEqual([])
+  })
 })
