@@ -174,6 +174,18 @@ class DeliveryNoteService:
                 message=f"customer {customer_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        # 2026-07-23 修复：送货单必须挂在一级客户（L1 root，parent_id IS NULL）
+        # 下面；二级叶子节点的客户会被拒，便于 add_parts 按 L1 root 收齐跨子厂件。
+        if cust.parent_id is not None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"customer {customer_id} 不是一级客户"
+                    f"（L2 子节点 {cust.name}）；"
+                    "送货单必须挂在一级客户下"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
         today = now_naive().strftime("%Y%m%d")
         nn = await self.counter.acquire_no(today)
         obj = TDeliveryNote(
@@ -307,7 +319,16 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
 
-        # 校验：每个 part 状态 READY_TO_SHIP；customer 必须等于 note.customer_id；
+        # 2026-07-23 修复：批查 part 各自 customer（找 L1 root）。
+        # note.customer_id 必为 L1 root（已在 create_draft 校验），所以 part L1 root
+        # 等于 note.customer_id 即合法；其它都抛 BIZ_DELIVERY_NOTE_PARTS_MULTIPLE_CUSTOMERS。
+        part_customer_ids = {p.customer_id for p in existing_list}
+        part_customer_list = await self.customers.list_by_ids(
+            list(part_customer_ids | {obj.customer_id})
+        )
+        cust_map: dict[int, Any] = {c.id: c for c in part_customer_list}
+
+        # 校验：每个 part 状态 READY_TO_SHIP；part L1 root 必须等于 note.customer_id；
         # 若 part.delivery_note_id 已不为 NULL → 该 part 已在别的单上
         serials_added: list[str] = []
         for p in existing_list:
@@ -320,12 +341,30 @@ class DeliveryNoteService:
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            if p.customer_id != obj.customer_id:
+            # 2026-07-23 修复：L1 root 比较（note.customer_id 是 L1 root）。
+            # - part.customer_id == obj.customer_id：等价是同一 L1 root
+            # - part 自己的 customer 的 parent_id == obj.customer_id：part 是
+            #   note L1 下的 L2 子节点（合法）
+            # - 其它：跨 L1 客户的件被拒
+            part_cust = cust_map.get(p.customer_id)
+            if part_cust is None:
+                raise BizError(
+                    code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                    message=(
+                        f"part {p.id} 所属客户 {p.customer_id} not found"
+                    ),
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            part_l1_id = (
+                part_cust.id if part_cust.parent_id is None
+                else part_cust.parent_id
+            )
+            if part_l1_id != obj.customer_id:
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_NOTE_PARTS_MULTIPLE_CUSTOMERS,
                     message=(
-                        f"part {p.id} customer={p.customer_id} != "
-                        f"note customer={obj.customer_id}"
+                        f"part {p.id} 一级客户 {part_l1_id} != "
+                        f"note 一级客户 {obj.customer_id}"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )

@@ -3,11 +3,14 @@
 append-only 审计表，承载送货单全生命周期事件流；与 `t_part_event` / `t_outsource_quote_event`
 形态对称。
 使用 `EventTimestampMixin`（只要 `created_at`，无 OCC / 无软删）。
+
+注意：不要在本类重复声明 `created_at`，否则会覆盖 mixin 的
+`nullable=False, server_default=func.now()`，触发 INSERT NULL 违例
+（参见 2026-07-23 production bug fix）。
 """
-from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, Integer, String
+from sqlalchemy import BigInteger, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import EventTimestampMixin
@@ -33,7 +36,7 @@ class TDeliveryNoteEvent(Base, EventTimestampMixin):
         note (String(500) NULL)
         scanned_count / expected_count (Integer NULL): 累积扫描进度（仅 PICKUP_SCANNED）
         created_by (BigInteger NULL): t_user.id
-        (EventTimestampMixin: created_at)
+        (EventTimestampMixin: created_at  NOT NULL DEFAULT now())
     """
 
     __tablename__ = "t_delivery_note_event"
@@ -76,7 +79,5 @@ class TDeliveryNoteEvent(Base, EventTimestampMixin):
     created_by: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, comment="操作用户 t_user.id",
     )
-    created_at: Mapped["datetime | None"] = mapped_column(
-        DateTime, nullable=True,
-        doc="EventTimestampMixin.created_at；mapped_column 显式列出便于 alembic check",
-    )
+    # 不重复声明 created_at——见模块顶部 docstring。
+
