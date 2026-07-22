@@ -236,3 +236,56 @@ class OutsourceQuoteSortKey(str, enum.Enum):
     CREATED_AT = "CREATED_AT"
     PRICE = "PRICE"
     REVIEWED_AT = "REVIEWED_AT"
+
+
+class DeliveryNoteStatus(str, enum.Enum):
+    """送货单状态机（2026-07-22 新增）。
+
+    DB 存 `varchar(16)` (`t_delivery_note.status`)。
+
+    流转：
+        DRAFT ──submit──▶ SUBMITTED ──pickup──▶ PICKED_UP ──archive──▶ ARCHIVED
+                          ╰──recall──▶ DRAFT（仅 SUBMITTED 可撤回）
+
+    - DRAFT       文员草拟，可任意 add / remove 零件
+    - SUBMITTED   文员已提交，等待司机领取；可被文员 recall → DRAFT
+    - PICKED_UP   司机扫码扫齐，正式领取；事务内 atomic 「全员 part.deliver + 单据归档」
+    - ARCHIVED    单据归档；终态（archived_at 已隐式 = picked_up_at）
+    """
+
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    PICKED_UP = "PICKED_UP"
+    ARCHIVED = "ARCHIVED"
+
+
+class DeliveryNoteEventType(str, enum.Enum):
+    """送货单事件类型（2026-07-22 新增）。
+
+    状态机迁移事件：SUBMITTED / RECALLED / PICKED_UP / ARCHIVED；
+    非迁移事件（由 service 直接写一行）：
+    - CREATED         新建草稿
+    - EDITED          元数据改动（备注等）
+    - ITEM_ADDED      添加一个零件
+    - ITEM_REMOVED    移除一个零件
+    - PICKUP_SCANNED  司机扫码累计的一个扫描（一次性，不是状态机迁移）
+    """
+
+    CREATED = "CREATED"
+    EDITED = "EDITED"
+    ITEM_ADDED = "ITEM_ADDED"
+    ITEM_REMOVED = "ITEM_REMOVED"
+    SUBMITTED = "SUBMITTED"
+    RECALLED = "RECALLED"
+    PICKUP_SCANNED = "PICKUP_SCANNED"
+    PICKED_UP = "PICKED_UP"
+    ARCHIVED = "ARCHIVED"
+
+
+class DeliveryNoteSortKey(str, enum.Enum):
+    """送货单一览支持的排序字段（2026-07-22 新增）。"""
+
+    CREATED_AT = "CREATED_AT"
+    SUBMITTED_AT = "SUBMITTED_AT"
+    PICKED_UP_AT = "PICKED_UP_AT"
+    DELIVERY_NOTE_NO = "DELIVERY_NOTE_NO"

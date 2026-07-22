@@ -158,6 +158,17 @@ class TPart(Base, AuditMixin):
         comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
     )
 
+    # —— 送货单字段（2026-07-22 新增）——
+    # 同时刻一个 active 零件至多被分配到 1 张送货单；service.add_parts 校验，
+    # DB 不做 partial unique（与「同 note 至多 1 part」语义相反）。
+    # PICKED_UP 时 service 会把该字段置 NULL，让 PartDetail「所属送货单」卡片消失。
+    delivery_note_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+        comment="逻辑外键 → t_delivery_note.id（PR-G 2026-07-22 新增）",
+    )
+
     # —— 工序字段 ——
     # 下一道工序：place_on_shelf 时必填；RETURNED 时由工人指定。
     # 逻辑外键 → t_process.id；service 层校验存在性。

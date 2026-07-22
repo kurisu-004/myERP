@@ -28,6 +28,7 @@ from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory
 from repository.applicant import ApplicantRepository
 from repository.assembly import AssemblyRepository
 from repository.customer import CustomerRepository
+from repository.delivery_note import DeliveryNoteRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
 from repository.outsource_quote import OutsourceQuoteRepository
@@ -143,6 +144,7 @@ class PartService:
         shelf_process_repo: ShelfProcessRepository | None = None,
         files: PartFileRepository | None = None,
         assemblies: "AssemblyRepository | None" = None,  # 2026-07-21：create_parts_tree 用
+        delivery_notes_repo: DeliveryNoteRepository | None = None,  # 2026-07-22：PR-G 详情显示所属送货单
         outsource_companies: OutsourceCompanyRepository | None = None,
         outsource_company_process: OutsourceCompanyProcessRepository | None = None,
         outsource_quotes: OutsourceQuoteRepository | None = None,
@@ -165,6 +167,7 @@ class PartService:
         self.shelf_process_repo = shelf_process_repo  # 可选：用于放回时校验工序属于货架
         self.files = files  # 可选：批量新建零件时上传 PDF 图纸
         self.assemblies = assemblies  # 2026-07-21：可选：create_parts_tree 写 t_assembly
+        self.delivery_notes_repo = delivery_notes_repo  # 2026-07-22：PR-G，可选：详情页显示所属送货单
         self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
         self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
         self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御 + mark_used）
@@ -2250,6 +2253,21 @@ class PartService:
             procs = await self.processes.list_by_ids(list(process_ids))
             process_map = {pr.id: pr.name for pr in procs}
 
+        # 批查所属送货单（PR-G 2026-07-22）：detail 页需要单号 + 状态
+        delivery_note_ids = {
+            int(p.delivery_note_id)
+            for p in rows
+            if p.delivery_note_id
+        }
+        delivery_note_map: dict[int, tuple[str, str]] = {}
+        if delivery_note_ids and self.delivery_notes_repo is not None:
+            notes = await self.delivery_notes_repo.list_by_ids(
+                list(delivery_note_ids),
+            )
+            delivery_note_map = {
+                n.id: (n.delivery_note_no, n.status) for n in notes
+            }
+
         out: list[PartOut] = []
         for p in rows:
             cust = cust_map.get(p.customer_id)
@@ -2319,6 +2337,19 @@ class PartService:
                     parent_customer_name=parent_name,
                     customer_path=path,
                     assembly_id=p.assembly_id,
+                    delivery_note_id=p.delivery_note_id,
+                    delivery_note_no=(
+                        delivery_note_map.get(int(p.delivery_note_id))[0]
+                        if p.delivery_note_id
+                        and delivery_note_map.get(int(p.delivery_note_id))
+                        else None
+                    ),
+                    delivery_note_status=(
+                        delivery_note_map.get(int(p.delivery_note_id))[1]
+                        if p.delivery_note_id
+                        and delivery_note_map.get(int(p.delivery_note_id))
+                        else None
+                    ),
                     current_holder_id=p.current_holder_id,
                     current_holder_kind=holder_kind,
                     shelf_code=shelf_code,
@@ -2433,6 +2464,7 @@ class PartService:
                     customer_name=child_name,
                     parent_customer_name=parent_name,
                     customer_path=path,
+                    delivery_note_id=p.delivery_note_id,
                     location=p.location,
                     shelf_code=shelf_code,
                     worker_name=worker_name,

@@ -124,3 +124,17 @@ class ErrCode(IntEnum):
     BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION = 21302  # 当前状态不允许此操作
     BIZ_OUTSOURCE_QUOTE_DUPLICATE = 21303           # 同 (part,company,process) 已存在活跃报价
     BIZ_OUTSOURCE_QUOTE_NOT_APPROVED = 21307        # send_to_outsource 找不到该 tuple 的 APPROVED 报价
+
+    # ---- 送货单（t_delivery_note，2026-07-22 新增）----
+    # 214xx：送货单相关
+    BIZ_DELIVERY_NOTE_NOT_FOUND = 21401           # 404  找不到指定的送货单
+    BIZ_DELIVERY_NOTE_INVALID_TRANSITION = 21402  # 400  当前状态不允许此操作（如 PICKED_UP 后不能再 recall）
+    BIZ_DELIVERY_NOTE_NOT_DRAFT = 21403           # 400  非 DRAFT 状态不能 soft_delete
+    BIZ_DELIVERY_NOTE_NOT_SUBMITTED = 21404       # 400  非 SUBMITTED 状态不能 recall / pickup
+    BIZ_DELIVERY_NOTE_PART_NOT_READY = 21405      # 400 零件状态非 READY_TO_SHIP（submit / pickup 时）
+    BIZ_DELIVERY_NOTE_PART_ALREADY_ASSIGNED = 21406  # 400  零件已在另一张送货单上
+    BIZ_DELIVERY_NOTE_PARTS_MULTIPLE_CUSTOMERS = 21407  # 400 同一单内混客户（与老 21110 同义，21407 便于按模块检索）
+    BIZ_DELIVERY_NOTE_SCAN_MISMATCH = 21408       # 400  扫码的 serial_no 不在本单范围内
+    BIZ_DELIVERY_NOTE_DRIVER_INVALID = 21409      # 400  司机非送货司机 / 不活跃
+    BIZ_DELIVERY_NOTE_SCAN_INCOMPLETE = 21410     # 400  pickup 时还没扫齐
+    BIZ_DELIVERY_NOTE_INVALID_VALUE = 21411       # 400 空单 / 等其他非法入参

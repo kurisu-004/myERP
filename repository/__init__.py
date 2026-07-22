@@ -1,6 +1,11 @@
 from .applicant import ApplicantRepository
 from .assembly import AssemblyRepository
 from .customer import CustomerRepository
+from .delivery_note import (
+    DeliveryNoteCounterRepository,
+    DeliveryNoteEventRepository,
+    DeliveryNoteRepository,
+)
 from .menu import MenuRepository
 from .outsource_company import OutsourceCompanyRepository
 from .outsource_company_process import OutsourceCompanyProcessRepository
@@ -22,6 +27,9 @@ __all__ = [
     "ApplicantRepository",
     "AssemblyRepository",
     "CustomerRepository",
+    "DeliveryNoteCounterRepository",
+    "DeliveryNoteEventRepository",
+    "DeliveryNoteRepository",
     "MenuRepository",
     "OutsourceCompanyProcessRepository",
     "OutsourceCompanyRepository",

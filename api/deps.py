@@ -10,6 +10,9 @@ from repository import (
     ApplicantRepository,
     AssemblyRepository,
     CustomerRepository,
+    DeliveryNoteCounterRepository,
+    DeliveryNoteEventRepository,
+    DeliveryNoteRepository,
     MenuRepository,
     OutsourceCompanyProcessRepository,
     OutsourceCompanyRepository,
@@ -45,6 +48,10 @@ from service import (
     WorkerService,
     WorkTypeProcessService,
     WorkTypeService,
+)
+from service.part import (
+    Broadcaster,
+    EventBroadcaster,
 )
 
 
@@ -295,6 +302,7 @@ def get_part_service(
         shelf_process_repo=ShelfProcessRepository(session),
         files=PartFileRepository(session),
         assemblies=AssemblyRepository(session),  # 2026-07-21：create_parts_tree 写 t_assembly
+        delivery_notes_repo=DeliveryNoteRepository(session),  # 2026-07-22：PR-G 详情显示所属送货单
         outsource_companies=OutsourceCompanyRepository(session),
         outsource_company_process=OutsourceCompanyProcessRepository(session),
         outsource_quotes=OutsourceQuoteRepository(session),
@@ -470,6 +478,7 @@ def get_assembly_service(
         processes=ProcessRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         files=files_repo,
+        delivery_notes_repo=DeliveryNoteRepository(session),  # 2026-07-22：PR-G
         outsource_companies=OutsourceCompanyRepository(session),
         outsource_company_process=OutsourceCompanyProcessRepository(session),
         current_user=user,
@@ -505,15 +514,49 @@ def get_assembly_service(
 
 def get_delivery_note_service(
     session: AsyncSession = Depends(get_session),
+    broadcaster: Broadcaster | None = None,
+    event_broadcaster: EventBroadcaster | None = None,
+    user: CurrentUser = Depends(get_current_user),
 ) -> DeliveryNoteService:
-    """送货单 Excel 导出 service 工厂（PR-B 2026-07-10）。
+    """送货单管理 service 工厂（PR-G 2026-07-22 替代 PR-B 老 XLSX 导出）。
 
-    只需要 PartRepository（按 id 批量查）+ CustomerRepository（按 id 批量查父/子
-    客户名拼路径）。无 user 依赖，调用方 API 层再做权限校验。
+    注入：
+    - notes / note_events / counter：CRUD + 事件流 + 每日单号
+    - parts / part_events：pickup() 时联动 part.deliver + 写 TPartEvent
+    - customers：建单校验存在
+    - workers：pickup() 校验司机工种 / 活跃
+    - broadcaster / event_broadcaster：pickup() 影响多个 part 状态，触发整张
+      dashboard snapshot 与业务事件（DELIVERY_NOTE_ARCHIVED）；通过闭包传，
+      不复用请求 session。
+
+    调用方 API 层用 require_roles 守权限（MANAGER/CLERK 编辑；pickup 任意已登录）。
     """
+    async def _broadcaster() -> None:
+        # pickup() 影响多个 part.deliver → dashboard 卡片「待送货」消失，
+        # 走整张 snapshot 重推。同 PartService：累积到 session.info，
+        # commit 成功后由 get_session flush。
+        session.info[_SNAPSHOT_PENDING_KEY] = True
+
+    async def _event_broadcaster(event_type: str, payload: dict) -> None:
+        session.info.setdefault(_EVENTS_PENDING_KEY, []).append(
+            (event_type, payload),
+        )
+
     return DeliveryNoteService(
+        session=session,
+        notes=DeliveryNoteRepository(session),
+        note_events=DeliveryNoteEventRepository(session),
+        counter=DeliveryNoteCounterRepository(session),
         parts=PartRepository(session),
         customers=CustomerRepository(session),
+        workers=WorkerRepository(session),
+        part_events=PartEventRepository(session),
+        broadcaster=_broadcaster if broadcaster is None else broadcaster,
+        event_broadcaster=(
+            _event_broadcaster if event_broadcaster is None
+            else event_broadcaster
+        ),
+        current_user=user,
     )
 
 

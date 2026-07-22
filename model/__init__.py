@@ -3,8 +3,14 @@ from .assembly import TAssembly
 from .audit import AuditMixin, EventTimestampMixin
 from .base import Base
 from .customer import TCustomer
+from .delivery_note import TDeliveryNote
+from .delivery_note_counter import TDeliveryNoteCounter
+from .delivery_note_event import TDeliveryNoteEvent
 from .enums import (
     AssemblyStatus,
+    DeliveryNoteEventType,
+    DeliveryNoteSortKey,
+    DeliveryNoteStatus,
     OutsourceQuoteEventType,
     OutsourceQuoteSortKey,
     OutsourceQuoteStatus,
@@ -44,6 +50,9 @@ __all__ = [
     "TApplicant",
     "TAssembly",
     "TCustomer",
+    "TDeliveryNote",
+    "TDeliveryNoteCounter",
+    "TDeliveryNoteEvent",
     "TMenu",
     "TOutsourceCompany",
     "TOutsourceCompanyProcess",
@@ -63,6 +72,9 @@ __all__ = [
     "TWorkType",
     "TWorkTypeProcess",
     "AssemblyStatus",
+    "DeliveryNoteEventType",
+    "DeliveryNoteSortKey",
+    "DeliveryNoteStatus",
     "OutsourceQuoteEventType",
     "OutsourceQuoteSortKey",
     "OutsourceQuoteStatus",

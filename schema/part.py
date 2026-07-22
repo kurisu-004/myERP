@@ -90,6 +90,19 @@ class PartOut(BaseModel):
         default=None,
         description="所属装配件 id（NULL = 普通独立零件，非任何装配件的子件）",
     )
+    # —— 送货单字段（PR-G 2026-07-22 新增）——
+    delivery_note_id: IdStr = Field(
+        default=None,
+        description="所属送货单 id（NULL = 未开单；详见 t_part.delivery_note_id）",
+    )
+    delivery_note_no: str | None = Field(
+        default=None,
+        description="所属送货单单号（DN-YYYYMMDD-NNNN）；NULL = 未开单",
+    )
+    delivery_note_status: str | None = Field(
+        default=None,
+        description="所属送货单状态（DRAFT / SUBMITTED / PICKED_UP / ARCHIVED）；NULL = 未开单",
+    )
     # —— 多态 holder ——
     current_holder_id: IdStr = Field(
         default=None,
@@ -189,6 +202,10 @@ class PartListItem(BaseModel):
     )
     customer_path: str | None = Field(
         default=None, description="客户完整路径"
+    )
+    delivery_note_id: IdStr = Field(
+        default=None,
+        description="所属送货单 id（NULL = 未开单；PR-G 2026-07-22 新增；零件一览浅蓝染色依据）",
     )
     location: str | None = Field(
         default=None, description="OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF"

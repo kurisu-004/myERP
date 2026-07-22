@@ -1,75 +1,266 @@
-"""送货单 Excel 模板导出（PR-F 2026-07-17 重设计；2026-07-20 切到 template/ 新模板）。
+"""送货单管理 API（2026-07-22 新增；替代老 `/delivery-notes/generate`）。
 
-POST /api/v1/delivery-notes/generate
-- body: { part_ids: list[str], template?: "F" | "L" }（雪花 ID 字符串）
-- response: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-- permission: MANAGER + CLERK（与「生成送货单」前端入口对齐）
+形态对齐 OutsourcQuote/Part 等业务路由：FastAPI 依赖注入 + global error handler
+信封；只允许 GET / POST（CLAUDE.md §7）。
 
-模板分发规则：
-- 若 `template` 给定（"F" / "L"）：走显式选择；service 层仍校验
-  「所选零件所属 L1 root 必须与 template 一致」，否则 400
-  BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED。
-- 若 `template` 缺省：按所选零件所属 L1 root 的 `serial_prefix` 自动分发
-  （F=法拉 / L=路达）。
-- prefix 未配置模板 → 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED。
-- 数据行数超出模板容量 → 400 BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS。
+权限策略：
+- 文员侧 (CLERK + MANAGER)：list / detail / events / create / add-parts /
+  remove-parts / submit / recall / soft-delete
+- 司机侧（任意已登录账号 + service 层校验 worker.work_type='送货司机'）：
+  pickup-pending list / detail / pickup-scan / pickup
 
-状态要求：所有 part.status 必须 == READY_TO_SHIP。
-跨客户校验：所有 part 必须同属一个 L1 root。
+`/delivery-notes/generate` 老 XLSX 路由已下线（PR-G 替换方案）。
 """
-from datetime import datetime
-from typing import Literal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status as http_status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends
 
 from api.deps import get_delivery_note_service
-from core.permission import require_roles
-from model.enums import UserRole
-from service._id_parse import parse_snowflake_id
+from core.permission import (
+    CurrentUser,
+    require_auth,
+    require_roles,
+)
+from model.enums import (
+    DeliveryNoteSortKey,
+    SortDir,
+    UserRole,
+)
+from schema.delivery_note import (
+    DeliveryNoteCreateRequest,
+    DeliveryNoteDetailOut,
+    DeliveryNoteEventOut,
+    DeliveryNoteListOut,
+    DeliveryNoteOut,
+    DeliveryNotePartIdsRequest,
+    DeliveryNotePickupListOut,
+    DeliveryNotePickupRequest,
+    DeliveryNotePickupScanOut,
+    DeliveryNotePickupScanRequest,
+    DeliveryNoteVersionedRequest,
+)
 from service.delivery_note import DeliveryNoteService
 
 router = APIRouter(prefix="/delivery-notes", tags=["送货单"])
 
+_OFFICE_DEP = [Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))]
 
-class DeliveryNoteGenerateRequest(BaseModel):
-    part_ids: list[str] = Field(
-        min_length=1,
-        description="雪花 ID 字符串列表（service 层 int() 转换）",
+
+# ============================================================
+# 1. 一览 / 详情 / 待送货
+# ============================================================
+@router.get(
+    "",
+    response_model=DeliveryNoteListOut,
+    summary="送货单一览（statuses / customer_id / keyword 过滤 + 分页）",
+    dependencies=_OFFICE_DEP,
+)
+async def list_delivery_notes(
+    statuses: list[str] | None = None,
+    customer_id: str | None = None,
+    keyword: str | None = None,
+    sort_by: DeliveryNoteSortKey = DeliveryNoteSortKey.CREATED_AT,
+    sort_dir: SortDir = SortDir.DESC,
+    limit: int = 50,
+    offset: int = 0,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteListOut:
+    items, total = await svc.list_with_filters(
+        statuses=statuses,
+        customer_id=customer_id,
+        keyword=keyword,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        limit=limit,
+        offset=offset,
     )
-    template: Literal["F", "L"] | None = Field(
-        default=None,
-        description=(
-            "显式指定送货单模板（F=法拉 / L=路达）；"
-            "None=按所选零件所属 L1 root 的 serial_prefix 自动分发"
-        ),
+    return DeliveryNoteListOut(
+        items=items, total=total, limit=limit, offset=offset,
+    )
+
+
+@router.get(
+    "/pickup-pending",
+    response_model=DeliveryNotePickupListOut,
+    summary=(
+        "司机待送货一览（仅 SUBMITTED 的非软删单；service 层校验 driver "
+        "work_type='送货司机'）"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def list_pickup_pending(
+    customer_id: str | None = None,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNotePickupListOut:
+    items = await svc.list_for_pickup(customer_id=customer_id)
+    return DeliveryNotePickupListOut(items=items)
+
+
+@router.post(
+    "",
+    response_model=DeliveryNoteOut,
+    summary="创建送货单草稿（CLERK / MANAGER）",
+    status_code=201,
+    dependencies=_OFFICE_DEP,
+)
+async def create_delivery_note(
+    payload: DeliveryNoteCreateRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+    _user: CurrentUser = Depends(require_auth()),
+) -> DeliveryNoteOut:
+    return await svc.create_draft(
+        customer_id=payload.customer_id, note=payload.note,
+    )
+
+
+@router.get(
+    "/{note_id}",
+    response_model=DeliveryNoteDetailOut,
+    summary="送货单详情（line_items + scanned_serials）",
+    dependencies=[Depends(require_auth())],
+)
+async def get_delivery_note(
+    note_id: str,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteDetailOut:
+    return await svc.get_with_parts(note_id)
+
+
+@router.get(
+    "/{note_id}/events",
+    response_model=list[DeliveryNoteEventOut],
+    summary="送货单事件时间线",
+    dependencies=[Depends(require_auth())],
+)
+async def list_delivery_note_events(
+    note_id: str,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> list[DeliveryNoteEventOut]:
+    return await svc.list_events(note_id)
+
+
+# ============================================================
+# 2. 草稿期 add / remove 零件（CLERK / MANAGER）
+# ============================================================
+@router.post(
+    "/{note_id}/add-parts",
+    response_model=DeliveryNoteDetailOut,
+    summary="添加零件（CLERK / MANAGER；DRAFT / SUBMITTED）",
+    dependencies=_OFFICE_DEP,
+)
+async def add_delivery_note_parts(
+    note_id: str,
+    payload: DeliveryNotePartIdsRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteDetailOut:
+    return await svc.add_parts(
+        note_id=note_id, part_ids=payload.part_ids, version=payload.version,
     )
 
 
 @router.post(
-    "/generate",
-    summary="按 part_ids 列表生成送货单 xlsx（MANAGER / CLERK）",
-    response_class=Response,
-    dependencies=[Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))],
+    "/{note_id}/remove-parts",
+    response_model=DeliveryNoteDetailOut,
+    summary="移除零件（CLERK / MANAGER；DRAFT / SUBMITTED）",
+    dependencies=_OFFICE_DEP,
 )
-async def generate_delivery_note(
-    payload: DeliveryNoteGenerateRequest,
+async def remove_delivery_note_parts(
+    note_id: str,
+    payload: DeliveryNotePartIdsRequest,
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
-) -> Response:
-    # 雪花 ID 字符串 → int（parse_snowflake_id 内部已抛 BizError）
-    ids = [parse_snowflake_id(s, field_name="part_ids") for s in payload.part_ids]
-
-    blob, prefix = await svc.build_xlsx(ids, template=payload.template)
-    today = datetime.now().strftime("%Y%m%d")
-    return Response(
-        content=blob,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="delivery_note_{prefix}_{today}.xlsx"'
-            ),
-        },
-        status_code=http_status.HTTP_200_OK,
+) -> DeliveryNoteDetailOut:
+    return await svc.remove_parts(
+        note_id=note_id, part_ids=payload.part_ids, version=payload.version,
     )
+
+
+# ============================================================
+# 3. 状态机迁移（CLERK / MANAGER）
+# ============================================================
+@router.post(
+    "/{note_id}/submit",
+    response_model=DeliveryNoteOut,
+    summary="DRAFT → SUBMITTED（CLERK / MANAGER）",
+    dependencies=_OFFICE_DEP,
+)
+async def submit_delivery_note(
+    note_id: str,
+    payload: DeliveryNoteVersionedRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteOut:
+    return await svc.submit(note_id=note_id, version=payload.version)
+
+
+@router.post(
+    "/{note_id}/recall",
+    response_model=DeliveryNoteOut,
+    summary="SUBMITTED → DRAFT（CLERK / MANAGER 撤回）",
+    dependencies=_OFFICE_DEP,
+)
+async def recall_delivery_note(
+    note_id: str,
+    payload: DeliveryNoteVersionedRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteOut:
+    return await svc.recall(note_id=note_id, version=payload.version)
+
+
+# ============================================================
+# 4. 司机扫码台（任意已登录 + service 层校验 driver work_type='送货司机'）
+# ============================================================
+@router.post(
+    "/{note_id}/pickup-scan",
+    response_model=DeliveryNotePickupScanOut,
+    summary=(
+        "司机每扫一个 part，调一次；返回 {scanned, expected, ready}"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def pickup_scan(
+    note_id: str,
+    payload: DeliveryNotePickupScanRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNotePickupScanOut:
+    return await svc.pickup_scan(
+        note_id=note_id,
+        part_serial=payload.part_serial,
+        badge_code=payload.badge_code,
+    )
+
+
+@router.post(
+    "/{note_id}/pickup",
+    response_model=DeliveryNoteOut,
+    summary=(
+        "扫齐后一次性 finalize：原子完成「全员 part.deliver + 单据 pickup / archive」"
+    ),
+    dependencies=[Depends(require_auth())],
+)
+async def pickup_delivery_note(
+    note_id: str,
+    payload: DeliveryNotePickupRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteOut:
+    return await svc.pickup(
+        note_id=note_id,
+        driver_worker_id=payload.driver_worker_id,
+        version=payload.version,
+        badge_code=payload.badge_code,
+    )
+
+
+# ============================================================
+# 5. 软删（仅 DRAFT，CLERK / MANAGER）
+# ============================================================
+@router.post(
+    "/{note_id}/soft-delete",
+    summary="软删（仅 DRAFT；CLERK / MANAGER）",
+    status_code=204,
+    dependencies=_OFFICE_DEP,
+)
+async def soft_delete_delivery_note(
+    note_id: str,
+    payload: DeliveryNoteVersionedRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> None:
+    await svc.soft_delete(note_id=note_id, version=payload.version)
