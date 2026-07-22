@@ -138,4 +138,4 @@ test_*.tmp
 # 这些文件含业务敏感信息且会频繁变更；只保留在本地 docs/example/ 作
 # 调试 / 演示用，不入版本控制。Excel 模板（如应标批量导入的 .xlsx 模板）
 # 如需入 git 放在别的 docs/ 子目录。
-docs/example/*.xlsx
+docs/example/**
