@@ -77,9 +77,12 @@ class PartRepository:
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
         keyword: str | None = None,
+        order_no: str | None = None,
         has_outsource_history: bool | None = None,
         request_date_from=None,
         request_date_to=None,
+        planned_delivery_date_from=None,
+        planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
@@ -94,9 +97,12 @@ class PartRepository:
             statuses=statuses,
             is_urgent=is_urgent,
             keyword=keyword,
+            order_no=order_no,
             has_outsource_history=has_outsource_history,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
@@ -109,15 +115,20 @@ class PartRepository:
             PartSortKey.SERIAL_NO: TPart.serial_no,
             PartSortKey.DRAWING_NO: TPart.drawing_no,
             PartSortKey.NAME: TPart.name,
+            PartSortKey.ORDER_NO: TPart.order_no,
         }[sort_by]
-        # 2026-07-21：可空列（system_delivery_date）排序时 NULL 排末尾（PG NULLS LAST 行为）
+        # 2026-07-21：可空列（system_delivery_date / order_no）排序时 NULL 排末尾。
+        _nulls_last_keys = {
+            PartSortKey.SYSTEM_DELIVERY_DATE,
+            PartSortKey.ORDER_NO,
+        }
         if sort_dir == SortDir.ASC:
-            if sort_by == PartSortKey.SYSTEM_DELIVERY_DATE:
+            if sort_by in _nulls_last_keys:
                 stmt = stmt.order_by(sort_col.asc().nulls_last(), TPart.id.desc())
             else:
                 stmt = stmt.order_by(sort_col.asc(), TPart.id.desc())
         else:
-            if sort_by == PartSortKey.SYSTEM_DELIVERY_DATE:
+            if sort_by in _nulls_last_keys:
                 stmt = stmt.order_by(sort_col.desc().nulls_last(), TPart.id.desc())
             else:
                 stmt = stmt.order_by(sort_col.desc(), TPart.id.desc())
@@ -133,9 +144,12 @@ class PartRepository:
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
         keyword: str | None = None,
+        order_no: str | None = None,
         has_outsource_history: bool | None = None,
         request_date_from=None,
         request_date_to=None,
+        planned_delivery_date_from=None,
+        planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
         include_deleted: bool = False,
@@ -146,9 +160,12 @@ class PartRepository:
             statuses=statuses,
             is_urgent=is_urgent,
             keyword=keyword,
+            order_no=order_no,
             has_outsource_history=has_outsource_history,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
@@ -498,9 +515,12 @@ class PartRepository:
         statuses: list[PartStatus] | None,
         is_urgent: bool | None,
         keyword: str | None,
+        order_no: str | None = None,
         has_outsource_history: bool | None,
         request_date_from=None,
         request_date_to=None,
+        planned_delivery_date_from=None,
+        planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
         include_deleted: bool,
@@ -529,6 +549,11 @@ class PartRepository:
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
                 )
+        # 2026-07-22：订单号独立搜索框（ILIKE 子串包含）。
+        if order_no:
+            on = order_no.strip()
+            if on:
+                stmt = stmt.where(TPart.order_no.ilike(f"%{on}%"))
         # 2026-07-21：PR-F 日期区间筛选（请购日期 / 系统交期）。
         # 仅端点非 None 时加条件；端点为 None 表示半开区间。
         # 系统交期可空（PR-F 字段 NULL=未设置），区间包含 NULL 时也会命中。
@@ -537,6 +562,11 @@ class PartRepository:
             stmt = stmt.where(TPart.request_date >= request_date_from)
         if request_date_to is not None:
             stmt = stmt.where(TPart.request_date <= request_date_to)
+        # 2026-07-22：计划交期区间（planned_delivery_date NOT NULL，无需 NULL 兜底）。
+        if planned_delivery_date_from is not None:
+            stmt = stmt.where(TPart.planned_delivery_date >= planned_delivery_date_from)
+        if planned_delivery_date_to is not None:
+            stmt = stmt.where(TPart.planned_delivery_date <= planned_delivery_date_to)
         if system_delivery_date_from is not None:
             stmt = stmt.where(
                 or_(

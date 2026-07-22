@@ -63,6 +63,8 @@ export interface ListPartsParams {
   statuses?: OrderStatus[]
   is_urgent?: boolean
   keyword?: string
+  /** 2026-07-22：订单号独立搜索（ILIKE 包含 %kw%）。 */
+  order_no?: string
   /**
    * 仅返回「曾外协过」的零件（2026-07-20 新增，外协接收历史页用）。
    * 命中条件由后端 EXISTS 子查询判定（SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE
@@ -72,6 +74,9 @@ export interface ListPartsParams {
   /** 2026-07-21 PR-F：请购日期区间（含端点；任一端点为空表示半开） */
   request_date_from?: string
   request_date_to?: string
+  /** 2026-07-22：计划交期区间（含端点；任一端点为空表示半开） */
+  planned_delivery_date_from?: string
+  planned_delivery_date_to?: string
   /** 2026-07-21 PR-F：系统交期区间（含端点；任一端点为空表示半开；NULL 字段视为落在区间内） */
   system_delivery_date_from?: string
   system_delivery_date_to?: string

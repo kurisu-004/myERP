@@ -412,10 +412,12 @@ class TestCreatePartsTreeMultiPage:
                 applicants=AsyncMock(),
             )
 
-        # 3 子件 DRAWING + 1 master ASSEMBLY_MASTER
-        assert mock_part_files.upload.await_count == 4
+        # 2 子件 DRAWING（跳过 is_master 页）+ 1 master ASSEMBLY_MASTER
+        # 2026-07-22：总装图页不再作为子件建 part/DRAWING，只作 ASSEMBLY_MASTER。
+        assert mock_parts.create.await_count == 2
+        assert mock_part_files.upload.await_count == 3
         kinds = [c.kwargs["kind"] for c in mock_part_files.upload.await_args_list]
-        assert kinds.count(PartFileKind.DRAWING) == 3
+        assert kinds.count(PartFileKind.DRAWING) == 2
         assert kinds.count(PartFileKind.ASSEMBLY_MASTER) == 1
         # ASSEMBLY_MASTER 的 owner_id 应该是 assembly.id
         master_call = next(c for c in mock_part_files.upload.await_args_list

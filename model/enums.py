@@ -150,6 +150,7 @@ class PartSortKey(str, enum.Enum):
     SERIAL_NO = "SERIAL_NO"
     DRAWING_NO = "DRAWING_NO"
     NAME = "NAME"
+    ORDER_NO = "ORDER_NO"  # 2026-07-22 新增
 
 
 class SortDir(str, enum.Enum):

@@ -109,6 +109,9 @@ async def list_parts(
         default=None,
         description="搜索关键字（图号 ILIKE 包含 %kw%；名称 ILIKE 前缀 kw%）",
     ),
+    order_no: str | None = Query(
+        default=None, description="订单号搜索（ILIKE 包含 %kw%；2026-07-22 新增）"
+    ),
     has_outsource_history: bool | None = Query(
         default=None,
         description=(
@@ -118,6 +121,8 @@ async def list_parts(
     ),
     request_date_from: date | None = Query(default=None, description="请购日期区间起点（含）"),
     request_date_to: date | None = Query(default=None, description="请购日期区间终点（含）"),
+    planned_delivery_date_from: date | None = Query(default=None, description="计划交期区间起点（含）"),
+    planned_delivery_date_to: date | None = Query(default=None, description="计划交期区间终点（含）"),
     system_delivery_date_from: date | None = Query(default=None, description="系统交期区间起点（含）"),
     system_delivery_date_to: date | None = Query(default=None, description="系统交期区间终点（含）"),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
@@ -134,9 +139,12 @@ async def list_parts(
             statuses=[PartStatus(s) for s in statuses] if statuses else None,
             is_urgent=is_urgent,
             keyword=keyword,
+            order_no=order_no,
             has_outsource_history=has_outsource_history,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
             sort_by=PartSortKey(sort_by),

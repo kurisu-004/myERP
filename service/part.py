@@ -205,9 +205,12 @@ class PartService:
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
+            order_no=query.order_no,
             has_outsource_history=query.has_outsource_history,
             request_date_from=query.request_date_from,
             request_date_to=query.request_date_to,
+            planned_delivery_date_from=query.planned_delivery_date_from,
+            planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
             sort_by=query.sort_by,
@@ -220,9 +223,12 @@ class PartService:
             statuses=query.statuses,
             is_urgent=query.is_urgent,
             keyword=query.keyword,
+            order_no=query.order_no,
             has_outsource_history=query.has_outsource_history,
             request_date_from=query.request_date_from,
             request_date_to=query.request_date_to,
+            planned_delivery_date_from=query.planned_delivery_date_from,
+            planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
         )
@@ -821,7 +827,8 @@ class PartService:
 
             child_results: list[PartBatchTreePartResult] = []
             child_files: list = []
-            for idx, page in enumerate(pages, start=1):
+            child_seq = 0
+            for page in pages:
                 if page.page_index >= len(all_pages):
                     raise BizError(
                         code=ErrCode.BIZ_INVALID_VALUE,
@@ -831,9 +838,13 @@ class PartService:
                         ),
                         http_status=http_status.HTTP_400_BAD_REQUEST,
                     )
+                # 总装图页只在下方作为 ASSEMBLY_MASTER 上传，不建子件（2026-07-22）
+                if page.is_master:
+                    continue
+                child_seq += 1
                 page_bytes = all_pages[page.page_index]
                 child_id = new_id()
-                child_serial = f"{assembly_serial}-{idx:02d}"
+                child_serial = f"{assembly_serial}-{child_seq:02d}"
                 tpart = TPart(
                     id=child_id,
                     serial_no=child_serial,

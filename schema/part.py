@@ -26,6 +26,9 @@ class PartListQuery(BaseModel):
         default=None,
         description="搜索关键字（图号 ILIKE 包含匹配 %kw%；名称 ILIKE 前缀匹配 kw%）",
     )
+    order_no: str | None = Field(
+        default=None, description="订单号搜索（ILIKE 包含匹配 %kw%；2026-07-22 新增）"
+    )
     has_outsource_history: bool | None = Field(
         default=None,
         description=(
@@ -37,6 +40,8 @@ class PartListQuery(BaseModel):
     # —— PR-F 日期区间筛选（2026-07-21 新增）——
     request_date_from: date | None = Field(default=None, description="请购日期区间起点（含）")
     request_date_to: date | None = Field(default=None, description="请购日期区间终点（含）")
+    planned_delivery_date_from: date | None = Field(default=None, description="计划交期区间起点（含）")
+    planned_delivery_date_to: date | None = Field(default=None, description="计划交期区间终点（含）")
     system_delivery_date_from: date | None = Field(default=None, description="系统交期区间起点（含）")
     system_delivery_date_to: date | None = Field(default=None, description="系统交期区间终点（含）")
     sort_by: PartSortKey = Field(

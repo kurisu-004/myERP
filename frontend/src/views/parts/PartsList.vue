@@ -34,71 +34,71 @@
           </template>
         </el-input>
 
+        <!-- 订单号独立搜索框（2026-07-22） -->
+        <el-input
+          v-model="search.orderNo"
+          placeholder="订单号"
+          clearable
+          style="width: 160px"
+          @keyup.enter="onSearch"
+          @clear="onSearch"
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+
         <el-button @click="onReset">
           <el-icon><RefreshLeft /></el-icon>
           <span>重置</span>
         </el-button>
 
-        <!-- 日期筛选弹窗（2026-07-21 PR-F：按请购日期 / 系统交期区间筛选） -->
-        <el-popover
-          :width="320"
-          placement="bottom-start"
-          trigger="click"
-          :show-arrow="false"
-          v-model:visible="dateFilterVisible"
-          @show="syncDateDraft"
-        >
-          <template #reference>
-            <el-button :type="anyDateFilterActive ? 'primary' : 'default'" plain>
-              <el-icon><Calendar /></el-icon>
-              <span>日期筛选</span>
-            </el-button>
-          </template>
-          <el-form size="small" label-width="80px">
-            <el-form-item label="请购日期">
-              <div class="date-range">
-                <el-date-picker
-                  v-model="dateDraft.requestFrom"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  placeholder="起点"
-                  style="width: 110px"
-                />
-                <span>~</span>
-                <el-date-picker
-                  v-model="dateDraft.requestTo"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  placeholder="终点"
-                  style="width: 110px"
-                />
-              </div>
-            </el-form-item>
-            <el-form-item label="系统交期">
-              <div class="date-range">
-                <el-date-picker
-                  v-model="dateDraft.systemFrom"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  placeholder="起点"
-                  style="width: 110px"
-                />
-                <span>~</span>
-                <el-date-picker
-                  v-model="dateDraft.systemTo"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  placeholder="终点"
-                  style="width: 110px"
-                />
-              </div>
-            </el-form-item>
-          </el-form>
-          <div class="filter-actions">
-            <el-button size="small" link @click="resetDateFilter">重置</el-button>
-            <el-button size="small" type="primary" @click="applyDateFilter">确定</el-button>
-          </div>
-        </el-popover>
+        <!-- 三个日期区间筛选（2026-07-22：请购日期 / 计划交期 / 系统交期，内联 daterange） -->
+        <div class="date-filter-item">
+          <span class="date-filter-label">请购日期</span>
+          <el-date-picker
+            v-model="requestDateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="起点"
+            end-placeholder="终点"
+            unlink-panels
+            clearable
+            style="width: 240px"
+            @change="onDateRangeChange"
+          />
+        </div>
+        <div class="date-filter-item">
+          <span class="date-filter-label">计划交期</span>
+          <el-date-picker
+            v-model="plannedDateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="起点"
+            end-placeholder="终点"
+            unlink-panels
+            clearable
+            style="width: 240px"
+            @change="onDateRangeChange"
+          />
+        </div>
+        <div class="date-filter-item">
+          <span class="date-filter-label">系统交期</span>
+          <el-date-picker
+            v-model="systemDateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="起点"
+            end-placeholder="终点"
+            unlink-panels
+            clearable
+            style="width: 240px"
+            @change="onDateRangeChange"
+          />
+        </div>
 
         <!-- 手机筛选入口（桌面走表头 popover） -->
         <el-button
@@ -321,7 +321,13 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="订单号" width="130" show-overflow-tooltip>
+      <el-table-column
+        prop="order_no"
+        label="订单号"
+        width="130"
+        sortable="custom"
+        show-overflow-tooltip
+      >
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -795,12 +801,16 @@ const { isMobile } = useBreakpoint()
 
 interface SearchState {
   keyword: string
+  orderNo: string
   statuses: OrderStatus[]
   isUrgent: boolean | null
   customerId: string
   /** 2026-07-21 PR-F：请购日期区间（含端点；空串=无限制） */
   requestDateFrom: string
   requestDateTo: string
+  /** 2026-07-22：计划交期区间（含端点；空串=无限制） */
+  plannedDeliveryDateFrom: string
+  plannedDeliveryDateTo: string
   /** 2026-07-21 PR-F：系统交期区间（含端点；空串=无限制） */
   systemDeliveryDateFrom: string
   systemDeliveryDateTo: string
@@ -808,6 +818,7 @@ interface SearchState {
 function initialSearch(): SearchState {
   return {
     keyword: '',
+    orderNo: '',
     statuses: isCncProgrammer
       ? ['PROGRAMMING']
       : ['IN_PROCESS', 'REPAIRING'],
@@ -815,6 +826,8 @@ function initialSearch(): SearchState {
     customerId: '',
     requestDateFrom: '',
     requestDateTo: '',
+    plannedDeliveryDateFrom: '',
+    plannedDeliveryDateTo: '',
     systemDeliveryDateFrom: '',
     systemDeliveryDateTo: '',
   }
@@ -829,55 +842,42 @@ const statusFilterActive = computed(
   () => search.statuses.length > 0 || search.isUrgent === true,
 )
 const customerFilterActive = computed(() => search.customerId !== '')
-const anyDateFilterActive = computed(
-  () =>
-    !!search.requestDateFrom ||
-    !!search.requestDateTo ||
-    !!search.systemDeliveryDateFrom ||
-    !!search.systemDeliveryDateTo,
+
+// ============ 三个日期区间筛选（2026-07-22：内联 daterange） ============
+// daterange 的 v-model 绑定 [start, end]；清空时 el 抛 null，getter/setter 兜底。
+type DateRange = [string, string] | null
+type DateRangeKey =
+  | 'requestDateFrom'
+  | 'requestDateTo'
+  | 'plannedDeliveryDateFrom'
+  | 'plannedDeliveryDateTo'
+  | 'systemDeliveryDateFrom'
+  | 'systemDeliveryDateTo'
+
+function makeRangeModel(fromKey: DateRangeKey, toKey: DateRangeKey) {
+  return computed<DateRange>({
+    get: () =>
+      search[fromKey] || search[toKey]
+        ? ([search[fromKey], search[toKey]] as [string, string])
+        : null,
+    set: (val: DateRange) => {
+      search[fromKey] = val?.[0] ?? ''
+      search[toKey] = val?.[1] ?? ''
+    },
+  })
+}
+
+const requestDateRange = makeRangeModel('requestDateFrom', 'requestDateTo')
+const plannedDateRange = makeRangeModel(
+  'plannedDeliveryDateFrom',
+  'plannedDeliveryDateTo',
+)
+const systemDateRange = makeRangeModel(
+  'systemDeliveryDateFrom',
+  'systemDeliveryDateTo',
 )
 
-// ============ 日期筛选弹窗（2026-07-21 PR-F） ============
-const dateFilterVisible = ref(false)
-const dateDraft = reactive<{
-  requestFrom: string
-  requestTo: string
-  systemFrom: string
-  systemTo: string
-}>({
-  requestFrom: '',
-  requestTo: '',
-  systemFrom: '',
-  systemTo: '',
-})
-
-function syncDateDraft(): void {
-  dateDraft.requestFrom = search.requestDateFrom
-  dateDraft.requestTo = search.requestDateTo
-  dateDraft.systemFrom = search.systemDeliveryDateFrom
-  dateDraft.systemTo = search.systemDeliveryDateTo
-}
-
-function resetDateFilter(): void {
-  dateDraft.requestFrom = ''
-  dateDraft.requestTo = ''
-  dateDraft.systemFrom = ''
-  dateDraft.systemTo = ''
-  search.requestDateFrom = ''
-  search.requestDateTo = ''
-  search.systemDeliveryDateFrom = ''
-  search.systemDeliveryDateTo = ''
-  dateFilterVisible.value = false
-  page.value = 1
-  void fetchList()
-}
-
-function applyDateFilter(): void {
-  search.requestDateFrom = dateDraft.requestFrom
-  search.requestDateTo = dateDraft.requestTo
-  search.systemDeliveryDateFrom = dateDraft.systemFrom
-  search.systemDeliveryDateTo = dateDraft.systemTo
-  dateFilterVisible.value = false
+function onDateRangeChange(): void {
   page.value = 1
   void fetchList()
 }
@@ -1073,8 +1073,11 @@ function buildParams(): ListPartsParams {
     statuses: search.statuses.length > 0 ? search.statuses : undefined,
     is_urgent: search.isUrgent ?? undefined,
     keyword: search.keyword.trim() || undefined,
+    order_no: search.orderNo.trim() || undefined,
     request_date_from: search.requestDateFrom || undefined,
     request_date_to: search.requestDateTo || undefined,
+    planned_delivery_date_from: search.plannedDeliveryDateFrom || undefined,
+    planned_delivery_date_to: search.plannedDeliveryDateTo || undefined,
     system_delivery_date_from: search.systemDeliveryDateFrom || undefined,
     system_delivery_date_to: search.systemDeliveryDateTo || undefined,
     sort_by: sortBy.value,
@@ -1156,11 +1159,24 @@ onMounted(() => {
     const persisted = restorePartsFilter()
     if (persisted) {
       search.keyword = persisted.search.keyword ?? search.keyword
+      search.orderNo = persisted.search.orderNo ?? search.orderNo
       search.statuses = Array.isArray(persisted.search.statuses)
         ? persisted.search.statuses
         : search.statuses
       search.isUrgent = persisted.search.isUrgent ?? search.isUrgent
       search.customerId = persisted.search.customerId ?? search.customerId
+      search.requestDateFrom =
+        persisted.search.requestDateFrom ?? search.requestDateFrom
+      search.requestDateTo =
+        persisted.search.requestDateTo ?? search.requestDateTo
+      search.plannedDeliveryDateFrom =
+        persisted.search.plannedDeliveryDateFrom ?? search.plannedDeliveryDateFrom
+      search.plannedDeliveryDateTo =
+        persisted.search.plannedDeliveryDateTo ?? search.plannedDeliveryDateTo
+      search.systemDeliveryDateFrom =
+        persisted.search.systemDeliveryDateFrom ?? search.systemDeliveryDateFrom
+      search.systemDeliveryDateTo =
+        persisted.search.systemDeliveryDateTo ?? search.systemDeliveryDateTo
       // localStorage 存的是 string，恢复时按合法值收敛（默认值兜底）
       sortBy.value = (SORT_PROP_MAP[persisted.sortBy]
         ? persisted.sortBy as PartSortKey
@@ -1380,6 +1396,19 @@ async function onDispatchConfirm(): Promise<void> {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* 2026-07-22：内联日期区间筛选（请购/计划/系统交期） */
+.date-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.date-filter-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .total-hint {

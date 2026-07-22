@@ -49,6 +49,7 @@ export type PartSortKey =
   | 'SERIAL_NO'
   | 'DRAWING_NO'
   | 'NAME'
+  | 'ORDER_NO'
 
 export type SortDir = 'ASC' | 'DESC'
 
@@ -64,6 +65,7 @@ export const PART_SORT_PROP_MAP: Record<string, PartSortKey> = {
   planned_delivery_date: 'PLANNED_DELIVERY_DATE',
   request_date: 'REQUEST_DATE',
   system_delivery_date: 'SYSTEM_DELIVERY_DATE',
+  order_no: 'ORDER_NO',
 }
 
 /** 列表展示用窄出参（与 PartItem 不同，无 holder/next_process/assembly_id）。 */
