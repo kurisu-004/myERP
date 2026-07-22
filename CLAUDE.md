@@ -218,7 +218,7 @@ INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
 
 所有 `AuditMixin` 表有 `version Integer NOT NULL DEFAULT 0` 列。`model/audit.py::AuditMixin.__init_subclass__` 用 `declared_attr.directive` 注入 `__mapper_args__ = {"version_id_col": cls.version}`——所有继承 AuditMixin 的 ORM 自动获 OCC，**无需改业务代码**。
 - SQLAlchemy 每次 dirty UPDATE 自动加 `WHERE id=? AND version=?` 并 `SET version=version+1`；0 行更新 → `StaleDataError` → 全局 handler → HTTP 409 + `BIZ_VERSION_CONFLICT`「该记录已被其他用户修改，请刷新后重试」。
-- `version_id_generator` 默认 True：Python 端同步 `version += 1`，flush 后**不 expire / refresh** → 不重现 MissingGreenlet。
+- `version_id_generator` 默认 True：Python 端同步 `version += 1`，flush 后**不 expire / refresh** → 访问 `version` 自身不重现 MissingGreenlet。**仅覆盖 `version_id_col`，不防 `updated_at` / `deleted_at` 等其他 server-side 列的 expire**。
 - `model/audit.py` 用 `@event.listens_for(DeclarativeBase, "init")` 兜底：构造时未传 `version` 自动填 0（`mapped_column(default=)` 只影响 INSERT SQL，不填实例）。
 - 响应 schema 加 `version: int`（前端 TS 同步；V1 暂不消费）。service `_to_out` 等组装方法显式传 `version=row.version`。
 - **不变量**：`t_user.refresh_token_version`（refresh 轮转）与行 `version`（OCC）是不同语义，两个字段并存。`TPartEvent`（append-only）不加 version。
@@ -243,7 +243,7 @@ sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; ...
 
 **约束**：任何带 `AuditMixin` 的 ORM **不走「先 INSERT 再 UPDATE 同一行」的两阶段写**。某列后续才知道，就先在 Python 侧解析完再构造对象一次性 INSERT（如 `serial_no`：先 `acquire_serial` 再构造）。
 
-> OCC（`version_id_generator=True`）默认行为已规避上述 onupdate expire 链路——访问 `updated_at` / `version` / `deleted_at` 都不抛。
+> OCC（`version_id_generator=True`）只保护 `version_id_col` 本身（`version`）不 expire；`updated_at`（`onupdate=func.now()`）等 server-side 列被 UPDATE 触碰后仍会标 expired，sync-read 仍会触发 implicit SELECT → MissingGreenlet。规避：在 sync-read 前显式 `await session.refresh(obj, attribute_names=("updated_at", ...))`，参见 `service/_session_refresh.py::refresh_for_state_machine`（已有 `PartService.pass_inspection` / `service/outsource_quote.py` 等调用点）。**反例**：2026-07-22 `AssemblyService.cancel_assembly` 因 sync 读 `asm.updated_at` 抛 MissingGreenlet，后由 commit 修复。
 
 ---
 
