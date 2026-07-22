@@ -11,6 +11,7 @@ class ErrCode(IntEnum):
     NOT_FOUND = 40400
     CONFLICT = 40900
     BIZ_VERSION_CONFLICT = 40901   # 乐观锁冲突：当前 version 与 DB 不一致
+    BIZ_REQUEST_TOO_LARGE = 41301  # 413  请求体超过 settings.max_request_body_size_bytes（RequestSizeLimitMiddleware 在 multipart 解析前拦截）
 
     INTERNAL_ERROR = 50000
     DATABASE_ERROR = 50001

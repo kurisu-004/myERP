@@ -385,7 +385,12 @@ export async function batchCreatePartsWithPdfs(
   files.forEach((f) => {
     if (f.data) form.append('files', f.data, f.filename)
   })
-  const resp = await api.post<PartBatchTreeResultFE>('/parts/batch-with-pdfs', form)
+  // 批量上传可能耗时数分钟，单点延长到 10 分钟；全局 axios `timeout: 30_000` 不动（其他业务保持短超时）。
+  const resp = await api.post<PartBatchTreeResultFE>(
+    '/parts/batch-with-pdfs',
+    form,
+    { timeout: 10 * 60 * 1000 },
+  )
   return resp.data
 }
 

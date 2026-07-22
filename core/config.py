@@ -66,6 +66,17 @@ class Settings(BaseSettings):
         default="", alias="COS_ALLOWED_TYPES"
     )
 
+    # ---- 单次请求体大小上限（2026-07-22 新增；与 nginx client_max_body_size 对齐）----
+    # 用于 RequestSizeLimitMiddleware 在 multipart 解析之前拦截，避免批量 PDF (300 MB)
+    # 全量进内存导致 OOM；前端 / 后端共享同一个值，便于两处都看 .env 调整。
+    max_request_body_size_bytes: int = Field(
+        default=300 * 1024 * 1024, alias="MAX_REQUEST_BODY_SIZE", ge=1,
+        description=(
+            "单次请求体大小上限（字节）；批量 PDF 上传 /parts/batch-with-pdfs 等 "
+            "大 body 端点的 nginx / 后端双层 413 守卫共享值。"
+        ),
+    )
+
     # ---- 送货单 Excel 模板（PR-F 2026-07-17 重设计；2026-07-20 切换到 template/ 新模板）----
     # 按 L1 客户的序列号前缀（A-Z）映射各自的 xlsx 模板路径。
     # service 层根据所选零件所属 L1 root 的 serial_prefix 选对应模板；
