@@ -138,6 +138,47 @@
       </div>
     </el-card>
 
+    <!-- 所属送货单（PR-G 2026-07-22）：仅当 t_part.delivery_note_id 非空 -->
+    <el-card
+      v-if="part && part.delivery_note_id != null"
+      shadow="never"
+      class="delivery-note-card"
+    >
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">
+            <el-icon><Document /></el-icon>
+            <span>所属送货单</span>
+            <el-tag
+              v-if="part.delivery_note_status"
+              :type="DELIVERY_NOTE_STATUS_TAG[part.delivery_note_status as DeliveryNoteStatus] || 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ DELIVERY_NOTE_STATUS_LABEL[part.delivery_note_status as DeliveryNoteStatus] }}
+            </el-tag>
+          </span>
+          <el-button
+            link
+            type="primary"
+            size="small"
+            @click="$router.push(`/delivery-notes/${part.delivery_note_id}`)"
+          >
+            查看送货单详情
+            <el-icon><ArrowRight /></el-icon>
+          </el-button>
+        </div>
+      </template>
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="单号">
+          {{ part.delivery_note_no ?? '—' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="状态">
+          {{ part.delivery_note_status ?? '—' }}
+        </el-descriptions-item>
+      </el-descriptions>
+    </el-card>
+
     <!-- 所属装配件（仅子零件） -->
     <el-card
       v-if="part && part.assembly_id != null"
@@ -873,6 +914,11 @@ import {
 } from '@/types/parts'
 import { getAssemblyForPart } from '@/api/assembly'
 import type { AssemblyDetail } from '@/types/assembly'
+import {
+  DELIVERY_NOTE_STATUS_LABEL,
+  DELIVERY_NOTE_STATUS_TAG,
+  type DeliveryNoteStatus,
+} from '@/types/deliveryNote'
 import {
   listPartFiles,
   uploadPartDrawing,

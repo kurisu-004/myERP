@@ -1276,7 +1276,13 @@ function statusTagType(s: OrderStatus): 'primary' | 'success' | 'warning' | 'inf
 }
 
 function rowClassName({ row }: { row: PartListItem }): string {
-  return row.is_urgent ? 'row-urgent' : ''
+  if (row.is_urgent) return 'row-urgent'
+  // PR-G 2026-07-22：已开具送货单（且尚未归档）的零件行用浅蓝染色；
+  // DELIVERED / COMPLETED / CANCELLED 后 delivery_note_id 被 service 置 NULL，颜色自然消失。
+  if (row.delivery_note_id && row.status !== 'DELIVERED' && row.status !== 'COMPLETED') {
+    return 'row-on-delivery-note'
+  }
+  return ''
 }
 
 function buildParams(): ListPartsParams {
@@ -1874,5 +1880,13 @@ async function onBatchDispatchConfirm(): Promise<void> {
 }
 :deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
   background-color: #fbcaca !important;
+}
+
+// PR-G 2026-07-22：已开过送货单（且尚未 PICKED_UP）的零件行用浅蓝 #e6f4ff 提示
+:deep(.el-table__row.row-on-delivery-note) > td.el-table__cell {
+  background-color: #e6f4ff !important;
+}
+:deep(.el-table__row.row-on-delivery-note:hover > td.el-table__cell) {
+  background-color: #d0e8ff !important;
 }
 </style>

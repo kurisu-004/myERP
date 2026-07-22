@@ -157,7 +157,7 @@ function selectAction(a: WorkAction): void {
   // PICK_UP 走「按工种选件」新流程 → /scan/pick
   // RETURN 走「按工人列持有件 → 选件 → 选工序 → 选架」新流程 → /scan/return
   // INSPECT 走「按工人列持有件 → 选件 → 扫码确认 → 选品检架」新流程 → /scan/inspect
-  // DELIVER（PR-C）走司机专属送货单流程 → /scan/deliver
+  // DELIVER（PR-G 2026-07-22）走司机专属送货单流程 → /scan/delivery-note-pickup
   if (a === 'PICK_UP') {
     void router.push('/scan/pick')
   } else if (a === 'RETURN') {
@@ -165,7 +165,7 @@ function selectAction(a: WorkAction): void {
   } else if (a === 'INSPECT') {
     void router.push('/scan/inspect')
   } else if (a === 'DELIVER') {
-    void router.push('/scan/deliver')
+    void router.push('/scan/delivery-note-pickup')
   }
 }
 

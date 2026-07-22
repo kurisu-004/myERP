@@ -28,6 +28,12 @@ export interface PartItem {
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null
+  /** PR-G 2026-07-22：所属送货单（NULL = 未开单；详情页可链接到送货单） */
+  delivery_note_id: string | null
+  /** PR-G 2026-07-22：所属送货单单号 DN-YYYYMMDD-NNNN（与 detail.batch_fetch 同事务返回） */
+  delivery_note_no: string | null
+  /** PR-G 2026-07-22：所属送货单状态 */
+  delivery_note_status: string | null
   assembly_id: string | null
   current_holder_id: string | null
   current_holder_kind: 'shelf' | 'worker' | 'outsource_company' | null

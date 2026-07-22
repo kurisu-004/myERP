@@ -95,6 +95,8 @@ export interface PartListItem {
   customer_name: string | null
   parent_customer_name: string | null
   customer_path: string | null
+  /** PR-G 2026-07-22：所属送货单 id（NULL = 未开单）；列表浅蓝染色依据 */
+  delivery_note_id: string | null
   location: string | null
   shelf_code: string | null
   worker_name: string | null

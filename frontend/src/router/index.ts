@@ -138,14 +138,28 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '装配件一览', icon: 'Connection', menuCode: 'assemblies_list', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览' }] },
       },
       {
-        path: 'delivery-notes/new',
-        name: 'DeliveryNoteNew',
-        component: () => import('@/views/delivery/DeliveryNoteNew.vue'),
+        path: 'delivery-notes',
+        name: 'DeliveryNoteList',
+        component: () => import('@/views/delivery/DeliveryNoteList.vue'),
         meta: {
-          title: '生成送货单',
+          title: '送货单',
           icon: 'Document',
-          menuCode: 'delivery_notes_new',
-          breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '生成送货单' }],
+          menuCode: 'delivery_notes_manage',
+          breadcrumb: [{ label: '订单管理', path: '/parts' }, { label: '送货单' }],
+        },
+      },
+      {
+        path: 'delivery-notes/:id(\\d+)',
+        name: 'DeliveryNoteDetail',
+        component: () => import('@/views/delivery/DeliveryNoteDetail.vue'),
+        meta: {
+          title: '送货单详情',
+          menuCode: 'delivery_notes_manage',
+          breadcrumb: [
+            { label: '订单管理', path: '/parts' },
+            { label: '送货单', path: '/delivery-notes' },
+            { label: '详情' },
+          ],
         },
       },
       {
@@ -226,7 +240,19 @@ const routes: RouteRecordRaw[] = [
       { path: 'pick', name: 'ScanPick', component: () => import('@/views/scan/ScanPickParts.vue'), meta: { title: '扫码台 · 选件领取', menuCode: 'scan_badge' } },
       { path: 'return', name: 'ScanReturn', component: () => import('@/views/scan/ScanReturnParts.vue'), meta: { title: '扫码台 · 选件放回', menuCode: 'scan_badge' } },
       { path: 'inspect', name: 'ScanInspect', component: () => import('@/views/scan/ScanInspectParts.vue'), meta: { title: '扫码台 · 选件送检', menuCode: 'scan_badge' } },
-      { path: 'deliver', name: 'ScanDeliver', component: () => import('@/views/scan/ScanDeliver.vue'), meta: { title: '扫码台 · 司机确认发货', menuCode: 'scan_badge' } },
+      // 司机待送货一览（PR-G 2026-07-22）：替代原 /scan/deliver（无送货单状态机的旧流程）
+      {
+        path: 'delivery-note-pickup',
+        name: 'ScanDeliveryNotePickupList',
+        component: () => import('@/views/delivery/DeliveryNotePickupList.vue'),
+        meta: { title: '扫码台 · 待送货一览', menuCode: 'scan_badge' },
+      },
+      {
+        path: 'delivery-note-pickup/:id(\\d+)',
+        name: 'ScanDeliveryNotePickup',
+        component: () => import('@/views/scan/ScanDeliveryNotePickup.vue'),
+        meta: { title: '扫码台 · 扫码领取', menuCode: 'scan_badge' },
+      },
     ],
   },
 ]

@@ -1,42 +1,202 @@
-// 送货单 Excel 导出 API（PR-F 2026-07-17 重设计；2026-07-20 加 template 显式选择）
+// 送货单管理 API 封装（PR-G 2026-07-22 重写）。
+// 全部雪花 ID 入参为 string（CLAUDE.md §3 JS Number 丢精度）。
+//
+// 端点清单（与 api/v1/delivery_note.py 对应）：
+//   GET    /delivery-notes                       - listNotes
+//   GET    /delivery-notes/pickup-pending        - listPickupPending
+//   POST   /delivery-notes                       - createNote
+//   GET    /delivery-notes/{id}                  - getNote
+//   GET    /delivery-notes/{id}/events           - listNoteEvents
+//   POST   /delivery-notes/{id}/add-parts        - addParts
+//   POST   /delivery-notes/{id}/remove-parts     - removeParts
+//   POST   /delivery-notes/{id}/submit          - submitNote
+//   POST   /delivery-notes/{id}/recall           - recallNote
+//   POST   /delivery-notes/{id}/pickup-scan      - pickupScan
+//   POST   /delivery-notes/{id}/pickup           - pickup
+//   POST   /delivery-notes/{id}/soft-delete      - softDelete
 
 import { api } from '@/api/http'
+import type {
+  DeliveryNoteDetailOut,
+  DeliveryNoteEventOut,
+  DeliveryNoteOut,
+  DeliveryNotePickupScanOut,
+  DeliveryNoteSortDir,
+  DeliveryNoteSortKey,
+  DeliveryNoteStatus,
+} from '@/types/deliveryNote'
 
-/** 显式送货单模板（F=法拉 / L=路达）；None = 后端按客户前缀自动分发。 */
-export type DeliveryNoteTemplate = 'F' | 'L'
-
-export interface GenerateDeliveryNotePayload {
-  /** 雪花 ID 字符串列表 */
-  part_ids: string[]
-  /** 显式指定模板 prefix（覆盖后端自动分发） */
-  template?: DeliveryNoteTemplate
+export interface ListNotesParams {
+  statuses?: DeliveryNoteStatus[]
+  customer_id?: string
+  keyword?: string
+  sort_by?: DeliveryNoteSortKey
+  sort_dir?: DeliveryNoteSortDir
+  limit?: number
+  offset?: number
 }
 
-/**
- * POST /api/v1/delivery-notes/generate
- * 返回 Blob，content-type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet。
- *
- * 后端按所选零件所属 L1 root 的 `serial_prefix` 自动选对应 xlsx 模板：
- * - F → template/delivery_note_fala.xlsx
- * - L → template/delivery_note_luda.xlsx
- * 调用方也可显式传 `template: 'F' | 'L'` 覆盖自动分发；显式值必须与
- * 所选零件所属 L1 root 一致，否则 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED。
- *
- * 未配置 / 跨客户 / 状态非 READY_TO_SHIP / 超模板容量 →
- *   BIZ_DELIVERY_* 400 系列 BizError JSON。
- *
- * Content-Disposition: attachment; filename="delivery_note_<prefix>_<yyyymmdd>.xlsx"
- */
-export async function generateDeliveryNote(
-  partIds: string[],
-  template?: DeliveryNoteTemplate,
-): Promise<Blob> {
-  const payload: GenerateDeliveryNotePayload = { part_ids: partIds }
-  if (template) payload.template = template
-  const resp = await api.post<Blob>(
-    '/delivery-notes/generate',
-    payload,
-    { responseType: 'blob' },
+export interface DeliveryNoteListResponse {
+  items: DeliveryNoteOut[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface CreateNotePayload {
+  customer_id: string
+  note?: string | null
+}
+
+export interface PartIdsPayload {
+  part_ids: string[]
+  version: number
+}
+
+export interface VersionPayload {
+  version: number
+}
+
+export interface PickupScanPayload {
+  part_serial: string
+  badge_code?: string | null
+}
+
+export interface PickupPayload {
+  driver_worker_id: string
+  version: number
+  badge_code?: string | null
+}
+
+// 1) list
+export async function listNotes(
+  params: ListNotesParams = {},
+): Promise<DeliveryNoteListResponse> {
+  const query: Record<string, unknown> = {}
+  if (params.statuses?.length) query.statuses = params.statuses
+  if (params.customer_id) query.customer_id = params.customer_id
+  if (params.keyword) query.keyword = params.keyword
+  if (params.sort_by) query.sort_by = params.sort_by
+  if (params.sort_dir) query.sort_dir = params.sort_dir
+  if (params.limit !== undefined) query.limit = params.limit
+  if (params.offset !== undefined) query.offset = params.offset
+  const resp = await api.get<DeliveryNoteListResponse>('/delivery-notes', {
+    params: query,
+  })
+  return resp.data
+}
+
+// 2) pickup-pending list
+export async function listPickupPending(
+  customer_id?: string,
+): Promise<DeliveryNoteOut[]> {
+  const resp = await api.get<{ items: DeliveryNoteOut[] }>(
+    '/delivery-notes/pickup-pending',
+    { params: customer_id ? { customer_id } : {} },
+  )
+  return resp.data.items
+}
+
+// 3) create draft
+export async function createNote(
+  payload: CreateNotePayload,
+): Promise<DeliveryNoteOut> {
+  const resp = await api.post<DeliveryNoteOut>('/delivery-notes', payload)
+  return resp.data
+}
+
+// 4) detail
+export async function getNote(noteId: string): Promise<DeliveryNoteDetailOut> {
+  const resp = await api.get<DeliveryNoteDetailOut>(`/delivery-notes/${noteId}`)
+  return resp.data
+}
+
+// 5) events
+export async function listNoteEvents(
+  noteId: string,
+): Promise<DeliveryNoteEventOut[]> {
+  const resp = await api.get<DeliveryNoteEventOut[]>(
+    `/delivery-notes/${noteId}/events`,
   )
   return resp.data
+}
+
+// 6) add-parts
+export async function addParts(
+  noteId: string,
+  payload: PartIdsPayload,
+): Promise<DeliveryNoteDetailOut> {
+  const resp = await api.post<DeliveryNoteDetailOut>(
+    `/delivery-notes/${noteId}/add-parts`,
+    payload,
+  )
+  return resp.data
+}
+
+// 7) remove-parts
+export async function removeParts(
+  noteId: string,
+  payload: PartIdsPayload,
+): Promise<DeliveryNoteDetailOut> {
+  const resp = await api.post<DeliveryNoteDetailOut>(
+    `/delivery-notes/${noteId}/remove-parts`,
+    payload,
+  )
+  return resp.data
+}
+
+// 8) submit
+export async function submitNote(
+  noteId: string,
+  payload: VersionPayload,
+): Promise<DeliveryNoteOut> {
+  const resp = await api.post<DeliveryNoteOut>(
+    `/delivery-notes/${noteId}/submit`,
+    payload,
+  )
+  return resp.data
+}
+
+// 9) recall
+export async function recallNote(
+  noteId: string,
+  payload: VersionPayload,
+): Promise<DeliveryNoteOut> {
+  const resp = await api.post<DeliveryNoteOut>(
+    `/delivery-notes/${noteId}/recall`,
+    payload,
+  )
+  return resp.data
+}
+
+// 10) pickup-scan (driver 累积扫描)
+export async function pickupScan(
+  noteId: string,
+  payload: PickupScanPayload,
+): Promise<DeliveryNotePickupScanOut> {
+  const resp = await api.post<DeliveryNotePickupScanOut>(
+    `/delivery-notes/${noteId}/pickup-scan`,
+    payload,
+  )
+  return resp.data
+}
+
+// 11) pickup (finalize)
+export async function pickup(
+  noteId: string,
+  payload: PickupPayload,
+): Promise<DeliveryNoteOut> {
+  const resp = await api.post<DeliveryNoteOut>(
+    `/delivery-notes/${noteId}/pickup`,
+    payload,
+  )
+  return resp.data
+}
+
+// 12) soft-delete
+export async function softDeleteNote(
+  noteId: string,
+  payload: VersionPayload,
+): Promise<void> {
+  await api.post(`/delivery-notes/${noteId}/soft-delete`, payload)
 }
