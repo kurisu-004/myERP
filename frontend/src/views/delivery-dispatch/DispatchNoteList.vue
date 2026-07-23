@@ -239,16 +239,18 @@ const unsubscribe = onScan(async (code) => {
     return
   }
   try {
-    const resp = await pickupScan(noteId, {
+    // 2026-07-23 Bug 4：后端 pickup-scan 只做硬校验（SUBMITTED + serial 属于本单），
+    // 不再维护扫码进度（响应里 scanned_serials 恒空 / ready 恒 false）。
+    // 进度由前端本地 Set 驱动：成功就 add，ready 基于本地 Set.size 判断。
+    await pickupScan(noteId, {
       part_serial: serial,
       badge_code: worker.value?.badge_code ?? null,
     })
-    st.scanned = new Set(resp.scanned_serials)
-    st.scannedCount = resp.scanned_count
-    st.expectedCount = resp.expected_count
-    st.ready = resp.ready
+    st.scanned.add(serial)
+    st.scannedCount = st.scanned.size
+    st.ready = st.expectedCount > 0 && st.scannedCount >= st.expectedCount
     ElMessage.success(`已扫: ${serial}`)
-    if (resp.ready) void confirmDelivery(noteId)
+    if (st.ready) void confirmDelivery(noteId)
   } catch (e) {
     ElMessage.error((e as Error).message ?? '扫码失败：该条码不属于本单')
   }

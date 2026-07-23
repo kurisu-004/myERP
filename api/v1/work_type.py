@@ -1,8 +1,10 @@
 """工种 (WorkType) + 工种↔工序映射 路由。
 
 路由结构（与 /customers、/shelves 一致的 read/write 双 router 拆分）：
-- **读端点**（GET）：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT。
+- **读端点**（GET）：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT + INSPECTOR。
   文员 / 编程员 / 共享 HMI 扫码台（下拉用）都要拉工种 / 映射列表。
+  2026-07-23 INSPECTOR 加入：送货扫码台 `DispatchBadgeGate` 解析扫描到的工人工种码
+  会调 `GET /work-types?limit=200`，需要放行。
 - **写端点**（POST 创建 / 更新 / 软删）：MANAGER-only。
   工种是组织结构资源，只允许管理员改动；其他角色只读使用。
 
@@ -32,9 +34,11 @@ from schema.work_type_process import (
 from service import WorkTypeProcessService, WorkTypeService
 
 # ============================================================
-# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT
+# 读路由：MANAGER + CLERK + CNC_PROGRAMMER + SHELF_ACCOUNT + INSPECTOR
 # （SHELF_ACCOUNT 在 2026-07-10 加入：共享 HMI 扫码台需要拉工种 +
-#  工序映射列表来过滤 PICK_UP 候选）
+#  工序映射列表来过滤 PICK_UP 候选；
+#  2026-07-23 加入 INSPECTOR：送货扫码台 DispatchBadgeGate 解析扫描到的工人工种码
+#  会调 GET /work-types?limit=200）
 # ============================================================
 read_router = APIRouter(
     prefix="/work-types",
@@ -45,6 +49,7 @@ read_router = APIRouter(
             UserRole.CLERK,
             UserRole.CNC_PROGRAMMER,
             UserRole.SHELF_ACCOUNT,
+            UserRole.INSPECTOR,
         ))
     ],
 )
@@ -55,7 +60,7 @@ _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
 @read_router.get(
     "",
     response_model=WorkTypeListOut,
-    summary="工种列表（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT）",
+    summary="工种列表（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT / INSPECTOR）",
 )
 async def list_work_types(
     code_like: str | None = Query(default=None),
@@ -71,7 +76,7 @@ async def list_work_types(
 @read_router.get(
     "/{work_type_id}",
     response_model=WorkTypeOut,
-    summary="工种详情（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT）",
+    summary="工种详情（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT / INSPECTOR）",
 )
 async def get_work_type(
     work_type_id: int,
@@ -85,7 +90,7 @@ async def get_work_type(
     response_model=WorkTypeWithProcessesOut,
     summary=(
         "工种当前映射的工序列表（含 sort_order）"
-        "（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT）"
+        "（MANAGER / CLERK / CNC_PROGRAMMER / SHELF_ACCOUNT / INSPECTOR）"
     ),
 )
 async def list_work_type_processes(

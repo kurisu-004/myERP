@@ -108,34 +108,47 @@ export interface DeliveryNoteCandidatePart {
   planned_delivery_date: string | null
 }
 
+// 2026-07-23 Bug 4：精简为 4 类事件 + RECALLED（历史只读）
+// WITHDRAWN 替代 RECALLED 作为新写入值；RECALLED 仅出现在已部署库的旧行。
+// 详情页时间线统一通过 DELIVERY_NOTE_EVENT_TYPE_LABEL 翻译为中文。
+export type DeliveryNoteEventTypeName =
+  | 'CREATED'
+  | 'SUBMITTED'
+  | 'WITHDRAWN'
+  | 'RECALLED' // 历史只读
+  | 'PICKED_UP'
+
+export const DELIVERY_NOTE_EVENT_TYPE_LABEL: Record<string, string> = {
+  CREATED: '创建',
+  SUBMITTED: '提交',
+  WITHDRAWN: '撤回',
+  RECALLED: '撤回', // 历史事件兜底；新代码不会再写此值
+  PICKED_UP: '领取',
+}
+
+/** 未命中 DELIVERY_NOTE_EVENT_TYPE_LABEL 的事件保留原始值便于排查。 */
+export function formatNoteEventLabel(eventType: string): string {
+  return DELIVERY_NOTE_EVENT_TYPE_LABEL[eventType] ?? `未知事件（${eventType}）`
+}
+
 export interface DeliveryNoteEventOut {
   id: string
   delivery_note_id: string
-  event_type:
-    | 'CREATED'
-    | 'EDITED'
-    | 'ITEM_ADDED'
-    | 'ITEM_REMOVED'
-    | 'SUBMITTED'
-    | 'RECALLED'
-    | 'PICKUP_SCANNED'
-    | 'PICKED_UP'
-    | 'ARCHIVED'
+  event_type: DeliveryNoteEventTypeName | string
   from_status: string | null
   to_status: string | null
-  drawing_code: string | null
-  badge_code: string | null
   note: string | null
-  scanned_count: number | null
-  expected_count: number | null
   created_by: string | null
   created_at: string | null
 }
 
 export interface DeliveryNotePickupScanOut {
   delivery_note_id: string
+  /** 2026-07-23 改：后端不再维护扫码进度；恒为 0。前端基于本地 Set 判 ready。 */
   scanned_count: number
   expected_count: number
+  /** 2026-07-23 改：后端无法判定 ready（无状态数据源）；恒为 false。 */
   ready: boolean
+  /** 2026-07-23 改：恒为空；前端不应据此覆盖本地状态。 */
   scanned_serials: string[]
 }

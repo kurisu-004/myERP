@@ -749,7 +749,11 @@ def _seed_menus(bind) -> None:
 
 
 def _seed_inspection_menu(bind) -> None:
-    """inspection_pending 菜单（挂 order_group）+ MANAGER/CLERK/INSPECTOR 角色关联。"""
+    """inspection_pending 菜单（挂 order_group）+ MANAGER/INSPECTOR 角色关联。
+
+    2026-07-23 改：移除 CLERK（与 `api/v1/part.py` _inspector_dep 一致）。
+    已部署库用 alembic 000000000012 单独清理。
+    """
     parent_row = bind.execute(
         sa.text(
             "SELECT id FROM t_menu "
@@ -793,7 +797,7 @@ def _seed_inspection_menu(bind) -> None:
         return
     mid = int(mid_row[0])
 
-    for role in ("MANAGER", "CLERK", "INSPECTOR"):
+    for role in ("MANAGER", "INSPECTOR"):
         bind.execute(
             sa.text(
                 """

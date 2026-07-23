@@ -62,11 +62,11 @@ _office_dep = [
     Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
 ]
 
-# MANAGER + CLERK + INSPECTOR：品检相关端点（pass-inspection / fail-inspection）。
-# 品检员可以独立验收，不依赖文员。
+# MANAGER + INSPECTOR：品检相关端点（pass-inspection / fail-inspection）。
+# 品检员可以独立验收，不依赖文员（2026-07-23 移除 CLERK：CLERK 不再有品检权限）。
 _inspector_dep = [
     Depends(require_roles(
-        UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+        UserRole.MANAGER, UserRole.INSPECTOR,
     ))
 ]
 
@@ -439,7 +439,7 @@ async def receive_part_from_outsource_to_inspection(
 @router.post(
     "/{part_id}/pass-inspection",
     response_model=PartOut,
-    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER / CLERK / INSPECTOR）",
+    summary="INSPECTION → READY_TO_SHIP：品检合格（MANAGER / INSPECTOR）",
     dependencies=_inspector_dep,
 )
 async def pass_part_inspection(
@@ -452,7 +452,7 @@ async def pass_part_inspection(
 @router.post(
     "/{part_id}/fail-inspection",
     response_model=PartOut,
-    summary="INSPECTION → IN_PROCESS：品检不通过，打回生产货架（含备注，MANAGER / CLERK / INSPECTOR）",
+    summary="INSPECTION → IN_PROCESS：品检不通过，打回生产货架（含备注，MANAGER / INSPECTOR）",
     description=(
         "2026-07-21 改：品检员在 INSPECTION 状态下点击打回，同时指定目标生产货架 + 下一道工序；"
         "service 端校验 `t_shelf_process` 映射（`BIZ_SHELF_PROCESS_NOT_MAPPED` 422，"

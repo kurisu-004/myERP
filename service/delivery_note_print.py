@@ -15,10 +15,12 @@
 模板字段含义（service 层不读，但供维护参考）：
 - 法拉（`template/delivery_note_fala.xlsx`，Sheet 'Sheet1'）：
   R1 公司抬头（merged A1:J1）；R2 列头；R3-R16 数据（14 行）；
-  R17-R21 收货/送货签字栏（merged cells）。
+  R17-R21 收货/送货签字栏（merged cells）；R21 合并 A21:J21 是「送货日期：YYYY年M月D日」
+  文案，由 `_write_footer` 覆盖（2026-07-23）。
 - 路达（`template/delivery_note_luda.xlsx`，Sheet '杏南'）：
-  R1 标题（merged A1:I1）；R2 送货日期；R3-R4 双行表头（含 G3:H3 / G4 / H4 合并）；
-  R5-R29 数据（25 行）；R30-R31 填写说明。
+  R1 标题（merged A1:I1）；R2 送货日期（H2='送货日期' + I2=日期）；R3-R4 双行表头
+  （含 G3:H3 / G4 / H4 合并）；R5-R29 数据（25 行）；R30-R31 填写说明。
+  R2 由 `_write_footer` 写日期（2026-07-23）。
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ from openpyxl import load_workbook
 from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
+from core.time import now_naive
 from model.customer import TCustomer
 from model.delivery_note import TDeliveryNote
 from model.enums import PartStatus
@@ -245,6 +248,12 @@ class DeliveryNotePrintService:
                     if val is not None:
                         ws.cell(row=target_row, column=binding.col, value=val)
 
+            # 5) 写模板级 footer / header 日期（2026-07-23 新增；之前模板字面量陈旧）：
+            #    - 法拉 A21 合并区整段覆盖成「送货日期：YYYY年M月D日」（保留合并）
+            #    - 路达 I2 写入 date 对象（保留模板 numFmtId=31 内置日期格式）
+            #    - delivery_date 为 NULL（旧库 010 之前的数据）回退到当天
+            _write_footer(ws, note=note, prefix=prefix)
+
             buf = io.BytesIO()
             wb.save(buf)
             return buf.getvalue()
@@ -276,3 +285,49 @@ def _resolve_cell(binding: CellBinding, ctx: dict[str, Any]) -> Any:
         # 日期对象保持原状由 openpyxl 写为 Excel 日期；空值写 None 跳过
         return val
     return None
+
+
+# ============================================================
+# 内部：模板级 footer / header 日期同步（2026-07-23 新增）
+# ============================================================
+def _format_fala_date(d: date) -> str:
+    """法拉模板右下角日期文案：「送货日期：YYYY年M月D日」。
+
+    与原模板字面量格式对齐（不去前导零；原模板写的是「2026年7月14日」）。
+    """
+    return f"送货日期：{d.year}年{d.month}月{d.day}日"
+
+
+def _resolve_footer_date(note: TDeliveryNote) -> date:
+    """送货日期：优先取 `note.delivery_date`；NULL（旧库 010 之前）回退当天。
+
+    与 `service/delivery_note.create_draft` 的「默认 = 创建当天」语义保持一致；
+    旧记录 NULL 时不能凭空塞一个旧日期（会引入另一类「陈旧日期」bug），也不能报错
+    （会让已部署的旧单据无法打印），所以选「打印当天」兜底。
+    """
+    return note.delivery_date or now_naive().date()
+
+
+def _write_footer(ws, *, note: TDeliveryNote, prefix: str) -> None:
+    """把 `note.delivery_date` 写到模板的 footer / header 日期单元格。
+
+    - ``prefix == "F"``：覆盖法拉模板合并区 A21 整段为「送货日期：YYYY年M月D日」
+      （保留合并 + 模板原有样式：右对齐 + 缩字 + 边框 + General 格式）。
+    - ``prefix == "L"``：写路达模板 H2='送货日期' 旁的 I2 为 Python ``date`` 对象
+      （openpyxl 自动应用模板内 numFmtId=31 内置日期格式，Excel 显示为
+      「2026/7/15」之类本地化形式；H2 标签不动）。
+
+    其他 prefix 抛 ``BIZ_INVALID_VALUE``（应当走 ``BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED``
+    在更早的入口被拦下；此处是兜底）。
+    """
+    effective = _resolve_footer_date(note)
+    if prefix == "F":
+        ws["A21"] = _format_fala_date(effective)
+    elif prefix == "L":
+        ws["I2"] = effective
+    else:
+        raise BizError(
+            code=ErrCode.BIZ_INVALID_VALUE,
+            message=f"delivery note template prefix {prefix!r} 无 footer 写入策略",
+            http_status=http_status.HTTP_400_BAD_REQUEST,
+        )

@@ -133,8 +133,10 @@ class DeliveryNoteStateMachine(StateChart):
         created_by: int | None = None,
         **_,
     ):
+        # 2026-07-23 改：写 WITHDRAWN 而非 RECALLED（语义无变化：仍 SUBMITTED → DRAFT；
+        # 仅事件类型名换成中文友好值）。RECALLED enum 保留只为读老数据。
         self._write_event(
-            event_repo, DeliveryNoteEventType.RECALLED,
+            event_repo, DeliveryNoteEventType.WITHDRAWN,
             from_status=DeliveryNoteStatus.SUBMITTED.value,
             to_status=DeliveryNoteStatus.DRAFT.value,
             created_by=created_by,

@@ -13,9 +13,11 @@ Round 2 (2026-07-23) 重点回归：
 """
 from __future__ import annotations
 
-from datetime import date
+import io
+from datetime import date, datetime
 
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 from core.error_code import ErrCode
@@ -468,14 +470,14 @@ async def test_recall_resets_status_to_draft(clean_db):
     row = await clean_db.get(TDeliveryNote, int(note.id))
     assert row.status == DeliveryNoteStatus.DRAFT.value
 
-    # RECALLED 事件仍应存在
+    # WITHDRAWN 事件应存在（2026-07-23 替代旧 RECALLED；RECALLED enum 仅历史只读）
     rows = await clean_db.execute(
         select(TDeliveryNoteEvent).where(
             TDeliveryNoteEvent.delivery_note_id == int(note.id),
-            TDeliveryNoteEvent.event_type == DeliveryNoteEventType.RECALLED.value,
+            TDeliveryNoteEvent.event_type == DeliveryNoteEventType.WITHDRAWN.value,
         )
     )
-    assert list(rows.scalars()), "recall 应写 RECALLED 事件"
+    assert list(rows.scalars()), "recall 应写 WITHDRAWN 事件"
 
     # DRAFT 状态下可软删（recall 前不行）
     await svc.soft_delete(note_id=str(note.id), version=recalled.version)
@@ -502,9 +504,11 @@ async def test_pickup_finalize_stops_at_picked_up_and_delivers_parts(clean_db):
     )
     submitted = await svc.submit(note_id=str(note.id), version=detail.version)
 
-    # 司机逐件扫描
+    # 司机逐件扫描（2026-07-23 改：后端不再维护扫码进度，scan.ready 恒 False；
+    # 前端基于本地 Set 判断 ready；后端 pickup 只校验 SUBMITTED + 非空）
     scan = await svc.pickup_scan(note_id=str(note.id), part_serial="F5001")
-    assert scan.ready, "单件扫齐后 ready 应为 True"
+    assert scan.expected_count == 1
+    assert not scan.ready, "Bug 4 改：后端 ready 恒 False（前端本地判断）"
 
     out = await svc.pickup(
         note_id=str(note.id),
@@ -521,11 +525,12 @@ async def test_pickup_finalize_stops_at_picked_up_and_delivers_parts(clean_db):
     assert part_row.status == PartStatus.DELIVERED.value
     assert part_row.actual_delivery_date == date.today()
 
-    # 不应产生 ARCHIVED 事件
+    # 不应产生 ARCHIVED 事件（2026-07-23 Bug 4：ARCHIVED 已从 DeliveryNoteEventType
+# 删除；DeliveryNoteStatus.ARCHIVED 是状态机终态，与事件枚举解耦）
     rows = await clean_db.execute(
         select(TDeliveryNoteEvent).where(
             TDeliveryNoteEvent.delivery_note_id == int(note.id),
-            TDeliveryNoteEvent.event_type == DeliveryNoteEventType.ARCHIVED.value,
+            TDeliveryNoteEvent.event_type == "ARCHIVED",
         )
     )
     assert not list(rows.scalars()), "停在 PICKED_UP，不应有 ARCHIVED 事件"
@@ -565,3 +570,256 @@ async def test_pickup_rejects_non_driver_worker(clean_db):
             version=submitted.version,
         )
     assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_DRIVER_INVALID
+
+
+# ============================================================
+# T18: print_xlsx 把 note.delivery_date 写到模板 footer（2026-07-23 Bug 2）
+# ============================================================
+async def test_print_xlsx_delivery_date_fala(clean_db):
+    """法拉模板：A21 合并区整体覆盖为「送货日期：YYYY年M月D日」。
+
+    之前是静态字面量「送货日期：  2026年7月14日」；现由代码按
+    `note.delivery_date` 覆盖。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F7001", drawing_no="D-F7001",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+    )
+    # 显式设置送货日期（覆盖默认今天）
+    target_date = date(2026, 7, 23)
+    await svc.update(
+        note_id=str(note.id),
+        version=detail.version,
+        delivery_date=target_date,
+    )
+
+    xlsx_bytes, prefix = await svc.print_xlsx(note_id=str(note.id))
+    assert prefix == "F"
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    assert ws["A21"].value == "送货日期：2026年7月23日"
+
+
+async def test_print_xlsx_delivery_date_luda(clean_db):
+    """路达模板：I2 写 Python date 对象；H2「送货日期」标签不动。"""
+    customer = await _make_l1_root(clean_db, name="路达", prefix="L")
+    part = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="L7001", drawing_no="D-L7001",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+    )
+    target_date = date(2026, 7, 23)
+    await svc.update(
+        note_id=str(note.id),
+        version=detail.version,
+        delivery_date=target_date,
+    )
+
+    xlsx_bytes, prefix = await svc.print_xlsx(note_id=str(note.id))
+    assert prefix == "L"
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["杏南"]
+    assert ws["H2"].value == "送货日期", "H2 标签不应被覆盖"
+    # openpyxl 把 date 读回为 datetime（时分秒 0）
+    assert ws["I2"].value == datetime(2026, 7, 23), (
+        f"期望 I2 为 datetime(2026, 7, 23)，实际 {ws['I2'].value!r}"
+    )
+
+
+async def test_print_xlsx_null_delivery_date_falls_back_to_today(clean_db):
+    """NULL delivery_date（旧库 010 之前的数据）打印时回退当天，不报错。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F7002", drawing_no="D-F7002",
+    )
+    svc = _make_service(clean_db)
+
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+    )
+    # 把 delivery_date 显式置 None（模拟旧库 010 之前的数据）
+    await svc.update(
+        note_id=str(note.id),
+        version=detail.version,
+        delivery_date=None,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    today = now_naive().date()
+    assert ws["A21"].value == f"送货日期：{today.year}年{today.month}月{today.day}日"
+
+
+# ============================================================
+# T19: SUBMITTED 后冻结零件清单（2026-07-23 Bug 5）
+# ============================================================
+async def test_add_parts_blocked_when_submitted(clean_db):
+    """submit 后 add_parts → BIZ_DELIVERY_NOTE_PARTS_LOCKED 409。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8001", drawing_no="D-F8001",
+    )
+    p2 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8002", drawing_no="D-F8002",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(p1.id)], version=note.version,
+    )
+    submitted = await svc.submit(
+        note_id=str(note.id), version=detail.version,
+    )
+
+    with pytest.raises(BizError) as exc_info:
+        await svc.add_parts(
+            note_id=str(note.id), part_ids=[str(p2.id)],
+            version=submitted.version,
+        )
+    assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED
+    assert exc_info.value.http_status == 409
+
+
+async def test_remove_parts_blocked_when_submitted(clean_db):
+    """submit 后 remove_parts → BIZ_DELIVERY_NOTE_PARTS_LOCKED 409。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8101", drawing_no="D-F8101",
+    )
+    p2 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8102", drawing_no="D-F8102",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(p1.id), str(p2.id)],
+        version=note.version,
+    )
+    submitted = await svc.submit(
+        note_id=str(note.id), version=detail.version,
+    )
+
+    with pytest.raises(BizError) as exc_info:
+        await svc.remove_parts(
+            note_id=str(note.id), part_ids=[str(p1.id)],
+            version=submitted.version,
+        )
+    assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED
+
+
+async def test_add_parts_allowed_after_recall(clean_db):
+    """submit → recall → add_parts → 200。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8201", drawing_no="D-F8201",
+    )
+    p2 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8202", drawing_no="D-F8202",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(p1.id)], version=note.version,
+    )
+    submitted = await svc.submit(
+        note_id=str(note.id), version=detail.version,
+    )
+    recalled = await svc.recall(
+        note_id=str(note.id), version=submitted.version,
+    )
+    assert recalled.status == DeliveryNoteStatus.DRAFT
+
+    detail2 = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(p2.id)], version=recalled.version,
+    )
+    assert detail2.status == DeliveryNoteStatus.DRAFT
+
+
+async def test_recall_after_pickup_fails_state_machine(clean_db):
+    """pickup 后 recall → 状态机拒绝（BIZ_DELIVERY_NOTE_NOT_SUBMITTED 之类）。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8301", drawing_no="D-F8301",
+    )
+    driver = await _make_driver(clean_db)
+    svc = _make_pickup_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+    )
+    submitted = await svc.submit(
+        note_id=str(note.id), version=detail.version,
+    )
+    picked_up = await svc.pickup(
+        note_id=str(note.id),
+        driver_worker_id=str(driver.id),
+        version=submitted.version,
+    )
+    assert picked_up.status == DeliveryNoteStatus.PICKED_UP
+
+    with pytest.raises(BizError):
+        await svc.recall(
+            note_id=str(note.id), version=picked_up.version,
+        )
+
+
+async def test_pickup_after_recall_fails_state_machine(clean_db):
+    """recall → pickup → 状态机拒绝（不再 SUBMITTED）。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8401", drawing_no="D-F8401",
+    )
+    driver = await _make_driver(clean_db)
+    svc = _make_pickup_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+    )
+    submitted = await svc.submit(
+        note_id=str(note.id), version=detail.version,
+    )
+    recalled = await svc.recall(
+        note_id=str(note.id), version=submitted.version,
+    )
+    assert recalled.status == DeliveryNoteStatus.DRAFT
+
+    with pytest.raises(BizError):
+        await svc.pickup(
+            note_id=str(note.id),
+            driver_worker_id=str(driver.id),
+            version=recalled.version,
+        )

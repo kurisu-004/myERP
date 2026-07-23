@@ -28,6 +28,7 @@ import {
   type DeliveryNoteEventOut,
   type DeliveryNoteLineItem,
   type DeliveryNoteStatus,
+  formatNoteEventLabel,
 } from '@/types/deliveryNote'
 // 2026-07-23 R2-C：复用 PartsList 的状态显示样式 / 标签色映射
 import {
@@ -427,14 +428,11 @@ const canEdit = computed(() => canAdd.value)
             :key="e.id"
             :timestamp="e.created_at ? new Date(e.created_at).toLocaleString() : ''"
           >
-            <strong>{{ e.event_type }}</strong>
+            <strong>{{ formatNoteEventLabel(e.event_type) }}</strong>
             <span v-if="e.from_status && e.to_status">
               ({{ e.from_status }} → {{ e.to_status }})
             </span>
             <div v-if="e.note" class="event-note">{{ e.note }}</div>
-            <div v-if="e.scanned_count != null" class="event-note">
-              已扫 {{ e.scanned_count }} / 共 {{ e.expected_count }}
-            </div>
           </el-timeline-item>
         </el-timeline>
       </el-card>

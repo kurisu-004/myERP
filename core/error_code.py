@@ -138,3 +138,4 @@ class ErrCode(IntEnum):
     BIZ_DELIVERY_NOTE_DRIVER_INVALID = 21409      # 400  司机非送货司机 / 不活跃
     BIZ_DELIVERY_NOTE_SCAN_INCOMPLETE = 21410     # 400  pickup 时还没扫齐
     BIZ_DELIVERY_NOTE_INVALID_VALUE = 21411       # 400 空单 / 等其他非法入参
+    BIZ_DELIVERY_NOTE_PARTS_LOCKED = 21412        # 409  SUBMITTED/PICKED_UP 后禁止 add_parts / remove_parts；想改动必须先 recall → DRAFT（2026-07-23 Bug 5）

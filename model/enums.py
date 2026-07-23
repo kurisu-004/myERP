@@ -260,26 +260,33 @@ class DeliveryNoteStatus(str, enum.Enum):
 
 
 class DeliveryNoteEventType(str, enum.Enum):
-    """送货单事件类型（2026-07-22 新增）。
+    """送货单事件类型（2026-07-23 精简为 4 类 + 历史兼容）。
 
-    状态机迁移事件：SUBMITTED / RECALLED / PICKED_UP / ARCHIVED；
-    非迁移事件（由 service 直接写一行）：
-    - CREATED         新建草稿
-    - EDITED          元数据改动（备注等）
-    - ITEM_ADDED      添加一个零件
-    - ITEM_REMOVED    移除一个零件
-    - PICKUP_SCANNED  司机扫码累计的一个扫描（一次性，不是状态机迁移）
+    现在记录的事件（按送货单生命周期）：
+    - CREATED       新建草稿（service 写）
+    - SUBMITTED     状态机迁移 DRAFT → SUBMITTED
+    - WITHDRAWN     状态机迁移 SUBMITTED → DRAFT（2026-07-23 替代旧 RECALLED）
+    - PICKED_UP     状态机迁移 SUBMITTED → PICKED_UP
+
+    历史兼容（仅供读已部署库的旧事件 / 前端 label map 翻译；不再写入）：
+    - RECALLED      旧 enum 值；2026-07-23 之前写的事件仍用此值。前端 label 映射与
+                    WITHDRAWN 同为「撤回」展示，避免历史时间线出现英文。
+
+    已删除（2026-07-23；DB 列同时 drop；详见 alembic 000000000013）：
+    - EDITED / ITEM_ADDED / ITEM_REMOVED（噪音事件）
+    - PICKUP_SCANNED（前端本地扫码去重，后端不再承载进度状态）
+    - ARCHIVED（status 仍存在作终态，事件不再单独写）
+
+    ``DeliveryNoteStatus.ARCHIVED`` 是状态机终态，与事件枚举解耦，
+    本次不动。
     """
 
     CREATED = "CREATED"
-    EDITED = "EDITED"
-    ITEM_ADDED = "ITEM_ADDED"
-    ITEM_REMOVED = "ITEM_REMOVED"
     SUBMITTED = "SUBMITTED"
+    WITHDRAWN = "WITHDRAWN"
+    # 历史兼容（read-only）：老库 RECALLED 行仍存在
     RECALLED = "RECALLED"
-    PICKUP_SCANNED = "PICKUP_SCANNED"
     PICKED_UP = "PICKED_UP"
-    ARCHIVED = "ARCHIVED"
 
 
 class DeliveryNoteSortKey(str, enum.Enum):

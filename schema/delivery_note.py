@@ -98,18 +98,21 @@ class DeliveryNoteDetailOut(DeliveryNoteOut):
 
 
 class DeliveryNoteEventOut(BaseModel):
-    """送货单事件条目。"""
+    """送货单事件条目（2026-07-23 精简）。
+
+    字段裁剪背景：
+    - drawing_code / badge_code / scanned_count / expected_count 仅 PICKUP_SCANNED
+      事件使用，已 drop（alembic 000000000013）。
+    - note 字段保留（CREATED / WITHDRAWN 等可附说明）。
+    - from_status / to_status 保留（状态机迁移事件需要）。
+    """
 
     id: IdStrNonNull
     delivery_note_id: IdStrNonNull
     event_type: str
     from_status: str | None = None
     to_status: str | None = None
-    drawing_code: str | None = Field(default=None, description="扫码时图纸码")
-    badge_code: str | None = None
     note: str | None = None
-    scanned_count: int | None = None
-    expected_count: int | None = None
     created_by: IdStr = None
     created_at: datetime | None = None
 

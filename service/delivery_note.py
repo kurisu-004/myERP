@@ -33,7 +33,6 @@ from core.exception import BizError
 from core.time import now_naive
 from model.delivery_note import TDeliveryNote
 from model.enums import (
-    DeliveryNoteEventType,
     DeliveryNoteSortKey,
     DeliveryNoteStatus,
     PartStatus,
@@ -49,12 +48,7 @@ from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.worker import WorkerRepository
 from repository.work_type import WorkTypeRepository
-from service._delivery_note_events import (
-    write_created,
-    write_item_added,
-    write_item_removed,
-    write_pickup_scan,
-)
+from service._delivery_note_events import write_created
 from service._id_parse import parse_snowflake_id
 from service._session_refresh import refresh_for_state_machine
 from utils.id_gen import new_id
@@ -239,7 +233,8 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         parts = await self.notes.list_parts(nid_int)
-        scanned = await self._scanned_serials(nid_int)
+        # 2026-07-23 改：后端不再维护扫码状态；传空 set 让前端从本地 Set 驱动显示。
+        scanned: set[str] = set()
         from schema.delivery_note import DeliveryNoteDetailOut
         return await self._to_detail(obj, parts, scanned)
 
@@ -305,19 +300,18 @@ class DeliveryNoteService:
                 ),
                 http_status=http_status.HTTP_409_CONFLICT,
             )
-        # 仅 DRAFT / SUBMITTED 允许 add（DRAFT 是常返；SUBMITTED 是允许的——
-        # 用户原话"可任意添加/移除"，故 SUBMITTED 状态的「撤回前临时修正」也开放）
-        if obj.status not in (
-            DeliveryNoteStatus.DRAFT.value,
-            DeliveryNoteStatus.SUBMITTED.value,
-        ):
+        # 2026-07-23 Bug 5：SUBMITTED 后冻结零件清单。想改动必须先 recall → DRAFT。
+        # submit 前可以任意 add/remove；submit 后任何 add 一律拒绝，避免「提交
+        # 后追加 INSPECTION 件产生冲突」之类的 bug。PICKED_UP / ARCHIVED 状态
+        # 机自身拒绝（DRAFT-only 也涵盖）。
+        if obj.status != DeliveryNoteStatus.DRAFT.value:
             raise BizError(
-                code=ErrCode.BIZ_DELIVERY_NOTE_INVALID_TRANSITION,
+                code=ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED,
                 message=(
-                    f"cannot add parts to {obj.status} note; "
-                    "only DRAFT/SUBMITTED is editable"
+                    f"送货单已提交（{obj.status}），不能新增零件；"
+                    "如需调整请先撤回。"
                 ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
+                http_status=http_status.HTTP_409_CONFLICT,
             )
 
         ids = [
@@ -416,10 +410,8 @@ class DeliveryNoteService:
                 await self.parts.update(p)
                 serials_added.append(p.serial_no or p.drawing_no or str(p.id))
 
-        await write_item_added(
-            self.session, note_id=obj.id,
-            added_serial_nos=serials_added, created_by=self._user_id,
-        )
+        # 2026-07-23 移除 write_item_added 事件写：非状态机迁移噪音事件按用户
+        # 要求不再记录；add_parts 的成功/失败由 service 自身返回值 + 响应体承担。
         await self._flush()
 
         if self._broadcaster is not None:
@@ -433,7 +425,7 @@ class DeliveryNoteService:
         part_ids: list[str],
         version: int,
     ):
-        """DRAFT / SUBMITTED 都允许移除。"""
+        """DRAFT 允许移除（2026-07-23 Bug 5：SUBMITTED 后冻结）。"""
         nid_int = parse_snowflake_id(note_id, field_name="id")
         obj = await self.notes.get_by_id(nid_int)
         if obj is None:
@@ -451,17 +443,15 @@ class DeliveryNoteService:
                 ),
                 http_status=http_status.HTTP_409_CONFLICT,
             )
-        if obj.status not in (
-            DeliveryNoteStatus.DRAFT.value,
-            DeliveryNoteStatus.SUBMITTED.value,
-        ):
+        # 2026-07-23 Bug 5：SUBMITTED 后冻结零件清单；与 add_parts 同步。
+        if obj.status != DeliveryNoteStatus.DRAFT.value:
             raise BizError(
-                code=ErrCode.BIZ_DELIVERY_NOTE_INVALID_TRANSITION,
+                code=ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED,
                 message=(
-                    f"cannot remove parts from {obj.status} note; "
-                    "only DRAFT/SUBMITTED is editable"
+                    f"送货单已提交（{obj.status}），不能移除零件；"
+                    "如需调整请先撤回。"
                 ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
+                http_status=http_status.HTTP_409_CONFLICT,
             )
 
         ids = [
@@ -484,10 +474,8 @@ class DeliveryNoteService:
             await self.parts.update(p)
             serials_removed.append(p.serial_no or p.drawing_no or str(p.id))
 
-        await write_item_removed(
-            self.session, note_id=obj.id,
-            removed_serial_nos=serials_removed, created_by=self._user_id,
-        )
+        # 2026-07-23 移除 write_item_removed 事件写：非状态机迁移噪音事件按用户
+        # 要求不再记录。
         await self._flush()
 
         if self._broadcaster is not None:
@@ -615,8 +603,16 @@ class DeliveryNoteService:
     ):
         """司机每扫一个 part，调一次。
 
-        累积进度 = 已经 PICKUP_SCANNED 事件的 drawing_code 去重；
-        返回：{ scanned_count, expected_count, ready, scanned_serials }。
+        2026-07-23 改：累积进度由前端本地维护（DispatchNoteList.vue 的
+        ``states[noteId].scanned`` Set），后端不再写 PICKUP_SCANNED 事件，
+        也不再维护 ``_scanned_serials``。本接口仅保留：
+        1) 状态机校验（必须 SUBMITTED）；
+        2) ``part_serial`` 属于本单的硬校验（防越权 / 防错扫其他单据）；
+        3) 返回结构仍兼容前端（前端不再用 scanned_serials 覆盖本地状态）。
+
+        返回 ``scanned_count / scanned_serials`` 恒为 0 / []；
+        ``ready`` 仅在 ``expected_count > 0`` 时才可能为 True（这里实际恒 False，
+        由前端基于本地 Set 判断）。
         """
         nid_int = parse_snowflake_id(note_id, field_name="id")
         obj = await self.notes.get_by_id(nid_int)
@@ -635,7 +631,7 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 校验 part_serial 属于本单
+        # 校验 part_serial 属于本单（硬校验：防越权 / 防错扫）
         part = await self.parts.get_by_serial(part_serial)
         if part is None or part.delivery_note_id != nid_int:
             raise BizError(
@@ -646,30 +642,17 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 累加去重；写入 PICKUP_SCANNED 事件（含 drawing_code / badge_code）
-        await write_pickup_scan(
-            self.session,
-            note_id=obj.id,
-            drawing_code=part.serial_no or str(part.id),
-            badge_code=badge_code,
-            scanned_count=0,           # 真实值在下面计算后 update
-            expected_count=0,
-            note=None,
-            created_by=self._user_id,
-        )
-        await self._flush()
-
-        scanned_set = await self._scanned_serials(nid_int)
+        # 列出本单零件总数，让前端能据此判断 ready
         parts = await self.notes.list_parts(nid_int)
         expected_count = len(parts)
-        scanned_count = len(scanned_set)
         from schema.delivery_note import DeliveryNotePickupScanOut
         return DeliveryNotePickupScanOut(
             delivery_note_id=str(obj.id),
-            scanned_count=scanned_count,
+            scanned_count=0,
             expected_count=expected_count,
-            ready=scanned_count >= expected_count and expected_count > 0,
-            scanned_serials=sorted(scanned_set),
+            # 后端无扫码状态数据源；ready 留给前端基于本地 Set 判定。
+            ready=False,
+            scanned_serials=[],
         )
 
     async def pickup(
@@ -741,26 +724,16 @@ class DeliveryNoteService:
             )
 
         # 校验扫齐
+        # 2026-07-23 改：后端不再维护 PICKUP_SCANNED 事件 / `_scanned_serials`，
+        # 司机扫码进度由前端本地 Set 跟踪；前端在 confirmDelivery() 里校验 ready
+        # 再调 pickup。后端这里只校验「非空 + 状态机 SUBMITTED」，
+        # 「缺漏件」的强制保证由前端负责。
         parts = await self.notes.list_parts(nid_int)
         expected_count = len(parts)
         if expected_count == 0:
             raise BizError(
                 code=ErrCode.BIZ_DELIVERY_NOTE_INVALID_VALUE,
                 message="empty delivery note; cannot pick up",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        scanned = await self._scanned_serials(nid_int)
-        missing = [
-            p.serial_no for p in parts
-            if (p.serial_no or str(p.id)) not in scanned
-        ]
-        if missing:
-            raise BizError(
-                code=ErrCode.BIZ_DELIVERY_NOTE_SCAN_INCOMPLETE,
-                message=(
-                    f"扫描未齐：缺 {len(missing)} 件，"
-                    f"如 {missing[:5]}{'…' if len(missing) > 5 else ''}"
-                ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
@@ -847,11 +820,7 @@ class DeliveryNoteService:
                 event_type=e.event_type,
                 from_status=e.from_status,
                 to_status=e.to_status,
-                drawing_code=e.drawing_code,
-                badge_code=e.badge_code,
                 note=e.note,
-                scanned_count=e.scanned_count,
-                expected_count=e.expected_count,
                 created_by=str(e.created_by) if e.created_by else None,
                 created_at=e.created_at,
             )
@@ -1027,17 +996,8 @@ class DeliveryNoteService:
         return await printer.render(obj)
 
     # ============================================================
-    # 内部：scanned serial 累积（按 PICKUP_SCANNED 事件去重）
+    # 内部 helpers
     # ============================================================
-
-    async def _scanned_serials(self, note_id: int) -> set[str]:
-        events = await self.note_events.list_by_note(note_id)
-        return {
-            e.drawing_code
-            for e in events
-            if e.event_type == DeliveryNoteEventType.PICKUP_SCANNED.value
-            and e.drawing_code
-        }
 
     async def _flush(self) -> None:
         await self.session.flush()
