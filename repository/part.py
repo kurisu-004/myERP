@@ -281,7 +281,6 @@ class PartRepository:
             .where(
                 TPartEvent.part_id == TPart.id,
                 TPartEvent.event_type == PartEventType.INSPECTION_FAILED.value,
-                TPartEvent.deleted_at.is_(None),
             )
             .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
             .limit(1)
@@ -353,7 +352,6 @@ class PartRepository:
             .where(
                 TPartEvent.part_id == TPart.id,
                 TPartEvent.event_type == PartEventType.INSPECTION_FAILED.value,
-                TPartEvent.deleted_at.is_(None),
             )
             .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
             .limit(1)
