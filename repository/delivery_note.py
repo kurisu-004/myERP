@@ -210,8 +210,15 @@ class DeliveryNoteEventRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def add(self, event: TDeliveryNoteEvent) -> TDeliveryNoteEvent:
-        """同步 add（state machine callback 用），不 flush。"""
+    def add(self, event: TDeliveryNoteEvent) -> TDeliveryNoteEvent:
+        """同步 add（state machine callback 用），不 flush。
+
+        2026-07-23 修复：之前声明为 ``async def`` 但状态机的同步 callback
+        （``statemachines/delivery_note.py::_write_event``）不 ``await`` 它，
+        导致 SUBMITTED / RECALLED / PICKED_UP / ARCHIVED 四种状态机事件
+        实际上一行都没写入。改为 ``def`` 后，sync 调用语义与 ORM
+        ``session.add`` 同步执行一致。
+        """
         self.session.add(event)
         return event
 

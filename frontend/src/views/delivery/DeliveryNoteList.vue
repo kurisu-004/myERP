@@ -1,12 +1,14 @@
 <!--
-  送货单一览（PR-G 2026-07-22 新增；替代老 DeliveryNoteNew.vue 的 XLSX 导出路径）
+  送货单一览（PR-G 2026-07-22 新增；2026-07-23 增强）
 
   - 文员 / MANAGER：filter (statuses × customer_id × keyword) → table → 操作
-    (查看 / 提交 / 撤回 / 软删)
-  - 顶部 + 新建草稿 按钮：弹 el-dialog 选 customer_id + 备注，创建后跳详情
+    (详情 / 提交 / 撤回 / 删除 / 打印)
+  - 顶部「新建草稿」按钮：弹 el-dialog 选一级客户 + 送货日期 + 备注，
+    勾选零件后原子创建 + 入件，跳详情页
+  - 配送日期列、送货日期列
+  - 打印按钮（list）：GET /delivery-notes/{id}/print → 浏览器下载 xlsx
 
   形态对齐 frontend/src/views/outsource/OutsourceQuoteList.vue
-  但本页面更简单：单一 status tag、固定列、无 submit/approve 等复杂流转。
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
@@ -17,6 +19,7 @@ import { Van } from '@element-plus/icons-vue'
 import {
   createNote as createNoteApi,
   listNotes,
+  printNote,
   recallNote,
   softDeleteNote,
   submitNote,
@@ -35,6 +38,7 @@ import {
 } from '@/utils/deliveryNotePermissions'
 import { listCustomers } from '@/api/customer'
 import { useAuthSession } from '@/composables/useAuthSession'
+import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
 
 const router = useRouter()
 const { hasRole } = useAuthSession()
@@ -56,13 +60,20 @@ const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(50)
 
-const customers = ref<{ id: string; name: string; path: string }[]>([])
+const customers = ref<{ id: string; name: string; path: string; parent_id: string | null }[]>([])
+
+/** 一级客户视图：新建草稿弹框专用；list-filter 处仍用全集 */
+const rootCustomers = computed(() =>
+  customers.value.filter((c) => c.parent_id === null),
+)
+
 async function loadCustomers() {
   try {
     const list = await listCustomers()
     customers.value = list.map((c: any) => ({
       id: c.id,
       name: c.name,
+      parent_id: c.parent_id ?? null,
       path: c.parent_name ? `${c.parent_name} / ${c.name}` : c.name,
     }))
   } catch (e) {
@@ -103,30 +114,61 @@ onMounted(async () => {
 })
 
 // ============================================================
-// 新建草稿对话框
+// 新建草稿对话框（2026-07-23 重写：送日期、零件勾选）
 // ============================================================
 const createDialogOpen = ref(false)
 const createCustomerId = ref<string>('')
+// 默认送货日期 = 今天 (YYYY-MM-DD 格式)
+/** @type {import('vue').Ref<string>} */
+const createDeliveryDate = ref<string>(formatToday())
 const createNoteText = ref<string>('')
 const creating = ref(false)
+/** 候选弹框选出的 part id 列表（弹框 emit submit 时合并） */
+const selectedPartIds = ref<string[]>([])
+/** 候选弹框自身的可见性（PartPickerDialog 的 v-model） */
+const pickerDialogOpen = ref(false)
+
+function formatToday(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 function openCreate() {
   createCustomerId.value = ''
+  createDeliveryDate.value = formatToday()
   createNoteText.value = ''
+  selectedPartIds.value = []
   createDialogOpen.value = true
 }
+
+/** 当用户在弹框里勾完零件，按下「加入 (N)」时回传 */
+function onPickerSubmit(partIds: string[]) {
+  selectedPartIds.value = partIds
+}
+
 async function submitCreate() {
   if (!createCustomerId.value) {
-    ElMessage.warning('请选择客户')
+    ElMessage.warning('请选择一级客户')
+    return
+  }
+  if (!createDeliveryDate.value) {
+    ElMessage.warning('请选择送货日期')
     return
   }
   creating.value = true
   try {
     const note = await createNoteApi({
       customer_id: createCustomerId.value,
+      delivery_date: createDeliveryDate.value,
+      part_ids: selectedPartIds.value,
       note: createNoteText.value.trim() || null,
     })
-    ElMessage.success(`已创建草稿 ${note.delivery_note_no}`)
+    ElMessage.success(
+      `已创建草稿 ${note.delivery_note_no}（含 ${selectedPartIds.value.length} 件）`,
+    )
     createDialogOpen.value = false
     router.push(`/delivery-notes/${note.id}`)
   } catch (e) {
@@ -142,7 +184,7 @@ async function submitCreate() {
 async function onSubmit(n: DeliveryNoteOut) {
   try {
     await ElMessageBox.confirm(
-      `确认提交 ${n.delivery_note_no}？提交后可被文员撤回，也可被司机领取。`,
+      `确认提交 ${n.delivery_note_no}？提交后只有所有零件均为「已通过品检」(READY_TO_SHIP) 才能提交。`,
       '提交送货单',
       { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '取消' },
     )
@@ -193,6 +235,26 @@ async function onSoftDelete(n: DeliveryNoteOut) {
     fetchList()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '删除失败')
+  }
+}
+
+const printing = ref(false)
+async function onPrint(n: DeliveryNoteOut) {
+  printing.value = true
+  try {
+    const blob = await printNote(n.id)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `送货单_${n.delivery_note_no}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '打印失败')
+  } finally {
+    printing.value = false
   }
 }
 </script>
@@ -246,6 +308,11 @@ async function onSoftDelete(n: DeliveryNoteOut) {
       :empty-text="loading ? '加载中' : '无数据'"
     >
       <el-table-column prop="delivery_note_no" label="单号" width="180" />
+      <el-table-column label="送货日期" width="120" align="center">
+        <template #default="scope">
+          {{ (scope.row as DeliveryNoteOut).delivery_date ?? '—' }}
+        </template>
+      </el-table-column>
       <el-table-column label="客户" min-width="200">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).customer_path
@@ -281,7 +348,7 @@ async function onSoftDelete(n: DeliveryNoteOut) {
           {{ (scope.row as DeliveryNoteOut).driver_worker_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" width="360" fixed="right">
         <template #default="scope">
           <el-button link type="primary" @click="$router.push(`/delivery-notes/${(scope.row as DeliveryNoteOut).id}`)">
             详情
@@ -301,6 +368,15 @@ async function onSoftDelete(n: DeliveryNoteOut) {
             @click="onRecall(scope.row as DeliveryNoteOut)"
           >
             撤回
+          </el-button>
+          <el-button
+            v-if="(role.MANAGER || role.CLERK)"
+            link
+            type="success"
+            :loading="printing"
+            @click="onPrint(scope.row as DeliveryNoteOut)"
+          >
+            打印
           </el-button>
           <el-button
             v-if="canSoftDelete((scope.row as DeliveryNoteOut).status, role)"
@@ -325,35 +401,72 @@ async function onSoftDelete(n: DeliveryNoteOut) {
       @size-change="fetchList"
     />
 
-    <!-- 新建草稿对话框 -->
-    <el-dialog v-model="createDialogOpen" title="新建送货单草稿" width="500px">
-      <el-form label-width="80px">
-        <el-form-item label="客户" required>
+    <!-- 新建草稿对话框（2026-07-23 重写） -->
+    <el-dialog v-model="createDialogOpen" title="新建送货单草稿" width="640px">
+      <el-form label-width="90px">
+        <el-form-item label="一级客户" required>
           <el-select
             v-model="createCustomerId"
             filterable
-            placeholder="选择二级叶子客户"
+            placeholder="选择一级客户（L1 root）"
             style="width: 100%"
           >
             <el-option
-              v-for="c in customers"
+              v-for="c in rootCustomers"
               :key="c.id"
-              :label="c.path"
+              :label="c.name"
               :value="c.id"
             />
           </el-select>
+        </el-form-item>
+        <el-form-item label="送货日期" required>
+          <el-date-picker
+            v-model="createDeliveryDate"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="选择送货日期"
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item label="备注">
           <el-input
             v-model="createNoteText"
             type="textarea"
-            :rows="3"
+            :rows="2"
             maxlength="500"
             show-word-limit
             placeholder="可选备注"
           />
         </el-form-item>
+        <el-form-item label="预选零件">
+          <div class="picker-summary">
+            <el-tag v-if="!createCustomerId" type="info" effect="plain">请先选客户</el-tag>
+            <template v-else>
+              <el-tag v-if="!selectedPartIds.length" type="warning" effect="plain">
+                暂未勾选（可在弹出框里勾选 INSPECTION / READY_TO_SHIP 件）
+              </el-tag>
+              <el-tag v-else type="success" effect="plain">
+                已勾 {{ selectedPartIds.length }} 件
+              </el-tag>
+              <el-button
+                size="small"
+                type="primary"
+                style="margin-left: 8px"
+                @click="pickerDialogOpen = true"
+              >
+                {{ selectedPartIds.length ? '重新选择' : '选择零件' }}
+              </el-button>
+            </template>
+          </div>
+        </el-form-item>
       </el-form>
+
+      <PartPickerDialog
+        v-model="pickerDialogOpen"
+        :customer-id="createCustomerId"
+        @submit="onPickerSubmit"
+      />
+
       <template #footer>
         <el-button @click="createDialogOpen = false">取消</el-button>
         <el-button type="primary" :loading="creating" @click="submitCreate">
@@ -368,4 +481,8 @@ async function onSoftDelete(n: DeliveryNoteOut) {
 .delivery-note-list { padding: 16px; }
 .filter-card :deep(.el-form-item) { margin-bottom: 0; }
 .pager { margin-top: 16px; justify-content: flex-end; }
+.picker-summary {
+  display: flex;
+  align-items: center;
+}
 </style>

@@ -72,6 +72,7 @@ declare module 'vue' {
     FileListCard: typeof import('./components/FileListCard.vue')['default']
     HmiPickerCard: typeof import('./components/HmiPickerCard.vue')['default']
     NotificationBanner: typeof import('./components/NotificationBanner.vue')['default']
+    PartPickerDialog: typeof import('./components/delivery/PartPickerDialog.vue')['default']
     PdfViewer: typeof import('./components/PdfViewer.vue')['default']
     ResponsiveList: typeof import('./components/ResponsiveList.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

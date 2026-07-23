@@ -61,6 +61,17 @@ class DeliveryNoteStateMachine(StateChart):
 
     # on_enter_* — sync model.status + 时间戳
 
+    def on_enter_DRAFT(self, **_):
+        # 2026-07-23 修复撤回 bug：库默认 state_field='state'，动态 state 不落到
+        # mapped `status` 列；缺 on_enter_DRAFT 时 recall(SUBMITTED→DRAFT) 只 append
+        # RECALLED 事件而 DB status 仍 SUBMITTED。此 hook 显式写回 DRAFT，并清空
+        # 提交痕迹（re-submit 时 on_enter_SUBMITTED 会重置 submitted_at）。
+        # 对照 statemachines/outsource_quote.py::on_enter_DRAFT。
+        if self.model:
+            self.model.status = DeliveryNoteStatus.DRAFT.value
+            self.model.submitted_at = None
+            self.model.submitted_by = None
+
     def on_enter_SUBMITTED(self, **_):
         if self.model:
             from core.time import now_naive

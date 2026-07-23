@@ -9,32 +9,40 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Van } from '@element-plus/icons-vue'
 
 import {
   addParts,
   getNote,
   listNoteEvents,
+  printNote,
   removeParts,
   recallNote,
   softDeleteNote,
   submitNote,
+  updateNote,
 } from '@/api/deliveryNote'
 import {
   DELIVERY_NOTE_STATUS_LABEL,
   DELIVERY_NOTE_STATUS_TAG,
   type DeliveryNoteDetailOut,
   type DeliveryNoteEventOut,
+  type DeliveryNoteLineItem,
   type DeliveryNoteStatus,
 } from '@/types/deliveryNote'
+// 2026-07-23 R2-C：复用 PartsList 的状态显示样式 / 标签色映射
+import {
+  ORDER_STATUS_LABEL,
+  ORDER_STATUS_TAG_TYPE,
+  type OrderStatus,
+} from '@/types/parts'
 import {
   canAddRemoveParts,
   canRecall,
   canSoftDelete,
   canSubmit,
 } from '@/utils/deliveryNotePermissions'
-import { getPartBySerial } from '@/api/parts'
 import { useAuthSession } from '@/composables/useAuthSession'
+import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -48,6 +56,8 @@ const role = computed(() => ({
 const note = ref<DeliveryNoteDetailOut | null>(null)
 const events = ref<DeliveryNoteEventOut[]>([])
 const loading = ref(false)
+/** 详情页可编辑送货日期（DRAFT / SUBMITTED）；PICKED_UP / ARCHIVED 时控件 disabled */
+const editDeliveryDate = ref<string>('')
 
 async function fetchDetail() {
   const id = route.params.id as string
@@ -56,6 +66,7 @@ async function fetchDetail() {
   try {
     note.value = await getNote(id)
     events.value = await listNoteEvents(id)
+    editDeliveryDate.value = note.value?.delivery_date ?? ''
   } catch (e) {
     ElMessage.error((e as Error).message ?? '加载失败')
   } finally {
@@ -64,6 +75,28 @@ async function fetchDetail() {
 }
 onMounted(fetchDetail)
 watch(() => route.params.id, fetchDetail)
+
+async function onDeliveryDateChange(newDate: string | null) {
+  if (!note.value) return
+  const normalized = newDate ?? ''
+  if (normalized === (note.value.delivery_date ?? '')) return
+  try {
+    await updateNote(note.value.id, {
+      version: note.value.version,
+      delivery_date: normalized,
+    })
+    ElMessage.success('已更新送货日期')
+    await fetchDetail()
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { code?: number } } }
+    if (err?.response?.data?.code === 21403 /* BIZ_VERSION_CONFLICT */) {
+      ElMessage.warning('该记录已被其他用户修改，请刷新后重试')
+    } else {
+      ElMessage.error((e as Error).message ?? '更新送货日期失败')
+    }
+    await fetchDetail()
+  }
+}
 
 // ============================================================
 // 状态机迁移操作
@@ -119,62 +152,69 @@ async function onSoftDelete() {
   }
 }
 
-function gotoPickup() {
+const printing = ref(false)
+async function onPrint() {
   if (!note.value) return
-  router.push(`/scan/delivery-note-pickup/${note.value.id}`)
+  printing.value = true
+  try {
+    const blob = await printNote(note.value.id)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `送货单_${note.value.delivery_note_no}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '打印失败')
+  } finally {
+    printing.value = false
+  }
 }
 
 // ============================================================
-// 添加零件对话框：按 serial 一行一条输入 → 解析 part_id → add_parts
+// 添加零件对话框（2026-07-23：PartPickerDialog 勾选 UI 替换原 serial 输入）
 // ============================================================
 const addDialogOpen = ref(false)
-const serialsInput = ref('')
 const addBusy = ref(false)
-const addErrors = ref<string[]>([])
 
 function openAdd() {
-  serialsInput.value = ''
-  addErrors.value = []
   addDialogOpen.value = true
 }
 
-async function submitAdd() {
+async function onPickerSubmit(partIds: string[]) {
   if (!note.value) return
-  const serials = serialsInput.value
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-  if (!serials.length) {
-    ElMessage.warning('请输入至少一个序列号')
-    return
-  }
+  if (!partIds.length) return
   addBusy.value = true
-  addErrors.value = []
-  const partIds: string[] = []
-  for (const s of serials) {
-    try {
-      const p = await getPartBySerial(s)
-      partIds.push(p.id)
-    } catch (e) {
-      addErrors.value.push(`未识别序列号「${s}」：${(e as Error).message}`)
-    }
-  }
-  if (!partIds.length) {
-    addBusy.value = false
-    return
-  }
   try {
     await addParts(note.value.id, {
       part_ids: partIds, version: note.value.version,
     })
     ElMessage.success(`已添加 ${partIds.length} 件`)
     addDialogOpen.value = false
-    fetchDetail()
+    await fetchDetail()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '添加失败')
   } finally {
     addBusy.value = false
   }
+}
+
+/** 当前单上已有 part id 列表（用于 PartPickerDialog 高亮禁用） */
+const existingPartIdsForPicker = computed(() => {
+  if (!note.value) return []
+  return note.value.line_items.map((it) => it.id)
+})
+
+// 2026-07-23 R2-C：line_items 状态列复用 PartsList 的标签映射
+function partStatusLabel(s: OrderStatus | string): string {
+  return (ORDER_STATUS_LABEL as Record<string, string>)[s] ?? String(s)
+}
+function partStatusTagType(
+  s: OrderStatus | string,
+): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
+  return (ORDER_STATUS_TAG_TYPE as Record<string, 'primary' | 'success' | 'warning' | 'info' | 'danger'>)[s] ?? 'info'
 }
 
 // ============================================================
@@ -238,6 +278,17 @@ const canEdit = computed(() => canAdd.value)
             {{ note.customer_path ?? note.customer_name ?? '—' }}
           </el-descriptions-item>
           <el-descriptions-item label="零件数">{{ note.part_count }}</el-descriptions-item>
+          <el-descriptions-item label="送货日期">
+            <el-date-picker
+              v-model="editDeliveryDate"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="未设置"
+              :disabled="note.status !== 'DRAFT' && note.status !== 'SUBMITTED'"
+              style="width: 160px"
+              @change="onDeliveryDateChange"
+            />
+          </el-descriptions-item>
           <el-descriptions-item label="提交时间">
             {{ note.submitted_at ? new Date(note.submitted_at).toLocaleString() : '—' }}
           </el-descriptions-item>
@@ -290,18 +341,43 @@ const canEdit = computed(() => canAdd.value)
             width="50"
             :selectable="() => true"
           />
-          <el-table-column type="index" label="#" width="60" />
-          <el-table-column prop="serial_no" label="序列号" width="160" />
-          <el-table-column prop="drawing_no" label="图号" width="160" />
-          <el-table-column prop="name" label="名称" min-width="200" />
-          <el-table-column prop="quantity" label="数量" width="80" align="center" />
-          <el-table-column label="紧急" width="80" align="center">
+          <el-table-column type="index" label="#" width="50" />
+          <el-table-column prop="serial_no" label="序列号" width="120" />
+          <el-table-column prop="drawing_no" label="图号" width="140" />
+          <el-table-column prop="name" label="名称" min-width="180" />
+          <el-table-column label="客户（二级）" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-tag v-if="row.is_urgent" type="danger" size="small">急</el-tag>
-              <span v-else>—</span>
+              <span>{{ row.customer_path ?? row.customer_name ?? '—' }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="status" label="状态" width="120" />
+          <el-table-column prop="applicant_name" label="申请人" width="100" />
+          <el-table-column prop="quantity" label="数量" width="70" align="center" />
+          <el-table-column label="请购日期" width="120">
+            <template #default="{ row }">{{ row.request_date || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="计划交期" width="120">
+            <template #default="{ row }">{{ row.planned_delivery_date || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="系统交期" width="120">
+            <template #default="{ row }">{{ row.system_delivery_date || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="订单号" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.order_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="备注" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.note || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="120" align="center">
+            <template #default="{ row }">
+              <el-tag
+                :type="partStatusTagType(row.status)"
+                effect="plain"
+                size="small"
+              >
+                {{ partStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
         </el-table>
       </el-card>
 
@@ -325,12 +401,12 @@ const canEdit = computed(() => canAdd.value)
             撤回（SUBMITTED → DRAFT）
           </el-button>
           <el-button
-            v-if="note.status === 'SUBMITTED'"
-            type="danger"
-            @click="gotoPickup"
+            v-if="(role.MANAGER || role.CLERK) && note.part_count > 0"
+            type="success"
+            :loading="printing"
+            @click="onPrint"
           >
-            <el-icon><Van /></el-icon>
-            扫码领取
+            打印送货单
           </el-button>
           <el-button
             v-if="canSoftDelete(note.status, role)"
@@ -364,26 +440,14 @@ const canEdit = computed(() => canAdd.value)
       </el-card>
     </template>
 
-    <!-- 添加零件对话框 -->
-    <el-dialog v-model="addDialogOpen" title="添加零件（按序列号；多件用空格/逗号/回车分隔）" width="520px">
-      <el-input
-        v-model="serialsInput"
-        type="textarea"
-        :rows="6"
-        placeholder="F1234&#10;F1235&#10;L2001"
-      />
-      <div v-if="addErrors.length" class="add-errors">
-        <div v-for="(msg, idx) in addErrors" :key="idx" class="add-error">
-          {{ msg }}
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="addDialogOpen = false">取消</el-button>
-        <el-button type="primary" :loading="addBusy" @click="submitAdd">
-          添加
-        </el-button>
-      </template>
-    </el-dialog>
+    <!-- 添加零件对话框（2026-07-23 改 PartPickerDialog 勾选 UI） -->
+    <PartPickerDialog
+      v-model="addDialogOpen"
+      :customer-id="String(note?.customer_id ?? '')"
+      :existing-part-ids="existingPartIdsForPicker"
+      title="选择零件添加到本单"
+      @submit="onPickerSubmit"
+    />
   </div>
 </template>
 
@@ -395,6 +459,4 @@ const canEdit = computed(() => canAdd.value)
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .event-note { font-size: 13px; color: #666; margin-top: 4px; }
-.add-errors { margin-top: 8px; max-height: 120px; overflow-y: auto; }
-.add-error { color: #d9534f; font-size: 13px; }
 </style>

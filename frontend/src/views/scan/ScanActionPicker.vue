@@ -70,19 +70,6 @@
           <span class="action-label">送 检</span>
           <span class="action-desc">全部工序完成，送到品检区</span>
         </el-button>
-
-        <!-- 送货（PR-C 2026-07-10）：工种=送货司机时不依赖货架，单独显示。 -->
-        <el-button
-          v-if="workerWorkTypeCode === '送货司机'"
-          type="danger"
-          size="large"
-          class="action-btn"
-          @click="selectAction('DELIVER')"
-        >
-          <el-icon :size="48"><Van /></el-icon>
-          <span class="action-label">送 货</span>
-          <span class="action-desc">按客户分批，扫零件确认发货</span>
-        </el-button>
       </div>
     </div>
   </div>
@@ -98,7 +85,6 @@ import {
   Box,
   Check,
   Refresh,
-  Van,
 } from '@element-plus/icons-vue'
 import {
   ACTION_LABEL,
@@ -106,14 +92,11 @@ import {
   type WorkAction,
 } from '@/composables/useScanSession'
 import { useActiveShelfSelection } from '@/composables/useActiveShelfSelection'
-import { listWorkTypes } from '@/api/workType'
-import type { WorkType } from '@/types/workType'
 
 const router = useRouter()
 const { worker, setAction, reset, requireWorker } = useScanSession()
 const shelfSel = useActiveShelfSelection()
 
-const workerWorkTypeCode = ref<string | null>(null) // '送货司机' 等
 const shelfLoading = ref(true)
 
 // 2026-07-13：boundZones = 绑定架 zone 的并集，决定按钮显隐
@@ -136,18 +119,6 @@ onBeforeMount(async () => {
   if (!requireWorker(router)) return
   // 拉候选架（绑定架详情；wildcard → 空；多架 → 等用户选）
   await shelfSel.initShelves()
-  // 工种决定 DELIVER 入口（PR-C 2026-07-10）
-  if (worker.value?.work_type_id) {
-    try {
-      const wtResp = await listWorkTypes({ limit: 200 })
-      const wt = (wtResp.items as WorkType[]).find(
-        (w) => String(w.id) === String(worker.value!.work_type_id),
-      )
-      workerWorkTypeCode.value = wt?.code ?? null
-    } catch {
-      workerWorkTypeCode.value = null
-    }
-  }
   shelfLoading.value = false
 })
 
@@ -157,15 +128,13 @@ function selectAction(a: WorkAction): void {
   // PICK_UP 走「按工种选件」新流程 → /scan/pick
   // RETURN 走「按工人列持有件 → 选件 → 选工序 → 选架」新流程 → /scan/return
   // INSPECT 走「按工人列持有件 → 选件 → 扫码确认 → 选品检架」新流程 → /scan/inspect
-  // DELIVER（PR-G 2026-07-22）走司机专属送货单流程 → /scan/delivery-note-pickup
+  // 送货入口已移到 MANAGER/INSPECTOR 的「送货」菜单（/delivery-dispatch）。
   if (a === 'PICK_UP') {
     void router.push('/scan/pick')
   } else if (a === 'RETURN') {
     void router.push('/scan/return')
   } else if (a === 'INSPECT') {
     void router.push('/scan/inspect')
-  } else if (a === 'DELIVER') {
-    void router.push('/scan/delivery-note-pickup')
   }
 }
 

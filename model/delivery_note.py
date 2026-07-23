@@ -7,10 +7,10 @@
 
 不在 DB 层加物理外键；状态合法性由 Python `DeliveryNoteStatus` 在 service / 状态机校验。
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, String, text
+from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import AuditMixin
@@ -77,6 +77,11 @@ class TDeliveryNote(Base, AuditMixin):
     )
     note: Mapped[str | None] = mapped_column(
         String(500), nullable=True, comment="备注",
+    )
+
+    delivery_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True,
+        comment="送货日期；默认 = 创建当天；DRAFT/SUBMITTED 可改（详见 update）",
     )
 
     __table_args__ = (

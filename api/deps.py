@@ -526,7 +526,7 @@ def get_delivery_note_service(
     - customers：建单校验存在
     - workers：pickup() 校验司机工种 / 活跃
     - broadcaster / event_broadcaster：pickup() 影响多个 part 状态，触发整张
-      dashboard snapshot 与业务事件（DELIVERY_NOTE_ARCHIVED）；通过闭包传，
+      dashboard snapshot 与业务事件（DELIVERY_NOTE_PICKED_UP）；通过闭包传，
       不复用请求 session。
 
     调用方 API 层用 require_roles 守权限（MANAGER/CLERK 编辑；pickup 任意已登录）。
@@ -550,6 +550,7 @@ def get_delivery_note_service(
         parts=PartRepository(session),
         customers=CustomerRepository(session),
         workers=WorkerRepository(session),
+        work_types=WorkTypeRepository(session),
         part_events=PartEventRepository(session),
         broadcaster=_broadcaster if broadcaster is None else broadcaster,
         event_broadcaster=(

@@ -13,7 +13,8 @@
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 
 from api.deps import get_delivery_note_service
 from core.permission import (
@@ -27,6 +28,7 @@ from model.enums import (
     UserRole,
 )
 from schema.delivery_note import (
+    DeliveryNoteCandidatePartsOut,
     DeliveryNoteCreateRequest,
     DeliveryNoteDetailOut,
     DeliveryNoteEventOut,
@@ -37,6 +39,7 @@ from schema.delivery_note import (
     DeliveryNotePickupRequest,
     DeliveryNotePickupScanOut,
     DeliveryNotePickupScanRequest,
+    DeliveryNoteUpdateRequest,
     DeliveryNoteVersionedRequest,
 )
 from service.delivery_note import DeliveryNoteService
@@ -47,8 +50,25 @@ _OFFICE_DEP = [Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))]
 
 
 # ============================================================
-# 1. 一览 / 详情 / 待送货
+# 1. 一览 / 详情 / 待送货 / 候选零件
 # ============================================================
+
+# 1a. GET /delivery-notes/candidate-parts —— 字面子路径先注册，避免被 /{note_id}
+#     catch-all 截胡（CLAUDE.md §shelves 同款约束）
+@router.get(
+    "/candidate-parts",
+    response_model=DeliveryNoteCandidatePartsOut,
+    summary="可选入单的零件（INSPECTION + READY_TO_SHIP，同 L1 根、不在 active 单上）",
+    dependencies=_OFFICE_DEP,
+)
+async def list_candidate_parts(
+    customer_id: Annotated[str, Query(description="一级客户雪花 ID (L1 root)")],
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteCandidatePartsOut:
+    items = await svc.list_candidate_parts(customer_id)
+    return DeliveryNoteCandidatePartsOut(items=items)
+
+
 @router.get(
     "",
     response_model=DeliveryNoteListOut,
@@ -109,7 +129,10 @@ async def create_delivery_note(
     _user: CurrentUser = Depends(require_auth()),
 ) -> DeliveryNoteOut:
     return await svc.create_draft(
-        customer_id=payload.customer_id, note=payload.note,
+        customer_id=payload.customer_id,
+        note=payload.note,
+        delivery_date=payload.delivery_date,
+        initial_part_ids=payload.part_ids or None,
     )
 
 
@@ -140,8 +163,29 @@ async def list_delivery_note_events(
 
 
 # ============================================================
-# 2. 草稿期 add / remove 零件（CLERK / MANAGER）
+# 2. 草稿期 add / remove 零件 / partial update（CLERK / MANAGER）
 # ============================================================
+
+# 2026-07-23：partial update（送货日期 / 备注），DRAFT/SUBMITTED 可编辑
+@router.post(
+    "/{note_id}/update",
+    response_model=DeliveryNoteOut,
+    summary="partial update（CLERK / MANAGER；DRAFT / SUBMITTED）",
+    dependencies=_OFFICE_DEP,
+)
+async def update_delivery_note(
+    note_id: str,
+    payload: DeliveryNoteUpdateRequest,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> DeliveryNoteOut:
+    return await svc.update(
+        note_id=note_id,
+        version=payload.version,
+        delivery_date=payload.delivery_date,
+        note_text=payload.note,
+    )
+
+
 @router.post(
     "/{note_id}/add-parts",
     response_model=DeliveryNoteDetailOut,
@@ -264,3 +308,28 @@ async def soft_delete_delivery_note(
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
 ) -> None:
     await svc.soft_delete(note_id=note_id, version=payload.version)
+
+
+# ============================================================
+# 6. 打印（CLERK / MANAGER；全 4 状态可打）
+#    按 L1 客户的序列号前缀分发 template/delivery_note_{prefix}.xlsx
+# ============================================================
+@router.get(
+    "/{note_id}/print",
+    summary=(
+        "下载送货单 XLSX（按 L1 客户前缀分发 F/L 模板；"
+        "DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 全状态可打）"
+    ),
+    dependencies=_OFFICE_DEP,
+)
+async def print_delivery_note(
+    note_id: str,
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> Response:
+    xlsx_bytes, prefix = await svc.print_xlsx(note_id)
+    filename = f"delivery_note_{prefix}_{note_id}.xlsx"
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

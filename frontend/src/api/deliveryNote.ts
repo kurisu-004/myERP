@@ -1,22 +1,26 @@
-// 送货单管理 API 封装（PR-G 2026-07-22 重写）。
+// 送货单管理 API 封装（PR-G 2026-07-22 重写；2026-07-23 增强：候选零件/可编辑日期/打印）。
 // 全部雪花 ID 入参为 string（CLAUDE.md §3 JS Number 丢精度）。
 //
 // 端点清单（与 api/v1/delivery_note.py 对应）：
 //   GET    /delivery-notes                       - listNotes
 //   GET    /delivery-notes/pickup-pending        - listPickupPending
+//   GET    /delivery-notes/candidate-parts       - listCandidateParts
 //   POST   /delivery-notes                       - createNote
 //   GET    /delivery-notes/{id}                  - getNote
 //   GET    /delivery-notes/{id}/events           - listNoteEvents
+//   POST   /delivery-notes/{id}/update           - updateNote
 //   POST   /delivery-notes/{id}/add-parts        - addParts
 //   POST   /delivery-notes/{id}/remove-parts     - removeParts
-//   POST   /delivery-notes/{id}/submit          - submitNote
+//   POST   /delivery-notes/{id}/submit           - submitNote
 //   POST   /delivery-notes/{id}/recall           - recallNote
 //   POST   /delivery-notes/{id}/pickup-scan      - pickupScan
 //   POST   /delivery-notes/{id}/pickup           - pickup
 //   POST   /delivery-notes/{id}/soft-delete      - softDelete
+//   GET    /delivery-notes/{id}/print            - printNote
 
 import { api } from '@/api/http'
 import type {
+  DeliveryNoteCandidatePart,
   DeliveryNoteDetailOut,
   DeliveryNoteEventOut,
   DeliveryNoteOut,
@@ -45,6 +49,17 @@ export interface DeliveryNoteListResponse {
 
 export interface CreateNotePayload {
   customer_id: string
+  /** YYYY-MM-DD；不传时服务端 fallback 到创建当天 */
+  delivery_date?: string | null
+  /** 原子带入首批零件（雪花 ID 字符串）；后端 add_parts 内部跑一次 */
+  part_ids?: string[]
+  note?: string | null
+}
+
+export interface UpdateNotePayload {
+  version: number
+  /** 不传（undefined）= 不改；空串=清空（服务端支持时） */
+  delivery_date?: string | null
   note?: string | null
 }
 
@@ -199,4 +214,37 @@ export async function softDeleteNote(
   payload: VersionPayload,
 ): Promise<void> {
   await api.post(`/delivery-notes/${noteId}/soft-delete`, payload)
+}
+
+// 2026-07-23 增强 ----------------------------------------------------------
+//
+// 13) candidate-parts（一级客户下 INSPECTION + READY_TO_SHIP 候选入单零件）
+export async function listCandidateParts(
+  customerId: string,
+): Promise<DeliveryNoteCandidatePart[]> {
+  const resp = await api.get<{ items: DeliveryNoteCandidatePart[] }>(
+    '/delivery-notes/candidate-parts',
+    { params: { customer_id: customerId } },
+  )
+  return resp.data.items
+}
+
+// 14) partial update（详情页改送货日期 / 备注）
+export async function updateNote(
+  noteId: string,
+  payload: UpdateNotePayload,
+): Promise<DeliveryNoteOut> {
+  const resp = await api.post<DeliveryNoteOut>(
+    `/delivery-notes/${noteId}/update`,
+    payload,
+  )
+  return resp.data
+}
+
+// 15) print：返回 XLSX blob，按 L1 客户前缀分发 F/L 模板
+export async function printNote(noteId: string): Promise<Blob> {
+  const resp = await api.get(`/delivery-notes/${noteId}/print`, {
+    responseType: 'blob',
+  })
+  return resp.data as Blob
 }

@@ -240,18 +240,27 @@ const routes: RouteRecordRaw[] = [
       { path: 'pick', name: 'ScanPick', component: () => import('@/views/scan/ScanPickParts.vue'), meta: { title: '扫码台 · 选件领取', menuCode: 'scan_badge' } },
       { path: 'return', name: 'ScanReturn', component: () => import('@/views/scan/ScanReturnParts.vue'), meta: { title: '扫码台 · 选件放回', menuCode: 'scan_badge' } },
       { path: 'inspect', name: 'ScanInspect', component: () => import('@/views/scan/ScanInspectParts.vue'), meta: { title: '扫码台 · 选件送检', menuCode: 'scan_badge' } },
-      // 司机待送货一览（PR-G 2026-07-22）：替代原 /scan/deliver（无送货单状态机的旧流程）
+    ],
+  },
+  // 司机送货扫码台（2026-07-23）：MANAGER/INSPECTOR 的「送货」菜单入口，全屏、
+  // MainLayout 之外。工牌识别 → 只有「送货司机」工种可通过 → 待送货单选择 →
+  // 逐件扫描 → 确认送货（复用后端 pickup-scan / pickup）。
+  {
+    path: '/delivery-dispatch',
+    meta: { requireAuth: true },
+    children: [
+      { path: '', redirect: '/delivery-dispatch/badge' },
       {
-        path: 'delivery-note-pickup',
-        name: 'ScanDeliveryNotePickupList',
-        component: () => import('@/views/delivery/DeliveryNotePickupList.vue'),
-        meta: { title: '扫码台 · 待送货一览', menuCode: 'scan_badge' },
+        path: 'badge',
+        name: 'DispatchBadge',
+        component: () => import('@/views/delivery-dispatch/DispatchBadgeGate.vue'),
+        meta: { title: '送货 · 工牌识别', menuCode: 'delivery_dispatch' },
       },
       {
-        path: 'delivery-note-pickup/:id(\\d+)',
-        name: 'ScanDeliveryNotePickup',
-        component: () => import('@/views/scan/ScanDeliveryNotePickup.vue'),
-        meta: { title: '扫码台 · 扫码领取', menuCode: 'scan_badge' },
+        path: 'notes',
+        name: 'DispatchNotes',
+        component: () => import('@/views/delivery-dispatch/DispatchNoteList.vue'),
+        meta: { title: '送货 · 待送货单', menuCode: 'delivery_dispatch' },
       },
     ],
   },

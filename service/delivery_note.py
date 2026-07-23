@@ -48,6 +48,7 @@ from repository.delivery_note import (
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.worker import WorkerRepository
+from repository.work_type import WorkTypeRepository
 from service._delivery_note_events import (
     write_created,
     write_item_added,
@@ -88,6 +89,7 @@ class DeliveryNoteService:
         workers: WorkerRepository,
         part_events: PartEventRepository,
         current_user,
+        work_types: WorkTypeRepository | None = None,
         broadcaster=None,
         event_broadcaster=None,
     ) -> None:
@@ -98,6 +100,7 @@ class DeliveryNoteService:
         self.parts = parts
         self.customers = customers
         self.workers = workers
+        self.work_types = work_types
         self.part_events = part_events
         self._user_id = (
             current_user.id if current_user and hasattr(current_user, "id")
@@ -165,6 +168,8 @@ class DeliveryNoteService:
         self,
         customer_id: str,
         note: str | None = None,
+        delivery_date: date | None = None,
+        initial_part_ids: list[str] | None = None,
     ):
         cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
         cust = await self.customers.get_by_id(cid_int)
@@ -188,12 +193,14 @@ class DeliveryNoteService:
             )
         today = now_naive().strftime("%Y%m%d")
         nn = await self.counter.acquire_no(today)
+        effective_delivery_date = delivery_date or now_naive().date()
         obj = TDeliveryNote(
             id=new_id(),
             delivery_note_no=f"DN-{today}-{nn:04d}",
             customer_id=cid_int,
             status=DeliveryNoteStatus.DRAFT.value,
             note=note,
+            delivery_date=effective_delivery_date,
         )
         if self._user_id is not None:
             obj.created_by = self._user_id
@@ -202,10 +209,23 @@ class DeliveryNoteService:
         await write_created(
             self.session,
             note_id=obj.id,
-            note=f"create draft for customer {cid_int}",
+            note=f"create draft for customer {cust.name}",
             created_by=self._user_id,
         )
         await self._flush()
+
+        # 2026-07-23 增强：原子带入首批零件。
+        # 走一次 add_parts，复用既有 INSPECTION/READY_TO_SHIP 状态 + L1 校验；
+        # 失败抛 BizError 向上；同一事务整体回滚（_flush 已写过一行 CREATED 事件，
+        # 但 t_delivery_note / event / counter 的写都在 session 内，调用方 BizError 后
+        # 由 FastAPI 异常路径 rollback 时一并撤销）。
+        if initial_part_ids:
+            await self.add_parts(
+                note_id=str(obj.id),
+                part_ids=list(initial_part_ids),
+                version=obj.version,
+            )
+
         from schema.delivery_note import DeliveryNoteOut
         return await self._to_out(obj)
 
@@ -328,16 +348,23 @@ class DeliveryNoteService:
         )
         cust_map: dict[int, Any] = {c.id: c for c in part_customer_list}
 
-        # 校验：每个 part 状态 READY_TO_SHIP；part L1 root 必须等于 note.customer_id；
-        # 若 part.delivery_note_id 已不为 NULL → 该 part 已在别的单上
+        # 校验：每个 part 状态 ∈ {INSPECTION, READY_TO_SHIP}（2026-07-23 放宽）；
+        # part L1 root 必须等于 note.customer_id；若 part.delivery_note_id
+        # 指向**另一张 active 单** (DRAFT/SUBMITTED) → 拒；PICKED_UP/ARCHIVED 的
+        # 孤儿关联放过（pickup 时按设计不再清 id）。
+        # 注：status=DELIVERED/REPAIRING/COMPLETED 等仍被状态校验挡掉，
+        # 不会出现在 READY_TO_SHIP/INSPECTION 候选里，所以「不会真的把出厂件重分配」。
         serials_added: list[str] = []
         for p in existing_list:
-            if p.status != PartStatus.READY_TO_SHIP.value:
+            if p.status not in (
+                PartStatus.INSPECTION.value,
+                PartStatus.READY_TO_SHIP.value,
+            ):
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_NOTE_PART_NOT_READY,
                     message=(
                         f"part {p.id} status={p.status}, "
-                        "only READY_TO_SHIP is allowed"
+                        "only INSPECTION / READY_TO_SHIP is allowed at draft entry"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
@@ -369,19 +396,25 @@ class DeliveryNoteService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
             if p.delivery_note_id is not None and p.delivery_note_id != obj.id:
-                raise BizError(
-                    code=ErrCode.BIZ_DELIVERY_NOTE_PART_ALREADY_ASSIGNED,
-                    message=(
-                        f"part {p.id} already on delivery note "
-                        f"{p.delivery_note_id}"
-                    ),
-                    http_status=http_status.HTTP_400_BAD_REQUEST,
-                )
+                # 仅当「另一张 active 单」时挡；归档过的单允许重新挂回
+                other = await self.notes.get_by_id(p.delivery_note_id)
+                if other is not None and other.status in (
+                    DeliveryNoteStatus.DRAFT.value,
+                    DeliveryNoteStatus.SUBMITTED.value,
+                ):
+                    raise BizError(
+                        code=ErrCode.BIZ_DELIVERY_NOTE_PART_ALREADY_ASSIGNED,
+                        message=(
+                            f"part {p.id} already on active delivery note "
+                            f"{p.delivery_note_id}"
+                        ),
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
             if p.delivery_note_id != obj.id:
                 p.delivery_note_id = obj.id
                 p.updated_by = self._user_id
                 await self.parts.update(p)
-                serials_added.append(p.serial_no or str(p.id))
+                serials_added.append(p.serial_no or p.drawing_no or str(p.id))
 
         await write_item_added(
             self.session, note_id=obj.id,
@@ -449,7 +482,7 @@ class DeliveryNoteService:
             p.delivery_note_id = None
             p.updated_by = self._user_id
             await self.parts.update(p)
-            serials_removed.append(p.serial_no or str(p.id))
+            serials_removed.append(p.serial_no or p.drawing_no or str(p.id))
 
         await write_item_removed(
             self.session, note_id=obj.id,
@@ -524,6 +557,8 @@ class DeliveryNoteService:
 
         if self._broadcaster is not None:
             await self._broadcaster()
+        # 2026-07-23 修复：post-flush refresh updated_at 防 MissingGreenlet
+        await self._serialize_after_mutation(obj)
         from schema.delivery_note import DeliveryNoteOut
         return await self._to_out(obj)
 
@@ -564,6 +599,7 @@ class DeliveryNoteService:
         await self.notes.update(obj)
         await self._flush()
 
+        await self._serialize_after_mutation(obj)
         from schema.delivery_note import DeliveryNoteOut
         return await self._to_out(obj)
 
@@ -687,11 +723,18 @@ class DeliveryNoteService:
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        if not driver.work_type or driver.work_type.code != WORK_TYPE_DRIVER_CODE:
+        # 2026-07-23 修复：TWorker 无 work_type relationship，只有 work_type_id；
+        # 必须经 WorkTypeRepository 解析工种码（对照 PartService.deliver）。
+        # 旧代码 `driver.work_type.code` 会 AttributeError，导致 pickup 全程无法完成。
+        driver_wt = (
+            await self.work_types.get_by_id(driver.work_type_id)
+            if self.work_types and driver.work_type_id else None
+        )
+        if driver_wt is None or driver_wt.code != WORK_TYPE_DRIVER_CODE:
             raise BizError(
                 code=ErrCode.BIZ_DELIVERY_NOTE_DRIVER_INVALID,
                 message=(
-                    f"driver work type {driver.work_type.code if driver.work_type else 'NULL'} "
+                    f"driver work type {driver_wt.code if driver_wt else 'NULL'} "
                     f"!= {WORK_TYPE_DRIVER_CODE!r}"
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
@@ -749,12 +792,14 @@ class DeliveryNoteService:
             # 清多态 holder / location（顺手修老 bug：state machine 不动 current_holder_id）
             p.current_holder_id = None
             p.location = None
-            # PICKED_UP 时把关联置 NULL，让前端 PartDetail「所属送货单」消失
-            p.delivery_note_id = None
+            # 2026-07-23 决策：保留 p.delivery_note_id 以便 PICKED_UP/ARCHIVED 后
+            # 仍可走 /print 端点打印归档原件；add_parts 的「已在别单」校验只挡 active
+            # 单（DRAFT/SUBMITTED），DELIVERED 件本身被 status 校验挡掉，不会误用。
             p.updated_by = self._user_id
             await self.parts.update(p)
 
-        # 单据 SUBMITTED → PICKED_UP → ARCHIVED（同一事务）
+        # 单据 SUBMITTED → PICKED_UP（2026-07-23 决策：停在 PICKED_UP，不自动
+        # archive；PICKED_UP 展示为「已送货」。ARCHIVED 状态暂不使用，保留定义。）
         await refresh_for_state_machine(
             self.session, obj,
             attrs=("status", "version", "updated_at"),
@@ -766,19 +811,13 @@ class DeliveryNoteService:
         obj.picked_up_by = self._user_id
         obj.updated_by = self._user_id
         await self.notes.update(obj)
-
-        obj.sm.archive(
-            event_repo=self.note_events, created_by=self._user_id,
-        )
-        obj.updated_by = self._user_id
-        await self.notes.update(obj)
         await self._flush()
 
         if self._broadcaster is not None:
             await self._broadcaster()
         if self._event_broadcaster is not None:
             await self._event_broadcaster(
-                "DELIVERY_NOTE_ARCHIVED",
+                "DELIVERY_NOTE_PICKED_UP",
                 {
                     "delivery_note_id": obj.id,
                     "delivery_note_no": obj.delivery_note_no,
@@ -787,6 +826,9 @@ class DeliveryNoteService:
                 },
             )
 
+        # 2026-07-23 修复：pickup 的 UPDATE 之后，updated_at expired，
+        # 必须 refresh 再 `_to_out` 防 MissingGreenlet
+        await self._serialize_after_mutation(obj)
         from schema.delivery_note import DeliveryNoteOut
         return await self._to_out(obj)
 
@@ -817,6 +859,174 @@ class DeliveryNoteService:
         ]
 
     # ============================================================
+    # 2026-07-23 增强：partial update / 候选零件 / 打印
+    # ============================================================
+
+    async def update(
+        self,
+        note_id: str,
+        *,
+        version: int,
+        delivery_date: "date | None" = None,
+        note_text: str | None = None,
+    ):
+        """DRAFT / SUBMITTED 单 partial 更新：送货日期 / 备注。
+
+        - `delivery_date=None` 视作「不改」（与 Pydantic 默认对齐）；
+          未来要支持清空另加 `clear_delivery_date: bool` 字段。
+        - `note_text=None` 同上「不改」；空串视作「清空」写 NULL 入 DB。
+        """
+        nid_int = parse_snowflake_id(note_id, field_name="id")
+        obj = await self.notes.get_by_id(nid_int)
+        if obj is None:
+            raise BizError(
+                code=ErrCode.BIZ_DELIVERY_NOTE_NOT_FOUND,
+                message=f"delivery note {note_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if obj.version != version:
+            raise BizError(
+                code=ErrCode.BIZ_VERSION_CONFLICT,
+                message=(
+                    f"delivery note version conflict: "
+                    f"server={obj.version} client={version}"
+                ),
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
+        if obj.status not in (
+            DeliveryNoteStatus.DRAFT.value,
+            DeliveryNoteStatus.SUBMITTED.value,
+        ):
+            raise BizError(
+                code=ErrCode.BIZ_DELIVERY_NOTE_INVALID_TRANSITION,
+                message=(
+                    f"cannot update {obj.status} note; "
+                    "only DRAFT/SUBMITTED is editable"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        changed = False
+        if delivery_date is not None and delivery_date != obj.delivery_date:
+            obj.delivery_date = delivery_date
+            changed = True
+        if note_text is not None and note_text != obj.note:
+            obj.note = note_text.strip() or None
+            changed = True
+        if changed:
+            obj.updated_by = self._user_id
+            await self.notes.update(obj)
+            await self._flush()
+            # 2026-07-23 修复：post-flush refresh 防 MissingGreenlet
+            await self._serialize_after_mutation(obj)
+
+        from schema.delivery_note import DeliveryNoteOut
+        return await self._to_out(obj)
+
+    async def list_candidate_parts(self, customer_id: str) -> list:
+        """L1 根下 status ∈ {INSPECTION, READY_TO_SHIP} 的候选入单零件。
+
+        - 必须传 L1 root id；L2 直接拒；
+        - 不在 active 单（DRAFT/SUBMITTED）上的件才出现；
+        - 同 L1 根下所有 active 子客户 (含自身) 跨子厂一起列出；
+        - service 层做 active 单去重（一次性 batch 查 notes，避免每行一个 SQL）。
+        """
+        cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
+        cust = await self.customers.get_by_id(cid_int)
+        if cust is None:
+            raise BizError(
+                code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
+                message=f"customer {customer_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if cust.parent_id is not None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"customer {customer_id} 不是一级客户；"
+                    "candidate-parts 必须传一级客户"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # L1 根下所有 active 子客户 (L2) + L1 自身
+        children = await self.customers.list_children(cid_int, include_deleted=False)
+        customer_ids = [c.id for c in children] + [cid_int]
+
+        rows = await self.parts.list_with_filters(
+            customer_ids_in=customer_ids,
+            statuses=[PartStatus.INSPECTION, PartStatus.READY_TO_SHIP],
+            keyword=None,
+            sort_by=DeliveryNoteSortKey.CREATED_AT,
+            sort_dir=None,
+            limit=2000, offset=0, include_deleted=False,
+        )
+
+        # 过滤：不在 active 单上（即 delivery_note_id IS NULL 或仅指向 PICKED_UP/ARCHIVED）。
+        # 一次 SQL：把候选行里出现的非空 delivery_note_id 集合拉一次 notes.list_by_ids，
+        # 在 Python 里就 set 判断。
+        active_note_ids: set[int] = set()
+        linked_note_ids = {
+            p.delivery_note_id for p in rows
+            if p.delivery_note_id is not None
+        }
+        if linked_note_ids:
+            linked_notes = await self.notes.list_by_ids(list(linked_note_ids))
+            active_note_ids = {
+                n.id for n in linked_notes
+                if n.status in (
+                    DeliveryNoteStatus.DRAFT.value,
+                    DeliveryNoteStatus.SUBMITTED.value,
+                )
+            }
+
+        # 把每个 part 的 L2 叶子客户名一次性拉出（避免 N+1）
+        leaf_ids = list({p.customer_id for p in rows})
+        leaf_list = await self.customers.list_by_ids(leaf_ids) if leaf_ids else []
+        leaf_map: dict[int, "Any"] = {c.id: c for c in leaf_list}
+
+        from schema.delivery_note import DeliveryNoteCandidatePart
+        result: list[DeliveryNoteCandidatePart] = []
+        for p in rows:
+            if p.delivery_note_id is not None and p.delivery_note_id in active_note_ids:
+                continue  # 在 active 单上，跳过
+            leaf = leaf_map.get(p.customer_id)
+            result.append(DeliveryNoteCandidatePart(
+                id=str(p.id),
+                serial_no=p.serial_no or "",
+                drawing_no=p.drawing_no or "",
+                name=p.name or "",
+                quantity=p.quantity,
+                applicant_name=p.applicant_name,
+                status=p.status,
+                planned_delivery_date=p.planned_delivery_date,
+            ))
+        return result
+
+    async def print_xlsx(self, note_id: str) -> tuple[bytes, str]:
+        """按 L1 客户前缀分发模板（template/delivery_note_{prefix}.xlsx），
+        返回 (bytes, prefix)；状态不限（DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 都可）。
+
+        真正的填表逻辑在 `service/delivery_note_print.py::DeliveryNotePrintService`；
+        这里只负责 note 加载 + 薄包装。
+        """
+        from service.delivery_note_print import DeliveryNotePrintService
+        nid_int = parse_snowflake_id(note_id, field_name="id")
+        obj = await self.notes.get_by_id(nid_int)
+        if obj is None:
+            raise BizError(
+                code=ErrCode.BIZ_DELIVERY_NOTE_NOT_FOUND,
+                message=f"delivery note {note_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        printer = DeliveryNotePrintService(
+            notes=self.notes,
+            parts=self.parts,
+            customers=self.customers,
+        )
+        return await printer.render(obj)
+
+    # ============================================================
     # 内部：scanned serial 累积（按 PICKUP_SCANNED 事件去重）
     # ============================================================
 
@@ -831,6 +1041,27 @@ class DeliveryNoteService:
 
     async def _flush(self) -> None:
         await self.session.flush()
+
+    async def _serialize_after_mutation(self, obj: "TDeliveryNote") -> None:
+        """在 mutation 路径末尾（构造响应前）确保 obj 的 server-side 列
+        已 async-loaded。
+
+        2026-07-23 修复：``AuditMixin.updated_at`` 是 ``onupdate=func.now()``
+        server-side 列，每次 ORM flush 后会被 SQLAlchemy 标为 expired。后续
+        ``_to_out(obj)`` 同步读 ``obj.updated_at`` 会触发隐式 SELECT，
+        在 AsyncSession 下抛 ``MissingGreenlet`` —— 表现是
+        ``POST /delivery-notes/{id}/submit`` 报 500 DATABASE_ERROR。
+
+        解法：每次 ``notes.update(obj) → _flush()`` 之后、``_to_out(obj)`` 之前
+        显式 ``session.refresh(obj, attribute_names=("updated_at",))``。
+        只刷必要列，避免覆盖同事务内尚未 flush 的其他字段。
+
+        所有 mutation 路径（submit / recall / pickup / update）统一调用本方法
+        避免漂移。
+        """
+        await refresh_for_state_machine(
+            self.session, obj, attrs=("updated_at",),
+        )
 
     # ============================================================
     # 内部：ORM → 出参
@@ -876,6 +1107,7 @@ class DeliveryNoteService:
             driver_worker_name=driver_name,
             part_count=part_count,
             note=obj.note,
+            delivery_date=obj.delivery_date,
             created_at=obj.created_at,
             updated_at=obj.updated_at,
         )
@@ -891,9 +1123,41 @@ class DeliveryNoteService:
             DeliveryNoteLineItem,
         )
         head = await self._to_out(obj)
+
+        # 2026-07-23 R2-C：一次性批查所有 part 的 L2 叶子客户 + L1 父客户，
+        # 避免 N+1（沿用 delivery_note_print.py::render 同款模式）
+        if parts:
+            leaf_ids = list({p.customer_id for p in parts})
+            leaf_list = await self.customers.list_by_ids(leaf_ids)
+            leaf_map: dict[int, "Any"] = {c.id: c for c in leaf_list}
+            parent_ids = [c.parent_id for c in leaf_list if c.parent_id]
+            parent_list = (
+                await self.customers.list_by_ids(list(set(parent_ids)))
+                if parent_ids else []
+            )
+            parent_map: dict[int, "Any"] = {c.id: c for c in parent_list}
+        else:
+            leaf_map = {}
+            parent_map = {}
+
         items: list[DeliveryNoteLineItem] = []
         for p in parts:
             line_serial = p.serial_no or str(p.id)
+            leaf = leaf_map.get(p.customer_id)
+            parent = (
+                parent_map.get(leaf.parent_id)
+                if leaf and leaf.parent_id else None
+            )
+            leaf_name = leaf.name if leaf else None
+            parent_name = (
+                parent.name if parent
+                else (leaf_name if leaf else None)  # L1 root 自指同 leaf
+            )
+            path = (
+                f"{parent_name} / {leaf_name}"
+                if (parent_name and leaf_name and parent_name != leaf_name)
+                else leaf_name
+            )
             items.append(DeliveryNoteLineItem(
                 id=str(p.id),
                 serial_no=p.serial_no or "",
@@ -902,6 +1166,15 @@ class DeliveryNoteService:
                 quantity=p.quantity,
                 is_urgent=p.is_urgent,
                 status=p.status,
+                applicant_name=p.applicant_name,
+                request_date=p.request_date,
+                planned_delivery_date=p.planned_delivery_date,
+                system_delivery_date=p.system_delivery_date,
+                order_no=p.order_no,
+                note=p.note,
+                customer_name=leaf_name,
+                parent_customer_name=parent_name,
+                customer_path=path,
                 is_scanned=line_serial in scanned_serials,
                 scanned=line_serial in scanned_serials,
             ))
