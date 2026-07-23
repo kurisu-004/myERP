@@ -62,7 +62,7 @@ model/*.py           # SQLAlchemy ORM
 | 工种-工序 | `TWorkTypeProcess` | `WorkTypeProcessRepository` | `work_type_process.py` | (并入 work_type 路由) |
 | 外协公司 | `TOutsourceCompany` | `OutsourceCompanyRepository` | `outsource_company.py` | `api/v1/outsource_company.py` |
 | 外协报价 | `TOutsourceQuote` | `OutsourceQuoteRepository` | `outsource_quote.py` | `api/v1/outsource_quote.py` |
-| 送货单 | (无 model，READY_TO_SHIP 零件聚合) | — | `delivery_note.py` | `api/v1/delivery_note.py` |
+| 送货单 | `TDeliveryNote` / `TDeliveryNoteCounter` / `TDeliveryNoteEvent` | `DeliveryNote{Repository,EventRepository,CounterRepository}` | `delivery_note.py` / `delivery_note_print.py`（XLSX 模板填表） | `api/v1/delivery_note.py` |
 | 用户/角色 | `TUser` / `TUserRole` | `UserRepository` / `UserRoleRepository` | `auth.py` / `user.py` | `api/v1/auth.py` / `user.py` |
 | 菜单 | `TMenu` / `TRoleMenu` | `MenuRepository` | `menu.py` | (auth 返回) |
 | 流水号 | `TSerialCounter` | `SerialCounterRepository` | — | — |
@@ -311,7 +311,7 @@ frontend/src/
 
 `alembic/versions/` 下用 **12 位零填充数字** revision id（如 `000000000001_schema_init.py`），不是 hex。模块顶部写明 `revision` / `down_revision` / `Create Date`，docstring 说明要点。
 
-**当前迁移（4 文件，线性链，单 head = `000000000005`）**：
+**当前迁移（5 个 schema + 4 个 prod_data 共 9 文件，schema 链 001 → 003 → 005 → 009 → 010，单 head = `000000000010`）**：
 
 | 文件 | revision | down | 内容 |
 |------|----------|------|------|
@@ -319,9 +319,14 @@ frontend/src/
 | `prod_data/000000000002_data_init.py` | `000000000002` | `000000000001` | 唯一数据种子（全部 ON CONFLICT 幂等，无假数据）：工种 / 工序 / 工种↔工序映射 / 真实工人 / 账号（密码 changeme）/ 菜单 + role_menu / `t_serial_counter` A-Z 全 26 行 / 货架↔工序默认映射（每 active PRODUCTION 架映射 5 个 INHOUSE 工序）。 |
 | `schema/000000000003_outsource_quote.py` | `000000000003` | `000000000002` | 外协：`t_outsource_company` / `t_outsource_quote` / `t_outsource_quote_event` / `t_outsource_company_process` + Part 外协状态/位置支持。 |
 | `schema/000000000005_add_part_order_note.py` | `000000000005` | `000000000003` | `t_part` 加 `order_no` / `system_delivery_date` / `note` 三列。 |
+| `prod_data/000000000006_inspector_menus.py` | `000000000006` | `000000000005` | 巡检员 (INSPECTOR) 菜单种子。 |
+| `prod_data/000000000007_inspector_dashboard.py` | `000000000007` | `000000000006` | INSPECTOR 看板卡片种子。 |
+| `prod_data/000000000008_remove_assemblies_new_menu.py` | `000000000008` | `000000000007` | 删除装配体（assemblies_new）老菜单条目。 |
+| `schema/000000000009_delivery_note.py` | `000000000009` | `000000000008` | 送货单：`t_delivery_note` / `t_delivery_note_event` / `t_delivery_note_counter` + `t_part.delivery_note_id`；状态机 DRAFT ↔ SUBMITTED → PICKED_UP → ARCHIVED；菜单 `delivery_notes_manage`。 |
+| `schema/000000000010_add_delivery_note_delivery_date.py` | `000000000010` | `000000000009` | `t_delivery_note.delivery_date`（Date NULL；默认 = 创建当天）；DRAFT/SUBMITTED 可改；PICKED_UP/ARCHIVED 后保留打印能力。 |
 
 - `alembic.ini`：`version_locations = schema:prod_data`（`recursive_version_locations = true`）。**无 `dev_data/` 目录**。
-- `alembic heads` 只返 1 行（`000000000005`）；`alembic upgrade head` 单命令即可（Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
+- `alembic heads` 只返 1 行（`000000000010`）；`alembic upgrade head` 单命令即可（Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
 - 冷启结果：seed 表有数据，业务表（part/customer/assembly/applicant/outsource）为空。
 - **新 schema 迁移放 `schema/` 子目录**，revision id 用下一个 12 位数字，`down_revision` 指向当前 head。改 `schema_init` 时验收门：全新库 `upgrade head` 后 `pg_dump --schema-only` 与旧链对比无意外差异。
 - **已有库对齐**：确认 schema 等价后 `alembic stamp <head>` 即可；dev 本地假数据另写独立 seed 脚本（不走迁移）。
@@ -469,7 +474,7 @@ frontend/src/
 - **DrawingService / PartFileService / CncProgramService**：文件上传（SHA 去重）/ 列表 / download-url / content / delete。
 - **OutsourceCompanyService**：外协公司 CRUD + 工序映射替换。
 - **OutsourceQuoteService**：报价 CRUD + 审批生命周期（DRAFT/SUBMITTED/APPROVED/REJECTED/USED）+ 事件 + 可发外协零件。
-- **DeliveryNoteService**（`service/delivery_note.py`）：按客户前缀模板生成 Excel 送货单（含条码）。
+- **DeliveryNoteService**（`service/delivery_note.py`）：DRAFT ↔ SUBMITTED → PICKED_UP → ARCHIVED 状态机 + 候选零件勾选（INSPECTION + READY_TO_SHIP）+ partial update（送货日期 / 备注）+ 前缀分发 XLSX 打印（走 `delivery_note_print.py::DeliveryNotePrintService`，复用 PR-F 的 `TEMPLATE_CONFIGS` / `CellBinding`，模板文件 `template/delivery_note_fala.xlsx` / `template/delivery_note_luda.xlsx` 与 `core.config::delivery_note_template_by_prefix` 单 head 接入）。错误码 `BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED` / `BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS`（仍在 `core/error_code.py`）。pickup 完成后保留 `t_part.delivery_note_id` 指向归档单（便于 PICKED_UP/ARCHIVED 仍可打印）；add_parts 仅挡 active 单冲突。
 - **ShelfProcessService**：列 / 原子替换货架↔工序有序映射。
 - **ApplicantService**：申请人 CRUD + search + get_or_create + bulk_get_or_create（挂一级客户；被引用拒删）。
 - **auto_complete**（`service/auto_complete.py`）：周期把足够老的 DELIVERED 零件推 COMPLETED（阈值用 `now_naive()`，与 DB `now()` 同源）。
