@@ -13,15 +13,20 @@
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 
 from api.deps import get_delivery_note_service
+from core.error_code import ErrCode
+from core.exception import BizError
 from core.permission import (
     CurrentUser,
+    get_current_user,
     require_auth,
     require_roles,
 )
+from core.security import create_download_token, decode_download_token
+from fastapi import status as http_status
 from model.enums import (
     DeliveryNoteSortKey,
     SortDir,
@@ -47,6 +52,47 @@ from service.delivery_note import DeliveryNoteService
 router = APIRouter(prefix="/delivery-notes", tags=["送货单"])
 
 _OFFICE_DEP = [Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))]
+
+_OFFICE_ROLES = (UserRole.MANAGER, UserRole.CLERK)
+
+
+async def require_delivery_print_auth(
+    note_id: str,
+    request: Request,
+    token: str | None = Query(default=None),
+) -> None:
+    """打印下载端点鉴权：优先 `?token=`（短期下载 token），否则回退 Bearer 头。
+
+    浏览器原生下载走 `<a href download>` 导航，无法带 Authorization 头，
+    因此前端先 `POST /{id}/print-token` 换一个短期 token 放 URL query。
+    无 token 时回退头部鉴权（保留 axios / 调试兼容）。两条路径都要求
+    MANAGER / CLERK 角色。
+    """
+    if token:
+        payload = decode_download_token(token)
+        roles = tuple(payload.get("roles") or ())
+        if not any(r.value in roles for r in _OFFICE_ROLES):
+            raise BizError(
+                code=ErrCode.FORBIDDEN,
+                message="download token missing office role",
+                http_status=http_status.HTTP_403_FORBIDDEN,
+            )
+        if str(payload.get("note_id")) != str(note_id):
+            raise BizError(
+                code=ErrCode.BIZ_AUTH_INVALID,
+                message="download token note mismatch",
+                http_status=http_status.HTTP_401_UNAUTHORIZED,
+            )
+        return
+    # 回退：Bearer 头 + office 角色
+    user = await get_current_user(request)
+    if not any(user.has_role(r) for r in _OFFICE_ROLES):
+        raise BizError(
+            code=ErrCode.FORBIDDEN,
+            message="one of roles [MANAGER, CLERK] required",
+            http_status=http_status.HTTP_403_FORBIDDEN,
+        )
+    return
 
 
 # ============================================================
@@ -314,13 +360,33 @@ async def soft_delete_delivery_note(
 # 6. 打印（CLERK / MANAGER；全 4 状态可打）
 #    按 L1 客户的序列号前缀分发 template/delivery_note_{prefix}.xlsx
 # ============================================================
+@router.post(
+    "/{note_id}/print-token",
+    summary="换取送货单打印短期下载 token（供浏览器原生下载走 URL query）",
+    dependencies=_OFFICE_DEP,
+)
+async def create_delivery_print_token(
+    note_id: str,
+    user: CurrentUser = Depends(require_roles(UserRole.MANAGER, UserRole.CLERK)),
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> dict:
+    nid_int = await svc.assert_exists(note_id)
+    token = create_download_token(
+        user_id=user.id,
+        username=user.username,
+        roles=list(user.roles),
+        note_id=nid_int,
+    )
+    return {"token": token}
+
+
 @router.get(
     "/{note_id}/print",
     summary=(
         "下载送货单 XLSX（按 L1 客户前缀分发 F/L 模板；"
         "DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 全状态可打）"
     ),
-    dependencies=_OFFICE_DEP,
+    dependencies=[Depends(require_delivery_print_auth)],
 )
 async def print_delivery_note(
     note_id: str,
@@ -331,5 +397,8 @@ async def print_delivery_note(
     return Response(
         content=xlsx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(xlsx_bytes)),
+        },
     )

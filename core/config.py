@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     # 未映射的前缀 → 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED。
     # 模板由用户提供（含公司抬头 / 列头 / 签字栏），代码只填值。
     # 2026-07-20 起切换到 `template/` 下的新模板（法 = Sheet1 / 路 = 杏南）；
+    # 2026-07-24 法拉换新模板（洪升宏 26.7.24，单份 10 行 R3-R12，超出自动分页）。
     # 老的 `docs/example/送货单_*.xlsx` 不再使用。
     delivery_note_template_by_prefix: dict[str, str] = Field(
         default={

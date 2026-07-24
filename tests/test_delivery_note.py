@@ -576,7 +576,7 @@ async def test_pickup_rejects_non_driver_worker(clean_db):
 # T18: print_xlsx 把 note.delivery_date 写到模板 footer（2026-07-23 Bug 2）
 # ============================================================
 async def test_print_xlsx_delivery_date_fala(clean_db):
-    """法拉模板：A21 合并区整体覆盖为「送货日期：YYYY年M月D日」。
+    """法拉模板：A17 合并区整体覆盖为「送货日期：YYYY年M月D日」。
 
     之前是静态字面量「送货日期：  2026年7月14日」；现由代码按
     `note.delivery_date` 覆盖。
@@ -605,7 +605,7 @@ async def test_print_xlsx_delivery_date_fala(clean_db):
 
     wb = load_workbook(io.BytesIO(xlsx_bytes))
     ws = wb["Sheet1"]
-    assert ws["A21"].value == "送货日期：2026年7月23日"
+    assert ws["A17"].value == "送货日期：2026年7月23日"
 
 
 async def test_print_xlsx_delivery_date_luda(clean_db):
@@ -665,7 +665,7 @@ async def test_print_xlsx_null_delivery_date_falls_back_to_today(clean_db):
     wb = load_workbook(io.BytesIO(xlsx_bytes))
     ws = wb["Sheet1"]
     today = now_naive().date()
-    assert ws["A21"].value == f"送货日期：{today.year}年{today.month}月{today.day}日"
+    assert ws["A17"].value == f"送货日期：{today.year}年{today.month}月{today.day}日"
 
 
 # ============================================================

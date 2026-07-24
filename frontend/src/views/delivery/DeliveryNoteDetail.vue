@@ -14,7 +14,8 @@ import {
   addParts,
   getNote,
   listNoteEvents,
-  printNote,
+    getPrintToken,
+  buildPrintUrl,
   removeParts,
   recallNote,
   softDeleteNote,
@@ -158,15 +159,14 @@ async function onPrint() {
   if (!note.value) return
   printing.value = true
   try {
-    const blob = await printNote(note.value.id)
-    const url = URL.createObjectURL(blob)
+    // 换短期 token → 浏览器原生下载（进度显示在下载栏），不再走 blob 全量缓冲
+    const { token } = await getPrintToken(note.value.id)
     const a = document.createElement('a')
-    a.href = url
+    a.href = buildPrintUrl(note.value.id, token)
     a.download = `送货单_${note.value.delivery_note_no}.xlsx`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    URL.revokeObjectURL(url)
   } catch (e) {
     ElMessage.error((e as Error).message ?? '打印失败')
   } finally {

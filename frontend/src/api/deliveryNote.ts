@@ -241,10 +241,17 @@ export async function updateNote(
   return resp.data
 }
 
-// 15) print：返回 XLSX blob，按 L1 客户前缀分发 F/L 模板
-export async function printNote(noteId: string): Promise<Blob> {
-  const resp = await api.get(`/delivery-notes/${noteId}/print`, {
-    responseType: 'blob',
-  })
-  return resp.data as Blob
+// 15) print-token：换取短期下载 token，供浏览器原生下载走 URL query
+//     （原生下载 `<a href download>` 导航无法带 Authorization 头）。
+export async function getPrintToken(noteId: string): Promise<{ token: string }> {
+  const resp = await api.post<{ token: string }>(
+    `/delivery-notes/${noteId}/print-token`,
+  )
+  return resp.data
 }
+
+// 拼装打印下载 URL（浏览器原生下载；进度显示在下载栏）。
+export function buildPrintUrl(noteId: string, token: string): string {
+  return `/api/v1/delivery-notes/${noteId}/print?token=${encodeURIComponent(token)}`
+}
+

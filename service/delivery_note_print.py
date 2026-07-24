@@ -3,8 +3,8 @@
 设计要点（沿用 PR-F 历史决策）：
 - 按 L1 客户的序列号前缀（A-Z）从 `core.config.settings.delivery_note_template_by_prefix`
   选对应 xlsx 模板；
-- 数据行超过 `cfg.max_rows` → 400 BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS
-  （保护签字栏不被覆盖；F=R3-R16=14 行 / L=R5-R29=25 行）；
+- 数据行超过 `cfg.max_rows` → 自动分页：复制模板 sheet，续到下一份/下一页
+  （2026-07-24 起；此前法拉超过 14 行会抛 BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS）；
 - 任一零件缺 serial_no / drawing_no → 跳过 + logger.warning（不抛错）；
 - prefix 未配置 / sheet 名不匹配 → 400 BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED /
   BIZ_INVALID_VALUE；
@@ -14,9 +14,10 @@
 
 模板字段含义（service 层不读，但供维护参考）：
 - 法拉（`template/delivery_note_fala.xlsx`，Sheet 'Sheet1'）：
-  R1 公司抬头（merged A1:J1）；R2 列头；R3-R16 数据（14 行）；
-  R17-R21 收货/送货签字栏（merged cells）；R21 合并 A21:J21 是「送货日期：YYYY年M月D日」
-  文案，由 `_write_footer` 覆盖（2026-07-23）。
+  2026-07-24 换新模板（洪升宏 26.7.24），单份最多 10 行。
+  R1 公司抬头（merged A1:J1）；R2 列头；R3-R12 数据（10 行）；
+  R13-R17 收货/送货签字栏（merged cells）；R17 合并 A17:J17 是「送货日期：YYYY年M月D日」
+  文案，由 `_write_footer` 覆盖。超 10 行按每页 10 行复制 sheet 续打。
 - 路达（`template/delivery_note_luda.xlsx`，Sheet '杏南'）：
   R1 标题（merged A1:I1）；R2 送货日期（H2='送货日期' + I2=日期）；R3-R4 双行表头
   （含 G3:H3 / G4 / H4 合并）；R5-R29 数据（25 行）；R30-R31 填写说明。
@@ -73,11 +74,11 @@ class TemplateConfig:
 
 
 TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
-    # 法拉：Sheet 'Sheet1'，数据 R3-R16（14 行），R17-R21 为签字栏
+    # 法拉：Sheet 'Sheet1'，数据 R3-R12（10 行），R13-R17 为签字栏；超 10 行自动分页
     "F": TemplateConfig(
         sheet_name="Sheet1",
         start_row=3,
-        max_rows=14,
+        max_rows=10,
         barcode_col=None,
         bindings=(
             CellBinding(1, "row_index"),
@@ -207,15 +208,6 @@ class DeliveryNotePrintService:
                 message="所选零件均不可用（缺流水号或图号）",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        if len(rows) > cfg.max_rows:
-            raise BizError(
-                code=ErrCode.BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS,
-                message=(
-                    f"本单零件 {len(rows)} 件超过模板 {prefix!r} 的最大行数 "
-                    f"{cfg.max_rows}；请分单打印"
-                ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
 
         # 3) 一次性查每个 part 的 L2 叶子客户 + L1 父（customer_name 用 L2、parent_name 留作备用）
         leaf_ids = list({p.customer_id for p in rows})
@@ -228,31 +220,50 @@ class DeliveryNotePrintService:
         )
         parent_map: dict[int, TCustomer] = {c.id: c for c in parent_list}
 
-        # 4) 填表（开放为同步 IO；openpyxl CPU-bound + 不重 IO，run_in_executor 即可）
-        def _fill() -> bytes:
-            for idx, p in enumerate(rows, start=1):
-                target_row = cfg.start_row + idx - 1
-                leaf = leaf_map.get(p.customer_id)
-                ctx: dict[str, Any] = {
-                    "row_index": idx,
-                    "part": p,
-                    "customer_name": leaf.name if leaf else "",
-                    "parent_name": (
-                        parent_map[leaf.parent_id].name
-                        if leaf and leaf.parent_id and leaf.parent_id in parent_map
-                        else ""
-                    ),
-                }
-                for binding in cfg.bindings:
-                    val = _resolve_cell(binding, ctx)
-                    if val is not None:
-                        ws.cell(row=target_row, column=binding.col, value=val)
+        # 4) 分页填表：每页最多 cfg.max_rows 行；超出自动续到下一份（复制模板 sheet）。
+        #    openpyxl CPU-bound + 无重 IO，用 asyncio.to_thread 包裹整段同步逻辑。
+        def _fill_row(sheet, idx_in_page: int, p: TPart) -> None:
+            target_row = cfg.start_row + idx_in_page - 1
+            leaf = leaf_map.get(p.customer_id)
+            ctx: dict[str, Any] = {
+                "row_index": idx_in_page,
+                "part": p,
+                "customer_name": leaf.name if leaf else "",
+                "parent_name": (
+                    parent_map[leaf.parent_id].name
+                    if leaf and leaf.parent_id and leaf.parent_id in parent_map
+                    else ""
+                ),
+            }
+            for binding in cfg.bindings:
+                val = _resolve_cell(binding, ctx)
+                if val is not None:
+                    sheet.cell(row=target_row, column=binding.col, value=val)
 
-            # 5) 写模板级 footer / header 日期（2026-07-23 新增；之前模板字面量陈旧）：
-            #    - 法拉 A21 合并区整段覆盖成「送货日期：YYYY年M月D日」（保留合并）
+        def _fill() -> bytes:
+            pages = [
+                rows[i : i + cfg.max_rows]
+                for i in range(0, len(rows), cfg.max_rows)
+            ]
+            # 复制发生在 base sheet 仍空白时，确保每份都是干净模板（不带上页数据）。
+            base_pa = ws.print_area if isinstance(ws.print_area, str) else None
+            local_pa = base_pa.split("!")[-1] if base_pa else None
+            sheets = [ws]
+            for n in range(1, len(pages)):
+                cp = wb.copy_worksheet(ws)
+                cp.title = f"{cfg.sheet_name} ({n + 1})"
+                if local_pa:
+                    cp.print_area = local_pa
+                sheets.append(cp)
+
+            # 5) 逐页填数据 + 写 footer 日期（footer 见 `_write_footer`）：
+            #    - 法拉 A17 合并区整段覆盖成「送货日期：YYYY年M月D日」（保留合并）
             #    - 路达 I2 写入 date 对象（保留模板 numFmtId=31 内置日期格式）
             #    - delivery_date 为 NULL（旧库 010 之前的数据）回退到当天
-            _write_footer(ws, note=note, prefix=prefix)
+            for page_rows, sheet in zip(pages, sheets):
+                for idx, p in enumerate(page_rows, start=1):
+                    _fill_row(sheet, idx, p)
+                _write_footer(sheet, note=note, prefix=prefix)
 
             buf = io.BytesIO()
             wb.save(buf)
@@ -311,7 +322,7 @@ def _resolve_footer_date(note: TDeliveryNote) -> date:
 def _write_footer(ws, *, note: TDeliveryNote, prefix: str) -> None:
     """把 `note.delivery_date` 写到模板的 footer / header 日期单元格。
 
-    - ``prefix == "F"``：覆盖法拉模板合并区 A21 整段为「送货日期：YYYY年M月D日」
+    - ``prefix == "F"``：覆盖法拉模板合并区 A17 整段为「送货日期：YYYY年M月D日」
       （保留合并 + 模板原有样式：右对齐 + 缩字 + 边框 + General 格式）。
     - ``prefix == "L"``：写路达模板 H2='送货日期' 旁的 I2 为 Python ``date`` 对象
       （openpyxl 自动应用模板内 numFmtId=31 内置日期格式，Excel 显示为
@@ -322,7 +333,7 @@ def _write_footer(ws, *, note: TDeliveryNote, prefix: str) -> None:
     """
     effective = _resolve_footer_date(note)
     if prefix == "F":
-        ws["A21"] = _format_fala_date(effective)
+        ws["A17"] = _format_fala_date(effective)
     elif prefix == "L":
         ws["I2"] = effective
     else:
