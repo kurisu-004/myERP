@@ -1,6 +1,6 @@
 """WebSocket：大屏数据实时推送。
 
-- /ws/dashboard：连接成功立即推一次快照（ready_queue + in_process）。
+- /ws/dashboard：连接成功后等待客户端订阅 Dashboard 频道，再推一次快照。
 - 业务侧（service 层）状态变更成功后调用 `broadcast_dashboard_snapshot`
   触发立即推送；通知横幅走 `broadcast_dashboard_event`。
 
@@ -9,14 +9,13 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from core.database import SessionLocal
-from core.error_code import ErrCode
 from core.exception import BizError
 from core.security import decode_access_token
 from core.time import now_shanghai_iso
@@ -27,6 +26,10 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+DASHBOARD_CHANNEL = "dashboard"
+EVENTS_CHANNEL = "events"
+SubscriptionChannel = Literal["dashboard", "events"]
 
 
 async def _resolve_user_from_ws(ws: WebSocket, token: str | None) -> int | None:
@@ -55,22 +58,53 @@ async def _resolve_user_from_ws(ws: WebSocket, token: str | None) -> int | None:
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: list[WebSocket] = []
+        self._subscriptions: dict[WebSocket, set[str]] = {}
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
         self.active.append(ws)
+        self._subscriptions[ws] = set()
         logger.info("ws dashboard connected, total=%d", len(self.active))
 
     def disconnect(self, ws: WebSocket) -> None:
         if ws in self.active:
             self.active.remove(ws)
+            self._subscriptions.pop(ws, None)
             logger.info("ws dashboard disconnected, total=%d", len(self.active))
 
-    async def broadcast(self, message: str) -> None:
-        if not self.active:
+    def subscribe(self, ws: WebSocket, channel: SubscriptionChannel) -> bool:
+        if ws not in self.active:
+            return False
+        subscriptions = self._subscriptions.setdefault(ws, set())
+        if channel in subscriptions:
+            return False
+        subscriptions.add(channel)
+        return True
+
+    def unsubscribe(self, ws: WebSocket, channel: SubscriptionChannel) -> None:
+        self._subscriptions.get(ws, set()).discard(channel)
+
+    def has_subscribers(self, channel: SubscriptionChannel) -> bool:
+        return any(channel in self._subscriptions.get(ws, set()) for ws in self.active)
+
+    def is_subscribed(self, ws: WebSocket, channel: SubscriptionChannel) -> bool:
+        return ws in self.active and channel in self._subscriptions.get(ws, set())
+
+    async def send(self, ws: WebSocket, message: str, channel: SubscriptionChannel) -> None:
+        if not self.is_subscribed(ws, channel):
+            return
+        try:
+            await ws.send_text(message)
+        except Exception:
+            self.disconnect(ws)
+
+    async def broadcast(self, message: str, channel: SubscriptionChannel) -> None:
+        if not self.has_subscribers(channel):
             return
         dead: list[WebSocket] = []
-        for ws in self.active:
+        for ws in list(self.active):
+            if not self.is_subscribed(ws, channel):
+                continue
             try:
                 await ws.send_text(message)
             except Exception:
@@ -97,9 +131,42 @@ async def _build_and_broadcast() -> None:
     try:
         async with SessionLocal() as session:
             data = await build_snapshot_with_workers(session)
-        await manager.broadcast(_snapshot_payload(data))
+        await manager.broadcast(_snapshot_payload(data), DASHBOARD_CHANNEL)
     except Exception:
         logger.exception("dashboard snapshot/broadcast failed")
+
+
+async def _build_and_send_snapshot(ws: WebSocket) -> None:
+    try:
+        async with SessionLocal() as session:
+            data = await build_snapshot_with_workers(session)
+        await manager.send(ws, _snapshot_payload(data), DASHBOARD_CHANNEL)
+    except Exception:
+        logger.exception("dashboard snapshot/send failed")
+
+
+async def _handle_subscription_message(ws: WebSocket, raw_message: str) -> None:
+    try:
+        message = json.loads(raw_message)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("ignoring invalid dashboard WS control message")
+        return
+    if not isinstance(message, dict):
+        return
+
+    message_type = message.get("type")
+    channel = message.get("channel")
+    if channel not in (DASHBOARD_CHANNEL, EVENTS_CHANNEL):
+        logger.warning("ignoring dashboard WS control message with invalid channel: %r", channel)
+        return
+
+    if message_type == "subscribe":
+        changed = manager.subscribe(ws, channel)
+        if changed and channel == DASHBOARD_CHANNEL:
+            # 订阅恢复后只给当前客户端补一份最新快照，不打扰其他连接。
+            await _build_and_send_snapshot(ws)
+    elif message_type == "unsubscribe":
+        manager.unsubscribe(ws, channel)
 
 
 @router.websocket("/ws/dashboard")
@@ -121,10 +188,6 @@ async def ws_dashboard(
         # application"。前端 token 过期后 dashboard.ts 的自动重连每
         # 跑一次就在后端刷一行 ERROR——这里统一吃掉。
         try:
-            # 直接发送 ``websocket.close``——ASGI spec 允许在 accept 前
-            # 拒绝连接，uvicorn 的 ``asgi_send`` 会回 HTTP 403 关闭握
-            # 手。这样比"先 accept 再 close"少一次回环，也避开
-            # accept→close 期间对端断开会触发的 OSError / WebSocketDisconnect。
             await ws.close(code=status.WS_1008_POLICY_VIOLATION)
         except (WebSocketDisconnect, RuntimeError, OSError):
             # 客户端已经在我们之前断开（ASGI 层 ``ClientDisconnected``
@@ -135,17 +198,9 @@ async def ws_dashboard(
         return
     await manager.connect(ws)
     try:
-        # 1) 连接即推：首屏立即有数据
-        async with SessionLocal() as session:
-            data = await build_snapshot_with_workers(session)
-        await ws.send_text(_snapshot_payload(data))
-
-        # 2) 保持连接
+        # 连接本身保持着，但只有收到 subscribe/dashboard 后才发送快照。
         while True:
-            try:
-                await asyncio.wait_for(ws.receive_text(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
+            await _handle_subscription_message(ws, await ws.receive_text())
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -155,7 +210,7 @@ async def ws_dashboard(
 
 
 async def broadcast_dashboard_snapshot() -> None:
-    if not manager.active:
+    if not manager.has_subscribers(DASHBOARD_CHANNEL):
         return
     await _build_and_broadcast()
 
@@ -173,6 +228,6 @@ def _event_payload(event_type: str, data: dict) -> str:
 
 
 async def broadcast_dashboard_event(event_type: str, payload: dict) -> None:
-    if not manager.active:
+    if not manager.has_subscribers(EVENTS_CHANNEL):
         return
-    await manager.broadcast(_event_payload(event_type, payload))
+    await manager.broadcast(_event_payload(event_type, payload), EVENTS_CHANNEL)

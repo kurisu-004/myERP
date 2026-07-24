@@ -289,18 +289,4 @@ router.beforeEach(async (to, _from, next) => {
   next()
 })
 
-// 全局后置守卫：进入 Dashboard 路由就重连 WS（修「点首页不会自动建立连接」bug）
-//
-// 实现：afterEach 而非 beforeEach —— beforeEach 在路由切换「前」跑，此时
-// router-view 还没切换，但用户在 Dashboard 上再次点 Dashboard 同路径
-// Vue Router 是 no-op，beforeEach 不会被重复触发；用 afterEach 同样能在 to 变化时
-// 回调一次，且不影响路由解析。
-//
-// 动态 import 防循环依赖（router → api/dashboard → 不应回 router）。
-router.afterEach((to) => {
-  if (to.name === 'Dashboard') {
-    void import('@/api/dashboard').then((m) => m.reconnectDashboard())
-  }
-})
-
 export default router
