@@ -61,6 +61,8 @@
       size="small"
       :default-sort="defaultSort"
       :row-class-name="rowClassName"
+      show-summary
+      :summary-method="totalPriceSummary"
       @sort-change="onSortChange"
       @row-dblclick="startEditAsm"
     >
@@ -204,19 +206,15 @@
           <span v-else>{{ row.unit_price ?? '—' }}</span>
         </template>
       </el-table-column>
+      <!-- 2026-07-24 v2 调整：总价由 quantity × unit_price 前端实时计算（只读展示，与 PartsList 对齐） -->
       <el-table-column label="总价" width="120" align="right">
         <template #default="{ row }">
-          <el-input-number
-            v-if="isEditing(row)"
-            v-model="editBuffer.total_price"
-            :min="0"
-            :precision="2"
-            :step="0.01"
-            :controls="false"
-            size="small"
-            style="width: 110px"
-          />
-          <span v-else>{{ row.total_price ?? '—' }}</span>
+          <span v-if="isEditing(row)">
+            {{ ((Number(editBuffer.quantity) || 0) * (Number(editBuffer.unit_price) || 0)).toFixed(2) }}
+          </span>
+          <span v-else>
+            {{ ((Number(row.quantity) || 0) * (Number(row.unit_price) || 0)).toFixed(2) }}
+          </span>
         </template>
       </el-table-column>
 
@@ -386,7 +384,7 @@
           </div>
           <div class="rl-kv__item">
             <span class="rl-kv__key">总价</span>
-            <span class="rl-kv__val">{{ row.total_price ?? '—' }}</span>
+            <span class="rl-kv__val">{{ ((Number(row.quantity) || 0) * (Number(row.unit_price) || 0)).toFixed(2) }}</span>
           </div>
           <div class="rl-kv__item">
             <span class="rl-kv__key">子零件</span>
@@ -483,6 +481,7 @@ import { useRoute } from 'vue-router'
 import {
   ElMessage,
 } from 'element-plus'
+import type { SummaryMethodProps } from 'element-plus'
 import { Filter, Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -712,15 +711,17 @@ function onSortChange({
 
 // ============ 行内编辑（2026-07-24）============
 // MANAGER / CLERK 可双击编辑（与后端 POST /assemblies/{id}/update 权限一致）。
-// 可编辑字段：drawing_no / quantity / unit_price / total_price / order_no /
+// 可编辑字段：drawing_no / quantity / unit_price / order_no /
 //   system_delivery_date / note。
-// 注意：装配体本身有 total_price 时，service 层会主动清零子件价（见
+// 2026-07-24 v2：总价列从"独立可编辑"改为"前端实时计算 = quantity × unit_price"，
+// 与 PartsList 对齐；不暴露给用户单独输入；后端 service/assembly.py 在
+// quantity / unit_price / total_price 任一变更时自动重算 total_price。
+// 注意：装配体本身 total_price > 0 时，service 层会主动清零子件价（见
 // service/assembly.py::_clear_children_prices），并通过 dashboard 广播。
 const ASM_EDITABLE_FIELDS = [
   'drawing_no',
   'quantity',
   'unit_price',
-  'total_price',
   'order_no',
   'system_delivery_date',
   'note',
@@ -729,7 +730,6 @@ interface AsmEditBuffer {
   drawing_no: string
   quantity: number
   unit_price: number
-  total_price: number
   order_no: string | null
   system_delivery_date: string | null
   note: string | null
@@ -738,7 +738,6 @@ const editBuffer = reactive<AsmEditBuffer>({
   drawing_no: '',
   quantity: 1,
   unit_price: 0,
-  total_price: 0,
   order_no: null,
   system_delivery_date: null,
   note: null,
@@ -771,7 +770,6 @@ function startEditAsm(row: AssemblyListItem): void {
   editBuffer.drawing_no = row.drawing_no
   editBuffer.quantity = row.quantity
   editBuffer.unit_price = row.unit_price
-  editBuffer.total_price = row.total_price
   editBuffer.order_no = row.order_no
   editBuffer.system_delivery_date = row.system_delivery_date
   editBuffer.note = row.note
@@ -782,8 +780,9 @@ async function saveEditAsm(row: AssemblyListItem): Promise<void> {
   if (editingId.value !== row.id) return
   savingEdit.value = true
   try {
+    // 2026-07-24 v2：总价由后端自动按 unit_price * quantity 重算，不在 payload 里显式传
     const res = await updateAssembly(row.id, { ...editBuffer })
-    Object.assign(row, { ...editBuffer, version: res.version })
+    Object.assign(row, { ...editBuffer, total_price: res.total_price, version: res.version })
     ElMessage.success('保存成功')
     editingId.value = null
   } catch (e) {
@@ -799,6 +798,23 @@ async function saveEditAsm(row: AssemblyListItem): Promise<void> {
   } finally {
     savingEdit.value = false
   }
+}
+
+// 2026-07-24 v2：表格底部合计行（仅总价列求和）
+function totalPriceSummary({ columns, data }: SummaryMethodProps): string[] {
+  return columns.map((col, index) => {
+    if (col.label === '总价') {
+      const total = data.reduce((sum, row) => {
+        const q = Number(row.quantity ?? 0)
+        const p = Number(row.unit_price ?? 0)
+        return sum + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0)
+      }, 0)
+      return total.toFixed(2)
+    }
+    // 第一列（序列号）放"合计"label，其他列空字符串
+    if (index === 0) return '合计'
+    return ''
+  })
 }
 
 // ============ 筛选状态持久化（PR-I 2026-07-20）============
