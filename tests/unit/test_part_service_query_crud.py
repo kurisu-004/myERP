@@ -217,6 +217,37 @@ def service(
 
 
 @pytest.fixture
+def mock_assemblies() -> AsyncMock:
+    """2026-07-24：PartService.assemblies 依赖（update_part 拒绝子件改价用）。"""
+    mock = AsyncMock()
+    mock.get_by_id = AsyncMock(return_value=None)
+    mock.create = AsyncMock()
+    return mock
+
+
+@pytest.fixture
+def service_with_assemblies(
+    mock_parts: AsyncMock,
+    mock_customers: AsyncMock,
+    mock_workers: AsyncMock,
+    mock_events: AsyncMock,
+    mock_serial_counters: AsyncMock,
+    mock_shelves: AsyncMock,
+    mock_assemblies: AsyncMock,
+) -> PartService:
+    """2026-07-24：注入 assemblies 的 PartService（用于父装配体已设总价场景）。"""
+    return PartService(
+        parts=mock_parts,
+        customers=mock_customers,
+        workers=mock_workers,
+        events=mock_events,
+        serial_counters=mock_serial_counters,
+        shelves=mock_shelves,
+        assemblies=mock_assemblies,
+    )
+
+
+@pytest.fixture
 def service_with_wtp(
     mock_parts: AsyncMock,
     mock_customers: AsyncMock,
@@ -1331,6 +1362,143 @@ class TestUpdatePart:
         assert part.note == ""
         assert part.customer_id == 10  # unchanged
         assert part.is_urgent is False  # unchanged
+
+    async def test_update_part_recomputes_total_price_when_unit_price_changes(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """2026-07-24：改 unit_price 不传 total_price → 后端按 qty * 单价自动重算。
+
+        防止价格数据漂移（之前 quantity 或 unit_price 改动不会重算 total_price）。
+        """
+        from decimal import Decimal
+
+        part = _make_part(id=1, customer_id=10)
+        part.quantity = 2
+        part.unit_price = Decimal("100")
+        part.total_price = Decimal("200")  # 一致
+        mock_parts.get_by_id.return_value = part
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.list_by_ids.return_value = [cust]
+
+        data = PartUpdateRequest(unit_price=Decimal("150"))
+        await service.update_part(1, data)
+        # unit_price=150, quantity=2 → total_price=300
+        assert part.unit_price == Decimal("150")
+        assert part.total_price == Decimal("300")
+
+    async def test_update_part_recomputes_total_price_when_quantity_changes(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """2026-07-24：改 quantity 不传 total_price → 后端按 qty * 单价自动重算。"""
+        from decimal import Decimal
+
+        part = _make_part(id=2, customer_id=10)
+        part.quantity = 2
+        part.unit_price = Decimal("100")
+        part.total_price = Decimal("200")
+        mock_parts.get_by_id.return_value = part
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.list_by_ids.return_value = [cust]
+
+        data = PartUpdateRequest(quantity=3)
+        await service.update_part(2, data)
+        assert part.quantity == 3
+        assert part.total_price == Decimal("300")
+
+    async def test_update_part_respects_explicit_total_price_override(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """2026-07-24：caller 显式传 total_price → 保留 caller 值，不重算。"""
+        from decimal import Decimal
+
+        part = _make_part(id=3, customer_id=10)
+        part.quantity = 2
+        part.unit_price = Decimal("100")
+        part.total_price = Decimal("200")
+        mock_parts.get_by_id.return_value = part
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.list_by_ids.return_value = [cust]
+
+        # caller 显式 888（与 qty * 单价 = 200 不一致）；应保留 caller 值
+        data = PartUpdateRequest(quantity=3, total_price=Decimal("888"))
+        await service.update_part(3, data)
+        assert part.total_price == Decimal("888")
+
+    async def test_update_part_rejects_assembly_child_price_change(
+        self,
+        service_with_assemblies: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_assemblies: AsyncMock,
+    ) -> None:
+        """2026-07-24：父装配体已设总价时，子件不能再单独改价。
+
+        触发 BIZ_PART_PRICE_LOCKED_BY_ASSEMBLY (20110) 400 错误。
+        """
+        from decimal import Decimal
+
+        from core.error_code import ErrCode
+        from core.exception import BizError
+
+        # 一个子零件，挂在装配体 100 下
+        part = _make_part(id=4, customer_id=10)
+        part.assembly_id = 100
+        mock_parts.get_by_id.return_value = part
+
+        # 父装配体已设总价 500
+        from model import TAssembly
+        parent_asm = TAssembly(
+            id=100, drawing_no="PA", name="Parent", customer_id=10,
+            request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+            is_urgent=False, status="PENDING", serial_no="P0001",
+            quantity=1, unit_price=Decimal("500"), total_price=Decimal("500"),
+        )
+        mock_assemblies.get_by_id = AsyncMock(return_value=parent_asm)
+
+        # 试图改子件 unit_price → 应被拒
+        data = PartUpdateRequest(unit_price=Decimal("999"))
+        with pytest.raises(BizError) as exc_info:
+            await service_with_assemblies.update_part(4, data)
+        assert exc_info.value.code == ErrCode.BIZ_PART_PRICE_LOCKED_BY_ASSEMBLY
+
+    async def test_update_part_allows_assembly_child_price_change_when_asm_total_zero(
+        self,
+        service_with_assemblies: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+        mock_assemblies: AsyncMock,
+    ) -> None:
+        """2026-07-24：父装配体总价 = 0 时，子件可单独改价。"""
+        from decimal import Decimal
+
+        part = _make_part(id=5, customer_id=10)
+        part.assembly_id = 200
+        mock_parts.get_by_id.return_value = part
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.list_by_ids.return_value = [cust]
+
+        from model import TAssembly
+        parent_asm = TAssembly(
+            id=200, drawing_no="PA", name="Parent", customer_id=10,
+            request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+            is_urgent=False, status="PENDING", serial_no="P0002",
+            quantity=1, unit_price=Decimal("0"), total_price=Decimal("0"),
+        )
+        mock_assemblies.get_by_id = AsyncMock(return_value=parent_asm)
+
+        # 父装配体总价 = 0，子件可单独改价
+        data = PartUpdateRequest(unit_price=Decimal("999"))
+        await service_with_assemblies.update_part(5, data)
+        assert part.unit_price == Decimal("999")
 
 
 # ======================================================================

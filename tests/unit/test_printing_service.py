@@ -149,11 +149,15 @@ class TestBuildPartPrintPdfNoDrawing:
 
 
 class TestBuildPartPrintPdfOrientation:
-    """朝向：图纸页与条码页同朝向。"""
+    """朝向：图纸页跟随上传图纸；条形码页强制 landscape（2026-07-24 解耦）。"""
 
-    async def test_portrait_image_keeps_portrait(
+    async def test_portrait_drawing_barcode_page_always_landscape(
         self, monkeypatch, fake_parts_repo,
     ):
+        """2026-07-24：竖图 → 图纸页 portrait，但条码页固定 landscape。
+
+        之前是双页都 portrait（朝向跟随图纸），用户反馈不利于扫码。
+        """
         import service.printing as printing_mod
         # 竖图（600x800）
         async def fake_download(key):
@@ -169,9 +173,37 @@ class TestBuildPartPrintPdfOrientation:
             part_id=1234, parts=fake_parts_repo, part_files=files_repo,
         )
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        # 两页都应是 portrait
+        # page[0] = 图纸页：portrait
+        page0 = reader.pages[0]
+        assert float(page0.mediabox.width) < float(page0.mediabox.height)
+        # page[1] = 条码页：landscape（强制）
+        page1 = reader.pages[1]
+        assert float(page1.mediabox.width) > float(page1.mediabox.height)
+        # 精确 A4 landscape
+        assert float(page1.mediabox.width) == 842
+        assert float(page1.mediabox.height) == 595
+
+    async def test_landscape_drawing_barcode_page_also_landscape(
+        self, monkeypatch, fake_parts_repo,
+    ):
+        """横图 → 两页都 landscape（不变）。"""
+        import service.printing as printing_mod
+        # 横图（800x600）
+        async def fake_download(key):
+            return _png_bytes(800, 600)
+        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
+
+        files_repo = MagicMock()
+        files_repo.list_by_part = AsyncMock(
+            return_value=[_make_drawing_row("PNG", "png", "drawings/part/5678/DRAWING/bbb_png")]
+        )
+
+        pdf_bytes = await build_part_print_pdf(
+            part_id=5678, parts=fake_parts_repo, part_files=files_repo,
+        )
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         for page in reader.pages:
-            assert float(page.mediabox.width) < float(page.mediabox.height)
+            assert float(page.mediabox.width) > float(page.mediabox.height)
 
 
 def _find_black_x_segments(img: Image.Image, y_lo: int, y_hi: int) -> list[tuple[int, int]]:
@@ -270,19 +302,23 @@ class TestBarcodePageLayoutVertical:
         assert black > 500, f"右边 25% 应有大量条码黑色像素，实际 black={black}"
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_left_half_is_empty(self, orientation: str) -> None:
-        """左半页应基本为白色（块只在右边，块左缘 < w/2 但内容很窄）。"""
+    def test_left_center_is_empty(self, orientation: str) -> None:
+        """2026-07-24 调整：左侧现在有 2 个小条码（左上 + 左下），但**中间**仍应基本为白色。
+
+        之前是 test_left_half_is_empty；现在改成左中区域（避开左下和左上）。
+        """
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(orientation, "L2014")
         w, h = img.size
 
-        left = img.crop((0, 0, w // 2, h)).convert("L")
-        hist = left.histogram()
+        # 左中：x ∈ [0, w*0.25]，y ∈ [h*0.20, h*0.75]（避开左下小条码、左上旋转 180° 小条码）
+        left_center = img.crop((0, int(h * 0.20), int(w * 0.25), int(h * 0.75))).convert("L")
+        hist = left_center.histogram()
         non_white = sum(hist[:250])
         total = sum(hist)
         assert non_white / total < 0.001, (
-            f"左半页应基本为白色，实际非白像素 {non_white}/{total}"
+            f"左中区域应基本为白色，实际非白像素 {non_white}/{total}"
         )
 
 
@@ -326,11 +362,64 @@ class TestDrawingPdfMediaboxNormalization:
         )
         reader = PdfReader(io.BytesIO(pdf_bytes))
         assert len(reader.pages) == 2
+        # 2026-07-24：图纸页（page[0]）按 orientation；条码页（page[-1]）固定 landscape
         w_pt, h_pt = a4_pt
-        for i, p in enumerate(reader.pages):
-            assert float(p.mediabox.width) == pytest.approx(w_pt, abs=0.1)
-            assert float(p.mediabox.height) == pytest.approx(h_pt, abs=0.1)
-            assert float(p.cropbox.width) == pytest.approx(w_pt, abs=0.1), (
-                f"page {i}: cropbox 未规范化，浏览器打印预览会裁切图纸"
-            )
-            assert float(p.cropbox.height) == pytest.approx(h_pt, abs=0.1)
+        bc_w, bc_h = 842, 595
+        # 图纸页
+        page0 = reader.pages[0]
+        assert float(page0.mediabox.width) == pytest.approx(w_pt, abs=0.1)
+        assert float(page0.mediabox.height) == pytest.approx(h_pt, abs=0.1)
+        assert float(page0.cropbox.width) == pytest.approx(w_pt, abs=0.1), (
+            f"图纸页 cropbox 未规范化，浏览器打印预览会裁切图纸"
+        )
+        assert float(page0.cropbox.height) == pytest.approx(h_pt, abs=0.1)
+        # 条码页（永远 landscape）
+        page1 = reader.pages[1]
+        assert float(page1.mediabox.width) == pytest.approx(bc_w, abs=0.1)
+        assert float(page1.mediabox.height) == pytest.approx(bc_h, abs=0.1)
+        assert float(page1.cropbox.width) == pytest.approx(bc_w, abs=0.1)
+
+
+class TestSmallBarcodesOnBarcodePage:
+    """2026-07-24：图纸条形码页加 2 个小条码 + 序列号副本。
+
+    - 左下：水平放置（不旋转）
+    - 左上：旋转 180° 放置
+    防图纸污染无法扫码；用户从不同角度扫都能命中。
+    """
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_small_barcode_bottom_left(self, orientation: str) -> None:
+        """左下角区域有黑色像素（小条码 + 小序列号）。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+        # 左下：x ∈ [0, w*0.30]，y ∈ [h*0.85, h]
+        crop = img.crop((0, int(h * 0.85), int(w * 0.30), h)).convert("L")
+        # 应有黑色像素
+        assert crop.getextrema()[0] < 128
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_small_barcode_top_left_rotated(self, orientation: str) -> None:
+        """左上角区域有黑色像素（旋转 180° 的小条码 + 序列号）。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(orientation, "L2014")
+        w, h = img.size
+        # 左上：x ∈ [0, w*0.30]，y ∈ [0, h*0.15]
+        crop = img.crop((0, 0, int(w * 0.30), int(h * 0.15))).convert("L")
+        # 应有黑色像素
+        assert crop.getextrema()[0] < 128
+
+    def test_main_barcode_still_on_right(self) -> None:
+        """主条码仍在右边（保持原 v3 设计），新增小条码不挤掉主条码。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page("landscape", "L2014")
+        w, h = img.size
+        # 右侧 25% 区域有大量黑色像素（主条码主体）
+        crop = img.crop((int(w * 0.75), 0, w, h)).convert("L")
+        # 主条码黑色像素密度应 ≥ 5%
+        bw = sum(1 for px in crop.getdata() if px < 128)
+        assert bw / crop.size[0] / crop.size[1] > 0.05

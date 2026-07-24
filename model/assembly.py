@@ -6,8 +6,18 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, Date, Index, String, text
+from sqlalchemy import (
+    DECIMAL,
+    BigInteger,
+    Boolean,
+    Date,
+    Index,
+    Integer,
+    String,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import AuditMixin
@@ -94,6 +104,48 @@ class TAssembly(Base, AuditMixin):
         nullable=True,
         index=True,
         comment="装配体序列号；子件序列号 = '{serial_no}-{i:02d}' 派生",
+    )
+
+    # —— 2026-07-24 新增：装配件自身价格 + 送货单字段 ——
+    # 业务约束（service/assembly.py::update_assembly 维护）：
+    #   - total_price > 0 ⇒ 自动清零所有 active 子件的 unit_price/total_price；
+    #   - PartService.update_part 对 part.assembly_id != NULL 且所属装配件 total_price > 0
+    #     时拒绝 unit_price/total_price 修改（BIZ_PART_PRICE_LOCKED_BY_ASSEMBLY 400）。
+    # 数量语义：装配体的"套数"（如 1 套装配件 = N 个零件）。零件的 quantity 是单套内件数。
+    quantity: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    unit_price: Mapped[Decimal] = mapped_column(
+        DECIMAL(12, 2),
+        nullable=False,
+        default=Decimal("0"),
+        server_default=text("0"),
+    )
+    total_price: Mapped[Decimal] = mapped_column(
+        DECIMAL(14, 2),
+        nullable=False,
+        default=Decimal("0"),
+        server_default=text("0"),
+    )
+    # —— 送货单字段（与 t_part.order_no / system_delivery_date / note 对齐）——
+    order_no: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+        index=True,
+        comment="订单号（法拉/路达共用，由文员录入）",
+    )
+    system_delivery_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        comment="订单方系统内部交期（仅打印送货单时用）",
+    )
+    note: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="备注（文员手填，送货单打印可见）",
     )
 
     @property

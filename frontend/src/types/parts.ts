@@ -82,6 +82,8 @@ export interface PartListItem {
   quantity: number
   /** 单价 */
   unit_price: number
+  /** 总价 = quantity * unit_price（2026-07-24 新增；后端落库字段，UI 直接展示） */
+  total_price: number
   /** 请购日期 */
   request_date: string
   planned_delivery_date: string

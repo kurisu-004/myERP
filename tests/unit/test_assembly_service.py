@@ -73,6 +73,13 @@ def make_assembly(**kwargs):
         actual_delivery_date=None,
         is_urgent=False,
         status="PENDING",
+        # 2026-07-24 新增：装配体自身价格 + 送货单字段（默认 0 / null）
+        quantity=1,
+        unit_price=Decimal("0"),
+        total_price=Decimal("0"),
+        order_no=None,
+        system_delivery_date=None,
+        note=None,
         created_at=datetime(2026, 7, 1, 10, 0, 0),
         updated_at=datetime(2026, 7, 1, 10, 0, 0),
     )
@@ -984,6 +991,191 @@ class TestCreateAssemblySplit:
             for p in captured_parts:
                 assert p.unit_price == Decimal("0")
                 assert p.total_price == Decimal("0")
+
+    async def test_create_assembly_with_unit_price_calculates_total_price(
+        self,
+        svc,
+        three_child_data,
+        mock_customers,
+        mock_serial_counters,
+        mock_parts,
+        mock_files,
+        mock_drawings,
+        monkeypatch,
+    ):
+        """装配体新建时显式传 quantity + unit_price → total_price = 数量 × 单价。
+
+        2026-07-24 PR：装配件本身需可设置价格，total_price 不传时按 unit_price*quantity 计算。
+        """
+        from schema.drawing import DrawingFileOut
+
+        _patch_split_pdf(monkeypatch, n_pages=4)
+
+        with patch("service.part_file.cos_mod.upload_object", new=AsyncMock()):
+            leaf = make_customer(id=1, name="Luda Sub", parent_id=10)
+            parent = make_customer(id=10, name="路达", parent_id=None)
+            async def mock_get_by_id(cid):
+                return {1: leaf, 10: parent}.get(cid)
+            mock_customers.get_by_id.side_effect = mock_get_by_id
+            mock_serial_counters.acquire_serial.return_value = "L0002"
+
+            # 设置 quantity=2, unit_price=300 → 期望 total_price=600
+            three_child_data.quantity = 2
+            three_child_data.unit_price = Decimal("300")
+            three_child_data.total_price = None  # 让 service 自动算
+
+            captured_assembly: list = []
+
+            async def mock_create_asm(asm):
+                captured_assembly.append(asm)
+                return asm
+            svc.assemblies.create.side_effect = mock_create_asm
+
+            stub_file = DrawingFileOut(
+                id="1", version=0, owner_id="1",
+                file_type="PDF", original_filename="x.pdf", file_size=10, kind="DRAWING",
+                content_type="application/pdf",
+                download_url="https://example.com/x", upload_status="READY",
+                created_at=datetime(2026, 7, 1, 10, 0, 0),
+            )
+            mock_drawings.upload = AsyncMock(return_value=stub_file)
+            svc._assembly_to_out = AsyncMock(return_value=MagicMock(spec=AssemblyOut))
+            svc.part_service._to_out = AsyncMock(return_value=[])
+
+            await svc.create_assembly(
+                three_child_data,
+                pdf_bytes=b"%PDF-1.4 fake",
+                pdf_filename="x.pdf",
+            )
+
+            assert len(captured_assembly) == 1
+            asm = captured_assembly[0]
+            assert asm.quantity == 2
+            assert asm.unit_price == Decimal("300")
+            assert asm.total_price == Decimal("600")
+
+    async def test_update_assembly_set_total_price_clears_children_prices(
+        self,
+        svc,
+        mock_customers,
+        mock_parts,
+        mock_files,
+        monkeypatch,
+    ):
+        """装配体设置总价 > 0 时，主动清零所有 active 子件的 unit_price/total_price。
+
+        2026-07-24 PR：业务约束"装配体已设价时子件不能再设价"的 server-side 兜底。
+        """
+        from decimal import Decimal
+        from model import TPart
+        from schema.assembly import AssemblyUpdateRequest
+
+        # 一个 active 装配件，已有 3 个子件，其中 2 个 unit_price > 0
+        from model import TAssembly
+
+        existing_asm = TAssembly(
+            id=100,
+            drawing_no="D1", name="N1", customer_id=1,
+            request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+            is_urgent=False, status="PENDING", serial_no="L0001",
+            quantity=1, unit_price=Decimal("0"), total_price=Decimal("0"),
+        )
+        existing_asm.version = 0
+        svc.assemblies.get_by_id = AsyncMock(return_value=existing_asm)
+
+        children = [
+            TPart(id=1, drawing_no="C1", customer_id=1, quantity=1,
+                  unit_price=Decimal("100"), total_price=Decimal("100"),
+                  request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+                  name="c1", applicant_name="x", status="PENDING",
+                  is_urgent=False, assembly_id=100),
+            TPart(id=2, drawing_no="C2", customer_id=1, quantity=1,
+                  unit_price=Decimal("200"), total_price=Decimal("200"),
+                  request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+                  name="c2", applicant_name="x", status="PENDING",
+                  is_urgent=False, assembly_id=100),
+            TPart(id=3, drawing_no="C3", customer_id=1, quantity=1,
+                  unit_price=Decimal("0"), total_price=Decimal("0"),
+                  request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+                  name="c3", applicant_name="x", status="PENDING",
+                  is_urgent=False, assembly_id=100),
+        ]
+        mock_parts.list_children = AsyncMock(return_value=children)
+
+        updated: list = []
+        async def mock_update_part(p):
+            updated.append(p)
+            return p
+        mock_parts.update.side_effect = mock_update_part
+        svc.assemblies.update = AsyncMock(return_value=existing_asm)
+        svc._broadcast = AsyncMock()
+        svc._build_detail = AsyncMock()
+        svc._broadcast_event = AsyncMock()
+
+        # 触发 update_assembly，传 total_price=500
+        payload = AssemblyUpdateRequest(total_price=Decimal("500"))
+        await svc.update_assembly(100, payload)
+
+        # 验证：装配体总价被设为 500
+        assert existing_asm.total_price == Decimal("500")
+        # 验证：2 个原本有价的子件被清零；第 3 个本来 0 价，未变动
+        assert len(updated) == 2
+        assert children[0].unit_price == Decimal("0")
+        assert children[0].total_price == Decimal("0")
+        assert children[1].unit_price == Decimal("0")
+        assert children[1].total_price == Decimal("0")
+
+    async def test_update_assembly_set_total_price_zero_keeps_children_prices(
+        self,
+        svc,
+        mock_customers,
+        mock_parts,
+        monkeypatch,
+    ):
+        """装配体显式清零总价（= 0）→ 不动子件价格。
+
+        反向验证：清零总价不等于"放开子件定价"，子件原样保留。
+        """
+        from decimal import Decimal
+        from model import TPart, TAssembly
+        from schema.assembly import AssemblyUpdateRequest
+
+        existing_asm = TAssembly(
+            id=200, drawing_no="D2", name="N2", customer_id=1,
+            request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+            is_urgent=False, status="PENDING", serial_no="L0002",
+            quantity=1, unit_price=Decimal("0"), total_price=Decimal("500"),
+        )
+        existing_asm.version = 0
+        svc.assemblies.get_by_id = AsyncMock(return_value=existing_asm)
+        svc.assemblies.update = AsyncMock(return_value=existing_asm)
+
+        child = TPart(
+            id=10, drawing_no="CX", customer_id=1, quantity=1,
+            unit_price=Decimal("300"), total_price=Decimal("300"),
+            request_date=date(2026, 7, 24), planned_delivery_date=date(2026, 8, 24),
+            name="cx", applicant_name="x", status="PENDING",
+            is_urgent=False, assembly_id=200,
+        )
+        mock_parts.list_children = AsyncMock(return_value=[child])
+
+        updated: list = []
+        async def mock_update_part(p):
+            updated.append(p)
+            return p
+        mock_parts.update.side_effect = mock_update_part
+        svc._broadcast = AsyncMock()
+        svc._build_detail = AsyncMock()
+        svc._broadcast_event = AsyncMock()
+
+        payload = AssemblyUpdateRequest(total_price=Decimal("0"))
+        await svc.update_assembly(200, payload)
+
+        # 装配体总价 = 0；子件价不变（仍未被 update）
+        assert existing_asm.total_price == Decimal("0")
+        assert len(updated) == 0
+        assert child.unit_price == Decimal("300")
+        assert child.total_price == Decimal("300")
 
 
 # ============================================================

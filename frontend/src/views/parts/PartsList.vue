@@ -169,6 +169,7 @@
       @sort-change="onSortChange"
       @selection-change="onSelectionChange"
       @row-click="onBatchRowClick"
+      @row-dblclick="onRowDblClick"
     >
       <el-table-column
         v-if="batchMode"
@@ -188,6 +189,23 @@
       >
         <template #default="{ row }">
           <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="order_no"
+        label="订单号"
+        width="130"
+        sortable="custom"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.order_no"
+            size="small"
+          />
+          <span v-else>{{ row.order_no || '—' }}</span>
         </template>
       </el-table-column>
 
@@ -270,6 +288,13 @@
         </template>
       </el-table-column>
 
+      <!-- 2026-07-24 新增：总价 = quantity × unit_price（后端落库字段） -->
+      <el-table-column label="总价" width="120" align="right">
+        <template #default="{ row }">
+          <span>{{ row.total_price ?? '—' }}</span>
+        </template>
+      </el-table-column>
+
       <el-table-column
         prop="request_date"
         label="请购日期"
@@ -327,23 +352,6 @@
             clearable
           />
           <span v-else>{{ row.system_delivery_date || '—' }}</span>
-        </template>
-      </el-table-column>
-
-      <el-table-column
-        prop="order_no"
-        label="订单号"
-        width="130"
-        sortable="custom"
-        show-overflow-tooltip
-      >
-        <template #default="{ row }">
-          <el-input
-            v-if="editingId === row.id"
-            v-model="editBuffer.order_no"
-            size="small"
-          />
-          <span v-else>{{ row.order_no || '—' }}</span>
         </template>
       </el-table-column>
 
@@ -852,7 +860,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -1457,6 +1465,47 @@ function startEdit(row: PartListItem): void {
   editBuffer.is_urgent = row.is_urgent
   editingId.value = row.id
 }
+
+// 2026-07-24：双击行进入编辑（仅 MANAGER/CLERK + 非批量模式）
+function onRowDblClick(row: PartListItem): void {
+  if (!canEdit) return
+  if (batchMode.value) return  // 批量模式下双击由 onBatchRowClick 处理，不进编辑
+  startEdit(row)
+}
+
+// 2026-07-24：编辑态下回车键保存
+// 黑名单：搜索框（.filter-card）/ 日期 picker / 下拉 popper
+const ENTER_BLACKLIST = [
+  '.filter-card',
+  '.el-popper.is-light',
+  '.el-select-dropdown',
+  '.el-tree-select__popper',
+  '.el-cascader__dropdown',
+  '.el-date-picker',
+]
+function onEditEnter(e: KeyboardEvent): void {
+  if (e.key !== 'Enter') return
+  if (editingId.value == null) return
+  const target = e.target as HTMLElement | null
+  if (target && ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+  e.preventDefault()
+  const row = items.value.find((r) => r.id === editingId.value)
+  if (row) void saveEdit(row)
+}
+
+watch(editingId, (val) => {
+  if (typeof document === 'undefined') return
+  if (val != null) {
+    document.addEventListener('keydown', onEditEnter)
+  } else {
+    document.removeEventListener('keydown', onEditEnter)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof document === 'undefined') return
+  document.removeEventListener('keydown', onEditEnter)
+})
 
 function cancelEdit(): void {
   editingId.value = null
