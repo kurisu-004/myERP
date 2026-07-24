@@ -39,4 +39,8 @@ class PartFileOut(BaseModel):
         ),
     )
     created_at: datetime
+    paired_file_id: str | None = Field(
+        default=None,
+        description="关联的配对文件ID（G_CODE <-> SETUP_SHEET）；NULL=未配对",
+    )
     download_url: str = Field(description="COS 临时签名 URL，默认 15 分钟有效")

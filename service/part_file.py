@@ -281,6 +281,49 @@ class PartFileService:
 
         return await self._to_out(file_row)
 
+    # ===== 配对上传（G_CODE + SETUP_SHEET） =====
+    async def upload_paired(
+        self,
+        *,
+        owner_id: int,
+        gcode_data: bytes,
+        gcode_filename: str,
+        gcode_content_type: str | None,
+        setup_data: bytes,
+        setup_filename: str,
+        setup_content_type: str | None,
+    ) -> tuple[PartFileOut, PartFileOut]:
+        """配对上传 G 代码 + CNC 设定单 PDF。
+        两个文件独立上传（各自 COS 对象 + DB 行），上传成功后双向设 paired_file_id。
+        """
+        gcode_out = await self.upload(
+            owner_id=owner_id,
+            kind=PartFileKind.G_CODE,
+            data=gcode_data,
+            original_filename=gcode_filename,
+            content_type=gcode_content_type,
+        )
+        setup_out = await self.upload(
+            owner_id=owner_id,
+            kind=PartFileKind.SETUP_SHEET,
+            data=setup_data,
+            original_filename=setup_filename,
+            content_type=setup_content_type,
+        )
+        # 双向关联
+        gcode_id = int(gcode_out.id)
+        setup_id = int(setup_out.id)
+        gcode_row = await self.files.get_by_id(gcode_id)
+        setup_row = await self.files.get_by_id(setup_id)
+        if gcode_row is not None and setup_row is not None:
+            gcode_row.paired_file_id = setup_id
+            setup_row.paired_file_id = gcode_id
+            await self.files.update(gcode_row)
+            await self.files.update(setup_row)
+            gcode_out.paired_file_id = str(setup_id)
+            setup_out.paired_file_id = str(gcode_id)
+        return gcode_out, setup_out
+
     # ===== 列表 =====
     async def list_for_part(
         self,
@@ -331,6 +374,16 @@ class PartFileService:
 
     async def delete_file(self, file_id: int) -> None:
         f = await self._get_or_404(file_id)
+        # 删除前先清除配对文件的 paired_file_id（G_CODE <-> SETUP_SHEET 双向关联）
+        if f.paired_file_id is not None:
+            mate = await self.files.get_by_id(f.paired_file_id)
+            if mate is not None:
+                mate.paired_file_id = None
+                await self.files.update(mate)
+                _logger.info(
+                    "part_file unpaired: file_id=%s paired_file_id=%s (mate %s unlinked)",
+                    f.id, f.paired_file_id, mate.id,
+                )
         key = f.object_key
         f.updated_by = self._user_id
         await self.files.soft_delete(f)
@@ -356,5 +409,8 @@ class PartFileService:
             upload_status=f.upload_status,
             content_sha256=f.content_sha256,
             created_at=f.created_at,
+            paired_file_id=(
+                str(f.paired_file_id) if f.paired_file_id is not None else None
+            ),
             download_url=download_url,
         )

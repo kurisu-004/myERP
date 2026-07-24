@@ -1,6 +1,7 @@
 """CNC 文件 API（2026-07-10 起：G 代码 + 设定单，合并为单 router）。
 
 端点：
+- POST /parts/{part_id}/cnc-pair       MANAGER + CNC_PROGRAMMER   配对上传 G_CODE + SETUP_SHEET
 - POST /parts/{part_id}/cnc-programs   MANAGER + CNC_PROGRAMMER   kind=G_CODE
 - POST /parts/{part_id}/setup-sheets   MANAGER + CNC_PROGRAMMER   kind=SETUP_SHEET (PDF)
 - GET  /parts/{part_id}/cnc-programs   任意已登录                (kind 可选过滤)
@@ -35,6 +36,33 @@ child_cnc_router = APIRouter(
 
 
 @child_cnc_router.post(
+    "/{part_id}/cnc-pair",
+    response_model=list[PartFileOut],
+    status_code=http_status.HTTP_201_CREATED,
+    summary="配对上传 G 代码 + CNC 设定单 PDF（MANAGER + CNC_PROGRAMMER）。两文件成对绑定。",
+    dependencies=[Depends(require_part_file_role(PartFileKind.G_CODE))],
+)
+async def upload_cnc_pair(
+    part_id: int,
+    gcode_file: UploadFile = File(...),
+    setup_file: UploadFile = File(...),
+    svc: PartFileService = Depends(get_part_file_service),
+) -> list[PartFileOut]:
+    gcode_data = await gcode_file.read()
+    setup_data = await setup_file.read()
+    gcode_out, setup_out = await svc.upload_paired(
+        owner_id=part_id,
+        gcode_data=gcode_data,
+        gcode_filename=gcode_file.filename or "program.nc",
+        gcode_content_type=gcode_file.content_type,
+        setup_data=setup_data,
+        setup_filename=setup_file.filename or "setup_sheet.pdf",
+        setup_content_type=setup_file.content_type,
+    )
+    return [gcode_out, setup_out]
+
+
+@child_cnc_router.post(
     "/{part_id}/cnc-programs",
     response_model=PartFileOut,
     status_code=http_status.HTTP_201_CREATED,
@@ -60,7 +88,7 @@ async def upload_part_cnc_program(
     "/{part_id}/setup-sheets",
     response_model=PartFileOut,
     status_code=http_status.HTTP_201_CREATED,
-    summary="为零件上传 CNC 设定单 PDF（MANAGER + CNC_PROGRAMMER；自动覆盖旧文件）",
+    summary="为零件上传 CNC 设定单 PDF（MANAGER + CNC_PROGRAMMER；允许多版本）",
     dependencies=[Depends(require_part_file_role(PartFileKind.SETUP_SHEET))],
 )
 async def upload_part_setup_sheet(

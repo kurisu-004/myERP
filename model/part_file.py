@@ -7,7 +7,7 @@
 - DRAWING           零件 / 子件的图纸 (PDF / PNG / JPG / TIFF / WEBP / HEIC...)，单文件约束
 - THREE_D_MODEL     零件 3D 模型 (STEP / STP / IGES / IGS / STL / OBJ / 3MF)，单文件约束
 - G_CODE            零件 CNC G 代码 (NC / TAP / CNC / MPF / NGC)，允许多版本
-- SETUP_SHEET       零件 CNC 设定单 (PDF)，单文件约束
+- SETUP_SHEET       零件 CNC 设定单 (PDF)，允许多版本；通过 `paired_file_id` 与 G_CODE 配对
 - ASSEMBLY_MASTER   装配体的总装图 (PDF)，单文件约束；
                     **polymorphic**: `part_id` 字段存装配体的 id（不是某个子件）
 - CAD_2D            零件 CAD 源文件 (DWG / DXF)，单文件约束（2026-07-14 新增）
@@ -16,9 +16,9 @@
 kind = ASSEMBLY_MASTER)。DB 层无 FK 约束（遵守项目「禁止物理外键」约定）；
 service 层校验目标行存在 + 未软删。
 
-单文件约束 (除 G_CODE 外) 由部分唯一索引 `uk_t_part_file_single` 在
+单文件约束 (除 G_CODE 和 SETUP_SHEET 外) 由部分唯一索引 `uk_t_part_file_single` 在
 DB 层强制：`UNIQUE (part_id, kind) WHERE deleted_at IS NULL AND kind IN
-('DRAWING','3D_MODEL','SETUP_SHEET','ASSEMBLY_MASTER','CAD_2D')`。
+('DRAWING','3D_MODEL','ASSEMBLY_MASTER','CAD_2D')`。
 
 内容去重：列 `content_sha256 CHAR(64)` 存 SHA-256 hex（NULL 表示未计算 /
 历史记录）。部分唯一索引 `uk_t_part_file_part_kind_sha` 在
@@ -85,6 +85,12 @@ class TPartFile(Base, AuditMixin):
         CHAR(64),
         nullable=True,
         comment="SHA-256 hex of file bytes（去重用）；NULL = 未计算 / 历史记录",
+    )
+    # G_CODE <-> SETUP_SHEET 双向关联：一对文件中，每行存对方的 id；NULL = 未配对。
+    paired_file_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment="关联的配对文件ID（G_CODE <-> SETUP_SHEET 双向关联）",
     )
 
     __table_args__ = (

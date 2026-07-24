@@ -62,3 +62,20 @@ export async function getCncDownloadUrl(fileId: string): Promise<string> {
 export async function deleteCncProgram(fileId: string): Promise<void> {
   await api.post(`/cnc-programs/${fileId}/delete`)
 }
+
+/** 配对上传：G 代码 + CNC 设定单 PDF。返回 [gcode, setup_sheet] 两个 PartFileItem。 */
+export async function uploadCncPair(
+  partId: string,
+  gcodeFile: File,
+  setupFile: File,
+): Promise<[PartFileItem, PartFileItem]> {
+  const fd = new FormData()
+  fd.append('gcode_file', gcodeFile)
+  fd.append('setup_file', setupFile)
+  const resp = await api.post<PartFileItem[]>(
+    `/parts/${partId}/cnc-pair`,
+    fd,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )
+  return [resp.data[0], resp.data[1]]
+}

@@ -59,7 +59,7 @@ _mgr_dep = [Depends(require_role(UserRole.MANAGER))]
 # MANAGER + CLERK：文员能下单/查看/编辑/下发/发送CNC编程/取消等前台操作。
 # 用户管理、货架管理、工种-工序配置仍保持 MANAGER-only。
 _office_dep = [
-    Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
+    Depends(require_roles(UserRole.MANAGER, UserRole.CLERK, UserRole.CNC_PROGRAMMER))
 ]
 
 # MANAGER + INSPECTOR：品检相关端点（pass-inspection / fail-inspection）。
@@ -749,7 +749,7 @@ async def list_parts_held_by_worker(
 # ============================================================
 # 双面打印 PDF（图纸 + 反面条形码）
 # ============================================================
-# 权限：CLERK + MANAGER（文员下发 + 管理员补打；扫码台/编程员不需要）。
+# 权限：CLERK + MANAGER + CNC_PROGRAMMER（文员下发 + 管理员补打 + 编程员打印图纸）。
 @router.get(
     "/{part_id}/print-drawing",
     summary="生成零件的双面打印 PDF（图纸 + 反面右下角条形码）",

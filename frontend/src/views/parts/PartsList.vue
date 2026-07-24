@@ -799,7 +799,11 @@
           description="CNC 编程员在「待编程一览」中下载图纸、上传 G 代码后，会再下发到生产货架。"
         />
         <el-form-item>
-          <span class="muted">已选 <strong>{{ selectedIds.size }}</strong> 件 PENDING 零件将执行此操作</span>
+          <span class="muted">
+            已选 <strong>{{ selectedIds.size }}</strong> 件
+            <template v-if="batchAction === 'print'">零件将执行此操作</template>
+            <template v-else>PENDING 零件将执行此操作</template>
+          </span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1097,12 +1101,12 @@ const sortDir = ref<SortDir>('ASC')
 
 // ============ 批量打印 / 批量下发（2026-07-22 共享批量模式）============
 // 2026-07-22：拆为 batchAction（'print' | 'dispatch'）两个动作；共享 batchMode、selectedIds、
-// selectedRows、row-click 切换、PENDING 守卫（isBatchSelectable）。跨页选择由 selectedIds
-// 维护真实状态，selectedRows 仅做当前页镜像 + 跨页已选行快照。
+// selectedRows、row-click 切换、selectable 守卫（isBatchSelectable，print 全状态可
+// 选、dispatch 仅 PENDING）。跨页选择由 selectedIds 维护真实状态。
 const batchMode = ref(false)
 const batchAction = ref<'print' | 'dispatch'>('print')
 const selectedRows = ref<PartListItem[]>([])
-/** 跨页选择真实状态来源：所有已选 PENDING 行的 id（含非当前页）。
+/** 跨页选择真实状态来源：所有已选行的 id（含非当前页）。
  * 2026-07-22 修复：必须用 reactive 包一层，否则模板里的 .size 不响应，count 永远 0、按钮永远 disabled。 */
 const selectedIds = reactive(new Set<string>())
 const batchPrinting = ref(false)
@@ -1112,7 +1116,8 @@ let batchPrintBlobUrl = ''
 const partsListRef = ref<InstanceType<typeof ResponsiveList> | null>(null)
 
 function isBatchSelectable(row: PartListItem): boolean {
-  return row.status === 'PENDING'
+  if (batchAction.value === 'print') return true          // 打印：所有状态
+  return row.status === 'PENDING'                         // 下发：仅 PENDING
 }
 
 function clearAllSelection(): void {
@@ -1488,6 +1493,15 @@ const ENTER_BLACKLIST = [
   '.el-date-picker',
 ]
 function onEditEnter(e: KeyboardEvent): void {
+  // ESC: cancel edit (same blacklist as Enter to avoid stealing from dropdowns/date-pickers)
+  if (e.key === 'Escape') {
+    if (editingId.value == null) return
+    const target = e.target as HTMLElement | null
+    if (target && ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+    e.preventDefault()
+    cancelEdit()
+    return
+  }
   if (e.key !== 'Enter') return
   if (editingId.value == null) return
   const target = e.target as HTMLElement | null

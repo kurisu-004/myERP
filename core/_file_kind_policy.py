@@ -9,12 +9,11 @@ from __future__ import annotations
 from model.enums import PartFileKind, UserRole
 
 # 单文件 kind（每 part / owner 最多 1 份）：DRAWING / 3D_MODEL /
-# SETUP_SHEET / ASSEMBLY_MASTER / CAD_2D。
-# G_CODE 不在内，允许多版本。
+# ASSEMBLY_MASTER / CAD_2D。
+# G_CODE 和 SETUP_SHEET 不在内，允许多版本；两者通过 paired_file_id 关联。
 SINGLE_FILE_KINDS: frozenset[PartFileKind] = frozenset({
     PartFileKind.DRAWING,
     PartFileKind.THREE_D_MODEL,
-    PartFileKind.SETUP_SHEET,
     PartFileKind.ASSEMBLY_MASTER,
     PartFileKind.CAD_2D,
 })

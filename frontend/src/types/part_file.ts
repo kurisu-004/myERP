@@ -35,6 +35,8 @@ export interface PartFileItem {
   created_at: string
   /** COS 临时签名 URL；每次请求即时签发 */
   download_url: string
+  /** 关联的配对文件 ID（G_CODE <-> SETUP_SHEET 双向关联）；NULL=未配对 */
+  paired_file_id: string | null
 }
 
 // ---------- 向后兼容 alias（旧 import 路径仍可用） ----------

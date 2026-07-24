@@ -805,6 +805,15 @@ const ASM_ENTER_BLACKLIST = [
   '.el-tree-select__popper', '.el-cascader__dropdown', '.el-date-picker',
 ]
 function onEditEnterAsm(e: KeyboardEvent): void {
+  // ESC: cancel edit (same blacklist as Enter to avoid stealing from dropdowns/date-pickers)
+  if (e.key === 'Escape') {
+    if (editingId.value == null) return
+    const target = e.target as HTMLElement | null
+    if (target && ASM_ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+    e.preventDefault()
+    editingId.value = null
+    return
+  }
   if (e.key !== 'Enter') return
   if (editingId.value == null) return
   const target = e.target as HTMLElement | null
