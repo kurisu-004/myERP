@@ -341,15 +341,25 @@
               @click.stop="editingId = null"
             >取消</el-button>
           </template>
-          <el-button
-            v-else
-            link
-            type="primary"
-            size="small"
-            @click.stop="$router.push(`/assemblies/${row.id}`)"
-          >
-            详情
-          </el-button>
+          <template v-else>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click.stop="$router.push(`/assemblies/${row.id}`)"
+            >
+              详情
+            </el-button>
+            <el-button
+              v-if="canEditAsm"
+              link
+              type="warning"
+              size="small"
+              @click.stop="startEditAsm(row)"
+            >
+              编辑
+            </el-button>
+          </template>
         </template>
       </el-table-column>
 
@@ -476,7 +486,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElMessage,
@@ -485,7 +495,6 @@ import type { SummaryMethodProps } from 'element-plus'
 import { Filter, Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
-import { useRowEditor } from '@/composables/useRowEditor'
 import { listAssemblies, updateAssembly } from '@/api/assembly'
 import {
   ASSEMBLY_STATUS_LABEL,
@@ -743,22 +752,11 @@ const editBuffer = reactive<AsmEditBuffer>({
   note: null,
 })
 const canEditAsm = computed(() => isManager.value || isClerk.value)
-// 仅借用 composable 的"editingId ref + 文档级回车保存"两个能力；
-// startEdit / saveEdit 用本地 editBuffer 实现（保留与 PartsList 一致的 reactive 风格）。
 const savingEdit = ref(false)
-const {
-  editingId,
-  isEditing,
-  onRowDblClick: _composableOnRowDblClick,
-  cancelEdit: _composableCancelEdit,
-} = useRowEditor<AssemblyListItem>({
-  items,
-  canEdit: canEditAsm,
-  editableFields: ASM_EDITABLE_FIELDS,
-  onSave: async () => {
-    /* 由 saveEditLocal 替代；composable 的 onSave 不会被触发 */
-  },
-})
+
+// 行内编辑状态（与 PartsList 同款本地实现，不依赖 useRowEditor）
+const editingId = ref<string | null>(null)
+function isEditing(row: AssemblyListItem): boolean { return editingId.value === row.id }
 
 // 行内编辑入口：双击行进入编辑态
 function startEditAsm(row: AssemblyListItem): void {
@@ -799,6 +797,36 @@ async function saveEditAsm(row: AssemblyListItem): Promise<void> {
     savingEdit.value = false
   }
 }
+
+// 2026-07-24：编辑态回车保存（与 PartsList 同款本地实现）
+// 黑名单：搜索框 / popper 下拉 / 日期 picker
+const ASM_ENTER_BLACKLIST = [
+  '.filter-card', '.el-popper.is-light', '.el-select-dropdown',
+  '.el-tree-select__popper', '.el-cascader__dropdown', '.el-date-picker',
+]
+function onEditEnterAsm(e: KeyboardEvent): void {
+  if (e.key !== 'Enter') return
+  if (editingId.value == null) return
+  const target = e.target as HTMLElement | null
+  if (target && ASM_ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+  e.preventDefault()
+  const row = items.value.find((r) => r.id === editingId.value)
+  if (row) void saveEditAsm(row)
+}
+
+watch(editingId, (val) => {
+  if (typeof document === 'undefined') return
+  if (val != null) {
+    document.addEventListener('keydown', onEditEnterAsm)
+  } else {
+    document.removeEventListener('keydown', onEditEnterAsm)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof document === 'undefined') return
+  document.removeEventListener('keydown', onEditEnterAsm)
+})
 
 // 2026-07-24 v2：表格底部合计行（仅总价列求和）
 function totalPriceSummary({ columns, data }: SummaryMethodProps): string[] {
