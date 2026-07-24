@@ -57,6 +57,19 @@ export interface AssemblyItem {
   /** PENDING / IN_PROCESS / COMPLETED / CANCELLED */
   status: AssemblyStatus
   child_count: number
+  // —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+  /** 装配体套数（默认 1） */
+  quantity: number
+  /** 装配体单价（Decimal 序列化为 number） */
+  unit_price: number
+  /** 装配体总价 = quantity * unit_price（后端落库） */
+  total_price: number
+  /** 订单号（法拉/路达共用） */
+  order_no: string | null
+  /** 订单方系统内部交期 */
+  system_delivery_date: string | null
+  /** 备注 */
+  note: string | null
   created_at: string
   updated_at: string
 }
@@ -109,6 +122,14 @@ export interface AssemblyCreatePayload {
   is_urgent?: boolean
   /** 子件；可空（创建空装配体到详情页再补） */
   children?: AssemblyChildPayload[]
+  // —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+  quantity?: number
+  unit_price?: number
+  /** 不传时由 service 按 unit_price * quantity 计算 */
+  total_price?: number | null
+  order_no?: string | null
+  system_delivery_date?: string | null
+  note?: string | null
 }
 
 /** 创建结果（创建响应需要完整数据；子件用 PartListItem 即可，详情页用窄版） */
@@ -138,4 +159,12 @@ export interface AssemblyUpdatePayload {
   planned_delivery_date?: string | null
   actual_delivery_date?: string | null
   is_urgent?: boolean | null
+  // —— 2026-07-24 新增 ——
+  quantity?: number | null
+  unit_price?: number | null
+  /** 显式传值时按 caller 写入；不传时按 unit_price * quantity 自动重算 */
+  total_price?: number | null
+  order_no?: string | null
+  system_delivery_date?: string | null
+  note?: string | null
 }

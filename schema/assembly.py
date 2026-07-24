@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -40,6 +41,16 @@ class AssemblyOut(BaseModel):
     is_urgent: bool
     status: str = Field(description="PENDING / IN_PROCESS / COMPLETED / CANCELLED")
     child_count: int = Field(description="子零件数量")
+    # —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+    quantity: int = Field(default=1, description="装配体套数")
+    unit_price: Decimal = Field(default=Decimal("0"), description="装配体单价")
+    total_price: Decimal = Field(
+        default=Decimal("0"),
+        description="装配体总价；service 层在 quantity/unit_price 改动时自动重算",
+    )
+    order_no: str | None = Field(default=None, max_length=30, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注")
     created_at: datetime
     updated_at: datetime
 
@@ -48,6 +59,7 @@ class AssemblyListItem(BaseModel):
     """装配件列表展示用窄出参，与 AssemblyOut 字段一致（已含 serial_no）。
 
     详情 / 创建响应仍用 AssemblyOut；本 schema 仅服务于 list 端点。
+    2026-07-24 起与 AssemblyOut 字段完全对齐（含数量/单价/总价/订单号/系统交期/备注）。
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -68,6 +80,13 @@ class AssemblyListItem(BaseModel):
     is_urgent: bool
     status: str
     child_count: int
+    # —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+    quantity: int = 1
+    unit_price: Decimal = Decimal("0")
+    total_price: Decimal = Decimal("0")
+    order_no: str | None = None
+    system_delivery_date: date | None = None
+    note: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -131,6 +150,16 @@ class AssemblyCreateRequest(BaseModel):
     request_date: date
     planned_delivery_date: date
     is_urgent: bool = False
+    # —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+    quantity: int = Field(default=1, ge=1, description="装配体套数（默认 1）")
+    unit_price: Decimal = Field(default=Decimal("0"), ge=0, description="装配体单价")
+    total_price: Decimal | None = Field(
+        default=None, ge=0,
+        description="装配体总价；不传时由 service 按 unit_price * quantity 计算",
+    )
+    order_no: str | None = Field(default=None, max_length=30, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注")
     # children 可为空（创建空装配体；后续到详情页 add_child / upload-pdf）
     children: list[AssemblyChildCreateRequest] = Field(default_factory=list)
 
@@ -193,6 +222,13 @@ class AssemblyUpdateRequest(BaseModel):
     planned_delivery_date: date | None = None
     actual_delivery_date: date | None = None
     is_urgent: bool | None = None
+    # —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+    quantity: int | None = Field(default=None, ge=1, description="装配体套数")
+    unit_price: Decimal | None = Field(default=None, ge=0, description="装配体单价")
+    total_price: Decimal | None = Field(default=None, ge=0, description="装配体总价；不传时按 unit_price * quantity 重算")
+    order_no: str | None = Field(default=None, max_length=30, description="订单号")
+    system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
+    note: str | None = Field(default=None, max_length=500, description="备注")
 
     @field_validator("drawing_no", "name", "applicant_name")
     @classmethod

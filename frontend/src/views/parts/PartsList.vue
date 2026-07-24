@@ -166,9 +166,12 @@
       :default-sort="defaultSort"
       :row-class-name="rowClassName"
       :row-style="{ cursor: batchMode ? 'pointer' : 'default' }"
+      show-summary
+      :summary-method="totalPriceSummary"
       @sort-change="onSortChange"
       @selection-change="onSelectionChange"
       @row-click="onBatchRowClick"
+      @row-dblclick="onRowDblClick"
     >
       <el-table-column
         v-if="batchMode"
@@ -188,6 +191,23 @@
       >
         <template #default="{ row }">
           <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column
+        prop="order_no"
+        label="订单号"
+        width="130"
+        sortable="custom"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <el-input
+            v-if="editingId === row.id"
+            v-model="editBuffer.order_no"
+            size="small"
+          />
+          <span v-else>{{ row.order_no || '—' }}</span>
         </template>
       </el-table-column>
 
@@ -270,6 +290,14 @@
         </template>
       </el-table-column>
 
+      <!-- 2026-07-24 v2 调整：总价 = quantity × unit_price **前端实时计算**
+     （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
+      <el-table-column label="总价" width="120" align="right">
+        <template #default="{ row }">
+          <span>{{ displayTotalPrice(row) }}</span>
+        </template>
+      </el-table-column>
+
       <el-table-column
         prop="request_date"
         label="请购日期"
@@ -327,23 +355,6 @@
             clearable
           />
           <span v-else>{{ row.system_delivery_date || '—' }}</span>
-        </template>
-      </el-table-column>
-
-      <el-table-column
-        prop="order_no"
-        label="订单号"
-        width="130"
-        sortable="custom"
-        show-overflow-tooltip
-      >
-        <template #default="{ row }">
-          <el-input
-            v-if="editingId === row.id"
-            v-model="editBuffer.order_no"
-            size="small"
-          />
-          <span v-else>{{ row.order_no || '—' }}</span>
         </template>
       </el-table-column>
 
@@ -852,9 +863,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import type { SummaryMethodProps } from 'element-plus'
 import {
   Close,
   Document,
@@ -1456,6 +1468,78 @@ function startEdit(row: PartListItem): void {
   editBuffer.note = row.note
   editBuffer.is_urgent = row.is_urgent
   editingId.value = row.id
+}
+
+// 2026-07-24：双击行进入编辑（仅 MANAGER/CLERK + 非批量模式）
+function onRowDblClick(row: PartListItem): void {
+  if (!canEdit) return
+  if (batchMode.value) return  // 批量模式下双击由 onBatchRowClick 处理，不进编辑
+  startEdit(row)
+}
+
+// 2026-07-24：编辑态下回车键保存
+// 黑名单：搜索框（.filter-card）/ 日期 picker / 下拉 popper
+const ENTER_BLACKLIST = [
+  '.filter-card',
+  '.el-popper.is-light',
+  '.el-select-dropdown',
+  '.el-tree-select__popper',
+  '.el-cascader__dropdown',
+  '.el-date-picker',
+]
+function onEditEnter(e: KeyboardEvent): void {
+  if (e.key !== 'Enter') return
+  if (editingId.value == null) return
+  const target = e.target as HTMLElement | null
+  if (target && ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+  e.preventDefault()
+  const row = items.value.find((r) => r.id === editingId.value)
+  if (row) void saveEdit(row)
+}
+
+watch(editingId, (val) => {
+  if (typeof document === 'undefined') return
+  if (val != null) {
+    document.addEventListener('keydown', onEditEnter)
+  } else {
+    document.removeEventListener('keydown', onEditEnter)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof document === 'undefined') return
+  document.removeEventListener('keydown', onEditEnter)
+})
+
+// 2026-07-24 v2：总价列响应式显示（编辑态用 editBuffer，非编辑态用 row）
+function displayTotalPrice(row: PartListItem): string {
+  // 编辑态：从 editBuffer 实时算（数量/单价改动立刻反映在总价列）
+  if (editingId.value === row.id) {
+    const q = Number(editBuffer.quantity ?? row.quantity)
+    const p = Number(editBuffer.unit_price ?? row.unit_price)
+    return Number.isFinite(q) && Number.isFinite(p) ? (q * p).toFixed(2) : '—'
+  }
+  // 非编辑态：用行内字段实时算（与后端落库的 row.total_price 一致或更准）
+  const q = Number(row.quantity)
+  const p = Number(row.unit_price)
+  return Number.isFinite(q) && Number.isFinite(p) ? (q * p).toFixed(2) : '—'
+}
+
+// 2026-07-24 v2：表格底部合计行（仅总价列求和）
+function totalPriceSummary({ columns, data }: SummaryMethodProps): string[] {
+  return columns.map((col, index) => {
+    if (col.label === '总价') {
+      const total = data.reduce((sum, row) => {
+        const q = Number(row.quantity ?? 0)
+        const p = Number(row.unit_price ?? 0)
+        return sum + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0)
+      }, 0)
+      return total.toFixed(2)
+    }
+    // 第一列（序列号 / selection）放"合计"label，其他列空字符串
+    if (index === 0) return '合计'
+    return ''
+  })
 }
 
 function cancelEdit(): void {

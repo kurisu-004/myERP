@@ -69,6 +69,10 @@ class PartOut(BaseModel):
     name: str = Field(description="名称/品名")
     drawing_no: str = Field(description="图号")
     quantity: int = Field(description="数量")
+    total_price: Decimal = Field(
+        default=Decimal("0"),
+        description="总价（quantity * unit_price；2026-07-24 起 PartOut 一并下发，前端一览展示）",
+    )
     planned_delivery_date: date = Field(description="计划交期")
     actual_delivery_date: date | None = Field(default=None, description="实际送货日期")
     is_urgent: bool = Field(description="是否加急")
@@ -185,6 +189,10 @@ class PartListItem(BaseModel):
     applicant_name: str | None = Field(default=None, description="申请人姓名快照")
     quantity: int
     unit_price: Decimal = Field(default=Decimal("0"), description="单价")
+    total_price: Decimal = Field(
+        default=Decimal("0"),
+        description="总价 = quantity * unit_price（2026-07-24 新增；UI 与后端落库字段一致）",
+    )
     request_date: date = Field(description="请购日期")
     planned_delivery_date: date
     actual_delivery_date: date | None = None

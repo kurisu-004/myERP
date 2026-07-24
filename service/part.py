@@ -979,6 +979,24 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+
+        # 2026-07-24：父装配体已设总价时，禁止子件再单独改价
+        if part.assembly_id is not None and (
+            data.unit_price is not None or data.total_price is not None
+        ):
+            if self.assemblies is not None:
+                parent_asm = await self.assemblies.get_by_id(part.assembly_id)
+                parent_total = getattr(parent_asm, "total_price", None) if parent_asm else None
+                if parent_total is not None and (parent_total or Decimal("0")) > 0:
+                    raise BizError(
+                        code=ErrCode.BIZ_PART_PRICE_LOCKED_BY_ASSEMBLY,
+                        message=(
+                            f"零件 {part.id} 所属装配件 {part.assembly_id} 已设置总价 "
+                            f"{parent_total}，子件不可单独改价"
+                        ),
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+
         if data.name is not None:
             part.name = data.name.strip()
         if data.drawing_no is not None:
@@ -991,6 +1009,9 @@ class PartService:
             part.unit_price = data.unit_price
         if data.total_price is not None:
             part.total_price = data.total_price
+        elif data.quantity is not None or data.unit_price is not None:
+            # caller 没显式传总价 → 按最新单价/数量自动重算（防数据漂移）
+            part.total_price = (part.unit_price or Decimal("0")) * (part.quantity or 0)
         if data.request_date is not None:
             part.request_date = data.request_date
         if data.planned_delivery_date is not None:

@@ -28,6 +28,7 @@ class ErrCode(IntEnum):
     BIZ_PART_SERIAL_EXHAUSTED = 20105  # 序列号池耗尽（>5000 活跃/PREFIX）
     # 20106/20107 留空，避免与未来 PART 相关码冲突
     BIZ_SERIAL_PREFIX_UNKNOWN = 20108  # t_serial_counter 找不到对应 prefix
+    BIZ_PART_PRICE_LOCKED_BY_ASSEMBLY = 20110  # 2026-07-24：父装配体已设总价，子件不能再单独改价（PartService.update_part 抛）
 
     BIZ_WORKER_NOT_FOUND = 20201
     BIZ_WORKER_INACTIVE = 20202

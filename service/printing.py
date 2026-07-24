@@ -43,12 +43,44 @@ A4_LANDSCAPE = (842, 595)
 DPI = 150
 PX_PER_PT = DPI / 72.0
 
+def _render_small_barcode_with_serial(
+    serial_no: str,
+) -> tuple[Image.Image, Image.Image]:
+    """2026-07-24 新增：渲染一组「小条码 + 小序列号」PIL Image（未旋转）。
+
+    复用 `_render_barcode_pil` 与 `_load_cn_font`；条码水平宽度 =
+    A4 短边 × SMALL_BC_W_FRACTION，序列号字体 SMALL_SERIAL_FONT_PX。
+    返回 (barcode_pil, serial_pil)，两者都是 RGB 白底图。
+    """
+    short_side_px = int(min(A4_LANDSCAPE) * PX_PER_PT)
+    bc_img = _render_barcode_pil(serial_no)
+    target_bc_w = int(short_side_px * SMALL_BC_W_FRACTION)
+    bc_h_scaled = int(bc_img.height * target_bc_w / bc_img.width)
+    bc_pil = bc_img.resize((target_bc_w, bc_h_scaled), Image.LANCZOS)
+
+    serial_font = _load_cn_font(size=SMALL_SERIAL_FONT_PX)
+    _tmp = Image.new("RGB", (1, 1))
+    bbox = ImageDraw.Draw(_tmp).textbbox((0, 0), serial_no, font=serial_font)
+    sw, sh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    serial_canvas = Image.new("RGB", (sw, sh), "white")
+    ImageDraw.Draw(serial_canvas).text((0, -bbox[1]), serial_no, fill="#000", font=serial_font)
+    return bc_pil, serial_canvas
+
+
 # === 2026-07-20 迭代 v3：反面页序列号 + 条码 CCW 旋转 90° 沿 A4 右边并排 ===
 SERIAL_FONT_PX = int(842 * PX_PER_PT / 8)       # ≈ 219 px（旋转前的字体高度）
 BARCODE_H_PX = int(842 * PX_PER_PT / 7)         # ≈ 250 px（旋转前的条码高度；旋转后变成水平宽度）
 BARCODE_W_FRACTION = 0.5                          # 旋转前的条码水平宽度 = A4 短边 50%
 RIGHT_MARGIN_PT = 28                            # 条码距页面右边（精确 1 cm）
 SERIAL_TO_BC_GAP_PT = 22                         # 序列号 ↔ 条码 间距
+
+# === 2026-07-24 新增：备用小条码（防图纸污染无法扫码）===
+SMALL_SERIAL_FONT_PX = 65                      # 小序列号字体（@150 DPI）
+SMALL_BC_W_FRACTION = 0.18                     # 小条码水平宽度 = A4 短边 18%（主条码 50%）
+SMALL_LEFT_MARGIN_PT = 28                      # 距页面左边（精确 1 cm）
+SMALL_BOTTOM_MARGIN_PT = 28                    # 距页面下边
+SMALL_TOP_MARGIN_PT = 28                       # 距页面上边
+SMALL_SERIAL_GAP_PT = 10                       # 小序列号 ↔ 小条码 间距
 
 
 def _a4_px(orientation: str) -> tuple[int, int]:
@@ -173,6 +205,32 @@ def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
 
     page.paste(serial_rotated, (sr_x, sr_y))
     page.paste(bc_rotated, (bc_x, bc_y))
+
+    # === 2026-07-24 新增：2 个备用小条形码 + 序列号 ===
+    # 防图纸污染（涂污/折角）无法扫码：左下方水平放、左上方旋转 180° 放，
+    # 用户从不同角度扫描都能命中至少一组。
+    bc_small, serial_small = _render_small_barcode_with_serial(serial_no)
+    bc_s_w, bc_s_h = bc_small.size
+    sr_s_w, sr_s_h = serial_small.size
+    left_px = int(SMALL_LEFT_MARGIN_PT * PX_PER_PT)
+    bottom_px = int(SMALL_BOTTOM_MARGIN_PT * PX_PER_PT)
+    top_px = int(SMALL_TOP_MARGIN_PT * PX_PER_PT)
+    gap_s_px = int(SMALL_SERIAL_GAP_PT * PX_PER_PT)
+
+    # ---- 左下方：水平放置（不旋转），序列号在上、条码在下 ----
+    serial_y = page_h - bottom_px - bc_s_h - gap_s_px - sr_s_h
+    page.paste(serial_small, (left_px, serial_y))
+    page.paste(bc_small, (left_px, page_h - bottom_px - bc_s_h))
+
+    # ---- 左上方：旋转 180° 放置 ----
+    # 先把"水平放置"的小组合成到独立画布，再 rotate(180)，最后贴到左上角
+    mini_w = max(sr_s_w, bc_s_w)
+    mini_h = sr_s_h + gap_s_px + bc_s_h
+    mini_canvas = Image.new("RGB", (mini_w, mini_h), "white")
+    mini_canvas.paste(serial_small, (0, 0))
+    mini_canvas.paste(bc_small, (0, sr_s_h + gap_s_px))
+    mini_rotated = mini_canvas.rotate(180, expand=True, resample=Image.BICUBIC)
+    page.paste(mini_rotated, (left_px, top_px))
 
     return page
 
@@ -409,9 +467,11 @@ async def build_part_print_pdf(
         for page in info_reader.pages:
             writer.add_page(page)
 
-    # 反面：条码页（朝向与正面一致）
-    barcode_page_img = _build_barcode_page(orientation, serial_no)
-    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, orientation)
+    # 反面：条码页（2026-07-24 起强制 landscape，与图纸朝向解耦，
+    # 防止 portrait 图纸导致条形码页也跟着 portrait 不利于扫码）
+    BC_ORIENTATION = "landscape"
+    barcode_page_img = _build_barcode_page(BC_ORIENTATION, serial_no)
+    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, BC_ORIENTATION)
     barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
     for page in barcode_reader.pages:
         writer.add_page(page)
@@ -420,13 +480,23 @@ async def build_part_print_pdf(
     # 2026-07-20 修复：源 PDF（如 CAD 导出的 PDF）经常带非标 CropBox/TrimBox，
     # 浏览器原生打印预览有时按 CropBox 而非 MediaBox 渲染，导致图纸被裁切显示不全。
     # 强制把每页的 mediabox / cropbox / trimbox / bleedbox 都对齐到精确 A4。
+    # 2026-07-24：条码页强制 landscape（与图纸朝向解耦），需分段写 mediabox。
     _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
     _a4_box = RectangleObject([0, 0, _w_pt, _h_pt])
-    for _p in writer.pages:
-        _p.mediabox = _a4_box
-        _p.cropbox = _a4_box
-        _p.trimbox = _a4_box
-        _p.bleedbox = _a4_box
+    _w_pt_bc, _h_pt_bc = A4_LANDSCAPE  # 条码页固定 landscape
+    _a4_box_bc = RectangleObject([0, 0, _w_pt_bc, _h_pt_bc])
+    # 最后一页是条码页（writer.pages[-1]），其余是图纸页
+    if writer.pages:
+        _p_bc = writer.pages[-1]
+        _p_bc.mediabox = _a4_box_bc
+        _p_bc.cropbox = _a4_box_bc
+        _p_bc.trimbox = _a4_box_bc
+        _p_bc.bleedbox = _a4_box_bc
+        for _p in writer.pages[:-1]:
+            _p.mediabox = _a4_box
+            _p.cropbox = _a4_box
+            _p.trimbox = _a4_box
+            _p.bleedbox = _a4_box
 
     # 2026-07-20 调试：输出每页最终的 mediabox 大小（pt），
     # 辅助排查「打印预览显示非 A4」类问题。

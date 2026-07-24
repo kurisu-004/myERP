@@ -61,7 +61,10 @@
       size="small"
       :default-sort="defaultSort"
       :row-class-name="rowClassName"
+      show-summary
+      :summary-method="totalPriceSummary"
       @sort-change="onSortChange"
+      @row-dblclick="startEditAsm"
     >
       <el-table-column
         prop="serial_no"
@@ -75,13 +78,40 @@
           <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
       </el-table-column>
+
+      <!-- 2026-07-24 新增：订单号列（与 PartsList 对齐） -->
+      <el-table-column
+        prop="order_no"
+        label="订单号"
+        width="130"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <el-input
+            v-if="isEditing(row)"
+            v-model="editBuffer.order_no"
+            size="small"
+          />
+          <span v-else>{{ row.order_no || '—' }}</span>
+        </template>
+      </el-table-column>
+
       <el-table-column
         prop="drawing_no"
         label="总图图号"
         width="160"
         sortable="custom"
         show-overflow-tooltip
-      />
+      >
+        <template #default="{ row }">
+          <el-input
+            v-if="isEditing(row)"
+            v-model="editBuffer.drawing_no"
+            size="small"
+          />
+          <span v-else>{{ row.drawing_no }}</span>
+        </template>
+      </el-table-column>
       <el-table-column
         prop="name"
         label="名称"
@@ -146,6 +176,48 @@
         </template>
       </el-table-column>
 
+      <!-- 2026-07-24 新增：数量 / 单价 / 总价（与 PartsList 对齐） -->
+      <el-table-column label="数量" width="90" align="right">
+        <template #default="{ row }">
+          <el-input-number
+            v-if="isEditing(row)"
+            v-model="editBuffer.quantity"
+            :min="1"
+            :precision="0"
+            :controls="false"
+            size="small"
+            style="width: 80px"
+          />
+          <span v-else>{{ row.quantity ?? '—' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="单价" width="110" align="right">
+        <template #default="{ row }">
+          <el-input-number
+            v-if="isEditing(row)"
+            v-model="editBuffer.unit_price"
+            :min="0"
+            :precision="2"
+            :step="0.01"
+            :controls="false"
+            size="small"
+            style="width: 100px"
+          />
+          <span v-else>{{ row.unit_price ?? '—' }}</span>
+        </template>
+      </el-table-column>
+      <!-- 2026-07-24 v2 调整：总价由 quantity × unit_price 前端实时计算（只读展示，与 PartsList 对齐） -->
+      <el-table-column label="总价" width="120" align="right">
+        <template #default="{ row }">
+          <span v-if="isEditing(row)">
+            {{ ((Number(editBuffer.quantity) || 0) * (Number(editBuffer.unit_price) || 0)).toFixed(2) }}
+          </span>
+          <span v-else>
+            {{ ((Number(row.quantity) || 0) * (Number(row.unit_price) || 0)).toFixed(2) }}
+          </span>
+        </template>
+      </el-table-column>
+
       <el-table-column label="子零件" width="80" align="center">
         <template #default="{ row }">
           <el-tag type="info" size="small" effect="plain">
@@ -162,6 +234,38 @@
         width="120"
         sortable="custom"
       />
+
+      <!-- 2026-07-24 新增：系统交期（与 PartsList 对齐） -->
+      <el-table-column
+        prop="system_delivery_date"
+        label="系统交期"
+        width="130"
+      >
+        <template #default="{ row }">
+          <el-date-picker
+            v-if="isEditing(row)"
+            v-model="editBuffer.system_delivery_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            size="small"
+            style="width: 120px"
+            clearable
+          />
+          <span v-else>{{ row.system_delivery_date || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <!-- 2026-07-24 新增：备注（与 PartsList 对齐） -->
+      <el-table-column label="备注" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-input
+            v-if="isEditing(row)"
+            v-model="editBuffer.note"
+            size="small"
+          />
+          <span v-else>{{ row.note || '—' }}</span>
+        </template>
+      </el-table-column>
 
       <el-table-column
         label="状态"
@@ -221,16 +325,41 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="160" align="center" fixed="right">
+      <el-table-column label="操作" width="200" align="center" fixed="right">
         <template #default="{ row }">
-          <el-button
-            link
-            type="primary"
-            size="small"
-            @click.stop="$router.push(`/assemblies/${row.id}`)"
-          >
-            详情
-          </el-button>
+          <template v-if="isEditing(row)">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="savingEdit"
+              @click.stop="saveEditAsm(row)"
+            >保存</el-button>
+            <el-button
+              link
+              size="small"
+              @click.stop="editingId = null"
+            >取消</el-button>
+          </template>
+          <template v-else>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click.stop="$router.push(`/assemblies/${row.id}`)"
+            >
+              详情
+            </el-button>
+            <el-button
+              v-if="canEditAsm"
+              link
+              type="warning"
+              size="small"
+              @click.stop="startEditAsm(row)"
+            >
+              编辑
+            </el-button>
+          </template>
         </template>
       </el-table-column>
 
@@ -243,7 +372,8 @@
           </el-tag>
         </div>
         <div class="rl-card-sub">
-          总图图号 {{ row.drawing_no || '—' }} · 序列号 {{ row.serial_no || '—' }}
+          总图图号 {{ row.drawing_no || '—' }} · 序列号 {{ row.serial_no || '—' }} ·
+          订单号 {{ row.order_no || '—' }}
         </div>
         <div class="rl-kv">
           <div class="rl-kv__item rl-kv__item--full">
@@ -253,6 +383,18 @@
           <div class="rl-kv__item">
             <span class="rl-kv__key">申请人</span>
             <span class="rl-kv__val">{{ row.applicant_name || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__val">{{ row.quantity ?? '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">单价</span>
+            <span class="rl-kv__val">{{ row.unit_price ?? '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">总价</span>
+            <span class="rl-kv__val">{{ ((Number(row.quantity) || 0) * (Number(row.unit_price) || 0)).toFixed(2) }}</span>
           </div>
           <div class="rl-kv__item">
             <span class="rl-kv__key">子零件</span>
@@ -265,6 +407,10 @@
           <div class="rl-kv__item">
             <span class="rl-kv__key">计划交期</span>
             <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">系统交期</span>
+            <span class="rl-kv__val">{{ row.system_delivery_date || '—' }}</span>
           </div>
         </div>
         <div class="rl-card-actions">
@@ -340,15 +486,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ElMessage,
 } from 'element-plus'
+import type { SummaryMethodProps } from 'element-plus'
 import { Filter, Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
-import { listAssemblies } from '@/api/assembly'
+import { listAssemblies, updateAssembly } from '@/api/assembly'
 import {
   ASSEMBLY_STATUS_LABEL,
   ASSEMBLY_STATUS_TAG_TYPE,
@@ -364,7 +511,7 @@ import { useListFilterPersist } from '@/composables/useListFilterPersist'
 
 const { tree: customerTree } = useCustomerTree()
 // PR-I 2026-07-20：INSPECTOR 看不到「新建装配件」按钮
-const { isInspector } = usePermissions()
+const { isInspector, isManager, isClerk } = usePermissions()
 const route = useRoute()
 const { isMobile } = useBreakpoint()
 
@@ -569,6 +716,133 @@ function onSortChange({
   sortBy.value = SORT_PROP_MAP[prop] ?? 'PLANNED_DELIVERY_DATE'
   sortDir.value = order === 'ascending' ? 'ASC' : 'DESC'
   void fetchData()
+}
+
+// ============ 行内编辑（2026-07-24）============
+// MANAGER / CLERK 可双击编辑（与后端 POST /assemblies/{id}/update 权限一致）。
+// 可编辑字段：drawing_no / quantity / unit_price / order_no /
+//   system_delivery_date / note。
+// 2026-07-24 v2：总价列从"独立可编辑"改为"前端实时计算 = quantity × unit_price"，
+// 与 PartsList 对齐；不暴露给用户单独输入；后端 service/assembly.py 在
+// quantity / unit_price / total_price 任一变更时自动重算 total_price。
+// 注意：装配体本身 total_price > 0 时，service 层会主动清零子件价（见
+// service/assembly.py::_clear_children_prices），并通过 dashboard 广播。
+const ASM_EDITABLE_FIELDS = [
+  'drawing_no',
+  'quantity',
+  'unit_price',
+  'order_no',
+  'system_delivery_date',
+  'note',
+] as const
+interface AsmEditBuffer {
+  drawing_no: string
+  quantity: number
+  unit_price: number
+  order_no: string | null
+  system_delivery_date: string | null
+  note: string | null
+}
+const editBuffer = reactive<AsmEditBuffer>({
+  drawing_no: '',
+  quantity: 1,
+  unit_price: 0,
+  order_no: null,
+  system_delivery_date: null,
+  note: null,
+})
+const canEditAsm = computed(() => isManager.value || isClerk.value)
+const savingEdit = ref(false)
+
+// 行内编辑状态（与 PartsList 同款本地实现，不依赖 useRowEditor）
+const editingId = ref<string | null>(null)
+function isEditing(row: AssemblyListItem): boolean { return editingId.value === row.id }
+
+// 行内编辑入口：双击行进入编辑态
+function startEditAsm(row: AssemblyListItem): void {
+  if (!canEditAsm.value) return
+  if (editingId.value && editingId.value !== row.id) {
+    ElMessage.warning('请先保存或取消当前正在编辑的行')
+    return
+  }
+  editBuffer.drawing_no = row.drawing_no
+  editBuffer.quantity = row.quantity
+  editBuffer.unit_price = row.unit_price
+  editBuffer.order_no = row.order_no
+  editBuffer.system_delivery_date = row.system_delivery_date
+  editBuffer.note = row.note
+  editingId.value = row.id
+}
+
+async function saveEditAsm(row: AssemblyListItem): Promise<void> {
+  if (editingId.value !== row.id) return
+  savingEdit.value = true
+  try {
+    // 2026-07-24 v2：总价由后端自动按 unit_price * quantity 重算，不在 payload 里显式传
+    const res = await updateAssembly(row.id, { ...editBuffer })
+    Object.assign(row, { ...editBuffer, total_price: res.total_price, version: res.version })
+    ElMessage.success('保存成功')
+    editingId.value = null
+  } catch (e) {
+    // 40901 = BIZ_VERSION_CONFLICT（乐观锁冲突）
+    if ((e as { code?: number }).code === 40901) {
+      ElMessage.warning('该装配件已被他人修改，已为你刷新列表')
+      editingId.value = null
+      void fetchData()
+    } else {
+      const msg = (e as { message?: string }).message ?? '保存失败'
+      ElMessage.error(msg)
+    }
+  } finally {
+    savingEdit.value = false
+  }
+}
+
+// 2026-07-24：编辑态回车保存（与 PartsList 同款本地实现）
+// 黑名单：搜索框 / popper 下拉 / 日期 picker
+const ASM_ENTER_BLACKLIST = [
+  '.filter-card', '.el-popper.is-light', '.el-select-dropdown',
+  '.el-tree-select__popper', '.el-cascader__dropdown', '.el-date-picker',
+]
+function onEditEnterAsm(e: KeyboardEvent): void {
+  if (e.key !== 'Enter') return
+  if (editingId.value == null) return
+  const target = e.target as HTMLElement | null
+  if (target && ASM_ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+  e.preventDefault()
+  const row = items.value.find((r) => r.id === editingId.value)
+  if (row) void saveEditAsm(row)
+}
+
+watch(editingId, (val) => {
+  if (typeof document === 'undefined') return
+  if (val != null) {
+    document.addEventListener('keydown', onEditEnterAsm)
+  } else {
+    document.removeEventListener('keydown', onEditEnterAsm)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof document === 'undefined') return
+  document.removeEventListener('keydown', onEditEnterAsm)
+})
+
+// 2026-07-24 v2：表格底部合计行（仅总价列求和）
+function totalPriceSummary({ columns, data }: SummaryMethodProps): string[] {
+  return columns.map((col, index) => {
+    if (col.label === '总价') {
+      const total = data.reduce((sum, row) => {
+        const q = Number(row.quantity ?? 0)
+        const p = Number(row.unit_price ?? 0)
+        return sum + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0)
+      }, 0)
+      return total.toFixed(2)
+    }
+    // 第一列（序列号）放"合计"label，其他列空字符串
+    if (index === 0) return '合计'
+    return ''
+  })
 }
 
 // ============ 筛选状态持久化（PR-I 2026-07-20）============

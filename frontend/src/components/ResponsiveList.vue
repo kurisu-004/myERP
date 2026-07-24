@@ -21,6 +21,7 @@
         :row-key="rowKey"
         style="width: 100%"
         v-bind="$attrs"
+        @row-dblclick="(row, column, event) => emit('row-dblclick', row, column, event)"
       >
         <slot />
         <template #empty>
@@ -72,6 +73,9 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'card-click', row: any, index: number): void
+  // 2026-07-24：透传 el-table 的 row-dblclick 事件，让父组件（如 PartsList /
+  // AssemblyList）使用 useRowEditor composable 处理双击行进入编辑。
+  (e: 'row-dblclick', row: any, column: any, event: MouseEvent): void
 }>()
 
 const { isMobile } = useBreakpoint()

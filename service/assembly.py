@@ -294,6 +294,17 @@ class AssemblyService:
             is_urgent=data.is_urgent,
             status="PENDING",
             serial_no=assembly_serial,  # 空装配体 = None；非空装配体 = 顶级流水号
+            # 2026-07-24：装配体自身价格 + 送货单字段
+            quantity=data.quantity if data.quantity else 1,
+            unit_price=data.unit_price if data.unit_price is not None else Decimal("0"),
+            total_price=(
+                data.total_price
+                if data.total_price is not None
+                else (data.unit_price or Decimal("0")) * (data.quantity or 1)
+            ),
+            order_no=data.order_no,
+            system_delivery_date=data.system_delivery_date,
+            note=data.note,
         )
         assembly.created_by = self._user_id
         assembly.updated_by = self._user_id
@@ -907,6 +918,34 @@ class AssemblyService:
         if data.is_urgent is not None:
             asm.is_urgent = data.is_urgent
 
+        # —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——
+        if data.quantity is not None:
+            asm.quantity = data.quantity
+        if data.unit_price is not None:
+            asm.unit_price = data.unit_price
+        if data.total_price is not None:
+            asm.total_price = data.total_price
+        elif data.unit_price is not None or data.quantity is not None:
+            # caller 没显式传总价 → 自动重算
+            asm.total_price = (asm.unit_price or Decimal("0")) * (asm.quantity or 1)
+
+        if data.order_no is not None:
+            asm.order_no = data.order_no.strip() if data.order_no else None
+        if data.system_delivery_date is not None:
+            asm.system_delivery_date = data.system_delivery_date
+        if data.note is not None:
+            asm.note = data.note
+
+        # 业务约束：装配体设置总价 > 0 时，主动清零所有 active 子件的 unit_price/total_price
+        if data.total_price is not None and (data.total_price or Decimal("0")) > 0:
+            touched = await self._clear_children_prices(asm.id)
+            if touched:
+                _logger.info(
+                    "assembly %s price set, cleared %d children unit_price/total_price",
+                    asm.id,
+                    touched,
+                )
+
         if data.customer_id is not None:
             new_cid = parse_snowflake_id(data.customer_id, field_name="customer_id")
             if new_cid is None:
@@ -1091,6 +1130,13 @@ class AssemblyService:
             is_urgent=asm.is_urgent,
             status=asm.status,
             child_count=child_count,
+            # 2026-07-24 新增：装配体自身价格 + 送货单字段
+            quantity=asm.quantity,
+            unit_price=asm.unit_price,
+            total_price=asm.total_price,
+            order_no=asm.order_no,
+            system_delivery_date=asm.system_delivery_date,
+            note=asm.note,
             created_at=asm.created_at,
             updated_at=asm.updated_at,
         )
@@ -1132,6 +1178,13 @@ class AssemblyService:
             is_urgent=asm.is_urgent,
             status=asm.status,
             child_count=child_count,
+            # 2026-07-24 新增：装配体自身价格 + 送货单字段（与 AssemblyOut 同步）
+            quantity=asm.quantity,
+            unit_price=asm.unit_price,
+            total_price=asm.total_price,
+            order_no=asm.order_no,
+            system_delivery_date=asm.system_delivery_date,
+            note=asm.note,
             created_at=asm.created_at,
             updated_at=asm.updated_at,
         )
@@ -1190,3 +1243,22 @@ class AssemblyService:
             await self.broadcaster()
         except Exception:  # noqa: BLE001
             _logger.exception("assembly snapshot broadcast failed")
+
+    async def _clear_children_prices(self, assembly_id: int) -> int:
+        """装配体设总价 > 0 时，清零所有 active 子件的 unit_price/total_price。
+
+        返回被改动的子件数。子件的其他字段不动；清零后会触发 dashboard 重推。
+        """
+        children = await self.parts.list_children(assembly_id)
+        zero = Decimal("0")
+        touched = 0
+        for child in children:
+            if (child.unit_price or zero) != zero or (child.total_price or zero) != zero:
+                child.unit_price = zero
+                child.total_price = zero
+                child.updated_by = self._user_id
+                await self.parts.update(child)
+                touched += 1
+        if touched:
+            await self._broadcast()
+        return touched
