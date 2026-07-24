@@ -66,7 +66,7 @@ export function useRowEditor<TRow extends { id: string }>(
 ): UseRowEditorApi<TRow> {
   const { items, canEdit, editableFields, onSave } = options
   const editingId = ref<string | null>(null)
-  const editBuffer = ref<Partial<TRow>>({})
+  const editBuffer = ref<Partial<TRow>>({}) as Ref<Partial<TRow>>
 
   function isEditing(row: TRow): boolean {
     return editingId.value === row.id

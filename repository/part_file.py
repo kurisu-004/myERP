@@ -9,9 +9,9 @@
 约定：
 - 所有查询默认 `deleted_at IS NULL`；调用方需要全量时显式
   `include_deleted=True`。
-- 单文件 kind（DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER）
+- 单文件 kind（DRAWING / 3D_MODEL / ASSEMBLY_MASTER / CAD_2D）
   在 service 层走「上传前先 soft_delete_by_part_and_kind」；
-  G_CODE 允许多版本，**不**调用该方法。
+  G_CODE / SETUP_SHEET 允许多版本，**不**调用该方法。
 """
 from __future__ import annotations
 

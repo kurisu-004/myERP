@@ -145,12 +145,11 @@ class TestUploadSize:
 
 
 class TestUploadSingleFileKinds:
-    """DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER：单文件覆盖。"""
+    """DRAWING / 3D_MODEL / ASSEMBLY_MASTER / CAD_2D：单文件覆盖。"""
 
     @pytest.mark.parametrize("kind,filename", [
         (PartFileKind.DRAWING, "x.pdf"),
         (PartFileKind.THREE_D_MODEL, "x.stp"),
-        (PartFileKind.SETUP_SHEET, "x.pdf"),
         (PartFileKind.ASSEMBLY_MASTER, "x.pdf"),
     ])
     async def test_soft_deletes_existing_before_create(
@@ -174,14 +173,20 @@ class TestUploadSingleFileKinds:
 
 
 class TestUploadMultiVersionKinds:
-    """G_CODE：允许多版本，不删旧的。"""
+    """G_CODE / SETUP_SHEET：允许多版本，不删旧的；两者通过 paired_file_id 关联。"""
 
-    async def test_g_code_does_not_soft_delete_existing(self, svc, mock_files):
+    @pytest.mark.parametrize("kind,filename", [
+        (PartFileKind.G_CODE, "x.nc"),
+        (PartFileKind.SETUP_SHEET, "x.pdf"),
+    ])
+    async def test_does_not_soft_delete_existing(
+        self, svc, mock_files, kind, filename,
+    ):
         await svc.upload(
-            owner_id=1001, kind=PartFileKind.G_CODE, data=b"x",
-            original_filename="x.nc", content_type=None,
+            owner_id=1001, kind=kind, data=b"x",
+            original_filename=filename, content_type=None,
         )
-        # G_CODE 多版本：不调 soft_delete_by_part_and_kind
+        # 多版本 / 配对 kind：不调 soft_delete_by_part_and_kind
         assert mock_files.soft_delete_by_part_and_kind.await_count == 0
         assert mock_files.create.await_count == 1
 

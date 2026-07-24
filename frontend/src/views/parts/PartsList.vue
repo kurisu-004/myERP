@@ -294,7 +294,7 @@
      （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
       <el-table-column label="总价" width="120" align="right">
         <template #default="{ row }">
-          <span>{{ displayTotalPrice(row) }}</span>
+          <span>{{ displayTotalPrice(row as PartListItem) }}</span>
         </template>
       </el-table-column>
 
@@ -870,7 +870,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { SummaryMethodProps } from 'element-plus'
+import type { SummaryMethod } from 'element-plus'
 import {
   Close,
   Document,
@@ -1540,7 +1540,7 @@ function displayTotalPrice(row: PartListItem): string {
 }
 
 // 2026-07-24 v2：表格底部合计行（仅总价列求和）
-function totalPriceSummary({ columns, data }: SummaryMethodProps): string[] {
+const totalPriceSummary: SummaryMethod<PartListItem> = ({ columns, data }) => {
   return columns.map((col, index) => {
     if (col.label === '总价') {
       const total = data.reduce((sum, row) => {

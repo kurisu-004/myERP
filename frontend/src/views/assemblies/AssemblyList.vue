@@ -88,7 +88,7 @@
       >
         <template #default="{ row }">
           <el-input
-            v-if="isEditing(row)"
+            v-if="isEditing(row as AssemblyListItem)"
             v-model="editBuffer.order_no"
             size="small"
           />
@@ -105,7 +105,7 @@
       >
         <template #default="{ row }">
           <el-input
-            v-if="isEditing(row)"
+            v-if="isEditing(row as AssemblyListItem)"
             v-model="editBuffer.drawing_no"
             size="small"
           />
@@ -180,7 +180,7 @@
       <el-table-column label="数量" width="90" align="right">
         <template #default="{ row }">
           <el-input-number
-            v-if="isEditing(row)"
+            v-if="isEditing(row as AssemblyListItem)"
             v-model="editBuffer.quantity"
             :min="1"
             :precision="0"
@@ -194,7 +194,7 @@
       <el-table-column label="单价" width="110" align="right">
         <template #default="{ row }">
           <el-input-number
-            v-if="isEditing(row)"
+            v-if="isEditing(row as AssemblyListItem)"
             v-model="editBuffer.unit_price"
             :min="0"
             :precision="2"
@@ -209,7 +209,7 @@
       <!-- 2026-07-24 v2 调整：总价由 quantity × unit_price 前端实时计算（只读展示，与 PartsList 对齐） -->
       <el-table-column label="总价" width="120" align="right">
         <template #default="{ row }">
-          <span v-if="isEditing(row)">
+          <span v-if="isEditing(row as AssemblyListItem)">
             {{ ((Number(editBuffer.quantity) || 0) * (Number(editBuffer.unit_price) || 0)).toFixed(2) }}
           </span>
           <span v-else>
@@ -243,7 +243,7 @@
       >
         <template #default="{ row }">
           <el-date-picker
-            v-if="isEditing(row)"
+            v-if="isEditing(row as AssemblyListItem)"
             v-model="editBuffer.system_delivery_date"
             type="date"
             value-format="YYYY-MM-DD"
@@ -259,7 +259,7 @@
       <el-table-column label="备注" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">
           <el-input
-            v-if="isEditing(row)"
+            v-if="isEditing(row as AssemblyListItem)"
             v-model="editBuffer.note"
             size="small"
           />
@@ -327,13 +327,13 @@
 
       <el-table-column label="操作" width="200" align="center" fixed="right">
         <template #default="{ row }">
-          <template v-if="isEditing(row)">
+          <template v-if="isEditing(row as AssemblyListItem)">
             <el-button
               link
               type="primary"
               size="small"
               :loading="savingEdit"
-              @click.stop="saveEditAsm(row)"
+              @click.stop="saveEditAsm(row as AssemblyListItem)"
             >保存</el-button>
             <el-button
               link
@@ -355,7 +355,7 @@
               link
               type="warning"
               size="small"
-              @click.stop="startEditAsm(row)"
+              @click.stop="startEditAsm(row as AssemblyListItem)"
             >
               编辑
             </el-button>
@@ -491,7 +491,7 @@ import { useRoute } from 'vue-router'
 import {
   ElMessage,
 } from 'element-plus'
-import type { SummaryMethodProps } from 'element-plus'
+import type { SummaryMethod } from 'element-plus'
 import { Filter, Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -780,7 +780,7 @@ async function saveEditAsm(row: AssemblyListItem): Promise<void> {
   try {
     // 2026-07-24 v2：总价由后端自动按 unit_price * quantity 重算，不在 payload 里显式传
     const res = await updateAssembly(row.id, { ...editBuffer })
-    Object.assign(row, { ...editBuffer, total_price: res.total_price, version: res.version })
+    Object.assign(row, { ...editBuffer, total_price: res.assembly.total_price, version: res.assembly.version })
     ElMessage.success('保存成功')
     editingId.value = null
   } catch (e) {
@@ -838,7 +838,7 @@ onBeforeUnmount(() => {
 })
 
 // 2026-07-24 v2：表格底部合计行（仅总价列求和）
-function totalPriceSummary({ columns, data }: SummaryMethodProps): string[] {
+const totalPriceSummary: SummaryMethod<AssemblyListItem> = ({ columns, data }) => {
   return columns.map((col, index) => {
     if (col.label === '总价') {
       const total = data.reduce((sum, row) => {

@@ -18,9 +18,10 @@
 - **CAS key**：`core.file_hash.make_object_key` 派生
   `{prefix}{owner_kind}/{owner_id}/{KIND}/{sha16}_{safe_filename}`。DB 丢失时
   从桶扫描即可知 owner/kind/内容指纹/原始文件名。
-- **单文件 kind**（DRAWING / 3D_MODEL / SETUP_SHEET / ASSEMBLY_MASTER / CAD_2D）：
+- **单文件 kind**（DRAWING / 3D_MODEL / ASSEMBLY_MASTER / CAD_2D）：
   命中复用时跳过 COS PUT；未命中时上传前 soft_delete 同 (owner, kind) 旧行。
-- **多版本 kind**（G_CODE）：命中 no-op；未命中直接 create。
+- **多版本 / 配对 kind**（G_CODE / SETUP_SHEET）：命中 no-op；未命中直接 create。
+  两者通过 `paired_file_id` 双向关联，由 `upload_paired` 一次上传。
 - 跨 part 不共享：DB 部分唯一索引 `uk_t_part_file_part_kind_sha` 在
   `(part_id, kind, content_sha256)` 上。跨 part 上传相同字节理论上仍走
   「不同 owner_id → 不同 sha16 → 不同 key」自然不共享，DB 索引是兜底。

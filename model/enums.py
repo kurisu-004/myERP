@@ -177,11 +177,11 @@ class PartFileKind(str, enum.Enum):
                        BMP / TIF / TIFF / WEBP / HEIC) — 单文件约束
     - THREE_D_MODEL    零件 3D 模型 (STEP / STP / IGES / IGS / STL / OBJ / 3MF) — 单文件约束
     - G_CODE           零件的 CNC G 代码 (NC / TAP / CNC / MPF / NGC) — 多版本
-    - SETUP_SHEET      零件的 CNC 设定单 (PDF) — 单文件约束
+    - SETUP_SHEET      零件的 CNC 设定单 (PDF) — 多版本；与 G_CODE 通过 paired_file_id 配对
     - ASSEMBLY_MASTER  装配体的总装图 (PDF)，polymorphic part_id = assembly.id — 单文件约束
     - CAD_2D           零件 CAD 源文件 (DWG / DXF) — 单文件约束（2026-07-14 新增）
 
-    单文件约束 (除 G_CODE 外)：每 part 每 kind 最多 1 份；索引
+    单文件约束 (除 G_CODE / SETUP_SHEET 外)：每 part 每 kind 最多 1 份；索引
     `uk_t_part_file_single` 在 DB 层强制。
 
     DRAWING 与图片格式（PNG/JPG/...）共用同一槽位：上传 PDF 时如果已有 PNG
