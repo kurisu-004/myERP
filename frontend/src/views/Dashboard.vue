@@ -1,17 +1,7 @@
 <template>
   <div class="dashboard">
-    <!-- 顶部 2/3：生产货架（每个货架一个卡，auto-fit grid 横向并排） -->
+    <!-- 顶部 2/3：货架网格（每个货架一个卡，auto-fit grid 横向并排） -->
     <section class="shelves-area">
-      <div class="shelves-header">
-        <span class="shelves-title"><el-icon class="title-icon"><Box /></el-icon>生产货架</span>
-        <div class="shelves-header-right">
-          <span class="status-mini" v-if="status">
-            <span :class="['dot', status]"></span>
-            <span class="status-mini-text">{{ statusLabel }}</span>
-            <span v-if="lastUpdated" class="status-mini-time"> · {{ lastUpdated }}</span>
-          </span>
-        </div>
-      </div>
       <div v-if="shelfGroups.length === 0" class="shelves-empty">暂无货架上的零件</div>
       <div v-else class="shelves-grid">
         <div
@@ -78,31 +68,17 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Box, Tools, UserFilled } from '@element-plus/icons-vue'
-import { onDashboardSnapshot, onDashboardStatus } from '@/api/dashboard'
+import { Tools, UserFilled } from '@element-plus/icons-vue'
+import { onDashboardSnapshot } from '@/api/dashboard'
 import type {
-  ConnectionStatus,
   DashboardShelfGroup,
   DashboardSnapshot,
 } from '@/types/dashboard'
 
 const shelfGroups = ref<DashboardShelfGroup[]>([])
 const workerParts = ref<DashboardSnapshot['data']['in_process']>([])
-const status = ref<ConnectionStatus>('connecting')
-const lastUpdated = ref('')
 
 let offSnap: (() => void) | null = null
-let offStatus: (() => void) | null = null
-
-const statusLabel = computed(() => {
-  if (status.value === 'open') return '已连接'
-  if (status.value === 'connecting') return '连接中'
-  return '已断开'
-})
-
-function formatTime(iso: string): string {
-  try { return new Date(iso).toLocaleTimeString('zh-CN', { hour12: false }) } catch { return iso }
-}
 
 /** "YYYY-MM-DD..." -> "MM-DD"；空值原样返回。 */
 function formatShortDate(s: string | null | undefined): string {
@@ -113,7 +89,6 @@ function formatShortDate(s: string | null | undefined): string {
 function applySnapshot(snap: DashboardSnapshot): void {
   shelfGroups.value = snap.data.on_production_shelves
   workerParts.value = snap.data.in_process
-  lastUpdated.value = formatTime(snap.ts)
 }
 
 // ============ 响应式字号/头像 ============
@@ -138,14 +113,12 @@ const avatarIconSize = computed(() => {
 
 onMounted(() => {
   offSnap = onDashboardSnapshot(applySnapshot)
-  offStatus = onDashboardStatus((s) => { status.value = s })
   syncWidth()
   window.addEventListener('resize', syncWidth, { passive: true })
 })
 
 onBeforeUnmount(() => {
   offSnap?.(); offSnap = null
-  offStatus?.(); offStatus = null
   window.removeEventListener('resize', syncWidth)
 })
 </script>
@@ -168,22 +141,6 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-height: 0;
 }
-.shelves-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0 4px 8px;
-  flex-shrink: 0;
-}
-.shelves-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 15px;
-}
-.title-icon { color: var(--primary-color); }
-.shelves-header-right { display: flex; align-items: center; gap: 8px; }
 .shelves-empty {
   flex: 1;
   display: flex;
@@ -378,25 +335,6 @@ onBeforeUnmount(() => {
 }
 
 // ============ 通用 ============
-.dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #c0c4cc;
-}
-.dot.open { background: #5cb85c; box-shadow: 0 0 0 3px rgba(92, 184, 92, 0.15); }
-.dot.connecting { background: #f0ad4e; }
-.dot.closed { background: #d9534f; }
-.status-mini {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.status-mini-text { font-weight: 500; }
-.status-mini-time { font-family: 'SF Mono', Menlo, Consolas, monospace; }
 
 // ============================================================
 // 车间大屏适配：1080p / 4K
@@ -404,7 +342,7 @@ onBeforeUnmount(() => {
 // avatar/icon 是 Element Plus 的 prop（不是 CSS 字体），由 script 的 avatarSize / avatarIconSize 接管。
 // ============================================================
 @media (min-width: 1600px) {
-  .shelves-title, .inprocess-title     { font-size: 32px; }
+  .inprocess-title                     { font-size: 32px; }
   .shelf-code                          { font-size: 28px; }
   .shelf-name                          { font-size: 26px; }
   .shelf-count, .inprocess-count       { font-size: 22px; padding: 4px 14px; }
@@ -428,12 +366,10 @@ onBeforeUnmount(() => {
   .pill-name                           { font-size: 24px; }
   .pill-process                        { font-size: 22px; max-width: 360px; }
   .inprocess-empty                     { font-size: 24px; padding: 32px 0; }
-  .status-mini                         { font-size: 22px; }
-  .dot                                 { width: 14px; height: 14px; }
 }
 
 @media (min-width: 2400px) {
-  .shelves-title, .inprocess-title     { font-size: 40px; }
+  .inprocess-title                     { font-size: 40px; }
   .shelf-code                          { font-size: 34px; }
   .shelf-name                          { font-size: 32px; }
   .shelf-count, .inprocess-count       { font-size: 28px; padding: 6px 18px; }
@@ -457,7 +393,5 @@ onBeforeUnmount(() => {
   .pill-name                           { font-size: 30px; }
   .pill-process                        { font-size: 28px; max-width: 480px; }
   .inprocess-empty                     { font-size: 30px; padding: 48px 0; }
-  .status-mini                         { font-size: 28px; }
-  .dot                                 { width: 18px; height: 18px; }
 }
 </style>
