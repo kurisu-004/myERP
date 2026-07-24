@@ -6,6 +6,12 @@
 // 字段映射详见 plan docs/.../excel-snug-zephyr.md 第三节。
 
 import * as XLSX from 'xlsx'
+import {
+  addDays,
+  cleanText,
+  parseDecimalOrNull,
+  parseIntSafe,
+} from './xlsxParseUtils'
 
 /** 解析后的一行（不含 customer_id / applicant_id，page 层去解析）。 */
 export interface BidRow {
@@ -62,47 +68,6 @@ const REQUIRED_HEADERS = [
 
 /** `紧急状态` 文本 → is_urgent=true 的硬编码集合。 */
 const URGENT_TRUE = new Set(['急件', '非常紧急'])
-
-function cleanText(value: unknown): string {
-  if (value == null) return ''
-  return String(value).trim()
-}
-
-function parseIntSafe(value: unknown): number | null {
-  if (value == null || value === '') return null
-  const s = String(value).trim()
-  const n = Number(s)
-  if (!Number.isFinite(n) || !Number.isInteger(n)) return null
-  return n
-}
-
-function parseDecimal(value: unknown): number {
-  if (value == null || value === '') return 0
-  const s = String(value).trim()
-  const n = Number(s)
-  if (!Number.isFinite(n)) return 0
-  return n
-}
-
-function parseDecimalOrNull(value: unknown): number | null {
-  if (value == null || value === '') return null
-  const s = String(value).trim()
-  const n = Number(s)
-  if (!Number.isFinite(n)) return null
-  return n
-}
-
-/** `YYYY-MM-DD + days` → `YYYY-MM-DD`（UTC 算术避免夏令时踩坑）。 */
-function addDays(yyyy_mm_dd: string, days: number): string {
-  const [y, m, d] = yyyy_mm_dd.split('-').map(Number)
-  const date = new Date(Date.UTC(y, m - 1, d))
-  date.setUTCDate(date.getUTCDate() + days)
-  return [
-    date.getUTCFullYear(),
-    String(date.getUTCMonth() + 1).padStart(2, '0'),
-    String(date.getUTCDate()).padStart(2, '0'),
-  ].join('-')
-}
 
 /** `方案/设计图纸` 单元格内嵌的 JSON 数组里抽第一个 fileName。失败 → null。 */
 function extractFirstFileName(raw: string): string | null {

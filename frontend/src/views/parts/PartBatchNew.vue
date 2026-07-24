@@ -370,7 +370,7 @@
       <el-tab-pane label="PDF 批量上传" name="pdf">
         <p class="hint">
           拖拽多个 PDF 文件（命名格式 <code>图号_零件名称.pdf</code>），
-          可同时拖入应标 Excel 文件（按图号匹配申请人/数量/加急等）。
+          可同时拖入应标 / 历史价确认单 Excel 文件（按图号匹配申请人/数量/加急等）。
           多页 PDF 拆为候选页：勾选页可「合并为零件」或「合并为装配件」；
           单页 PDF 直接进入独立零件表。可手动新增 / 删除条目。
         </p>
@@ -433,9 +433,12 @@
                 :show-file-list="true"
               >
                 <el-icon class="el-icon--upload"><document /></el-icon>
-                <div class="el-upload__text">拖拽应标 Excel（可选；按图号匹配）</div>
+                <div class="el-upload__text">拖拽应标 / 历史价确认单 Excel（可选；按图号匹配）</div>
                 <template #tip>
-                  <div class="el-upload__tip">列：物料编号 / 货物(劳务)名称 / 申请人 / 数量 / 单价 / 紧急状态 / 预估交期天数</div>
+                  <div class="el-upload__tip">
+                    支持：① 应标 Excel（列：物料编号 / 货物(劳务)名称 / 申请人 / 数量 / 单价 / 紧急状态 / 预估交期天数） ·
+                    ② 历史价确认单（列：申请部门 / 申请人 / 交期(天) / 物料编号 / 物料名称 / 采购数量 / 含税单价 / 含税价格）
+                  </div>
                 </template>
               </el-upload>
             </el-col>
@@ -624,8 +627,12 @@
                   <template #default="{ row }">
                     <el-autocomplete
                       v-model="row.applicant_name"
+                      value-key="name"
                       :fetch-suggestions="(q: string, cb: any) => querySearch(q, cb)"
+                      :trigger-on-focus="true"
                       :debounce="0"
+                      :loading="applicantLoading"
+                      :disabled="!pdfForm.customerL1Id"
                       placeholder="选填"
                       clearable
                       size="small"
@@ -774,8 +781,12 @@
                   <template #default="{ row }">
                     <el-autocomplete
                       v-model="row.applicant_name"
+                      value-key="name"
                       :fetch-suggestions="(q: string, cb: any) => querySearch(q, cb)"
+                      :trigger-on-focus="true"
                       :debounce="0"
+                      :loading="applicantLoading"
+                      :disabled="!pdfForm.customerL1Id"
                       placeholder="选填"
                       clearable
                       size="small"
@@ -1483,7 +1494,8 @@ import {
   type PartBatchTreeItemFE,
   type PartBatchTreeAssemblyFE,
 } from '@/api/parts'
-import { parseBidExcel, type BidRow } from '@/utils/bidExcelParser'
+import { parseBidExcel, type BidRow, type ParseResult } from '@/utils/bidExcelParser'
+import { parseHistoricalPriceExcel } from '@/utils/historicalPriceExcelParser'
 import { parseDrawingFilename } from '@/utils/drawingFilename'
 import { pdfjsLib } from '@/utils/pdfjs'
 
@@ -1503,6 +1515,17 @@ const pdfForm = reactive<PdfFormState>({
   customerL1Id: null,
   requestDate: todayIso(),
 })
+
+// PDF Tab 一级客户切换 → 拉一次该客户下申请人全集。
+// useApplicantSearch.loadForCustomer 内部对同一 rootCustomerId 不重拉；
+// 切换到空客户则清空缓存。immediate: false 避免首次 null 时多余调用。
+watch(
+  () => pdfForm.customerL1Id,
+  (next) => {
+    void loadApplicantsForCustomer(next)
+  },
+  { immediate: false },
+)
 
 // PDF / Excel 文件列表（el-upload 控件绑定）
 const pdfFiles = ref<UploadFile[]>([])
@@ -1680,7 +1703,17 @@ async function readExcel(file: File): Promise<BidRow[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const XLSX: any = await import('xlsx')
   const wb = XLSX.read(buf, { type: 'array' })
-  const parsed = parseBidExcel(wb, todayIso())
+  const sheetNames = wb.SheetNames
+  let parsed: ParseResult
+  if (sheetNames.includes('历史价确认单明细')) {
+    parsed = parseHistoricalPriceExcel(wb, todayIso())
+  } else if (sheetNames.includes('招标项目-标的')) {
+    parsed = parseBidExcel(wb, todayIso())
+  } else {
+    throw new Error(
+      `Excel 格式无法识别（需要「历史价确认单明细」或「招标项目-标的」sheet），当前文件 sheet: ${sheetNames.join(', ')}`,
+    )
+  }
   if (parsed.errors.length > 0) {
     ElMessage.warning(`Excel 解析告警：${parsed.errors.length} 条（已忽略）`)
   }
