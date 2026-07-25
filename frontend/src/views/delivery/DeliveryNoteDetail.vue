@@ -14,8 +14,7 @@ import {
   addParts,
   getNote,
   listNoteEvents,
-    getPrintToken,
-  buildPrintUrl,
+  printNote,
   removeParts,
   recallNote,
   softDeleteNote,
@@ -154,23 +153,48 @@ async function onSoftDelete() {
   }
 }
 
-const printing = ref(false)
+// ============================================================
+// 打印下载进度（单实例 ref；按钮右侧挂 <el-progress type="circle">）
+// ============================================================
+const dlProgress = ref<
+  { loaded: number; total: number; state: 'downloading' | 'success' | 'error' } | null
+>(null)
+
+const pct = computed(() => {
+  const p = dlProgress.value
+  if (!p || !p.total) return p?.loaded ? 100 : 0
+  return Math.min(100, Math.round((p.loaded / p.total) * 100))
+})
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 async function onPrint() {
-  if (!note.value) return
-  printing.value = true
+  if (!note.value || dlProgress.value?.state === 'downloading') return
+  dlProgress.value = { loaded: 0, total: 0, state: 'downloading' }
   try {
-    // 换短期 token → 浏览器原生下载（进度显示在下载栏），不再走 blob 全量缓冲
-    const { token } = await getPrintToken(note.value.id)
-    const a = document.createElement('a')
-    a.href = buildPrintUrl(note.value.id, token)
-    a.download = `送货单_${note.value.delivery_note_no}.xlsx`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    const { blob, filename } = await printNote(note.value.id, (p) => {
+      dlProgress.value = { ...dlProgress.value!, ...p }
+    })
+    triggerBrowserDownload(blob, filename)
+    dlProgress.value = { ...dlProgress.value!, state: 'success' }
+    setTimeout(() => {
+      dlProgress.value = null
+    }, 1500)
   } catch (e) {
+    dlProgress.value = { ...dlProgress.value!, state: 'error' }
     ElMessage.error((e as Error).message ?? '打印失败')
-  } finally {
-    printing.value = false
+    setTimeout(() => {
+      dlProgress.value = null
+    }, 2000)
   }
 }
 
@@ -386,29 +410,31 @@ const canEdit = computed(() => canAdd.value)
         <template #header>
           <span>状态操作</span>
         </template>
-        <el-space wrap>
-          <el-button
-            v-if="note.status === 'DRAFT' && (role.MANAGER || role.CLERK)"
-            type="primary"
-            @click="onSubmit"
-          >
-            提交（DRAFT → SUBMITTED）
-          </el-button>
-          <el-button
-            v-if="note.status === 'SUBMITTED' && (role.MANAGER || role.CLERK)"
-            type="warning"
-            @click="onRecall"
-          >
-            撤回（SUBMITTED → DRAFT）
-          </el-button>
-          <el-button
-            v-if="(role.MANAGER || role.CLERK) && note.part_count > 0"
-            type="success"
-            :loading="printing"
-            @click="onPrint"
-          >
-            打印送货单
-          </el-button>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <el-space wrap>
+            <el-button
+              v-if="note.status === 'DRAFT' && (role.MANAGER || role.CLERK)"
+              type="primary"
+              @click="onSubmit"
+            >
+              提交
+            </el-button>
+            <el-button
+              v-if="note.status === 'SUBMITTED' && (role.MANAGER || role.CLERK)"
+              type="warning"
+              @click="onRecall"
+            >
+              撤回
+            </el-button>
+            <el-button
+              v-if="(role.MANAGER || role.CLERK) && note.part_count > 0"
+              type="success"
+              :loading="dlProgress?.state === 'downloading'"
+              @click="onPrint"
+            >
+              打印送货单
+            </el-button>
+          </el-space>
           <el-button
             v-if="canSoftDelete(note.status, role)"
             type="danger"
@@ -417,7 +443,7 @@ const canEdit = computed(() => canAdd.value)
           >
             删除草稿
           </el-button>
-        </el-space>
+        </div>
       </el-card>
 
       <el-card shadow="never" class="events-card">
@@ -446,6 +472,25 @@ const canEdit = computed(() => canAdd.value)
       title="选择零件添加到本单"
       @submit="onPickerSubmit"
     />
+
+    <!-- 右上角下载进度条卡片（fixed 定位，单实例） -->
+    <div v-if="dlProgress" class="dl-tray" aria-live="polite">
+      <div class="dl-card">
+        <div class="dl-card-header">
+          <span class="dl-card-name">{{ note?.delivery_note_no ?? '' }}</span>
+          <span class="dl-card-pct">{{ pct }}%</span>
+        </div>
+        <el-progress
+          type="line"
+          :percentage="pct"
+          :status="dlProgress.state === 'success' ? 'success'
+                  : dlProgress.state === 'error' ? 'exception'
+                  : undefined"
+          :show-text="false"
+          :stroke-width="8"
+        />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -457,4 +502,42 @@ const canEdit = computed(() => canAdd.value)
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .event-note { font-size: 13px; color: #666; margin-top: 4px; }
+.dl-tray {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 280px;
+  pointer-events: none;
+}
+.dl-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+  padding: 8px 12px;
+  pointer-events: auto;
+}
+.dl-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 6px;
+}
+.dl-card-name {
+  font-weight: 500;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.dl-card-pct {
+  font-variant-numeric: tabular-nums;
+}
 </style>

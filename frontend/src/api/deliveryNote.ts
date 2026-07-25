@@ -16,7 +16,7 @@
 //   POST   /delivery-notes/{id}/pickup-scan      - pickupScan
 //   POST   /delivery-notes/{id}/pickup           - pickup
 //   POST   /delivery-notes/{id}/soft-delete      - softDelete
-//   GET    /delivery-notes/{id}/print            - printNote
+//   GET    /delivery-notes/{id}/print            - printNote (Authorization header, StreamingResponse)
 
 import { api } from '@/api/http'
 import type {
@@ -241,17 +241,46 @@ export async function updateNote(
   return resp.data
 }
 
-// 15) print-token：换取短期下载 token，供浏览器原生下载走 URL query
-//     （原生下载 `<a href download>` 导航无法带 Authorization 头）。
-export async function getPrintToken(noteId: string): Promise<{ token: string }> {
-  const resp = await api.post<{ token: string }>(
-    `/delivery-notes/${noteId}/print-token`,
-  )
-  return resp.data
+/**
+ * 程序化下载送货单 XLSX（Axios blob + onDownloadProgress）。
+ *
+ * - 走标准 `api` 拦截器：Authorization 头自动挂、40102 自动 refresh + 重试。
+ * - `onDownloadProgress` 通过 `Content-Length` 给出 total，前端据此算出百分比。
+ * - 拿到完整 Blob 后再用 `URL.createObjectURL` + `<a download>` 触发浏览器保存。
+ */
+export interface PrintNoteProgress {
+  loaded: number
+  total: number
 }
 
-// 拼装打印下载 URL（浏览器原生下载；进度显示在下载栏）。
-export function buildPrintUrl(noteId: string, token: string): string {
-  return `/api/v1/delivery-notes/${noteId}/print?token=${encodeURIComponent(token)}`
+export interface PrintNoteResult {
+  blob: Blob
+  filename: string
+}
+
+export async function printNote(
+  noteId: string,
+  onProgress?: (p: PrintNoteProgress) => void,
+): Promise<PrintNoteResult> {
+  const resp = await api.get<Blob>(
+    `/delivery-notes/${encodeURIComponent(noteId)}/print`,
+    {
+      responseType: 'blob',
+      onDownloadProgress: (event) => {
+        onProgress?.({ loaded: event.loaded, total: event.total ?? 0 })
+      },
+    },
+  )
+  const filename =
+    parseFilename(resp.headers['content-disposition']) ??
+    `delivery_note_${noteId}.xlsx`
+  return { blob: resp.data, filename }
+}
+
+/** 解析 `attachment; filename="delivery_note_F_123.xlsx"`。 */
+function parseFilename(header: string | undefined): string | null {
+  if (!header) return null
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header)
+  return m ? decodeURIComponent(m[1].trim()) : null
 }
 

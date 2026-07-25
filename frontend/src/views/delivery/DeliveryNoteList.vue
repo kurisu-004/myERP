@@ -6,12 +6,13 @@
   - 顶部「新建草稿」按钮：弹 el-dialog 选一级客户 + 送货日期 + 备注，
     勾选零件后原子创建 + 入件，跳详情页
   - 配送日期列、送货日期列
-  - 打印按钮（list）：GET /delivery-notes/{id}/print → 浏览器下载 xlsx
+  - 打印按钮（list）：GET /delivery-notes/{id}/print → Axios blob + onDownloadProgress →
+    按钮右侧 <el-progress type="circle"> 实时显示百分比
 
   形态对齐 frontend/src/views/outsource/OutsourceQuoteList.vue
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Van } from '@element-plus/icons-vue'
@@ -19,8 +20,7 @@ import { Van } from '@element-plus/icons-vue'
 import {
   createNote as createNoteApi,
   listNotes,
-  getPrintToken,
-  buildPrintUrl,
+  printNote,
   recallNote,
   softDeleteNote,
   submitNote,
@@ -239,23 +239,58 @@ async function onSoftDelete(n: DeliveryNoteOut) {
   }
 }
 
-const printing = ref(false)
+// ============================================================
+// 打印下载进度（per-row reactive map；按钮右侧挂 <el-progress type="circle">）
+// ============================================================
+type DlState = {
+  loaded: number
+  total: number
+  state: 'downloading' | 'success' | 'error'
+}
+const dlMap = reactive<Record<string, DlState>>({})
+
+function pctOf(id: string): number {
+  const p = dlMap[id]
+  if (!p || !p.total) return p?.loaded ? 100 : 0
+  return Math.min(100, Math.round((p.loaded / p.total) * 100))
+}
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 async function onPrint(n: DeliveryNoteOut) {
-  printing.value = true
+  if (dlMap[n.id]?.state === 'downloading') return
+  dlMap[n.id] = { loaded: 0, total: 0, state: 'downloading' }
   try {
-    // 换短期 token → 浏览器原生下载（进度显示在下载栏），不再走 blob 全量缓冲
-    const { token } = await getPrintToken(n.id)
-    const a = document.createElement('a')
-    a.href = buildPrintUrl(n.id, token)
-    a.download = `送货单_${n.delivery_note_no}.xlsx`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    const { blob, filename } = await printNote(n.id, (p) => {
+      dlMap[n.id] = { ...dlMap[n.id], ...p }
+    })
+    triggerBrowserDownload(blob, filename)
+    dlMap[n.id] = { ...dlMap[n.id], state: 'success' }
+    setTimeout(() => {
+      delete dlMap[n.id]
+    }, 1500)
   } catch (e) {
+    dlMap[n.id] = { ...dlMap[n.id], state: 'error' }
     ElMessage.error((e as Error).message ?? '打印失败')
-  } finally {
-    printing.value = false
+    setTimeout(() => {
+      delete dlMap[n.id]
+    }, 2000)
   }
+}
+
+/** 拿 note 在 items 里的 delivery_note_no；找不到则 fallback id 字符串。 */
+function noteNoOf(id: string): string {
+  const n = items.value.find((x) => x.id === id)
+  return n?.delivery_note_no ?? id
 }
 </script>
 
@@ -263,39 +298,53 @@ async function onPrint(n: DeliveryNoteOut) {
   <div class="delivery-note-list">
     <el-card shadow="never" class="filter-card">
       <el-form inline class="filter-form">
-        <el-form-item label="状态">
-          <el-select
-            v-model="statuses"
-            multiple
-            clearable
-            placeholder="全部"
-            style="width: 280px"
-          >
-            <el-option v-for="s in allStatuses" :key="s" :label="DELIVERY_NOTE_STATUS_LABEL[s]" :value="s" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="客户">
-          <el-select
-            v-model="customerId"
-            clearable
-            filterable
-            placeholder="全部"
-            style="width: 200px"
-          >
-            <el-option v-for="c in customers" :key="c.id" :label="c.path" :value="c.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="单号">
-          <el-input v-model="keyword" placeholder="DN-20260723-…" clearable style="width: 200px" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="page = 1; fetchList()">查询</el-button>
-          <el-button @click="resetFilter">重置</el-button>
-          <el-button v-if="role.MANAGER || role.CLERK" type="success" @click="openCreate">
-            <el-icon><Van /></el-icon>
-            新建草稿
-          </el-button>
-        </el-form-item>
+        <div style="display: flex; margin-bottom: 15px;">
+          <el-form-item label="状态">
+            <el-select
+              v-model="statuses"
+              multiple
+              clearable
+              placeholder="全部"
+              style="width: 380px"
+            >
+              <el-option v-for="s in allStatuses" :key="s" :label="DELIVERY_NOTE_STATUS_LABEL[s]" :value="s" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="客户">
+            <el-select
+              v-model="customerId"
+              clearable
+              filterable
+              placeholder="全部"
+              style="width: 200px"
+            >
+              <el-option v-for="c in customers" :key="c.id" :label="c.path" :value="c.id" />
+            </el-select>
+          </el-form-item>
+        </div>
+
+  
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <el-form-item label="单号">
+              <el-input v-model="keyword" placeholder="DN-20260723-…" clearable style="width: 200px" />
+            </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="page = 1; fetchList()">查询</el-button>
+                <el-button @click="resetFilter">重置</el-button>
+              </el-form-item>
+          </div>
+          
+          <div>
+            <el-button v-if="role.MANAGER || role.CLERK" type="success" @click="openCreate">
+              <el-icon><Van /></el-icon>
+              新建草稿
+            </el-button>
+          </div>
+
+
+        </div>
+
       </el-form>
     </el-card>
 
@@ -307,19 +356,19 @@ async function onPrint(n: DeliveryNoteOut) {
       style="margin-top: 16px"
       :empty-text="loading ? '加载中' : '无数据'"
     >
-      <el-table-column prop="delivery_note_no" label="单号" width="180" />
+      <el-table-column prop="delivery_note_no" label="单号" width="180" align="center"/>
       <el-table-column label="送货日期" width="120" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).delivery_date ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="客户" min-width="200">
+      <el-table-column label="客户" min-width="130" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).customer_path
             ?? (scope.row as DeliveryNoteOut).customer_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="110">
+      <el-table-column label="状态" width="80" align="center">
         <template #default="scope">
           <el-tag
             :type="DELIVERY_NOTE_STATUS_TAG[(scope.row as DeliveryNoteOut).status] || 'info'"
@@ -330,62 +379,64 @@ async function onPrint(n: DeliveryNoteOut) {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="part_count" label="零件数" width="90" align="center" />
-      <el-table-column label="提交时间" width="170">
+      <el-table-column prop="part_count" label="零件数" width="70" align="center" />
+      <el-table-column label="提交时间" width="170" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).submitted_at
             ? new Date((scope.row as DeliveryNoteOut).submitted_at!).toLocaleString() : '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="领取时间" width="170">
+      <el-table-column label="领取时间" width="170" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).picked_up_at
             ? new Date((scope.row as DeliveryNoteOut).picked_up_at!).toLocaleString() : '—' }}
         </template>
       </el-table-column>
-      <el-table-column prop="driver_worker_name" label="司机" width="120">
+      <el-table-column prop="driver_worker_name" label="司机" width="80" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).driver_worker_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="360" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right" align="center">
         <template #default="scope">
-          <el-button link type="primary" @click="$router.push(`/delivery-notes/${(scope.row as DeliveryNoteOut).id}`)">
-            详情
-          </el-button>
-          <el-button
-            v-if="canSubmit((scope.row as DeliveryNoteOut).status, role)"
-            link
-            type="primary"
-            @click="onSubmit(scope.row as DeliveryNoteOut)"
-          >
-            提交
-          </el-button>
-          <el-button
-            v-if="canRecall((scope.row as DeliveryNoteOut).status, role)"
-            link
-            type="warning"
-            @click="onRecall(scope.row as DeliveryNoteOut)"
-          >
-            撤回
-          </el-button>
-          <el-button
-            v-if="(role.MANAGER || role.CLERK)"
-            link
-            type="success"
-            :loading="printing"
-            @click="onPrint(scope.row as DeliveryNoteOut)"
-          >
-            打印
-          </el-button>
-          <el-button
-            v-if="canSoftDelete((scope.row as DeliveryNoteOut).status, role)"
-            link
-            type="danger"
-            @click="onSoftDelete(scope.row as DeliveryNoteOut)"
-          >
-            删除
-          </el-button>
+          <div style="display: flex; align-items: center; gap: 0px;">
+            <el-button link type="primary" @click="$router.push(`/delivery-notes/${(scope.row as DeliveryNoteOut).id}`)">
+              详情
+            </el-button>
+            <el-button
+              v-if="canSubmit((scope.row as DeliveryNoteOut).status, role)"
+              link
+              type="primary"
+              @click="onSubmit(scope.row as DeliveryNoteOut)"
+            >
+              提交
+            </el-button>
+            <el-button
+              v-if="canRecall((scope.row as DeliveryNoteOut).status, role)"
+              link
+              type="warning"
+              @click="onRecall(scope.row as DeliveryNoteOut)"
+            >
+              撤回
+            </el-button>
+            <el-button
+              v-if="(role.MANAGER || role.CLERK)"
+              link
+              type="success"
+              :loading="dlMap[(scope.row as DeliveryNoteOut).id]?.state === 'downloading'"
+              @click="onPrint(scope.row as DeliveryNoteOut)"
+            >
+              打印
+            </el-button>
+            <el-button
+              v-if="canSoftDelete((scope.row as DeliveryNoteOut).status, role)"
+              link
+              type="danger"
+              @click="onSoftDelete(scope.row as DeliveryNoteOut)"
+            >
+              删除
+            </el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -474,6 +525,29 @@ async function onPrint(n: DeliveryNoteOut) {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 右上角下载进度条堆叠区（fixed 定位，不随页面滚动） -->
+    <div class="dl-tray" aria-live="polite">
+      <div
+        v-for="(state, id) in dlMap"
+        :key="id"
+        class="dl-card"
+      >
+        <div class="dl-card-header">
+          <span class="dl-card-name">{{ noteNoOf(id) }}</span>
+          <span class="dl-card-pct">{{ pctOf(id) }}%</span>
+        </div>
+        <el-progress
+          type="line"
+          :percentage="pctOf(id)"
+          :status="state.state === 'success' ? 'success'
+                  : state.state === 'error' ? 'exception'
+                  : undefined"
+          :show-text="false"
+          :stroke-width="8"
+        />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -484,5 +558,43 @@ async function onPrint(n: DeliveryNoteOut) {
 .picker-summary {
   display: flex;
   align-items: center;
+}
+.dl-tray {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 280px;
+  pointer-events: none;
+}
+.dl-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+  padding: 8px 12px;
+  pointer-events: auto;
+}
+.dl-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 6px;
+}
+.dl-card-name {
+  font-weight: 500;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.dl-card-pct {
+  font-variant-numeric: tabular-nums;
 }
 </style>

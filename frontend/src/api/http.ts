@@ -227,7 +227,17 @@ api.interceptors.response.use(
     return response
   },
   async (error: AxiosError) => {
-    const payload = error.response?.data
+    // blob 响应的 error body 也是 Blob；isEnvelope(blob) 返回 false 会让
+    // 401 自动刷新失效。先把 Blob body 读成文本再尝试 JSON parse。
+    let payload: unknown = error.response?.data
+    if (payload instanceof Blob) {
+      try {
+        const text = await payload.text()
+        payload = text ? JSON.parse(text) : null
+      } catch {
+        payload = null
+      }
+    }
     if (!isEnvelope(payload)) {
       throw new ApiError(
         error.response?.status ?? 0,

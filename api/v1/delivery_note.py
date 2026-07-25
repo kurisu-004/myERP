@@ -13,20 +13,16 @@
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 
 from api.deps import get_delivery_note_service
-from core.error_code import ErrCode
-from core.exception import BizError
 from core.permission import (
     CurrentUser,
     get_current_user,
     require_auth,
     require_roles,
 )
-from core.security import create_download_token, decode_download_token
-from fastapi import status as http_status
 from model.enums import (
     DeliveryNoteSortKey,
     SortDir,
@@ -54,45 +50,6 @@ router = APIRouter(prefix="/delivery-notes", tags=["送货单"])
 _OFFICE_DEP = [Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))]
 
 _OFFICE_ROLES = (UserRole.MANAGER, UserRole.CLERK)
-
-
-async def require_delivery_print_auth(
-    note_id: str,
-    request: Request,
-    token: str | None = Query(default=None),
-) -> None:
-    """打印下载端点鉴权：优先 `?token=`（短期下载 token），否则回退 Bearer 头。
-
-    浏览器原生下载走 `<a href download>` 导航，无法带 Authorization 头，
-    因此前端先 `POST /{id}/print-token` 换一个短期 token 放 URL query。
-    无 token 时回退头部鉴权（保留 axios / 调试兼容）。两条路径都要求
-    MANAGER / CLERK 角色。
-    """
-    if token:
-        payload = decode_download_token(token)
-        roles = tuple(payload.get("roles") or ())
-        if not any(r.value in roles for r in _OFFICE_ROLES):
-            raise BizError(
-                code=ErrCode.FORBIDDEN,
-                message="download token missing office role",
-                http_status=http_status.HTTP_403_FORBIDDEN,
-            )
-        if str(payload.get("note_id")) != str(note_id):
-            raise BizError(
-                code=ErrCode.BIZ_AUTH_INVALID,
-                message="download token note mismatch",
-                http_status=http_status.HTTP_401_UNAUTHORIZED,
-            )
-        return
-    # 回退：Bearer 头 + office 角色
-    user = await get_current_user(request)
-    if not any(user.has_role(r) for r in _OFFICE_ROLES):
-        raise BizError(
-            code=ErrCode.FORBIDDEN,
-            message="one of roles [MANAGER, CLERK] required",
-            http_status=http_status.HTTP_403_FORBIDDEN,
-        )
-    return
 
 
 # ============================================================
@@ -358,47 +315,42 @@ async def soft_delete_delivery_note(
 
 # ============================================================
 # 6. 打印（CLERK / MANAGER；全 4 状态可打）
-#    按 L1 客户的序列号前缀分发 template/delivery_note_{prefix}.xlsx
+#    按 L1 客户的序列号前缀分发 template/delivery_note_{prefix}.xlsx。
+#
+#    GET — Authorization header；XLSX 通过 StreamingResponse 分块 yield（CHUNK_SIZE），
+#          让 nginx（proxy_buffering off）把字节逐步推到浏览器，前端 Axios 的
+#          `onDownloadProgress` 据此计算进度百分比。Content-Length 仍显式设置
+#          （总字节已知，前端需要 `total` 算百分比）。
 # ============================================================
-@router.post(
-    "/{note_id}/print-token",
-    summary="换取送货单打印短期下载 token（供浏览器原生下载走 URL query）",
-    dependencies=_OFFICE_DEP,
-)
-async def create_delivery_print_token(
-    note_id: str,
-    user: CurrentUser = Depends(require_roles(UserRole.MANAGER, UserRole.CLERK)),
-    svc: DeliveryNoteService = Depends(get_delivery_note_service),
-) -> dict:
-    nid_int = await svc.assert_exists(note_id)
-    token = create_download_token(
-        user_id=user.id,
-        username=user.username,
-        roles=list(user.roles),
-        note_id=nid_int,
-    )
-    return {"token": token}
+CHUNK_SIZE = 64 * 1024  # 64KB，与典型 TCP send buffer 同量级
 
 
 @router.get(
     "/{note_id}/print",
     summary=(
-        "下载送货单 XLSX（按 L1 客户前缀分发 F/L 模板；"
-        "DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 全状态可打）"
+        "下载送货单 XLSX（Authorization header；DRAFT/SUBMITTED/PICKED_UP/"
+        "ARCHIVED 全状态可打；StreamingResponse 让前端 onDownloadProgress 拿到"
+        "细粒度 loaded 事件）"
     ),
-    dependencies=[Depends(require_delivery_print_auth)],
+    dependencies=_OFFICE_DEP,
 )
 async def print_delivery_note(
     note_id: str,
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
-) -> Response:
+) -> StreamingResponse:
     xlsx_bytes, prefix = await svc.print_xlsx(note_id)
     filename = f"delivery_note_{prefix}_{note_id}.xlsx"
-    return Response(
-        content=xlsx_bytes,
+
+    async def stream_chunks():
+        for i in range(0, len(xlsx_bytes), CHUNK_SIZE):
+            yield xlsx_bytes[i : i + CHUNK_SIZE]
+
+    return StreamingResponse(
+        stream_chunks(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(len(xlsx_bytes)),
+            "Cache-Control": "no-store",
         },
     )
