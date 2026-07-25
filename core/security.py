@@ -128,40 +128,6 @@ def create_refresh_token(
     return jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def create_download_token(
-    *,
-    user_id: int,
-    username: str,
-    roles: list[str],
-    note_id: int,
-    expires_minutes: int = 2,
-) -> str:
-    """签发一次性短期下载 token（默认 2min TTL），type="download"。
-
-    用途：送货单打印走浏览器原生下载（`<a href download>` 导航无法带
-    Authorization 头），所以 token 走 URL query。用专用短期 token 而非
-    长效 access token，避免 access token 落进 nginx/uvicorn 访问日志与浏览器历史。
-
-    载荷额外塞 `note_id` + `scope`，print 端点解出后校验 note_id 匹配。
-    """
-    claims = _build_token_claims(
-        user_id=user_id,
-        username=username,
-        roles=roles,
-        shelf_ids=[],
-        extra=None,
-        expires_minutes=expires_minutes,
-        token_type="download",
-        extra_claims={"note_id": str(note_id), "scope": "delivery_note_print"},
-    )
-    return jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-
-
-def decode_download_token(token: str) -> dict:
-    """解下载 token；严格要求 type="download"。失败抛 BIZ_AUTH_INVALID 401。"""
-    return _decode_token(token, expected_type="download")
-
-
 def _decode_token(token: str, *, expected_type: str) -> dict:
     """共用解码器：校验 exp / iss / sig / type。
 

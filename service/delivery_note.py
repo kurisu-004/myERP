@@ -238,21 +238,6 @@ class DeliveryNoteService:
         from schema.delivery_note import DeliveryNoteDetailOut
         return await self._to_detail(obj, parts, scanned)
 
-    async def assert_exists(self, note_id: str) -> int:
-        """校验送货单存在，返回其 int id；不存在抛 404。
-
-        供打印下载 token 端点做轻量存在性校验（不拉 parts / 不组装 detail）。
-        """
-        nid_int = parse_snowflake_id(note_id, field_name="id")
-        obj = await self.notes.get_by_id(nid_int)
-        if obj is None:
-            raise BizError(
-                code=ErrCode.BIZ_DELIVERY_NOTE_NOT_FOUND,
-                message=f"delivery note {note_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        return nid_int
-
     async def soft_delete(
         self, note_id: str, version: int,
     ) -> None:

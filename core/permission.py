@@ -79,14 +79,17 @@ def _extract_bearer(request: Request) -> str:
     return parts[1]
 
 
-async def get_current_user(request: Request) -> CurrentUser:
-    """FastAPI 依赖：从请求头取 JWT 并组装 CurrentUser。
+async def get_current_user_from_access_token(token: str) -> CurrentUser:
+    """共用：从 access JWT 字符串 + t_user 解出 CurrentUser。
+
+    解码失败 / 用户不存在 / 软删 / 停用 / 无角色 → 抛 BizError 401/403。
+    被 `get_current_user(request)`（Bearer header）和打印端点的
+    `access_token=<JWT>` form body 路径共享，确保两条路径鉴权行为完全一致。
 
     为避免 `core.permission` ↔ `api.deps` 循环导入，这里直接 `SessionLocal()`
     对 `t_user` 跑一个 SELECT；后续若需在事务内使用 `CurrentUser`，请改
     在 endpoint 里 `Depends(get_session)` 自行处理。
     """
-    token = _extract_bearer(request)
     payload = decode_access_token(token)
 
     try:
@@ -127,6 +130,12 @@ async def get_current_user(request: Request) -> CurrentUser:
         shelf_ids=shelf_ids,
         shelf_wildcard=shelf_wildcard,
     )
+
+
+async def get_current_user(request: Request) -> CurrentUser:
+    """FastAPI 依赖：从 `Authorization: Bearer <token>` 头取 JWT 并组装 CurrentUser。"""
+    token = _extract_bearer(request)
+    return await get_current_user_from_access_token(token)
 
 
 def require_role(role: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
