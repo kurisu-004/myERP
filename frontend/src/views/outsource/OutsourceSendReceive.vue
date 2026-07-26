@@ -1063,7 +1063,7 @@ watch(activeTab, async (t) => {
         <el-form-item :label="receiveBranch === 'production' ? '生产货架' : '品检货架'" required>
           <el-select
             v-model="receiveShelf"
-            :placeholder="receiveBranch === 'production' ? '选 PRODUCTION 区' : '选 INSPECTION 区'"
+            :placeholder="receiveBranch === 'production' ? '生产区' : '品检区'"
             filterable
             style="width: 100%"
           >
@@ -1075,7 +1075,7 @@ watch(activeTab, async (t) => {
             />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="receiveBranch === 'production'" label="下一道 INHOUSE" required>
+        <el-form-item v-if="receiveBranch === 'production'" label="下一道工序" required>
           <el-select v-model="receiveProcess" filterable style="width: 100%">
             <el-option
               v-for="p in filteredInhouseProcesses"
@@ -1084,12 +1084,6 @@ watch(activeTab, async (t) => {
               :value="p.id"
             />
           </el-select>
-        </el-form-item>
-        <el-form-item v-if="receiveBranch === 'inspection'">
-          <el-checkbox v-model="autoPass">
-            通过品检后自动进入待送货
-            <small>（勾选后连发 pass_inspection：OUTSOURCE → INSPECTION → READY_TO_SHIP）</small>
-          </el-checkbox>
         </el-form-item>
       </el-form>
       <template #footer>
