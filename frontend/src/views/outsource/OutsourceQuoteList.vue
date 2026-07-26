@@ -2,7 +2,7 @@
      (2026-07-16 仿 PartsList.vue 范式重排版：列头 popover 筛选 + 列头排序 + 分页 sizes)
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
@@ -13,6 +13,7 @@ import {
   approveOutsourceQuote,
   createOutsourceQuote,
   listApprovedForSend,
+  listCompaniesByProcess,
   listOutsourceQuotes,
   rejectOutsourceQuote,
   softDeleteOutsourceQuote,
@@ -20,7 +21,6 @@ import {
   updateOutsourceQuote,
 } from '@/api/outsource'
 import { listCustomers, type Customer } from '@/api/customer'
-import { listOutsourceCompanies } from '@/api/outsource'
 import { listProcesses } from '@/api/process'
 import { listParts } from '@/api/parts'
 import { listPartFiles } from '@/api/assembly'
@@ -291,8 +291,6 @@ const parts = ref<PartListItem[]>([])
 async function loadLookups(): Promise<void> {
   try {
     customers.value = await listCustomers()
-    const cs = await listOutsourceCompanies({ limit: 200 })
-    companies.value = cs.items.map((c) => ({ id: c.id, name: c.name }))
     const ps = await listProcesses({ limit: 200 })
     processes.value = ps.items.filter((p) => p.category === 'OUTSOURCE')
     // 报价只针对可继续流转的零件：PENDING / IN_PROCESS；按创建时间倒序，最多 500 条
@@ -433,6 +431,36 @@ function openCreate(): void {
   createForm.note = ''
   showCreate.value = true
 }
+
+/** 新建报价对话框 — 工序变化时按工序反查外协公司（级联） */
+const companiesLoading = ref(false)
+async function loadCompaniesByProcess(processId: string): Promise<void> {
+  if (!processId) {
+    companies.value = []
+    return
+  }
+  companiesLoading.value = true
+  try {
+    const cs = await listCompaniesByProcess(processId)
+    companies.value = cs.map((c) => ({ id: c.id, name: c.name }))
+  } catch (e) {
+    companies.value = []
+    ElMessage.error((e as Error).message ?? '外协公司加载失败')
+  } finally {
+    companiesLoading.value = false
+  }
+}
+
+// 工序变化：级联刷新公司列表，并清掉之前已选的公司，避免脏数据
+// 注意：此处 watch 必须在 createForm (reactive) 声明之后注册，
+//       否则 watch() 同步调用 source getter 会撞到 const TDZ 抛 ReferenceError。
+watch(
+  () => createForm.process_id,
+  (newPid) => {
+    createForm.outsource_company_id = ''
+    void loadCompaniesByProcess(newPid)
+  },
+)
 async function onCreate(): Promise<void> {
   if (!createFormRef.value) return
   // el-form 校验：4 个必填字段 + price > 0；校验失败时 validate() reject，直接短路（红字提示）
@@ -860,7 +888,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
     <!-- 新建 DRAFT 报价 -->
     <el-dialog
       v-model="showCreate"
-      title="新建外协报价（DRAFT）"
+      title="新建外协报价"
       :width="createDlg.width.value"
       :top="createDlg.top.value"
       :fullscreen="createDlg.fullscreen.value"
@@ -876,7 +904,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             v-model="createForm.part_id"
             filterable
             style="width:100%"
-            placeholder="可报价零件（PENDING / 生产中）按创建时间倒序，最多 500 条"
+            placeholder="可报价零件（待生产 / 生产中）按创建时间倒序，最多 500 条"
           >
             <el-option
               v-for="p in parts"
@@ -886,21 +914,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="外协公司" prop="outsource_company_id">
-          <el-select
-            v-model="createForm.outsource_company_id"
-            filterable
-            style="width:100%"
-          >
-            <el-option
-              v-for="c in companies"
-              :key="c.id"
-              :label="c.name"
-              :value="c.id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="工序(OUTSOURCE)" prop="process_id">
+        <el-form-item label="工序" prop="process_id">
           <el-select
             v-model="createForm.process_id"
             filterable
@@ -914,6 +928,23 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="外协公司" prop="outsource_company_id">
+          <el-select
+            v-model="createForm.outsource_company_id"
+            filterable
+            :disabled="!createForm.process_id"
+            :loading="companiesLoading"
+            placeholder="请先选择工序"
+            style="width:100%"
+          >
+            <el-option
+              v-for="c in companies"
+              :key="c.id"
+              :label="c.name"
+              :value="c.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="单价(元)" prop="price">
           <el-input v-model="createForm.price" type="number" :precision="2" :step="0.01" />
         </el-form-item>
@@ -923,7 +954,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
       </el-form>
       <template #footer>
         <el-button @click="showCreate = false">取消</el-button>
-        <el-button type="primary" @click="onCreate">保存为 DRAFT</el-button>
+        <el-button type="primary" @click="onCreate">保存草稿</el-button>
       </template>
     </el-dialog>
 
