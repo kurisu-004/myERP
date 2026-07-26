@@ -1,7 +1,7 @@
 <!--
   InspectionPending.vue — 品检待办一览（INSPECTION 状态的零件）
 
-  - 顶部：图号/名称搜索 + 手动刷新 + 自动刷新（每 10s）+ 共 N 条
+  - 顶部：图号/名称搜索 + 手动刷新 + 自动刷新（每 5min）+ 共 N 条
   - 每行两个动作：「品检通过」「品检打回」
   - 品检打回 → 弹出 el-dialog 选择目标 PRODUCTION 货架（el-radio-group）
   - 加急行整行红底 #fde2e2（与 PartsList 同款）
@@ -29,7 +29,7 @@
         </el-button>
 
         <el-checkbox v-model="autoRefresh" @change="onAutoRefreshToggle">
-          自动刷新（10s）
+          自动刷新（5min）
         </el-checkbox>
 
         <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
@@ -379,7 +379,7 @@ function onAutoRefreshToggle(val: string | number | boolean): void {
   if (val) {
     autoRefreshTimer = window.setInterval(() => {
       fetchList()
-    }, 10_000)
+    }, 300_000)
   }
 }
 

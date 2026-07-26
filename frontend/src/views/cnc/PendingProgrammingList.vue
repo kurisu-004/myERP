@@ -15,7 +15,7 @@
     * 分页 layout 按 isMobile 切换（手机只保留 prev/pager/next）
     * 下发到生产 el-dialog 用 useDialogSize（手机近全屏）
   - 加急行整行红底 #fde2e2（与 PartsList / InspectionPending 同款）。
-  - 自动刷新（10s）按需勾选。
+  - 自动刷新（5min）按需勾选。
 -->
 <template>
   <div class="pending-programming">
@@ -40,7 +40,7 @@
         </el-button>
 
         <el-checkbox v-model="autoRefresh" @change="onAutoRefreshToggle">
-          自动刷新（10s）
+          自动刷新（5min）
         </el-checkbox>
 
         <span v-if="total > 0" class="total-hint">共 {{ total }} 条</span>
@@ -363,7 +363,7 @@ function onAutoRefreshToggle(val: string | number | boolean): void {
   if (val) {
     autoRefreshTimer = window.setInterval(() => {
       fetchList()
-    }, 10_000)
+    }, 300_000)
   }
 }
 
