@@ -33,7 +33,7 @@ export const ORDER_STATUS_TAG_TYPE: Record<OrderStatus, 'info' | 'warning' | 'su
   PROGRAMMING: 'warning',
   IN_PROCESS: 'primary',
   INSPECTION: 'warning',
-  READY_TO_SHIP: 'warning',
+  READY_TO_SHIP: 'primary',
   DELIVERED: 'success',
   REPAIRING: 'danger',
   OUTSOURCE: 'warning',
