@@ -628,23 +628,23 @@ watch(activeTab, async (t) => {
             class="queue-table"
             style="margin-bottom: 12px"
           >
-            <el-table-column label="序列号" width="110">
+            <el-table-column label="序列号" min-width="110" align="center">
               <template #default="{ row }">
                 <span :class="{ muted: !row.part.serial_no }">{{ row.part.serial_no || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="part.drawing_no" label="图号" width="120" />
-            <el-table-column prop="part.name" label="名称" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="outsource_company_name" label="外协公司" width="160" show-overflow-tooltip />
-            <el-table-column prop="process_name" label="外协工序" width="120" />
-            <el-table-column prop="price" label="单价(元)" width="80" align="right" />
-            <el-table-column label="状态" width="80" align="center">
+            <el-table-column prop="part.drawing_no" label="图号" min-width="120" align="center"/>
+            <el-table-column prop="part.name" label="名称" min-width="160" show-overflow-tooltip align="center"/>
+            <el-table-column prop="outsource_company_name" label="外协公司" min-width="160" show-overflow-tooltip align="center"/>
+            <el-table-column prop="process_name" label="外协工序" min-width="120" align="center"/>
+            <el-table-column prop="price" label="单价(元)" min-width="80" align="right" />
+            <el-table-column label="状态" min-width="80" align="center">
               <template #default="{ row }">
                 <el-tag v-if="row._failed" type="danger" size="small">失败</el-tag>
                 <span v-else class="muted">待发</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="70" fixed="right">
+            <el-table-column label="操作" min-width="70" fixed="right" align="center">
               <template #default="{ $index }">
                 <el-button
                   link
@@ -702,26 +702,26 @@ watch(activeTab, async (t) => {
             border
             size="small"
           >
-            <el-table-column prop="part_serial_no" label="序列号" width="100" />
-            <el-table-column prop="part_drawing_no" label="图号" width="120" />
-            <el-table-column prop="part_name" label="名称" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="quantity" label="数量" width="80" align="right" />
-            <el-table-column prop="planned_delivery_date" label="计划交期" width="120" />
-            <el-table-column label="加急" width="60" align="center">
+            <el-table-column prop="part_serial_no" label="序列号" min-width="100" align="center"/>
+            <el-table-column prop="part_drawing_no" label="图号" min-width="120" align="center"/>
+            <el-table-column prop="part_name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
+            <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
+            <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>
+            <el-table-column label="加急" min-width="60" align="center">
               <template #default="{ row }">
                 <el-tag v-if="(row as ApprovedQuoteForSendItem).is_urgent" type="danger" size="small">加急</el-tag>
                 <span v-else>—</span>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip />
-            <el-table-column label="下一道工序" width="140" show-overflow-tooltip>
+            <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center"/>
+            <el-table-column label="下一道工序" min-width="140" show-overflow-tooltip align="center">
               <template #default="{ row }">{{ (row as ApprovedQuoteForSendItem).next_process_name || '—' }}</template>
             </el-table-column>
-            <el-table-column prop="outsource_company_name" label="外协公司" width="160" show-overflow-tooltip />
-            <el-table-column label="单价(元)" width="100" align="right">
+            <el-table-column prop="outsource_company_name" label="外协公司" min-width="160" show-overflow-tooltip align="center"/>
+            <el-table-column label="单价(元)" min-width="100" align="right">
               <template #default="{ row }">{{ (row as ApprovedQuoteForSendItem).price }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="100" fixed="right">
+            <el-table-column label="操作" min-width="100" fixed="right" align="center">
               <template #default="{ row }">
                 <el-tooltip
                   v-if="!canSend(row as unknown as ApprovedQuoteForSendItem)"
@@ -843,10 +843,10 @@ watch(activeTab, async (t) => {
             border
             size="small"
           >
-            <el-table-column prop="serial_no" label="序列号" width="100" />
-            <el-table-column prop="drawing_no" label="图号" width="120" />
-            <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
-            <el-table-column label="当前外协公司" width="160" show-overflow-tooltip>
+            <el-table-column prop="serial_no" label="序列号" min-width="100" align="center"/>
+            <el-table-column prop="drawing_no" label="图号" min-width="120" align="center"/>
+            <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
+            <el-table-column label="当前外协公司" min-width="160" show-overflow-tooltip align="center">
               <template #default="{ row }">
                 <!-- PartListItem 不含 outsource_company_name 字段（仅 PartOut 有）；
                      用 any cast 读取，service 实际会填上 current_holder_display 但
@@ -854,13 +854,13 @@ watch(activeTab, async (t) => {
                 <el-tag type="warning" size="small">外协中</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="下一道工序" width="160" show-overflow-tooltip>
+            <el-table-column label="下一道工序" min-width="160" show-overflow-tooltip align="center">
               <template #default="{ row }">
                 <span class="muted">—</span>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip />
-            <el-table-column label="操作" width="100" fixed="right">
+            <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip align="center"/>
+            <el-table-column label="操作" min-width="100" fixed="right" align="center">
               <template #default="{ row }">
                 <el-button
                   size="small"
@@ -954,17 +954,17 @@ watch(activeTab, async (t) => {
             border
             size="small"
           >
-            <el-table-column prop="serial_no" label="序列号" width="100" />
-            <el-table-column prop="drawing_no" label="图号" width="120" />
-            <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
-            <el-table-column label="状态" width="100" align="center">
+            <el-table-column prop="serial_no" label="序列号" min-width="100" align="center"/>
+            <el-table-column prop="drawing_no" label="图号" min-width="120" align="center"/>
+            <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
+            <el-table-column label="状态" min-width="100" align="center">
               <template #default="{ row }">
                 <el-tag size="small" effect="plain">{{ (row as PartListItem).status }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="planned_delivery_date" label="计划交期" width="120" />
-            <el-table-column label="操作" width="100" fixed="right">
+            <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip align="center"/>
+            <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>
+            <el-table-column label="操作" min-width="100" fixed="right" align="center">
               <template #default="{ row }">
                 <el-button
                   link

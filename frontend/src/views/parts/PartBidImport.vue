@@ -108,7 +108,7 @@
         :row-class-name="rowClassName"
       >
         <el-table-column type="index" label="序号" width="56" />
-        <el-table-column label="申请人" min-width="150">
+        <el-table-column label="申请人" min-width="150" align="center">
           <template #default="{ row }">
             <el-autocomplete
               v-model="(row as ImportRow).applicantName"
@@ -124,7 +124,7 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="分厂名" min-width="180">
+        <el-table-column label="分厂名" min-width="180" align="center">
           <template #default="{ row }">
             <el-select
               v-model="(row as ImportRow).customerId"
@@ -145,7 +145,7 @@
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column label="图纸编号" min-width="150">
+        <el-table-column label="图纸编号" min-width="150" align="center">
           <template #default="{ row }">
             <el-input
               v-model="(row as ImportRow).drawingNo"
@@ -154,7 +154,7 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="名称" min-width="180">
+        <el-table-column label="名称" min-width="180" align="center">
           <template #default="{ row }">
             <el-input
               v-model="(row as ImportRow).partName"
@@ -163,7 +163,7 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="数量" width="130" align="center">
+        <el-table-column label="数量" min-width="130" align="center">
           <template #default="{ row }">
             <el-input-number
               v-model="(row as ImportRow).quantity"
@@ -176,12 +176,12 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="是否加急" width="90" align="center">
+        <el-table-column label="是否加急" min-width="90" align="center">
           <template #default="{ row }">
             <el-switch v-model="(row as ImportRow).isUrgent" />
           </template>
         </el-table-column>
-        <el-table-column label="计划交期" width="170" align="center">
+        <el-table-column label="计划交期" min-width="170" align="center">
           <template #default="{ row }">
             <el-date-picker
               v-model="(row as ImportRow).plannedDeliveryDate"
@@ -193,7 +193,7 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" align="center" fixed="right">
+        <el-table-column label="操作" min-width="240" align="center" fixed="right">
           <template #default="{ row }">
             <div class="row-ops">
               <el-upload

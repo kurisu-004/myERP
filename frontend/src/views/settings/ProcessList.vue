@@ -29,17 +29,17 @@
       size="small"
     >
       <el-table-column type="index" label="#" width="50" />
-      <el-table-column prop="code" label="代码" width="120" />
-      <el-table-column prop="name" label="名称" min-width="160" />
-      <el-table-column label="类别" width="100">
+      <el-table-column prop="code" label="代码" min-width="120" align="center"/>
+      <el-table-column prop="name" label="名称" min-width="160" align="center"/>
+      <el-table-column label="类别" min-width="100" align="center">
         <template #default="{ row }">
           <el-tag :type="(row as Process).category === 'INHOUSE' ? 'primary' : 'warning'" size="small">
             {{ PROCESS_CATEGORY_LABEL[(row as Process).category] }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="sort_order" label="排序" width="80" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column prop="sort_order" label="排序" min-width="80" align="center"/>
+      <el-table-column label="操作" min-width="180" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as Process)">编辑</el-button>
           <el-button link type="danger" size="small" @click="onDelete(row as Process)">删除</el-button>

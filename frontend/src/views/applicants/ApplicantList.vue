@@ -63,18 +63,18 @@
         size="small"
       >
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="name" label="姓名" min-width="160" />
-        <el-table-column label="所属一级客户" min-width="180">
+        <el-table-column prop="name" label="姓名" min-width="160" align="center"/>
+        <el-table-column label="所属一级客户" min-width="180" align="center">
           <template #default="{ row }">
             {{ row.customer_name || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="180">
+        <el-table-column label="创建时间" min-width="180" align="center">
           <template #default="{ row }">
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" min-width="180" fixed="right" align="center">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="onEdit(row as Applicant)">编辑</el-button>
             <el-button link type="danger" size="small" @click="onDelete(row as Applicant)">删除</el-button>

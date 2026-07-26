@@ -12,13 +12,13 @@
       stripe
       :default-sort="{ prop: 'display_order', order: 'ascending' }"
     >
-      <el-table-column prop="code" label="代码" width="110" />
-      <el-table-column prop="name" label="名称" min-width="140" />
-      <el-table-column label="区域" width="90">
+      <el-table-column prop="code" label="代码" min-width="110" align="center"/>
+      <el-table-column prop="name" label="名称" min-width="140" align="center"/>
+      <el-table-column label="区域" min-width="90" align="center">
         <template #default="{ row }"><el-tag :type="row.zone === 'PRODUCTION' ? 'primary' : 'warning'" size="small">{{ row.zone === 'PRODUCTION' ? '生产' : '品检' }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="location" label="位置" min-width="120" />
-      <el-table-column prop="display_order" label="物理顺序" width="100" align="center" sortable>
+      <el-table-column prop="location" label="位置" min-width="120" align="center"/>
+      <el-table-column prop="display_order" label="物理顺序" min-width="100" align="center" sortable>
         <template #default="{ row }">
           <el-tag
             :type="row.display_order > 0 ? 'info' : 'warning'"
@@ -29,11 +29,11 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="account_count" label="账号数" width="80" align="center" />
-      <el-table-column label="状态" width="80">
+      <el-table-column prop="account_count" label="账号数" min-width="80" align="center" />
+      <el-table-column label="状态" min-width="80" align="center">
         <template #default="{ row }"><el-tag :type="row.is_active ? 'success' : 'danger'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag></template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column label="操作" min-width="160" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link size="small" @click="editShelf(row)">编辑</el-button>
           <el-popconfirm v-if="row.is_active" title="确认停用？" @confirm="doDeactivate(String(row.id))">

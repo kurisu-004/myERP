@@ -184,11 +184,10 @@
       <el-table-column
         prop="serial_no"
         label="序列号"
-        width="110"
+        min-width="110"
         fixed="left"
         sortable="custom"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
@@ -197,10 +196,9 @@
       <el-table-column
         prop="order_no"
         label="订单号"
-        width="130"
+        min-width="130"
         sortable="custom"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -214,11 +212,10 @@
       <el-table-column
         prop="drawing_no"
         label="图号"
-        width="130"
+        min-width="130"
         fixed="left"
         sortable="custom"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -234,8 +231,7 @@
         label="名称"
         min-width="200"
         sortable="custom"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -248,7 +244,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="申请人" width="110" show-overflow-tooltip>
+      <el-table-column label="申请人" min-width="110" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -259,7 +255,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="数量" width="110" align="right">
+      <el-table-column label="数量" min-width="110" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -274,7 +270,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="单价" width="120" align="right">
+      <el-table-column label="单价" min-width="120" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -292,7 +288,7 @@
 
       <!-- 2026-07-24 v2 调整：总价 = quantity × unit_price **前端实时计算**
      （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
-      <el-table-column label="总价" width="120" align="right">
+      <el-table-column label="总价" min-width="120" align="right">
         <template #default="{ row }">
           <span>{{ displayTotalPrice(row as PartListItem) }}</span>
         </template>
@@ -301,9 +297,8 @@
       <el-table-column
         prop="request_date"
         label="请购日期"
-        width="150"
-        sortable="custom"
-      >
+        min-width="150"
+        sortable="custom" align="center">
         <template #default="{ row }">
           <el-date-picker
             v-if="editingId === row.id"
@@ -321,9 +316,8 @@
       <el-table-column
         prop="planned_delivery_date"
         label="计划交期"
-        width="150"
-        sortable="custom"
-      >
+        min-width="150"
+        sortable="custom" align="center">
         <template #default="{ row }">
           <el-date-picker
             v-if="editingId === row.id"
@@ -341,9 +335,8 @@
       <el-table-column
         prop="system_delivery_date"
         label="系统交期"
-        width="150"
-        sortable="custom"
-      >
+        min-width="150"
+        sortable="custom" align="center">
         <template #default="{ row }">
           <el-date-picker
             v-if="editingId === row.id"
@@ -358,7 +351,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="备注" min-width="160" show-overflow-tooltip>
+      <el-table-column label="备注" min-width="160" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -369,7 +362,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="加急" width="80" align="center">
+      <el-table-column label="加急" min-width="80" align="center">
         <template #default="{ row }">
           <el-switch
             v-if="editingId === row.id"
@@ -388,7 +381,7 @@
 
       <el-table-column
         label="状态"
-        width="140"
+        min-width="140"
         align="center"
       >
         <template #header>
@@ -448,7 +441,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+      <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
         <template #header>
           <span class="header-cell">
             <span>客户</span>
@@ -502,7 +495,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="所在位置" width="150" show-overflow-tooltip>
+      <el-table-column label="所在位置" min-width="150" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span v-if="row.location === 'PRODUCTION_SHELF' && row.shelf_code">
             货架 {{ row.shelf_code }}
@@ -517,7 +510,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column label="操作" min-width="160" fixed="right" align="center">
         <template #default="{ row }">
           <template v-if="editingId === row.id">
             <el-button

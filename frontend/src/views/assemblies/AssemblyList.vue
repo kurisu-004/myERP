@@ -69,11 +69,10 @@
       <el-table-column
         prop="serial_no"
         label="序列号"
-        width="110"
+        min-width="110"
         fixed="left"
         sortable="custom"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
@@ -83,9 +82,8 @@
       <el-table-column
         prop="order_no"
         label="订单号"
-        width="130"
-        show-overflow-tooltip
-      >
+        min-width="130"
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="isEditing(row as AssemblyListItem)"
@@ -99,10 +97,9 @@
       <el-table-column
         prop="drawing_no"
         label="总图图号"
-        width="160"
+        min-width="160"
         sortable="custom"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="isEditing(row as AssemblyListItem)"
@@ -117,14 +114,13 @@
         label="名称"
         min-width="180"
         sortable="custom"
-        show-overflow-tooltip
-      />
-      <el-table-column label="申请人" width="110" show-overflow-tooltip>
+        show-overflow-tooltip align="center"/>
+      <el-table-column label="申请人" min-width="110" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span :class="{ muted: !row.applicant_name }">{{ row.applicant_name || '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="客户" min-width="200" show-overflow-tooltip>
+      <el-table-column label="客户" min-width="200" show-overflow-tooltip align="center">
         <template #header>
           <span class="header-cell">
             <span>客户</span>
@@ -177,7 +173,7 @@
       </el-table-column>
 
       <!-- 2026-07-24 新增：数量 / 单价 / 总价（与 PartsList 对齐） -->
-      <el-table-column label="数量" width="90" align="right">
+      <el-table-column label="数量" min-width="90" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="isEditing(row as AssemblyListItem)"
@@ -191,7 +187,7 @@
           <span v-else>{{ row.quantity ?? '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="单价" width="110" align="right">
+      <el-table-column label="单价" min-width="110" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="isEditing(row as AssemblyListItem)"
@@ -207,7 +203,7 @@
         </template>
       </el-table-column>
       <!-- 2026-07-24 v2 调整：总价由 quantity × unit_price 前端实时计算（只读展示，与 PartsList 对齐） -->
-      <el-table-column label="总价" width="120" align="right">
+      <el-table-column label="总价" min-width="120" align="right">
         <template #default="{ row }">
           <span v-if="isEditing(row as AssemblyListItem)">
             {{ ((Number(editBuffer.quantity) || 0) * (Number(editBuffer.unit_price) || 0)).toFixed(2) }}
@@ -218,29 +214,27 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="子零件" width="80" align="center">
+      <el-table-column label="子零件" min-width="80" align="center">
         <template #default="{ row }">
           <el-tag type="info" size="small" effect="plain">
             {{ row.child_count }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="请购日期" width="120">
+      <el-table-column label="请购日期" min-width="120" align="center">
         <template #default="{ row }">{{ row.request_date || '—' }}</template>
       </el-table-column>
       <el-table-column
         prop="planned_delivery_date"
         label="计划交期"
-        width="120"
-        sortable="custom"
-      />
+        min-width="120"
+        sortable="custom" align="center"/>
 
       <!-- 2026-07-24 新增：系统交期（与 PartsList 对齐） -->
       <el-table-column
         prop="system_delivery_date"
         label="系统交期"
-        width="130"
-      >
+        min-width="130" align="center">
         <template #default="{ row }">
           <el-date-picker
             v-if="isEditing(row as AssemblyListItem)"
@@ -256,7 +250,7 @@
       </el-table-column>
 
       <!-- 2026-07-24 新增：备注（与 PartsList 对齐） -->
-      <el-table-column label="备注" min-width="160" show-overflow-tooltip>
+      <el-table-column label="备注" min-width="160" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="isEditing(row as AssemblyListItem)"
@@ -269,7 +263,7 @@
 
       <el-table-column
         label="状态"
-        width="140"
+        min-width="140"
         align="center"
       >
         <template #header>
@@ -325,7 +319,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="200" align="center" fixed="right">
+      <el-table-column label="操作" min-width="200" align="center" fixed="right">
         <template #default="{ row }">
           <template v-if="isEditing(row as AssemblyListItem)">
             <el-button

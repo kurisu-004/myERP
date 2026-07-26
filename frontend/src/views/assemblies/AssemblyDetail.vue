@@ -171,7 +171,7 @@
         :row-class-name="childRowClass"
       >
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column label="序列号" width="100">
+        <el-table-column label="序列号" min-width="100" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.serial_no" type="success" size="small" effect="dark">
               {{ row.serial_no }}
@@ -179,7 +179,7 @@
             <span v-else class="muted">未分配</span>
           </template>
         </el-table-column>
-        <el-table-column label="图号" width="160">
+        <el-table-column label="图号" min-width="160" align="center">
           <template #default="{ row }">
             <el-link
               v-if="childDrawingMap[row.id]"
@@ -191,25 +191,25 @@
             <span v-else class="mono">{{ row.drawing_no }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="quantity" label="数量" width="70" align="right" />
-        <el-table-column label="状态" width="100" align="center">
+        <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip align="center"/>
+        <el-table-column prop="quantity" label="数量" min-width="70" align="right" />
+        <el-table-column label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="partStatusTagType(row.status)" size="small">
               {{ partStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="计划交期" width="120">
+        <el-table-column label="计划交期" min-width="120" align="center">
           <template #default="{ row }">{{ row.planned_delivery_date }}</template>
         </el-table-column>
-        <el-table-column label="所在位置" width="160">
+        <el-table-column label="所在位置" min-width="160" align="center">
           <template #default="{ row }">
             <span v-if="row.current_holder_display">{{ row.current_holder_display }}</span>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" align="center" fixed="right">
+        <el-table-column label="操作" min-width="80" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">
               详情

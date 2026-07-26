@@ -432,7 +432,7 @@
         border
         stripe
       >
-        <el-table-column label="状态" width="110" align="center">
+        <el-table-column label="状态" min-width="110" align="center">
           <template #default="{ row }">
             <el-tag
               :type="((OUTSOURCE_QUOTE_STATUS_TAG[(row as OutsourceQuote).status] || 'info') as 'info' | 'success' | 'warning' | 'danger')"
@@ -447,18 +447,17 @@
           prop="outsource_company_name"
           label="外协公司"
           min-width="140"
-          show-overflow-tooltip
-        />
-        <el-table-column prop="process_code" label="工序" width="100" />
-        <el-table-column label="单价(元)" width="100" align="right">
+          show-overflow-tooltip align="center"/>
+        <el-table-column prop="process_code" label="工序" min-width="100" align="center"/>
+        <el-table-column label="单价(元)" min-width="100" align="right">
           <template #default="{ row }">{{ (row as OutsourceQuote).price }}</template>
         </el-table-column>
-        <el-table-column label="创建时间" width="160">
+        <el-table-column label="创建时间" min-width="160" align="center">
           <template #default="{ row }">
             <span class="muted">{{ formatDateTime((row as OutsourceQuote).created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" align="center" fixed="right">
+        <el-table-column label="操作" min-width="120" align="center" fixed="right">
           <template #default="{ row }">
             <el-button
               link

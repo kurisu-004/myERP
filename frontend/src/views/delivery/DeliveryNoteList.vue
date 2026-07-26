@@ -356,8 +356,8 @@ function noteNoOf(id: string): string {
       style="margin-top: 16px"
       :empty-text="loading ? '加载中' : '无数据'"
     >
-      <el-table-column prop="delivery_note_no" label="单号" width="180" align="center"/>
-      <el-table-column label="送货日期" width="120" align="center">
+      <el-table-column prop="delivery_note_no" label="单号" min-width="180" align="center"/>
+      <el-table-column label="送货日期" min-width="120" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).delivery_date ?? '—' }}
         </template>
@@ -368,7 +368,7 @@ function noteNoOf(id: string): string {
             ?? (scope.row as DeliveryNoteOut).customer_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80" align="center">
+      <el-table-column label="状态" min-width="80" align="center">
         <template #default="scope">
           <el-tag
             :type="DELIVERY_NOTE_STATUS_TAG[(scope.row as DeliveryNoteOut).status] || 'info'"
@@ -379,25 +379,25 @@ function noteNoOf(id: string): string {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="part_count" label="零件数" width="70" align="center" />
-      <el-table-column label="提交时间" width="170" align="center">
+      <el-table-column prop="part_count" label="零件数" min-width="70" align="center" />
+      <el-table-column label="提交时间" min-width="170" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).submitted_at
             ? new Date((scope.row as DeliveryNoteOut).submitted_at!).toLocaleString() : '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="领取时间" width="170" align="center">
+      <el-table-column label="领取时间" min-width="170" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).picked_up_at
             ? new Date((scope.row as DeliveryNoteOut).picked_up_at!).toLocaleString() : '—' }}
         </template>
       </el-table-column>
-      <el-table-column prop="driver_worker_name" label="司机" width="80" align="center">
+      <el-table-column prop="driver_worker_name" label="司机" min-width="80" align="center">
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).driver_worker_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right" align="center">
+      <el-table-column label="操作" min-width="200" fixed="right" align="center">
         <template #default="scope">
           <div style="display: flex; align-items: center; gap: 0px;">
             <el-button link type="primary" @click="$router.push(`/delivery-notes/${(scope.row as DeliveryNoteOut).id}`)">

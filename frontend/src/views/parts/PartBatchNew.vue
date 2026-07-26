@@ -68,7 +68,7 @@
         @card-click="onRowPreview"
       >
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column label="图号" width="130">
+        <el-table-column label="图号" min-width="130" align="center">
           <template #default="{ row }">
             <el-button
               v-if="(row as StagedEntry).drawingUrl"
@@ -80,22 +80,22 @@
             <span v-else class="mono">{{ row.drawingNo }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="quantity" label="数量" width="70" align="right" />
-        <el-table-column label="申请人" min-width="120" show-overflow-tooltip>
+        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
+        <el-table-column prop="quantity" label="数量" min-width="70" align="right" />
+        <el-table-column label="申请人" min-width="120" show-overflow-tooltip align="center">
           <template #default="{ row }">{{ row.applicantName || '—' }}</template>
         </el-table-column>
-        <el-table-column label="客户" min-width="160" show-overflow-tooltip>
+        <el-table-column label="客户" min-width="160" show-overflow-tooltip align="center">
           <template #default="{ row }">{{ row.customerLabel || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="plannedDeliveryDate" label="计划交期" width="120" />
-        <el-table-column label="加急" width="70" align="center">
+        <el-table-column prop="plannedDeliveryDate" label="计划交期" min-width="120" align="center"/>
+        <el-table-column label="加急" min-width="70" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.isUrgent" type="danger" size="small" effect="dark">加急</el-tag>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" align="center" fixed="right">
+        <el-table-column label="操作" min-width="120" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click.stop="onRowPreview(row as StagedEntry)">查看</el-button>
             <el-button link type="danger" size="small" @click.stop="onRemoveRow((row as StagedEntry).uid)">删除</el-button>
@@ -501,7 +501,7 @@
             @selection-change="onSourceSelectionChange"
           >
             <el-table-column type="selection" width="55" />
-            <el-table-column label="PDF 文件名" min-width="280">
+            <el-table-column label="PDF 文件名" min-width="280" align="center">
               <template #default="{ row }">
                 <el-link
                   type="primary"
@@ -513,13 +513,13 @@
                 </el-link>
               </template>
             </el-table-column>
-            <el-table-column label="页" width="60" align="center">
+            <el-table-column label="页" min-width="60" align="center">
               <template #default="{ row }">
                 <span v-if="(row as SourceTreeRow).pageIndex === null">{{ (row as SourceTreeRow).totalPages }}</span>
                 <span v-else>{{ (row as SourceTreeRow).pageIndex! + 1 }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="100" align="center">
+            <el-table-column label="操作" min-width="100" align="center">
               <template #default="{ row }">
                 <el-button
                   v-if="(row as SourceTreeRow).pageIndex === null"
@@ -550,7 +550,7 @@
                 empty-text="还没有独立零件。可在「源文件区」勾选页后合并，或直接新增。"
                 class="pdf-standalone-table"
               >
-                <el-table-column label="图号" min-width="140">
+                <el-table-column label="图号" min-width="140" align="center">
                   <template #default="{ row }">
                     <el-input
                       v-model="row.drawing_no"
@@ -560,12 +560,12 @@
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="名称" min-width="160">
+                <el-table-column label="名称" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-input v-model="row.name" size="small" placeholder="选填" />
                   </template>
                 </el-table-column>
-                <el-table-column label="图纸" min-width="200" show-overflow-tooltip>
+                <el-table-column label="图纸" min-width="200" show-overflow-tooltip align="center">
                   <template #default="{ row }">
                     <el-link
                       type="primary"
@@ -577,7 +577,7 @@
                     </el-link>
                   </template>
                 </el-table-column>
-                <el-table-column label="数量" width="90">
+                <el-table-column label="数量" min-width="90" align="center">
                   <template #default="{ row }">
                     <el-input-number
                       v-model="row.quantity"
@@ -589,7 +589,7 @@
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="计划交期" width="160">
+                <el-table-column label="计划交期" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-date-picker
                       v-model="row.planned_delivery_date"
@@ -602,7 +602,7 @@
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="分厂" min-width="160">
+                <el-table-column label="分厂" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-select
                       v-model="row.customer_id"
@@ -623,7 +623,7 @@
                     </el-select>
                   </template>
                 </el-table-column>
-                <el-table-column label="申请人" min-width="160">
+                <el-table-column label="申请人" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-autocomplete
                       v-model="row.applicant_name"
@@ -640,17 +640,17 @@
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="加急" width="70" align="center">
+                <el-table-column label="加急" min-width="70" align="center">
                   <template #default="{ row }">
                     <el-switch v-model="row.is_urgent" />
                   </template>
                 </el-table-column>
-                <el-table-column label="备注" min-width="140">
+                <el-table-column label="备注" min-width="140" align="center">
                   <template #default="{ row }">
                     <el-input v-model="row.note" size="small" type="textarea" :rows="1" placeholder="选填" />
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="120" align="center" fixed="right">
+                <el-table-column label="操作" min-width="120" align="center" fixed="right">
                   <template #default="{ row }">
                     <el-button
                       v-if="row.mergedFrom && row.mergedFrom.length > 1"
@@ -683,20 +683,20 @@
                 <el-table-column type="expand">
                   <template #default="{ row }">
                     <el-table :data="row.children" size="small" :show-header="true" class="child-table">
-                      <el-table-column label="页" width="60" align="center">
+                      <el-table-column label="页" min-width="60" align="center">
                         <template #default="{ row: c }">P{{ c.page_index + 1 }}</template>
                       </el-table-column>
-                      <el-table-column label="图号" min-width="140">
+                      <el-table-column label="图号" min-width="140" align="center">
                         <template #default="{ row: c }">
                           <el-input v-model="c.drawing_no" size="small" />
                         </template>
                       </el-table-column>
-                      <el-table-column label="名称" min-width="140">
+                      <el-table-column label="名称" min-width="140" align="center">
                         <template #default="{ row: c }">
                           <el-input v-model="c.name" size="small" />
                         </template>
                       </el-table-column>
-                      <el-table-column label="数量" width="90">
+                      <el-table-column label="数量" min-width="90" align="center">
                         <template #default="{ row: c }">
                           <el-input-number
                             v-model="c.quantity"
@@ -708,7 +708,7 @@
                           />
                         </template>
                       </el-table-column>
-                      <el-table-column label="计划交期" width="150">
+                      <el-table-column label="计划交期" min-width="150" align="center">
                         <template #default="{ row: c }">
                           <el-date-picker
                             v-model="c.planned_delivery_date"
@@ -721,12 +721,12 @@
                           />
                         </template>
                       </el-table-column>
-                      <el-table-column label="加急" width="70" align="center">
+                      <el-table-column label="加急" min-width="70" align="center">
                         <template #default="{ row: c }">
                           <el-switch v-model="c.is_urgent" />
                         </template>
                       </el-table-column>
-                      <el-table-column label="备注" min-width="120">
+                      <el-table-column label="备注" min-width="120" align="center">
                         <template #default="{ row: c }">
                           <el-input v-model="c.note" size="small" type="textarea" :rows="1" placeholder="选填" />
                         </template>
@@ -734,17 +734,17 @@
                     </el-table>
                   </template>
                 </el-table-column>
-                <el-table-column label="图号" min-width="140">
+                <el-table-column label="图号" min-width="140" align="center">
                   <template #default="{ row }">
                     <el-input v-model="row.drawing_no" size="small" />
                   </template>
                 </el-table-column>
-                <el-table-column label="名称" min-width="160">
+                <el-table-column label="名称" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-input v-model="row.name" size="small" />
                   </template>
                 </el-table-column>
-                <el-table-column label="图纸" min-width="180" show-overflow-tooltip>
+                <el-table-column label="图纸" min-width="180" show-overflow-tooltip align="center">
                   <template #default="{ row }">
                     <el-link
                       type="primary"
@@ -756,7 +756,7 @@
                     </el-link>
                   </template>
                 </el-table-column>
-                <el-table-column label="分厂" min-width="160">
+                <el-table-column label="分厂" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-select
                       v-model="row.customer_id"
@@ -777,7 +777,7 @@
                     </el-select>
                   </template>
                 </el-table-column>
-                <el-table-column label="申请人" min-width="160">
+                <el-table-column label="申请人" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-autocomplete
                       v-model="row.applicant_name"
@@ -794,7 +794,7 @@
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="装配图（总装图）" min-width="180">
+                <el-table-column label="装配图（总装图）" min-width="180" align="center">
                   <template #default="{ row }">
                     <el-select
                       v-model="row.masterPageIndex"
@@ -812,7 +812,7 @@
                     </el-select>
                   </template>
                 </el-table-column>
-                <el-table-column label="计划交期" width="160">
+                <el-table-column label="计划交期" min-width="160" align="center">
                   <template #default="{ row }">
                     <el-date-picker
                       v-model="row.planned_delivery_date"
@@ -826,15 +826,15 @@
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="备注" min-width="140">
+                <el-table-column label="备注" min-width="140" align="center">
                   <template #default="{ row }">
                     <el-input v-model="row.note" size="small" type="textarea" :rows="1" placeholder="选填" />
                   </template>
                 </el-table-column>
-                <el-table-column label="子件数" width="70" align="center">
+                <el-table-column label="子件数" min-width="70" align="center">
                   <template #default="{ row }">{{ row.children.length }}</template>
                 </el-table-column>
-                <el-table-column label="操作" width="80" align="center" fixed="right">
+                <el-table-column label="操作" min-width="80" align="center" fixed="right">
                   <template #default="{ row }">
                     <el-button link type="danger" size="small" @click="removeAssembly(row.uid)">删除</el-button>
                   </template>

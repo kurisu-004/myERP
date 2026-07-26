@@ -16,8 +16,8 @@
             stripe
             :height="isMobile ? 280 : '100%'"
           >
-            <el-table-column prop="code" label="代码" width="120" />
-            <el-table-column prop="name" label="名称" min-width="120" />
+            <el-table-column prop="code" label="代码" min-width="120" align="center"/>
+            <el-table-column prop="name" label="名称" min-width="120" align="center"/>
           </el-table>
         </div>
         <!-- 右:映射工序 -->

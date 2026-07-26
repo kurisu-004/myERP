@@ -23,11 +23,11 @@
       size="small"
     >
       <el-table-column type="index" label="#" width="50" />
-      <el-table-column prop="code" label="代码" width="140" />
-      <el-table-column prop="name" label="名称" min-width="160" />
-      <el-table-column prop="description" label="描述" min-width="200" />
-      <el-table-column prop="sort_order" label="排序" width="80" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column prop="code" label="代码" min-width="140" align="center"/>
+      <el-table-column prop="name" label="名称" min-width="160" align="center"/>
+      <el-table-column prop="description" label="描述" min-width="200" align="center"/>
+      <el-table-column prop="sort_order" label="排序" min-width="80" align="center"/>
+      <el-table-column label="操作" min-width="180" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as WorkType)">编辑</el-button>
           <el-button link type="danger" size="small" @click="onDelete(row as WorkType)">删除</el-button>

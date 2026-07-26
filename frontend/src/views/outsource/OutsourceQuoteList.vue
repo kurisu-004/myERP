@@ -596,18 +596,16 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         <el-table-column
           prop="part_serial_no"
           label="序列号"
-          width="100"
+          min-width="100"
           sortable="custom"
-          show-overflow-tooltip
-        />
+          show-overflow-tooltip align="center"/>
 
         <el-table-column
           prop="part_drawing_no"
           label="图号"
-          width="120"
+          min-width="120"
           sortable="custom"
-          show-overflow-tooltip
-        >
+          show-overflow-tooltip align="center">
           <template #default="{ row }">
             <el-link
               v-if="(row as OutsourceQuote).part_drawing_no"
@@ -624,34 +622,31 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           label="名称"
           min-width="180"
           sortable="custom"
-          show-overflow-tooltip
-        />
+          show-overflow-tooltip align="center"/>
 
         <el-table-column
           prop="outsource_company_name"
           label="外协公司"
-          width="160"
+          min-width="160"
           sortable="custom"
-          show-overflow-tooltip
-        />
+          show-overflow-tooltip align="center"/>
 
         <el-table-column
           prop="process_code"
           label="工序"
-          width="100"
-          sortable="custom"
-        />
+          min-width="100"
+          sortable="custom" align="center"/>
 
         <el-table-column
           prop="price"
           label="单价(元)"
-          width="100"
+          min-width="100"
           align="right"
           sortable="custom"
         />
 
         <!-- 状态列（无 sortable；用列头 popover 过滤） -->
-        <el-table-column label="状态" width="110" align="center">
+        <el-table-column label="状态" min-width="110" align="center">
           <template #header>
             <span class="header-cell">
               <span>状态</span>
@@ -705,7 +700,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         </el-table-column>
 
         <!-- 客户列（无 sortable；用列头 popover 过滤 L1 客户） -->
-        <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+        <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
           <template #header>
             <span class="header-cell">
               <span>客户</span>
@@ -758,7 +753,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" :width="actionColumnWidth" fixed="right">
+        <el-table-column label="操作" :min-width="actionColumnWidth" fixed="right" align="center">
           <template #default="{ row }">
             <el-button
               v-if="canEdit((row as OutsourceQuote), roleMap)"

@@ -49,9 +49,9 @@
       size="small"
     >
       <el-table-column type="index" label="#" width="50" />
-      <el-table-column prop="badge_code" label="工牌码" width="160" />
-      <el-table-column prop="name" label="姓名" min-width="120" />
-      <el-table-column label="工种" min-width="120">
+      <el-table-column prop="badge_code" label="工牌码" min-width="160" align="center"/>
+      <el-table-column prop="name" label="姓名" min-width="120" align="center"/>
+      <el-table-column label="工种" min-width="120" align="center">
         <template #default="{ row }">
           <el-tag v-if="(row as Worker).work_type_id" size="small" type="primary">
             {{ workTypeNameById[(row as Worker).work_type_id!] || '...' }}
@@ -59,16 +59,16 @@
           <span v-else style="color: #c0c4cc">未分配</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" min-width="100" align="center">
         <template #default="{ row }">
           <el-tag :type="(row as Worker).is_active ? 'success' : 'info'" effect="light" size="small">
             {{ (row as Worker).is_active ? '在职' : '停用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" min-width="170" />
-      <el-table-column prop="updated_at" label="更新时间" min-width="170" />
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column prop="created_at" label="创建时间" min-width="170" align="center"/>
+      <el-table-column prop="updated_at" label="更新时间" min-width="170" align="center"/>
+      <el-table-column label="操作" min-width="220" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as Worker)">编辑</el-button>
           <el-button

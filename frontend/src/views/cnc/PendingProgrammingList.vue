@@ -64,10 +64,9 @@
       <el-table-column
         prop="serial_no"
         label="序列号"
-        width="110"
+        min-width="110"
         fixed="left"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
         </template>
@@ -76,17 +75,15 @@
       <el-table-column
         prop="drawing_no"
         label="图号"
-        width="130"
+        min-width="130"
         fixed="left"
-        show-overflow-tooltip
-      />
+        show-overflow-tooltip align="center"/>
 
       <el-table-column
         prop="name"
         label="名称"
         min-width="200"
-        show-overflow-tooltip
-      >
+        show-overflow-tooltip align="center">
         <template #default="{ row }">
           <router-link :to="`/parts/${row.id}`" class="name-link">
             {{ row.name }}
@@ -94,15 +91,14 @@
         </template>
       </el-table-column>
 
-      <el-table-column prop="quantity" label="数量" width="80" align="right" />
+      <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
 
       <el-table-column
         prop="planned_delivery_date"
         label="计划交期"
-        width="120"
-      />
+        min-width="120" align="center"/>
 
-      <el-table-column label="客户" min-width="180" show-overflow-tooltip>
+      <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span v-if="row.customer_path">{{ row.customer_path }}</span>
           <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
@@ -110,7 +106,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column label="操作" min-width="160" fixed="right" align="center">
         <template #default="{ row }">
           <el-button
             link

@@ -11,9 +11,9 @@
       empty-text="暂无账号"
       stripe
     >
-      <el-table-column prop="username" label="用户名" min-width="120" />
-      <el-table-column prop="full_name" label="姓名" min-width="100" />
-      <el-table-column label="角色" min-width="200">
+      <el-table-column prop="username" label="用户名" min-width="120" align="center"/>
+      <el-table-column prop="full_name" label="姓名" min-width="100" align="center"/>
+      <el-table-column label="角色" min-width="200" align="center">
         <template #default="{ row }">
           <el-tag v-for="r in row.roles" :key="r.id" size="small" style="margin-right:4px" :type="r.scope_type ? 'warning' : 'primary'">
             {{ r.role }}{{ r.shelf_code ? ` @${r.shelf_code}` : '' }}
@@ -21,12 +21,12 @@
           <span v-if="!row.roles.length" class="no-roles">无角色</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80">
+      <el-table-column label="状态" min-width="80" align="center">
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" min-width="280" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link size="small" @click="openRoles(row)">角色</el-button>
           <el-button link size="small" @click="editUser(row)">编辑</el-button>

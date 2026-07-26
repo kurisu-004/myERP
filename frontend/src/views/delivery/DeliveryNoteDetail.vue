@@ -367,32 +367,32 @@ const canEdit = computed(() => canAdd.value)
             :selectable="() => true"
           />
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column prop="serial_no" label="序列号" width="120" />
-          <el-table-column prop="drawing_no" label="图号" width="140" />
-          <el-table-column prop="name" label="名称" min-width="180" />
-          <el-table-column label="客户（二级）" min-width="160" show-overflow-tooltip>
+          <el-table-column prop="serial_no" label="序列号" min-width="120" align="center"/>
+          <el-table-column prop="drawing_no" label="图号" min-width="140" align="center"/>
+          <el-table-column prop="name" label="名称" min-width="180" align="center"/>
+          <el-table-column label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
             <template #default="{ row }">
               <span>{{ row.customer_path ?? row.customer_name ?? '—' }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="applicant_name" label="申请人" width="100" />
-          <el-table-column prop="quantity" label="数量" width="70" align="center" />
-          <el-table-column label="请购日期" width="120">
+          <el-table-column prop="applicant_name" label="申请人" min-width="100" align="center"/>
+          <el-table-column prop="quantity" label="数量" min-width="70" align="center" />
+          <el-table-column label="请购日期" min-width="120" align="center">
             <template #default="{ row }">{{ row.request_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="计划交期" width="120">
+          <el-table-column label="计划交期" min-width="120" align="center">
             <template #default="{ row }">{{ row.planned_delivery_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="系统交期" width="120">
+          <el-table-column label="系统交期" min-width="120" align="center">
             <template #default="{ row }">{{ row.system_delivery_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="订单号" width="120" show-overflow-tooltip>
+          <el-table-column label="订单号" min-width="120" show-overflow-tooltip align="center">
             <template #default="{ row }">{{ row.order_no || '—' }}</template>
           </el-table-column>
-          <el-table-column label="备注" min-width="120" show-overflow-tooltip>
+          <el-table-column label="备注" min-width="120" show-overflow-tooltip align="center">
             <template #default="{ row }">{{ row.note || '—' }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="120" align="center">
+          <el-table-column label="状态" min-width="120" align="center">
             <template #default="{ row }">
               <el-tag
                 :type="partStatusTagType(row.status)"

@@ -36,30 +36,30 @@
         size="small"
       >
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="name" label="公司名" min-width="160" />
-        <el-table-column prop="contact_name" label="联系人" min-width="100">
+        <el-table-column prop="name" label="公司名" min-width="160" align="center"/>
+        <el-table-column prop="contact_name" label="联系人" min-width="100" align="center">
           <template #default="{ row }">
             {{ (row as OutsourceCompany).contact_name || '—' }}
           </template>
         </el-table-column>
-        <el-table-column prop="contact_phone" label="联系电话" min-width="120">
+        <el-table-column prop="contact_phone" label="联系电话" min-width="120" align="center">
           <template #default="{ row }">
             {{ (row as OutsourceCompany).contact_phone || '—' }}
           </template>
         </el-table-column>
-        <el-table-column prop="address" label="地址" min-width="200" show-overflow-tooltip>
+        <el-table-column prop="address" label="地址" min-width="200" show-overflow-tooltip align="center">
           <template #default="{ row }">
             {{ (row as OutsourceCompany).address || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="80">
+        <el-table-column label="状态" min-width="80" align="center">
           <template #default="{ row }">
             <el-tag :type="(row as OutsourceCompany).is_active ? 'success' : 'info'" size="small">
               {{ (row as OutsourceCompany).is_active ? '启用' : '停用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" min-width="240" fixed="right" align="center">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="onEdit(row as OutsourceCompany)">编辑</el-button>
             <el-button link type="warning" size="small" @click="onManageProcesses(row as OutsourceCompany)">维护工序</el-button>
