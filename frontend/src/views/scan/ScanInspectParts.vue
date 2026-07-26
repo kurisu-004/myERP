@@ -44,7 +44,7 @@
       </div>
     </div>
 
-    <div class="content">
+    <div ref="contentRef" class="content">
       <!-- 加载 -->
       <div v-if="loadingList" class="loading-block">
         <el-icon :size="32" class="is-loading"><Loading /></el-icon>
@@ -158,6 +158,30 @@
       </div>
     </div>
 
+    <!-- 2026-07-26：工控机触屏友好 — 右下角两个浮动滚动按钮（touch 友好） -->
+    <div v-if="parts.length > 1" class="scroll-fab">
+      <el-button
+        type="primary"
+        circle
+        size="large"
+        :disabled="atTop"
+        aria-label="滚动到顶部"
+        @click="scrollToTop"
+      >
+        <el-icon><ArrowUp /></el-icon>
+      </el-button>
+      <el-button
+        type="primary"
+        circle
+        size="large"
+        :disabled="atBottom"
+        aria-label="滚动到底部"
+        @click="scrollToBottom"
+      >
+        <el-icon><ArrowDown /></el-icon>
+      </el-button>
+    </div>
+
     <!-- 品检货架选择（送检只需选架，不需下一道工序） -->
     <ShelfPickerDialog
       v-if="showShelfPicker"
@@ -227,11 +251,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Aim,
+  ArrowDown,
+  ArrowUp,
   Avatar,
   Back,
   Box,
@@ -265,6 +291,29 @@ const loadingList = ref(false)
 const selectedPart = ref<PartItem | null>(null)
 // 点选卡片后进入「待扫码确认」状态；扫到匹配条码才弹送检货架 picker
 const awaitingScan = ref(false)
+
+// --- 2026-07-26：工控机触屏友好 — 右下浮动滚动按钮的状态与控制 ---
+const contentRef = ref<HTMLElement | null>(null)
+const atTop = ref(true)
+const atBottom = ref(false)
+function onContentScroll(): void {
+  const el = contentRef.value
+  if (!el) return
+  atTop.value = el.scrollTop <= 1
+  atBottom.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+}
+function scrollToTop(): void {
+  contentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
+}
+function scrollToBottom(): void {
+  const el = contentRef.value
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+}
+onMounted(() => {
+  contentRef.value?.addEventListener('scroll', onContentScroll, { passive: true })
+  onContentScroll()
+})
 const submitting = ref(false)
 
 // --- 预览状态 ---
@@ -301,6 +350,7 @@ const unsubScan = onScan((code) => {
 
 onBeforeUnmount(() => {
   unsubScan()
+  contentRef.value?.removeEventListener('scroll', onContentScroll)
   if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
 })
 
@@ -648,5 +698,20 @@ function deliveryUrgencyClass(s: string | null | undefined): string {
 }
 .non-pdf-hint {
   margin: 0; color: #606266; font-size: 14px;
+}
+
+// 2026-07-26：右下浮动滚动按钮（工控机触屏拖页不便）
+.scroll-fab {
+  position: fixed;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 100;
+}
+.scroll-fab .el-button {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 </style>
