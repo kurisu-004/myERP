@@ -712,6 +712,268 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
+    # ============================================================
+    # 直接发送外协候选（2026-07-28 新增）
+    # ============================================================
+    async def list_direct_outsource_candidates(
+        self,
+        *,
+        c2_shelf_id: int,
+        process_ids: list[int],
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """直接发送外协候选（next_process.requires_approval=false 且位于 C2 货架）。
+
+        谓词（与 list_outsource_sendable 区别）：
+        - status='IN_PROCESS' + location='PRODUCTION_SHELF'（不含 PENDING，与 C2 前置矛盾）
+        - current_holder_id = c2_shelf_id（必须在 C2 货架上）
+        - next_process_id IN process_ids（上游 service 已筛选 requires_approval=false 的 OUTSOURCE 工序）
+
+        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
+        """
+        stmt = select(TPart).where(
+            TPart.status == "IN_PROCESS",
+            TPart.location == "PRODUCTION_SHELF",
+            TPart.current_holder_id == c2_shelf_id,
+            TPart.next_process_id.in_(process_ids),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        ).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_direct_outsource_candidates(
+        self,
+        *,
+        c2_shelf_id: int,
+        process_ids: list[int],
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        """直接发送外协候选总数（与 list_direct_outsource_candidates 同谓词）。"""
+        stmt = select(TPart).where(
+            TPart.status == "IN_PROCESS",
+            TPart.location == "PRODUCTION_SHELF",
+            TPart.current_holder_id == c2_shelf_id,
+            TPart.next_process_id.in_(process_ids),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.with_only_columns(func.count(TPart.id))
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
+
+
+    # ============================================================
+    # 统一外协可发送一览查询（2026-07-28 新增，取代旧的 sendable / direct_outsource）
+    # ============================================================
+    async def list_direct_outsource_sendable(
+        self,
+        *,
+        process_ids: list[int],
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """直接发送外协候选（无需审批工序的两种来源状态合并）。
+
+        谓词（2026-07-28 修订：不再要求 c2_shelf_id；起始 / 中间外协都进列表）：
+        - deleted_at IS NULL
+        - next_process_id IN process_ids
+        - status = PENDING（起始外协，OFFICE）
+        - OR (status = IN_PROCESS + location = PRODUCTION_SHELF)（中间外协）
+
+        C2 货架前置**只**保留在 send_to_outsource 服务层校验（中间外协路径）。
+        """
+        stmt = select(TPart).where(
+            TPart.next_process_id.in_(process_ids),
+            or_(
+                TPart.status == "PENDING",
+                and_(
+                    TPart.status == "IN_PROCESS",
+                    TPart.location == "PRODUCTION_SHELF",
+                ),
+            ),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        ).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_direct_outsource_sendable(
+        self,
+        *,
+        process_ids: list[int],
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        """直接发送候选总数（与 list_direct_outsource_sendable 同谓词）。"""
+        stmt = select(TPart).where(
+            TPart.next_process_id.in_(process_ids),
+            or_(
+                TPart.status == "PENDING",
+                and_(
+                    TPart.status == "IN_PROCESS",
+                    TPart.location == "PRODUCTION_SHELF",
+                ),
+            ),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.with_only_columns(func.count(TPart.id))
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
+
+    async def list_approved_outsource_sendable(
+        self,
+        *,
+        part_ids: list[int],
+        process_ids: list[int],
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """审批后外协可发送候选（需审批工序 + 有 APPROVED 报价 + 起始 / 中间外协来源）。
+
+        谓词：
+        - deleted_at IS NULL
+        - id IN part_ids（service 预筛：至少有 1 条 APPROVED 报价的 part_id）
+        - next_process_id IN process_ids（service 预筛：这些工序需要审批）
+        - status = PENDING（起始外协审批）
+        - OR (status = IN_PROCESS + location = PRODUCTION_SHELF)（中间外协审批）
+        """
+        if not part_ids or not process_ids:
+            return []
+        stmt = select(TPart).where(
+            TPart.id.in_(part_ids),
+            TPart.next_process_id.in_(process_ids),
+            or_(
+                TPart.status == "PENDING",
+                and_(
+                    TPart.status == "IN_PROCESS",
+                    TPart.location == "PRODUCTION_SHELF",
+                ),
+            ),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.order_by(
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        ).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_approved_outsource_sendable(
+        self,
+        *,
+        part_ids: list[int],
+        process_ids: list[int],
+        customer_ids_in: list[int] | None = None,
+        keyword: str | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        """审批后候选总数（与 list_approved_outsource_sendable 同谓词）。"""
+        if not part_ids or not process_ids:
+            return 0
+        stmt = select(TPart).where(
+            TPart.id.in_(part_ids),
+            TPart.next_process_id.in_(process_ids),
+            or_(
+                TPart.status == "PENDING",
+                and_(
+                    TPart.status == "IN_PROCESS",
+                    TPart.location == "PRODUCTION_SHELF",
+                ),
+            ),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if customer_ids_in:
+            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.with_only_columns(func.count(TPart.id))
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
+
 
     async def list_outsource_receivable(
         self,

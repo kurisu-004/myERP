@@ -8,6 +8,7 @@
 """
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Index,
     Integer,
@@ -31,6 +32,10 @@ class TProcess(Base, AuditMixin):
         category (String 16): 自产 / 外协；DB CheckConstraint 强校验
         sort_order (Integer): 列表排序
         description (String 200, nullable): 备注
+        requires_approval (Boolean): 外协工序是否需要报价审批（详见 service/process.py）
+            - True（默认）：走原有报价 + MANAGER 审批 + 发送流程
+            - False：CLERK/INSPECTOR 可在「零件位于 C2 货架」前提下跳过报价直接发送
+            - INHOUSE 工序此字段无业务含义；service 层在 create 时强制 False
         (audit 5 fields via AuditMixin)
     """
 
@@ -59,6 +64,11 @@ class TProcess(Base, AuditMixin):
     description: Mapped[str | None] = mapped_column(
         String(200), nullable=True,
         comment="可选描述",
+    )
+    requires_approval: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True,
+        server_default=text("true"),
+        comment="外协工序是否需要报价审批",
     )
 
     __table_args__ = (

@@ -70,13 +70,20 @@ class ProcessService:
                 message=f"process code {data.code!r} already exists",
                 http_status=http_status.HTTP_409_CONFLICT,
             )
+        # 类别分流：INHOUSE 工序不进入外协流程，requires_approval 强制为 False
+        category_value = data.category.value
+        if category_value == ProcessCategory.INHOUSE.value:
+            effective_requires_approval = False
+        else:
+            effective_requires_approval = data.requires_approval
         p = TProcess(
             id=new_id(),
             code=data.code,
             name=data.name,
-            category=data.category.value,
+            category=category_value,
             sort_order=data.sort_order,
             description=data.description,
+            requires_approval=effective_requires_approval,
         )
         p.created_by = self._user_id
         p.updated_by = self._user_id
@@ -101,6 +108,9 @@ class ProcessService:
             p.sort_order = data.sort_order
         if data.description is not None:
             p.description = data.description
+        # update 路径不做 category 强制；运维可通过 API 把 INHOUSE 临时改 True
+        if data.requires_approval is not None:
+            p.requires_approval = data.requires_approval
         p.updated_by = self._user_id
         await self.processes.update(p)
         # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
@@ -146,6 +156,7 @@ def _process_to_out(p: TProcess) -> ProcessOut:
         category=ProcessCategory(p.category),
         sort_order=p.sort_order,
         description=p.description,
+        requires_approval=p.requires_approval,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )

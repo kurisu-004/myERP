@@ -85,6 +85,7 @@ def _make_part(
     part.assembly_id = assembly_id
     part.placed_at = None
     part.next_process_id = next_process_id
+    part.version = 0  # OCC 校验需要（2026-07-28）
     part.sm = MagicMock()
     return part
 
@@ -1969,7 +1970,7 @@ class TestSendToOutsource:
 
         # 工序存在 + OUTSOURCE 类别
         from model.process import TProcess
-        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0)
+        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0, requires_approval=True)
         proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
         proc.description = None; proc.deleted_at = None
         mock_processes.get_by_id = AsyncMock(return_value=proc)
@@ -1991,7 +1992,7 @@ class TestSendToOutsource:
         from schema.part import SendToOutsourceRequest
         result = await service.send_to_outsource(
             1001, SendToOutsourceRequest(
-                outsource_company_id="500", next_process_id="99",
+                outsource_company_id="500", next_process_id="99", version=0,
             ),
         )
         assert result == mock_out
@@ -2011,7 +2012,7 @@ class TestSendToOutsource:
         with pytest.raises(BizError) as exc_info:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
-                    outsource_company_id="999", next_process_id="99",
+                    outsource_company_id="999", next_process_id="99", version=0,
                 ),
             )
         assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND
@@ -2028,7 +2029,7 @@ class TestSendToOutsource:
         with pytest.raises(BizError) as exc_info:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
-                    outsource_company_id="1", next_process_id="99",
+                    outsource_company_id="1", next_process_id="99", version=0,
                 ),
             )
         assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_NOT_FOUND
@@ -2051,7 +2052,7 @@ class TestSendToOutsource:
         with pytest.raises(BizError) as exc_info:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
-                    outsource_company_id="1", next_process_id="99",
+                    outsource_company_id="1", next_process_id="99", version=0,
                 ),
             )
         assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_COMPANY_BAD_PROCESS
@@ -2066,7 +2067,7 @@ class TestSendToOutsource:
         mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
 
         from model.process import TProcess
-        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0)
+        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0, requires_approval=True)
         proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
         proc.description = None; proc.deleted_at = None
         mock_processes.get_by_id = AsyncMock(return_value=proc)
@@ -2080,7 +2081,7 @@ class TestSendToOutsource:
         with pytest.raises(BizError) as exc_info:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
-                    outsource_company_id="1", next_process_id="99",
+                    outsource_company_id="1", next_process_id="99", version=0,
                 ),
             )
         assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_PROCESS_NOT_MAPPED
@@ -2131,7 +2132,7 @@ class TestReceiveFromOutsource:
         mock_shelves.get_by_id = AsyncMock(return_value=shelf)
 
         from model.process import TProcess
-        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0)
+        proc = TProcess(id=99, code="数控车", name="数控车", category="OUTSOURCE", sort_order=0, requires_approval=True)
         proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
         proc.description = None; proc.deleted_at = None
         mock_processes.get_by_id = AsyncMock(return_value=proc)
@@ -2216,7 +2217,7 @@ class TestSendToOutsourceDefenseGate:
         mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
         from model.process import TProcess
         proc = TProcess(id=99, code="数控车", name="数控车",
-                        category="OUTSOURCE", sort_order=0)
+                        category="OUTSOURCE", sort_order=0, requires_approval=True)
         proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
         proc.description = None; proc.deleted_at = None
         mock_processes.get_by_id = AsyncMock(return_value=proc)
@@ -2230,7 +2231,7 @@ class TestSendToOutsourceDefenseGate:
         with pytest.raises(BizError) as exc:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
-                    outsource_company_id="500", next_process_id="99",
+                    outsource_company_id="500", next_process_id="99", version=0,
                 ),
             )
         assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED
@@ -2251,7 +2252,7 @@ class TestSendToOutsourceDefenseGate:
         mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
         from model.process import TProcess
         proc = TProcess(id=99, code="数控车", name="数控车",
-                        category="OUTSOURCE", sort_order=0)
+                        category="OUTSOURCE", sort_order=0, requires_approval=True)
         proc.created_at = datetime(2025, 1, 1); proc.updated_at = datetime(2025, 1, 1)
         proc.description = None; proc.deleted_at = None
         mock_processes.get_by_id = AsyncMock(return_value=proc)
@@ -2263,7 +2264,7 @@ class TestSendToOutsourceDefenseGate:
         with pytest.raises(BizError) as exc:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
-                    outsource_company_id="500", next_process_id="99",
+                    outsource_company_id="500", next_process_id="99", version=0,
                 ),
             )
         assert exc.value.code == ErrCode.BIZ_PART_NOT_OUTSOURCEABLE
@@ -2281,7 +2282,8 @@ class TestSendToOutsourceDefenseGate:
         from model.process import TProcess
         out_proc = TProcess(id=200, code="外工序",
                             category=ProcessCategory.OUTSOURCE.value,
-                            sort_order=0, name="下道")
+                            sort_order=0, name="下道",
+                            requires_approval=True)
         out_proc.created_at = datetime(2025, 1, 1)
         out_proc.updated_at = datetime(2025, 1, 1)
         out_proc.description = None
@@ -2311,12 +2313,198 @@ class TestSendToOutsourceDefenseGate:
         from schema.part import SendToOutsourceRequest
         result = await service.send_to_outsource(
             1001, SendToOutsourceRequest(
-                outsource_company_id="500", next_process_id="200",
+                outsource_company_id="500", next_process_id="200", version=0,
             ),
         )
         assert result == mock_out
         part.sm.send_to_outsource.assert_called_once()
         approved_quote.sm.mark_used.assert_called_once()
+
+
+# ===================================================================
+# 2026-07-28：send_to_outsource 乐观锁 + 直接发送分支（requires_approval=False）
+# ===================================================================
+
+
+class TestSendToOutsourceOCCAndDirect:
+    """send_to_outsource 入口 OCC + 直接发送外协（C2 货架前置）。"""
+
+    async def test_occ_mismatch_raises_409(
+        self, service, mock_parts, mock_outsource_companies, mock_processes,
+    ) -> None:
+        """data.version 与 part.version 不一致 → BIZ_VERSION_CONFLICT 409。"""
+        part = _make_part()
+        part.version = 5
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="99",
+                    version=3,  # 不匹配
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_VERSION_CONFLICT
+        assert exc.value.http_status == 409
+
+    async def test_direct_send_on_c2_success(
+        self, service, mock_parts, mock_shelves, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+    ) -> None:
+        """process.requires_approval=False + part 在 C2 货架 → 直接发送成功。
+
+        关键不变性：
+        - 不调 self.outsource_quotes.get_one_approved
+        - 不调 approved_quote.sm.mark_used
+        - 状态机 transition 正常推进；direct_send=True 透传给 statemachine
+        """
+        c2 = MagicMock(spec=TShelf)
+        c2.id = 99
+        c2.code = "C2"
+        c2.zone = ShelfZone.PRODUCTION.value
+        c2.is_active = True
+        c2.deleted_at = None
+        mock_shelves.get_by_code = AsyncMock(return_value=c2)
+
+        from model.process import TProcess
+        proc = TProcess(
+            id=200, code="热处理", name="热处理",
+            category=ProcessCategory.OUTSOURCE.value,
+            sort_order=0, requires_approval=False,  # 直接发送开关
+        )
+        proc.created_at = datetime(2025, 1, 1)
+        proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None
+        proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            next_process_id=200,
+            current_holder_id=99,  # 坐在 C2 上
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+
+        company = MagicMock(id=500, name="A 外协", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[200],
+        )
+
+        # 即使有 quote repo mock，直接发送分支不应被调用
+        mock_outsource_quotes.get_one_approved = AsyncMock(
+            side_effect=AssertionError("直接发送不应查报价"),
+        )
+
+        mock_out = _make_part_out()
+        service._to_out = AsyncMock(return_value=[mock_out])
+
+        from schema.part import SendToOutsourceRequest
+        result = await service.send_to_outsource(
+            1001, SendToOutsourceRequest(
+                outsource_company_id="500", next_process_id="200", version=0,
+            ),
+        )
+        assert result == mock_out
+        part.sm.send_to_outsource.assert_called_once()
+        # 验证 direct_send=True 被传入（关键字参数）
+        call_kwargs = part.sm.send_to_outsource.call_args.kwargs
+        assert call_kwargs.get("direct_send") is True
+
+    async def test_direct_send_part_not_on_c2_raises_422(
+        self, service, mock_parts, mock_shelves, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+    ) -> None:
+        """process.requires_approval=False 但 part 不在 C2 → BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF 422。"""
+        c2 = MagicMock(spec=TShelf)
+        c2.id = 99
+        c2.code = "C2"
+        c2.zone = ShelfZone.PRODUCTION.value
+        c2.is_active = True
+        c2.deleted_at = None
+        mock_shelves.get_by_code = AsyncMock(return_value=c2)
+
+        from model.process import TProcess
+        proc = TProcess(
+            id=200, code="热处理", name="热处理",
+            category=ProcessCategory.OUTSOURCE.value,
+            sort_order=0, requires_approval=False,
+        )
+        proc.created_at = datetime(2025, 1, 1)
+        proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None
+        proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        # part 在 A1 货架（holder != C2.id）
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            next_process_id=200,
+            current_holder_id=11,  # 别的货架
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+
+        company = MagicMock(id=500, name="A 外协", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[200],
+        )
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="200", version=0,
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF
+        assert exc.value.http_status == 422
+        part.sm.send_to_outsource.assert_not_called()
+
+    async def test_direct_send_c2_missing_raises_500(
+        self, service, mock_parts, mock_shelves, mock_outsource_companies,
+        mock_outsource_company_process, mock_processes,
+    ) -> None:
+        """C2 货架未配置 → BIZ_INVALID_VALUE 500（运维配置错误）。"""
+        mock_shelves.get_by_code = AsyncMock(return_value=None)
+
+        from model.process import TProcess
+        proc = TProcess(
+            id=200, code="热处理", name="热处理",
+            category=ProcessCategory.OUTSOURCE.value,
+            sort_order=0, requires_approval=False,
+        )
+        proc.created_at = datetime(2025, 1, 1)
+        proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None
+        proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            next_process_id=200,
+            current_holder_id=99,
+        )
+        mock_parts.get_by_id = AsyncMock(return_value=part)
+
+        company = MagicMock(id=500, name="A 外协", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[200],
+        )
+
+        from schema.part import SendToOutsourceRequest
+        with pytest.raises(BizError) as exc:
+            await service.send_to_outsource(
+                1001, SendToOutsourceRequest(
+                    outsource_company_id="500", next_process_id="200", version=0,
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
+        assert exc.value.http_status == 500
 
 
 # ===================================================================

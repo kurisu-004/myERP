@@ -44,7 +44,12 @@ from repository.work_type import WorkTypeRepository
 from repository.work_type_process import WorkTypeProcessRepository
 from repository.worker import WorkerRepository
 from schema.part import (
+    DirectOutsourceCandidateItem,
+    DirectOutsourceCandidateListOut,
+    DirectOutsourceCompanyOption,
     FailInspectionRequest,
+    OutsourceSendableItem,
+    OutsourceSendableListOut,
     PartBatchCreateItemFailure,
     PartBatchCreateRequest,
     PartBatchCreateResult,
@@ -72,6 +77,11 @@ from schema._types import IdStr, IdStrNonNull
 from schema.part_file import PartFileOut
 from service._id_parse import parse_snowflake_id
 from service._session_refresh import refresh_for_state_machine
+from service._customer_helpers import (  # 2026-07-28：抽到共享模块
+    expand_customer_ids,
+    make_customer_path_cached,
+    preload_customer_cache,
+)
 from service.applicant import ApplicantService
 from service.part_file import PartFileService
 from utils.id_gen import new_id
@@ -1128,10 +1138,14 @@ class PartService:
         - outsource_company_id 存在 + 未软删 + is_active=True
         - next_process_id 存在 + category=OUTSOURCE
         - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
+        - data.version 与 part.version 一致（OCC；2026-07-28 新增）
 
-        note by design：当前实现与 place_on_shelf / pick_up_by_scan 同款风险——
-        不带行锁、不带版本号。两位 CLERK 同时发送同一零件到不同公司时，
-        可能产生双重 SENT_TO_OUTSOURCE 事件；与既有代码风险等级一致。
+        行为分支（由 next_process.requires_approval 决定）：
+        - True（默认）：必须有该 (part, company, process) 元组的 APPROVED 报价；
+          发送后把报价 mark_used。
+        - False（无需审批，2026-07-28 新增）：跳过报价检查；要求 part 位于 C2 货架
+          （status=IN_PROCESS + location=PRODUCTION_SHELF + current_holder_id=C2.id）；
+          事件 note 追加「/ 直接发送（无需审批）」。
         """
         if self.outsource_companies is None or self.outsource_company_process is None:
             raise BizError(
@@ -1146,6 +1160,15 @@ class PartService:
             part,
             attrs=("status", "location", "next_process_id"),
         )
+
+        # 0. OCC 校验（2026-07-28 新增）：AuditMixin 已自动给 UPDATE 加 WHERE version=?，
+        # 这里显式校验是为了在拿到最新 version 后立即拦截并发冲突，给前端更明确的报错。
+        if part.version != data.version:
+            raise BizError(
+                code=ErrCode.BIZ_VERSION_CONFLICT,
+                message="该零件已被其他用户修改，请刷新后重试",
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
 
         # 1. parse_snowflake_id(company_id) → int
         company_id_int = parse_snowflake_id(
@@ -1232,46 +1255,98 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 6. [2026-07-16] 已批报价防御闸
-        if self.outsource_quotes is None:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message="server missing outsource quote repository",
-                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+        # 6. 分支：是否需要报价审批（2026-07-28 新增）
+        if process.requires_approval:
+            # 6a. [2026-07-16] 已批报价防御闸
+            if self.outsource_quotes is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="server missing outsource quote repository",
+                    http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            approved_quote = await self.outsource_quotes.get_one_approved(
+                part_id=part.id,
+                outsource_company_id=company_id_int,
+                process_id=process_id_int,
             )
-        approved_quote = await self.outsource_quotes.get_one_approved(
-            part_id=part.id,
-            outsource_company_id=company_id_int,
-            process_id=process_id_int,
-        )
-        if approved_quote is None:
-            raise BizError(
-                code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
-                message=(
-                    f"未找到「{company.name} / {process.code}」的已批准报价，"
-                    "请先在「报价一览」中提交并由 MANAGER 审核通过"
-                ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
+            if approved_quote is None:
+                raise BizError(
+                    code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
+                    message=(
+                        f"未找到「{company.name} / {process.code}」的已批准报价，"
+                        "请先在「报价一览」中提交并由 MANAGER 审核通过"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+            await refresh_for_state_machine(
+                self.parts.session, approved_quote, attrs=("status",),
             )
 
-        await refresh_for_state_machine(
-            self.parts.session, approved_quote, attrs=("status",),
-        )
+            # 7. 状态机转换
+            part.sm.send_to_outsource(
+                outsource_company=company, process=process,
+                event_repo=self.events, created_by=self._user_id,
+            )
+            part.updated_by = self._user_id
+            await self.parts.update(part)
 
-        # 7. 状态机转换
-        part.sm.send_to_outsource(
-            outsource_company=company, process=process,
-            event_repo=self.events, created_by=self._user_id,
-        )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-
-        # 8. [2026-07-16] 把 APPROVED 报价 mark_used → USED + 写事件
-        approved_quote.sm.mark_used(
-            event_repo=self.quote_events, created_by=self._user_id,
-        )
-        approved_quote.updated_by = self._user_id
-        await self.outsource_quotes.update(approved_quote)
+            # 8. [2026-07-16] 把 APPROVED 报价 mark_used → USED + 写事件
+            approved_quote.sm.mark_used(
+                event_repo=self.quote_events, created_by=self._user_id,
+            )
+            approved_quote.updated_by = self._user_id
+            await self.outsource_quotes.update(approved_quote)
+        else:
+            # 6b. 直接发送分支（无需审批）：按 source_status 分场景校验（2026-07-28）
+            #   - 起始外协（PENDING, OFFICE）：不需要 C2 货架，直接从办公室发出
+            #   - 中间外协（IN_PROCESS + PRODUCTION_SHELF）：要求 part 位于 C2 货架
+            if part.status == PartStatus.PENDING.value:
+                # 起始外协：从 OFFICE 直接发，不要求 C2
+                pass
+            elif (
+                part.status == PartStatus.IN_PROCESS.value
+                and part.location == PartLocation.PRODUCTION_SHELF.value
+            ):
+                # 中间外协：要求 C2 货架
+                c2 = await self.shelves.get_by_code("C2")
+                if c2 is None or not c2.is_active or c2.zone != "PRODUCTION":
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message="C2 货架未配置或不可用，请联系管理员",
+                        http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+                if part.current_holder_id != c2.id:
+                    raise BizError(
+                        code=ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF,
+                        message=(
+                            f"中间外协直发要求零件位于 C2 / 生产/外协 C2 货架，"
+                            f"当前 status={part.status} location={part.location} "
+                            f"current_holder_id={part.current_holder_id}"
+                        ),
+                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    )
+            else:
+                # PENDING / IN_PROCESS+PRODUCTION_SHELF 之外的异常状态
+                raise BizError(
+                    code=ErrCode.BIZ_PART_NOT_OUTSOURCEABLE,
+                    message=(
+                        f"直接发送外协要求 part 处于 PENDING（起始外协）或 "
+                        f"IN_PROCESS+PRODUCTION_SHELF（中间外协）；"
+                        f"当前 status={part.status} location={part.location}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            # 状态机转换（事件 note 自动追加 " / 直接发送（无需审批）"，
+            # TPartEvent.outsource_company_id 由 statemachine 从 company.id 自动推断）
+            part.sm.send_to_outsource(
+                outsource_company=company, process=process,
+                event_repo=self.events, created_by=self._user_id,
+                direct_send=True,
+            )
+            part.updated_by = self._user_id
+            await self.parts.update(part)
+            # 直接发送不写 quote、不 mark_used、不调 self.outsource_quotes
 
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -1290,8 +1365,11 @@ class PartService:
     ) -> PartOut:
         """OUTSOURCE → IN_PROCESS：从外协回收，下发到生产货架继续加工。
 
-        body 复用 PlaceOnShelfRequest（shelf_id + next_process_id）；
+        body 复用 PlaceOnShelfRequest（shelf_id + next_process_id + 可选 outsource_company_id）；
         额外校验：next_process_id 必须是 INHOUSE（外协回来后通常进车间）。
+
+        2026-07-28：`outsource_company_id` 入参（可空）写入 TPartEvent.outsource_company_id
+        用于外协对账；前端从 part_event 历史查最近 SENT_TO_OUTSOURCE 的公司 id 填入。
         """
         part = await self._get_part_or_404(part_id)
         await refresh_for_state_machine(
@@ -1312,10 +1390,28 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        # 解析 outsource_company_id（对账审计字段，可空）
+        outsource_company_id_int: int | None = None
+        if data.outsource_company_id:
+            parsed = parse_snowflake_id(
+                data.outsource_company_id, field_name="outsource_company_id",
+            )
+            if parsed is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"outsource_company_id 不是合法的雪花 ID 字符串："
+                        f"{data.outsource_company_id!r}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            outsource_company_id_int = parsed
+
         # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
         part.sm.receive_from_outsource(
             shelf=shelf, process=process,
             event_repo=self.events, created_by=self._user_id,
+            outsource_company_id=outsource_company_id_int,
         )
         part.updated_by = self._user_id
         await self.parts.update(part)
@@ -1341,6 +1437,7 @@ class PartService:
         - auto_pass_inspection：True 时一次性把状态推到 READY_TO_SHIP
           （相当于「外协 → 品检 → 通过品检 → 待送货」两步压缩为一次操作；
           用于信任外协质量的快捷流程）。
+        - outsource_company_id（2026-07-28 可选）：写入 TPartEvent.outsource_company_id 对账。
 
         复用现有 pass_inspection 实现二次转换（同一事务连续两次状态机调用）。
         """
@@ -1352,10 +1449,28 @@ class PartService:
         )
         target_shelf = await self._validate_inspection_shelf(data.shelf_id)
 
+        # 解析 outsource_company_id（对账审计字段，可空）
+        outsource_company_id_int: int | None = None
+        if data.outsource_company_id:
+            parsed = parse_snowflake_id(
+                data.outsource_company_id, field_name="outsource_company_id",
+            )
+            if parsed is None:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"outsource_company_id 不是合法的雪花 ID 字符串："
+                        f"{data.outsource_company_id!r}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            outsource_company_id_int = parsed
+
         # 第一次转换：OUTSOURCE → INSPECTION
         part.sm.inspect_from_outsource(
             target_shelf=target_shelf,
             event_repo=self.events, created_by=self._user_id,
+            outsource_company_id=outsource_company_id_int,
         )
         part.updated_by = self._user_id
         await self.parts.update(part)
@@ -1935,6 +2050,289 @@ class PartService:
             return []
         rows = await self.parts.list_held_by_worker(worker_id=worker_id)
         return await self._to_out(rows)
+
+    # ============================================================
+    # 统一外协可发送一览（2026-07-28 新增；取代 list_direct_outsource_candidates）
+    # ============================================================
+    async def list_outsource_sendable(
+        self,
+        *,
+        keyword: str | None = None,
+        customer_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> OutsourceSendableListOut:
+        """外协可发送一览（统一查询）：合并 APPROVAL（有报价）和 DIRECT（无需审批可直发）两路。
+
+        谓词：
+        - APPROVAL：part_id ∈ part_ids_with_approved_quote ∩ next_process_id ∈ approval_proc_ids
+          ∩ (status=PENDING OR IN_PROCESS+PRODUCTION_SHELF)
+        - DIRECT：next_process_id ∈ direct_proc_ids
+          ∩ (status=PENDING OR IN_PROCESS+PRODUCTION_SHELF)
+
+        C2 货架**不**在此过滤；send_to_outsource 服务层在中间外协（IN_PROCESS）路径
+        做 C2 前置校验。起始外协（PENDING）直发不要求 C2。
+        """
+        if (
+            self.processes is None
+            or self.outsource_company_process is None
+            or self.outsource_companies is None
+            or self.outsource_quotes is None
+        ):
+            return OutsourceSendableListOut(
+                items=[], total=0, limit=limit, offset=offset,
+            )
+
+        # 1. 拉全部 OUTSOURCE 工序，按 requires_approval 分两组
+        processes = await self.processes.list_with_filters(
+            category="OUTSOURCE", include_deleted=False, limit=500, offset=0,
+        )
+        direct_proc_ids = {p.id for p in processes if not p.requires_approval}
+        approval_proc_ids = {p.id for p in processes if p.requires_approval}
+        process_map = {p.id: p for p in processes}
+
+        if not direct_proc_ids and not approval_proc_ids:
+            return OutsourceSendableListOut(
+                items=[], total=0, limit=limit, offset=offset,
+            )
+
+        # 2. 直发：批查 company mappings，过滤掉失效 company
+        direct_proc_to_companies: dict[int, list[int]] = {}
+        all_direct_company_ids: set[int] = set()
+        if direct_proc_ids:
+            mappings = await self.outsource_company_process.list_companys_by_processes(
+                list(direct_proc_ids), include_deleted=False,
+            )
+            for m in mappings:
+                direct_proc_to_companies.setdefault(m.process_id, []).append(
+                    m.outsource_company_id,
+                )
+                all_direct_company_ids.add(m.outsource_company_id)
+        # 取 active companies
+        active_company_map: dict[int, object] = {}
+        if all_direct_company_ids:
+            companies = await self.outsource_companies.list_by_ids(list(all_direct_company_ids))
+            active_company_map = {c.id: c for c in companies if c.is_active}
+        # 过滤掉失效 company，整理为 proc_id -> sorted[company_id]
+        direct_proc_to_active_companies: dict[int, list[int]] = {}
+        for proc_id, cids in direct_proc_to_companies.items():
+            valid = [cid for cid in cids if cid in active_company_map]
+            if valid:
+                direct_proc_to_active_companies[proc_id] = sorted(valid)
+
+        # 3. 审批：批查所有 APPROVED 报价，按 (part_id) 取每 part 最新一条
+        approved_by_part: dict[int, object] = {}
+        if approval_proc_ids:
+            all_approved = await self.outsource_quotes.list_all_approved()
+            # 按 part_id 分组，按 (created_at desc, id desc) 取最新一条
+            for q in all_approved:
+                if q.process_id not in approval_proc_ids:
+                    continue
+                existing = approved_by_part.get(q.part_id)
+                if existing is None or (
+                    q.created_at > existing.created_at
+                    or (q.created_at == existing.created_at and q.id > existing.id)
+                ):
+                    approved_by_part[q.part_id] = q
+        approval_part_ids = list(approved_by_part.keys())
+
+        # 4. customer 展开
+        customer_ids_in: list[int] | None = None
+        if customer_id:
+            cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
+            if cid_int is None:
+                return OutsourceSendableListOut(
+                    items=[], total=0, limit=limit, offset=offset,
+                )
+            customer_ids_in = await expand_customer_ids(self.customers, cid_int)
+
+        kw = (keyword or "").strip() or None
+
+        # 5. 并发查直发 + 审批 + 计数（limit*2 给合并留余量）
+        big_limit = max(limit * 2, 100)
+        big_offset = max(offset - limit, 0)
+        direct_parts: list = []
+        approval_parts: list = []
+        direct_total = 0
+        approval_total = 0
+        if direct_proc_to_active_companies:
+            sendable_direct_ids = list(direct_proc_to_active_companies.keys())
+            direct_total = await self.parts.count_direct_outsource_sendable(
+                customer_ids_in=customer_ids_in, keyword=kw,
+                process_ids=sendable_direct_ids,
+            )
+            if direct_total:
+                direct_parts = await self.parts.list_direct_outsource_sendable(
+                    customer_ids_in=customer_ids_in, keyword=kw,
+                    process_ids=sendable_direct_ids,
+                    limit=big_limit, offset=big_offset,
+                )
+        if approval_part_ids:
+            approval_total = await self.parts.count_approved_outsource_sendable(
+                part_ids=approval_part_ids, process_ids=list(approval_proc_ids),
+                customer_ids_in=customer_ids_in, keyword=kw,
+            )
+            if approval_total:
+                approval_parts = await self.parts.list_approved_outsource_sendable(
+                    part_ids=approval_part_ids, process_ids=list(approval_proc_ids),
+                    customer_ids_in=customer_ids_in, keyword=kw,
+                    limit=big_limit, offset=big_offset,
+                )
+
+        # 6. 拼装 + 合并排序
+        cust_cache = await preload_customer_cache(self.customers, [
+            p.customer_id for p in direct_parts
+            if p.customer_id is not None
+        ] + [
+            p.customer_id for p in approval_parts
+            if p.customer_id is not None
+        ])
+        items: list[OutsourceSendableItem] = []
+
+        # 6a. DIRECT items
+        for p in direct_parts:
+            cids = direct_proc_to_active_companies.get(p.next_process_id, [])
+            company_opts = [
+                DirectOutsourceCompanyOption(
+                    id=cid,
+                    name=active_company_map[cid].name if cid in active_company_map else "",
+                )
+                for cid in cids
+            ]
+            if not company_opts:
+                continue
+            next_proc = process_map.get(p.next_process_id)
+            customer_path: str | None = None
+            if p.customer_id is not None and p.customer_id in cust_cache:
+                customer_path = make_customer_path_cached(
+                    cust_cache[p.customer_id], cust_cache,
+                )
+            items.append(OutsourceSendableItem(
+                version=p.version,
+                send_mode="DIRECT",
+                source_status=p.status,
+                part_id=p.id,
+                part_serial_no=p.serial_no,
+                part_drawing_no=p.drawing_no,
+                part_name=p.name,
+                quantity=p.quantity,
+                planned_delivery_date=(
+                    p.planned_delivery_date.isoformat()
+                    if p.planned_delivery_date else None
+                ),
+                is_urgent=bool(getattr(p, "is_urgent", False)),
+                customer_path=customer_path,
+                next_process_id=p.next_process_id,
+                next_process_name=next_proc.name if next_proc else None,
+                outsource_company_id=None,
+                outsource_company_name=None,
+                company_options=company_opts,
+                price=None,
+                status_label="sendable",
+            ))
+
+        # 6b. APPROVAL items
+        # 审批端需要的 company_id/name：从 APPROVED 报价拿
+        approval_company_ids = {
+            q.outsource_company_id for q in approved_by_part.values()
+        }
+        approval_company_map: dict[int, object] = {}
+        if approval_company_ids:
+            comps = await self.outsource_companies.list_by_ids(list(approval_company_ids))
+            approval_company_map = {c.id: c for c in comps}
+        for p in approval_parts:
+            q = approved_by_part.get(p.id)
+            if q is None:
+                continue
+            company = approval_company_map.get(q.outsource_company_id)
+            next_proc = process_map.get(q.process_id)
+            customer_path: str | None = None
+            if p.customer_id is not None and p.customer_id in cust_cache:
+                customer_path = make_customer_path_cached(
+                    cust_cache[p.customer_id], cust_cache,
+                )
+            items.append(OutsourceSendableItem(
+                version=p.version,
+                send_mode="APPROVAL",
+                source_status=p.status,
+                part_id=p.id,
+                part_serial_no=p.serial_no,
+                part_drawing_no=p.drawing_no,
+                part_name=p.name,
+                quantity=p.quantity,
+                planned_delivery_date=(
+                    p.planned_delivery_date.isoformat()
+                    if p.planned_delivery_date else None
+                ),
+                is_urgent=bool(getattr(p, "is_urgent", False)),
+                customer_path=customer_path,
+                next_process_id=p.next_process_id,
+                next_process_name=next_proc.name if next_proc else None,
+                outsource_company_id=q.outsource_company_id,
+                outsource_company_name=company.name if company else None,
+                company_options=[],
+                price=q.price,
+                status_label="sendable",
+            ))
+
+        # 合并排序：加急 DESC, planned_delivery_date ASC, part_id DESC
+        # 用统一 tuple 类型确保 Python sort 稳定
+        items.sort(
+            key=lambda it: (
+                0 if it.is_urgent else 1,
+                it.planned_delivery_date or "",
+                -int(it.part_id),
+            )
+        )
+
+        # 切分页（基于合并后的 total）
+        total = direct_total + approval_total
+        # 切片按 offset/limit（数据已经按统一顺序排好）
+        page = items[max(0, offset - big_offset): max(0, offset - big_offset) + limit]
+
+        return OutsourceSendableListOut(
+            items=page, total=total, limit=limit, offset=offset,
+        )
+
+    async def list_direct_outsource_candidates(
+        self,
+        *,
+        keyword: str | None = None,
+        customer_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> DirectOutsourceCandidateListOut:
+        """旧版直接发送候选（已弃用；2026-07-28 后由 list_outsource_sendable 取代）。
+
+        保留以兼容老调用方；新代码请用 list_outsource_sendable。
+        """
+        unified = await self.list_outsource_sendable(
+            keyword=keyword, customer_id=customer_id,
+            limit=limit, offset=offset,
+        )
+        # 过滤 DIRECT 行，转成旧 DirectOutsourceCandidateItem
+        items = [
+            DirectOutsourceCandidateItem(
+                version=it.version,
+                part_id=it.part_id,
+                part_serial_no=it.part_serial_no,
+                part_drawing_no=it.part_drawing_no,
+                part_name=it.part_name,
+                quantity=it.quantity,
+                planned_delivery_date=it.planned_delivery_date,
+                is_urgent=it.is_urgent,
+                customer_path=it.customer_path,
+                next_process_id=it.next_process_id,
+                next_process_name=it.next_process_name,
+                requires_approval=False,
+                status_label="sendable",
+                company_options=it.company_options,
+            )
+            for it in unified.items if it.send_mode == "DIRECT"
+        ]
+        return DirectOutsourceCandidateListOut(
+            items=items, total=unified.total, limit=limit, offset=offset,
+        )
 
     async def pass_inspection(self, part_id: int) -> PartOut:
         """INSPECTION -> READY_TO_SHIP：品检合格。"""

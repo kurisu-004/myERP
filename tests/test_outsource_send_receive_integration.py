@@ -182,6 +182,7 @@ def _send_request(world) -> SendToOutsourceRequest:
     return SendToOutsourceRequest(
         outsource_company_id=str(world["company"].id),
         next_process_id=str(world["outsource_process"].id),
+        version=world["part"].version,
     )
 
 

@@ -14,7 +14,7 @@
         <el-form-item>
           <el-button type="primary" @click="fetchList"><el-icon><Search /></el-icon><span>查询</span></el-button>
           <el-button @click="onReset"><el-icon><RefreshLeft /></el-icon><span>重置</span></el-button>
-          <el-button type="success" @click="onNew"><el-icon><Plus /></el-icon><span>新增工序</span></el-button>
+          <el-button v-if="isManager" type="success" @click="onNew"><el-icon><Plus /></el-icon><span>新增工序</span></el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -38,8 +38,15 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="审批模式" min-width="110" align="center">
+        <template #default="{ row }">
+          <el-tag :type="(row as Process).requires_approval ? 'warning' : 'success'" size="small">
+            {{ (row as Process).requires_approval ? '需要审批' : '直接发送' }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="sort_order" label="排序" min-width="80" align="center"/>
-      <el-table-column label="操作" min-width="180" fixed="right" align="center">
+      <el-table-column v-if="isManager" label="操作" min-width="180" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as Process)">编辑</el-button>
           <el-button link type="danger" size="small" @click="onDelete(row as Process)">删除</el-button>
@@ -51,6 +58,9 @@
           <span class="rl-card-title">{{ row.name }}</span>
           <el-tag :type="row.category === 'INHOUSE' ? 'primary' : 'warning'" size="small">
             {{ PROCESS_CATEGORY_LABEL[(row as Process).category] }}
+          </el-tag>
+          <el-tag :type="(row as Process).requires_approval ? 'warning' : 'success'" size="small">
+            {{ (row as Process).requires_approval ? '需要审批' : '直接发送' }}
           </el-tag>
         </div>
         <div class="rl-card-sub">代码 {{ row.code }}</div>
@@ -64,7 +74,7 @@
             <span class="rl-kv__val">{{ row.description || '—' }}</span>
           </div>
         </div>
-        <div class="rl-card-actions">
+        <div v-if="isManager" class="rl-card-actions">
           <el-button link type="primary" size="small" @click="onEdit(row as Process)">编辑</el-button>
           <el-button link type="danger" size="small" @click="onDelete(row as Process)">删除</el-button>
         </div>
@@ -92,6 +102,16 @@
             <el-option label="外协" value="OUTSOURCE" />
           </el-select>
         </el-form-item>
+        <el-form-item label="需要审批">
+          <el-switch
+            v-model="form.requires_approval"
+            :disabled="form.category === 'INHOUSE'"
+            active-text="需要审批"
+            inactive-text="直接发送"
+            inline-prompt
+            style="--el-switch-off-color: #67c23a"
+          />
+        </el-form-item>
         <el-form-item label="排序">
           <el-input-number v-model="form.sort_order" :min="0" />
         </el-form-item>
@@ -114,6 +134,7 @@ import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { usePermissions } from '@/composables/usePermissions'
 import {
   createProcess,
   listProcesses,
@@ -124,6 +145,7 @@ import type { Process, ProcessCategory } from '@/types/process'
 import { PROCESS_CATEGORY_LABEL } from '@/types/process'
 
 const { isMobile } = useBreakpoint()
+const { isManager } = usePermissions()
 const dialogSize = useDialogSize({ desktopWidth: 460 })
 
 const loading = ref(false)
@@ -139,7 +161,12 @@ const dialogTitle = computed(() => (editing.value ? '编辑工序' : '新增工�
 const form = reactive<{
   code: string; name: string; category: ProcessCategory
   sort_order: number; description: string
-}>({ code: '', name: '', category: 'INHOUSE', sort_order: 0, description: '' })
+  requires_approval: boolean
+}>({
+  code: '', name: '', category: 'INHOUSE',
+  sort_order: 0, description: '',
+  requires_approval: true,  // OUTSOURCE 默认；INHOUSE 在保存时由后端强制为 false
+})
 
 async function fetchList(): Promise<void> {
   loading.value = true
@@ -160,7 +187,11 @@ async function fetchList(): Promise<void> {
 function onReset(): void { search.code_like = ''; search.category = undefined; fetchList() }
 function onNew(): void {
   editing.value = null
-  Object.assign(form, { code: '', name: '', category: 'INHOUSE', sort_order: 0, description: '' })
+  Object.assign(form, {
+    code: '', name: '', category: 'INHOUSE',
+    sort_order: 0, description: '',
+    requires_approval: true,
+  })
   dialogVisible.value = true
 }
 function onEdit(row: Process): void {
@@ -169,6 +200,7 @@ function onEdit(row: Process): void {
     code: row.code, name: row.name, category: row.category,
     sort_order: row.sort_order,
     description: row.description ?? '',
+    requires_approval: row.requires_approval ?? true,
   })
   dialogVisible.value = true
 }
@@ -186,6 +218,7 @@ async function onSave(): Promise<void> {
         category: form.category,
         sort_order: form.sort_order,
         description: form.description.trim() || null,
+        requires_approval: form.requires_approval,
       })
       ElMessage.success('已保存')
     } else {
@@ -195,6 +228,7 @@ async function onSave(): Promise<void> {
         category: form.category,
         sort_order: form.sort_order,
         description: form.description.trim() || null,
+        requires_approval: form.requires_approval,
       })
       ElMessage.success('已新增')
     }
@@ -209,7 +243,11 @@ async function onSave(): Promise<void> {
 
 function onDialogClosed(): void {
   editing.value = null
-  Object.assign(form, { code: '', name: '', category: 'INHOUSE', sort_order: 0, description: '' })
+  Object.assign(form, {
+    code: '', name: '', category: 'INHOUSE',
+    sort_order: 0, description: '',
+    requires_approval: true,
+  })
 }
 
 async function onDelete(row: Process): Promise<void> {

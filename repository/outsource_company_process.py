@@ -75,6 +75,27 @@ class OutsourceCompanyProcessRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_companys_by_processes(
+        self,
+        process_ids: list[int],
+        *,
+        include_deleted: bool = False,
+    ) -> list[TOutsourceCompanyProcess]:
+        """批量反查：给一组 process_id，返回所有 active junction 行（2026-07-28 新增）。
+
+        service 层按 (process_id) 分组得到每个工序映射的公司 id 列表。
+        调用方需保证 `process_ids` 非空（空列表会返回 0 行，与现有契约一致）。
+        """
+        if not process_ids:
+            return []
+        stmt = select(TOutsourceCompanyProcess).where(
+            TOutsourceCompanyProcess.process_id.in_(process_ids),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TOutsourceCompanyProcess.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ===== 集合替换 =====
     async def delete_by_outsource_company(self, company_id: int) -> None:
         """把某公司的全部映射置为软删。

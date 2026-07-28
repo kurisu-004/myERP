@@ -4,6 +4,12 @@
 import { api } from '@/api/http'
 import type { PartFileItem } from '@/types/part_file'
 import type {
+  DirectOutsourceCandidateListResult,
+} from '@/types/directOutsource'
+import type {
+  OutsourceSendableListResult,
+} from '@/types/outsource'
+import type {
   OrderStatus,
   PartEventType,
   PartListItem,
@@ -578,6 +584,12 @@ export interface SendToOutsourcePayload {
   outsource_company_id: string
   /** 外协工序 id（雪花 ID 字符串；JS Number 会丢精度） */
   next_process_id: string
+  /**
+   * 乐观锁版本号；与后端 PartOut.version 必须一致，否则返 BIZ_VERSION_CONFLICT 409。
+   * 前端从 PartItem.version / PartOut.version 取值后传入。
+   * 2026-07-28 新增。
+   */
+  version: number
 }
 
 /**
@@ -591,6 +603,45 @@ export async function sendToOutsource(
   const resp = await api.post<PartItem>(
     `/parts/${encodeURIComponent(partId)}/send-to-outsource`,
     payload,
+  )
+  return resp.data
+}
+
+/**
+ * 统一外协可发送一览（2026-07-28 新增；取代 listDirectOutsourceCandidates / listApprovedForSend）：
+ * 合并 APPROVAL（需审批 + 有报价）和 DIRECT（无需审批可直发）两类，
+ * 每行带 send_mode + source_status 字段。
+ */
+export async function listOutsourceSendable(
+  params: {
+    keyword?: string
+    customer_id?: string
+    limit?: number
+    offset?: number
+  } = {},
+): Promise<OutsourceSendableListResult> {
+  const resp = await api.get<OutsourceSendableListResult>(
+    '/parts/outsource-sendable',
+    { params: cleanParams(params) },
+  )
+  return resp.data
+}
+
+/**
+ * 直接发送外协候选（已弃用；2026-07-28 后由 listOutsourceSendable 取代）。
+ * 保留以兼容旧调用方；新代码请用 listOutsourceSendable。
+ */
+export async function listDirectOutsourceCandidates(
+  params: {
+    keyword?: string
+    customer_id?: string
+    limit?: number
+    offset?: number
+  } = {},
+): Promise<DirectOutsourceCandidateListResult> {
+  const resp = await api.get<DirectOutsourceCandidateListResult>(
+    '/parts/direct-outsource-candidates',
+    { params: cleanParams(params) },
   )
   return resp.data
 }

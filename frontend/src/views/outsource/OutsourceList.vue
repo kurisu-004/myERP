@@ -59,10 +59,11 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" min-width="240" fixed="right" align="center">
+        <el-table-column label="操作" min-width="280" fixed="right" align="center">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="onEdit(row as OutsourceCompany)">编辑</el-button>
             <el-button link type="warning" size="small" @click="onManageProcesses(row as OutsourceCompany)">维护工序</el-button>
+            <el-button link type="success" size="small" @click="onBilling(row as OutsourceCompany)">对账</el-button>
             <el-button link type="danger" size="small" @click="onDelete(row as OutsourceCompany)">删除</el-button>
           </template>
         </el-table-column>
@@ -189,6 +190,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
@@ -206,6 +208,7 @@ import type { OutsourceCompany } from '@/types/outsource'
 import { listProcesses } from '@/api/process'
 import type { Process } from '@/types/process'
 
+const router = useRouter()
 const { isMobile } = useBreakpoint()
 const companyDlg = useDialogSize({ desktopWidth: 520 })
 const paginationLayout = computed(() =>
@@ -383,6 +386,11 @@ async function onSaveProcesses(): Promise<void> {
 function onManageDialogClosed(): void {
   managing.value = null
   manageForm.process_ids = []
+}
+
+function onBilling(row: OutsourceCompany): void {
+  // 跳到外协对账页（2026-07-28 新增）
+  void router.push(`/outsource/companies/${row.id}/sent-parts`)
 }
 
 async function onDelete(row: OutsourceCompany): Promise<void> {

@@ -21,7 +21,7 @@ def _now() -> datetime:
 def _p(id: int = 1, code: str = "车") -> TProcess:
     p = TProcess(
         id=id, code=code, name="车床加工", category="INHOUSE",
-        sort_order=0,
+        sort_order=0, requires_approval=False,
     )
     p.created_at = _now()
     p.updated_at = _now()
@@ -51,7 +51,102 @@ async def test_create_process_success():
 
     assert out.code == "车"
     assert out.category == ProcessCategory.INHOUSE
+    assert out.requires_approval is False  # INHOUSE 默认 False（2026-07-28）
     repo.create.assert_awaited_once()
+
+
+# =============================================================================
+# requires_approval 字段语义（2026-07-28 新增）
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_create_process_inhouse_forces_requires_approval_false():
+    """新建 INHOUSE 工序时，即便请求 requires_approval=True 也会被强制为 False。"""
+    repo = AsyncMock()
+    repo.get_by_code = AsyncMock(return_value=None)
+    repo.create = AsyncMock(side_effect=_mock_create)
+
+    svc = ProcessService(processes=repo)
+    out = await svc.create_process(ProcessCreateRequest(
+        code="车", name="车床加工",
+        category=ProcessCategory.INHOUSE,
+        requires_approval=True,  # 强制覆盖
+    ))
+
+    assert out.category == ProcessCategory.INHOUSE
+    assert out.requires_approval is False
+    # 入库的 TProcess 也应为 False
+    created = repo.create.await_args.args[0]
+    assert created.requires_approval is False
+
+
+@pytest.mark.asyncio
+async def test_create_process_outsource_default_true():
+    """新建 OUTSOURCE 不传 requires_approval 时，默认 True（保持原流程）。"""
+    repo = AsyncMock()
+    repo.get_by_code = AsyncMock(return_value=None)
+    repo.create = AsyncMock(side_effect=_mock_create)
+
+    svc = ProcessService(processes=repo)
+    out = await svc.create_process(ProcessCreateRequest(
+        code="热处理", name="热处理",
+        category=ProcessCategory.OUTSOURCE,
+    ))
+
+    assert out.category == ProcessCategory.OUTSOURCE
+    assert out.requires_approval is True
+
+
+@pytest.mark.asyncio
+async def test_create_process_outsource_can_disable_approval():
+    """新建 OUTSOURCE 显式传 requires_approval=False 时保持 False。"""
+    repo = AsyncMock()
+    repo.get_by_code = AsyncMock(return_value=None)
+    repo.create = AsyncMock(side_effect=_mock_create)
+
+    svc = ProcessService(processes=repo)
+    out = await svc.create_process(ProcessCreateRequest(
+        code="热处理", name="热处理",
+        category=ProcessCategory.OUTSOURCE,
+        requires_approval=False,
+    ))
+
+    assert out.requires_approval is False
+
+
+@pytest.mark.asyncio
+async def test_update_process_requires_approval_none_preserves():
+    """update 时不传 requires_approval（None）应保留原值。"""
+    repo = AsyncMock()
+    existing = _p(id=11, code="热处理")
+    existing.category = "OUTSOURCE"
+    existing.requires_approval = False  # 既有值
+    repo.get_by_id = AsyncMock(return_value=existing)
+    repo.update = AsyncMock(return_value=existing)
+
+    svc = ProcessService(processes=repo)
+    out = await svc.update_process(
+        11, ProcessUpdateRequest(name="热处理v2"),
+    )
+    assert out.requires_approval is False
+
+
+@pytest.mark.asyncio
+async def test_update_process_requires_approval_override():
+    """update 路径不做 category 强制；INHOUSE 工序也可被 API 改成 True。"""
+    repo = AsyncMock()
+    existing = _p(id=12, code="车")
+    existing.category = "INHOUSE"
+    existing.requires_approval = False  # 默认
+    repo.get_by_id = AsyncMock(return_value=existing)
+    repo.update = AsyncMock(return_value=existing)
+
+    svc = ProcessService(processes=repo)
+    out = await svc.update_process(
+        12, ProcessUpdateRequest(requires_approval=True),
+    )
+    assert out.requires_approval is True
 
 
 @pytest.mark.asyncio

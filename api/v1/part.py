@@ -24,7 +24,9 @@ from model.enums import PartEventType, UserRole
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
 from schema.part import (
+    DirectOutsourceCandidateListOut,
     FailInspectionRequest,
+    OutsourceSendableListOut,
     PartBatchCreateRequest,
     PartBatchCreateResult,
     PartBatchTreeRequest,
@@ -298,6 +300,29 @@ async def list_pending_programming_parts(
             limit=limit,
             offset=offset,
         )
+    )
+
+
+@router.get(
+    "/outsource-sendable",
+    response_model=OutsourceSendableListOut,
+    summary=(
+        "外协可发送一览（统一查询，2026-07-28 新增）：合并 APPROVAL（有 APPROVED 报价）和 "
+        "DIRECT（无需审批可直发）两类。send_mode 字段区分；source_status 区分起始外协（PENDING）和"
+        "中间外协（IN_PROCESS+PRODUCTION_SHELF）（MANAGER / CLERK / INSPECTOR）"
+    ),
+    dependencies=_inspector_outsource_dep,
+)
+async def list_outsource_sendable(
+    keyword: str | None = Query(default=None),
+    customer_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    svc: PartService = Depends(get_part_service),
+) -> OutsourceSendableListOut:
+    return await svc.list_outsource_sendable(
+        keyword=keyword, customer_id=customer_id,
+        limit=limit, offset=offset,
     )
 
 

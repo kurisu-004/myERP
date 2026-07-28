@@ -30,12 +30,22 @@ import {
   receiveFromOutsourceToInspection,
   sendToOutsource as sendPartToOutsource,
   getPartBySerial,
+  listDirectOutsourceCandidates,
+  listOutsourceSendable,
   type SendToOutsourcePayload,
   type PartItem,
   listParts,
 } from '@/api/parts'
-import type { ApprovedQuoteForSendItem } from '@/types/outsource'
+import type {
+  ApprovedQuoteForSendItem,
+  OutsourceSendableItem,
+} from '@/types/outsource'
+import type { DirectOutsourceCandidateItem } from '@/types/directOutsource'
 import type { PartListItem } from '@/types/parts'
+
+/** 合并后的可发送项：2026-07-28 后由 GET /parts/outsource-sendable 单端点返回
+ * OutsourceSendableItem 统一承担；每行已含 send_mode + source_status。 */
+type SendableItem = OutsourceSendableItem
 
 type TabName = 'sendable' | 'receiving' | 'received'
 
@@ -93,9 +103,9 @@ async function loadLookups(): Promise<void> {
 }
 
 // ============================================================
-// Tab 1：可发送
+// Tab 1：可发送（APPROVAL 已批报价 + DIRECT 直接发送候选，2026-07-28 合并）
 // ============================================================
-const sendableItems = ref<ApprovedQuoteForSendItem[]>([])
+const sendableItems = ref<SendableItem[]>([])
 const sendableTotal = ref(0)
 const sendableLoading = ref(false)
 const sendableError = ref<string | null>(null)
@@ -107,7 +117,8 @@ async function refreshSendable(): Promise<void> {
   sendableLoading.value = true
   sendableError.value = null
   try {
-    const r = await listApprovedForSend({
+    // 2026-07-28：统一端点 GET /parts/outsource-sendable（取代旧的两端点合并）
+    const r = await listOutsourceSendable({
       keyword: sendableFilter.keyword || undefined,
       customer_id: sendableFilter.customer_id || undefined,
       limit: sendablePageSize.value,
@@ -126,26 +137,48 @@ async function refreshSendable(): Promise<void> {
 }
 
 const sendDialogVisible = ref(false)
-const sendTarget = ref<ApprovedQuoteForSendItem | null>(null)
+const sendTarget = ref<SendableItem | null>(null)
+const sendSelectedCompanyId = ref<string>('')
 const sendSubmitting = ref(false)
 
-function canSend(item: ApprovedQuoteForSendItem): boolean {
-  // 服务端返回的项都已经 satisfy；这里走 status_label 防越界
-  return item.status_label === 'sendable'
+function canSend(item: SendableItem): boolean {
+  if (item.status_label !== 'sendable') return false
+  if (item.send_mode === 'DIRECT') {
+    return item.company_options.length >= 1
+  }
+  // APPROVAL: outsource_company_id 由后端确定
+  return true
 }
-function openSend(item: ApprovedQuoteForSendItem): void {
+function openSend(item: SendableItem): void {
   if (!canSend(item)) {
     ElMessage.warning('该零件当前状态不满足发送条件')
     return
   }
   sendTarget.value = item
+  // 直接发送：默认选第一家公司（不能为空数组；前端必有 ≥1）
+  if (item.send_mode === 'DIRECT') {
+    sendSelectedCompanyId.value = item.company_options[0]?.id ?? ''
+  } else {
+    sendSelectedCompanyId.value = ''
+  }
   sendDialogVisible.value = true
 }
 async function onConfirmSend(): Promise<void> {
   if (!sendTarget.value) return
+  const target = sendTarget.value
+  if (target.send_mode === 'DIRECT' && !sendSelectedCompanyId.value) {
+    ElMessage.warning('请选择外协公司')
+    return
+  }
+  const companyId: string = target.send_mode === 'DIRECT'
+    ? sendSelectedCompanyId.value
+    : (target.outsource_company_id ?? '')
+  const companyName: string = target.send_mode === 'DIRECT'
+    ? target.company_options.find((c) => c.id === sendSelectedCompanyId.value)?.name ?? ''
+    : (target.outsource_company_name ?? '')
   try {
     await ElMessageBox.confirm(
-      `确认把「${sendTarget.value.part_drawing_no}」发送到「${sendTarget.value.outsource_company_name}」？`,
+      `确认把「${target.part_drawing_no}」发送到「${companyName}」？`,
       '发送外协',
       { type: 'warning', confirmButtonText: '确认发送', cancelButtonText: '取消' },
     )
@@ -155,10 +188,11 @@ async function onConfirmSend(): Promise<void> {
   sendSubmitting.value = true
   try {
     const payload: SendToOutsourcePayload = {
-      outsource_company_id: sendTarget.value.outsource_company_id,
-      next_process_id: sendTarget.value.process_id,
+      outsource_company_id: companyId,
+      next_process_id: target.next_process_id,
+      version: target.version,
     }
-    await sendPartToOutsource(sendTarget.value.part_id, payload)
+    await sendPartToOutsource(target.part_id, payload)
     ElMessage.success('已发送至外协')
     sendDialogVisible.value = false
     await refreshSendable()
@@ -201,7 +235,10 @@ interface SendQueueItem {
   outsource_company_name: string
   process_id: string
   process_name: string
-  price: number
+  /** 直接发送时为 null；APPROVAL 时为单件报价 */
+  price: number | null
+  /** OCC：发送时必传 */
+  version: number
   // 入队后做标记，给 UI 看
   _failed?: boolean
   _failMsg?: string
@@ -234,6 +271,21 @@ async function handleScannedSerialForSend(code: string): Promise<void> {
     ElMessage.warning(`${part.serial_no ?? trimmed} 当前不在可发送列表（可能状态不满足或没有 APPROVED 报价）`)
     return
   }
+  // 直接发送 + 多公司 → 强制用户先选公司（不让扫码盲目入队）
+  if (match.send_mode === 'DIRECT' && match.company_options.length > 1) {
+    sendTarget.value = match
+    sendSelectedCompanyId.value = match.company_options[0]?.id ?? ''
+    sendDialogVisible.value = true
+    ElMessage.info('该外协工序映射了多家公司，请先在弹窗中选择后再扫码入队')
+    return
+  }
+  // 直接发送 + 单公司 或 APPROVAL → 直接入队
+  const companyId: string = match.send_mode === 'DIRECT'
+    ? (match.company_options[0]?.id ?? '')
+    : (match.outsource_company_id ?? '')
+  const companyName: string = match.send_mode === 'DIRECT'
+    ? (match.company_options[0]?.name ?? '')
+    : (match.outsource_company_name ?? '')
   sendQueue.value.push({
     part: {
       id: part.id,
@@ -241,11 +293,12 @@ async function handleScannedSerialForSend(code: string): Promise<void> {
       drawing_no: part.drawing_no,
       name: part.name,
     },
-    outsource_company_id: match.outsource_company_id,
-    outsource_company_name: match.outsource_company_name ?? '',
-    process_id: match.process_id,
-    process_name: match.process_name ?? '',
-    price: Number(match.price),
+    outsource_company_id: companyId,
+    outsource_company_name: companyName,
+    process_id: match.next_process_id ?? '',
+    process_name: match.next_process_name ?? '',
+    price: match.send_mode === 'DIRECT' ? null : Number(match.price),
+    version: match.version,
   })
   ElMessage.success(`已加入发送队列：${part.serial_no ?? trimmed}`)
 }
@@ -289,6 +342,7 @@ async function onConfirmBatchSend(): Promise<void> {
       const payload: SendToOutsourcePayload = {
         outsource_company_id: item.outsource_company_id,
         next_process_id: item.process_id,
+        version: item.version,
       }
       await sendPartToOutsource(item.part.id, payload)
       okCount++
@@ -709,22 +763,46 @@ watch(activeTab, async (t) => {
             <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>
             <el-table-column label="加急" min-width="60" align="center">
               <template #default="{ row }">
-                <el-tag v-if="(row as ApprovedQuoteForSendItem).is_urgent" type="danger" size="small">加急</el-tag>
+                <el-tag v-if="(row as SendableItem).is_urgent" type="danger" size="small">加急</el-tag>
                 <span v-else>—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="模式" min-width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="(row as SendableItem).send_mode === 'DIRECT'" type="success" size="small">免审批</el-tag>
+                <el-tag v-else type="warning" size="small">已批报价</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="起始/中间" min-width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="(row as SendableItem).source_status === 'PENDING'" type="info" size="small">起始</el-tag>
+                <el-tag v-else type="primary" size="small">中间</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center"/>
             <el-table-column label="下一道工序" min-width="140" show-overflow-tooltip align="center">
-              <template #default="{ row }">{{ (row as ApprovedQuoteForSendItem).next_process_name || '—' }}</template>
+              <template #default="{ row }">{{ (row as SendableItem).next_process_name || '—' }}</template>
             </el-table-column>
-            <el-table-column prop="outsource_company_name" label="外协公司" min-width="160" show-overflow-tooltip align="center"/>
+            <el-table-column label="外协公司" min-width="160" show-overflow-tooltip align="center">
+              <template #default="{ row }">
+                <template v-if="(row as SendableItem).send_mode === 'DIRECT'">
+                  {{ (row as DirectOutsourceCandidateItem).company_options.map((c) => c.name).join(' / ') || '—' }}
+                </template>
+                <template v-else>
+                  {{ (row as ApprovedQuoteForSendItem).outsource_company_name || '—' }}
+                </template>
+              </template>
+            </el-table-column>
             <el-table-column label="单价(元)" min-width="100" align="right">
-              <template #default="{ row }">{{ (row as ApprovedQuoteForSendItem).price }}</template>
+              <template #default="{ row }">
+                <template v-if="(row as SendableItem).send_mode === 'DIRECT'">—</template>
+                <template v-else>{{ (row as ApprovedQuoteForSendItem).price }}</template>
+              </template>
             </el-table-column>
             <el-table-column label="操作" min-width="100" fixed="right" align="center">
               <template #default="{ row }">
                 <el-tooltip
-                  v-if="!canSend(row as unknown as ApprovedQuoteForSendItem)"
+                  v-if="!canSend(row as SendableItem)"
                   content="该零件当前状态 / 位置 / 工序不满足发送条件"
                   placement="top"
                 >
@@ -734,48 +812,59 @@ watch(activeTab, async (t) => {
                   v-else
                   size="small"
                   type="primary"
-                  @click="openSend(row as unknown as ApprovedQuoteForSendItem)"
+                  @click="openSend(row as SendableItem)"
                 >发送</el-button>
               </template>
             </el-table-column>
 
             <template #card="{ row }">
               <div class="rl-card-head">
-                <span class="rl-card-title">{{ (row as ApprovedQuoteForSendItem).part_name || '未命名零件' }}</span>
-                <el-tag v-if="(row as ApprovedQuoteForSendItem).is_urgent" type="danger" size="small">加急</el-tag>
+                <span class="rl-card-title">{{ (row as SendableItem).part_name || '未命名零件' }}</span>
+                <el-tag v-if="(row as SendableItem).is_urgent" type="danger" size="small">加急</el-tag>
+                <el-tag v-if="(row as SendableItem).send_mode === 'DIRECT'" type="success" size="small">免审批</el-tag>
+                <el-tag v-else type="warning" size="small">已批报价</el-tag>
+                <el-tag v-if="(row as SendableItem).source_status === 'PENDING'" type="info" size="small">起始</el-tag>
+                <el-tag v-else type="primary" size="small">中间</el-tag>
               </div>
               <div class="rl-card-sub">
-                图号 {{ (row as ApprovedQuoteForSendItem).part_drawing_no || '—' }} · 序列号 {{ (row as ApprovedQuoteForSendItem).part_serial_no || '—' }}
+                图号 {{ (row as SendableItem).part_drawing_no || '—' }} · 序列号 {{ (row as SendableItem).part_serial_no || '—' }}
               </div>
               <div class="rl-kv">
                 <div class="rl-kv__item">
                   <span class="rl-kv__key">数量</span>
-                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).quantity ?? '—' }}</span>
+                  <span class="rl-kv__val">{{ (row as SendableItem).quantity ?? '—' }}</span>
                 </div>
                 <div class="rl-kv__item">
                   <span class="rl-kv__key">计划交期</span>
-                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).planned_delivery_date || '—' }}</span>
+                  <span class="rl-kv__val">{{ (row as SendableItem).planned_delivery_date || '—' }}</span>
                 </div>
                 <div class="rl-kv__item rl-kv__item--full">
                   <span class="rl-kv__key">客户</span>
-                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).customer_path || '—' }}</span>
+                  <span class="rl-kv__val">{{ (row as SendableItem).customer_path || '—' }}</span>
                 </div>
                 <div class="rl-kv__item">
                   <span class="rl-kv__key">下一道工序</span>
-                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).next_process_name || '—' }}</span>
+                  <span class="rl-kv__val">{{ (row as SendableItem).next_process_name || '—' }}</span>
                 </div>
                 <div class="rl-kv__item">
                   <span class="rl-kv__key">单价</span>
-                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).price }} 元</span>
+                  <span class="rl-kv__val">{{ (row as SendableItem).send_mode === 'DIRECT' ? '—' : `${(row as ApprovedQuoteForSendItem).price} 元` }}</span>
                 </div>
                 <div class="rl-kv__item rl-kv__item--full">
                   <span class="rl-kv__key">外协公司</span>
-                  <span class="rl-kv__val">{{ (row as ApprovedQuoteForSendItem).outsource_company_name || '—' }}</span>
+                  <span class="rl-kv__val">
+                    <template v-if="(row as SendableItem).send_mode === 'DIRECT'">
+                      {{ (row as DirectOutsourceCandidateItem).company_options.map((c) => c.name).join(' / ') || '—' }}
+                    </template>
+                    <template v-else>
+                      {{ (row as ApprovedQuoteForSendItem).outsource_company_name || '—' }}
+                    </template>
+                  </span>
                 </div>
               </div>
               <div class="rl-card-actions">
                 <el-tooltip
-                  v-if="!canSend(row as ApprovedQuoteForSendItem)"
+                  v-if="!canSend(row as SendableItem)"
                   content="该零件当前状态 / 位置 / 工序不满足发送条件"
                   placement="top"
                 >
@@ -785,7 +874,7 @@ watch(activeTab, async (t) => {
                   v-else
                   size="small"
                   type="primary"
-                  @click="openSend(row as ApprovedQuoteForSendItem)"
+                  @click="openSend(row as SendableItem)"
                 >发送</el-button>
               </div>
             </template>
@@ -1028,14 +1117,40 @@ watch(activeTab, async (t) => {
       :width="sendDlg.width.value"
       :top="sendDlg.top.value"
     >
-      <el-descriptions v-if="sendTarget" :column="1" border>
-        <el-descriptions-item label="序列号">{{ sendTarget.part_serial_no }}</el-descriptions-item>
-        <el-descriptions-item label="图号">{{ sendTarget.part_drawing_no }}</el-descriptions-item>
-        <el-descriptions-item label="名称">{{ sendTarget.part_name }}</el-descriptions-item>
-        <el-descriptions-item label="外协公司">{{ sendTarget.outsource_company_name }}</el-descriptions-item>
-        <el-descriptions-item label="外协工序">{{ sendTarget.process_name }}</el-descriptions-item>
-        <el-descriptions-item label="单价">{{ sendTarget.price }} 元</el-descriptions-item>
-      </el-descriptions>
+      <template v-if="sendTarget">
+        <div v-if="sendTarget.send_mode === 'DIRECT'" style="margin-bottom: 12px;">
+          <el-tag type="success" size="default">免审批，直接发送</el-tag>
+          <span style="margin-left: 8px; color: var(--el-text-color-secondary);">
+            {{
+              sendTarget.source_status === 'PENDING'
+                ? '无需报价，从 OFFICE 直接发出（起始外协）'
+                : '无需报价，要求 C2 货架（中间外协）'
+            }}
+          </span>
+        </div>
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="序列号">{{ sendTarget.part_serial_no }}</el-descriptions-item>
+          <el-descriptions-item label="图号">{{ sendTarget.part_drawing_no }}</el-descriptions-item>
+          <el-descriptions-item label="名称">{{ sendTarget.part_name }}</el-descriptions-item>
+          <el-descriptions-item v-if="sendTarget.send_mode === 'APPROVAL'" label="外协公司">
+            {{ sendTarget.outsource_company_name }}
+          </el-descriptions-item>
+          <el-descriptions-item v-else label="外协公司">
+            <el-select v-model="sendSelectedCompanyId" style="width: 100%">
+              <el-option
+                v-for="opt in sendTarget.company_options"
+                :key="opt.id"
+                :label="opt.name"
+                :value="opt.id"
+              />
+            </el-select>
+          </el-descriptions-item>
+          <el-descriptions-item label="外协工序">{{ sendTarget.next_process_name ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item label="单价">
+            {{ sendTarget.send_mode === 'DIRECT' ? '—' : `${sendTarget.price} 元` }}
+          </el-descriptions-item>
+        </el-descriptions>
+      </template>
       <template #footer>
         <el-button @click="sendDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="sendSubmitting" @click="onConfirmSend">
