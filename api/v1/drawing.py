@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, UploadFile, status as http_status
+from fastapi import APIRouter, Depends, File, Header, UploadFile, status as http_status
 from fastapi.responses import Response
 
 from api.deps import get_part_file_repository, get_part_file_service
@@ -149,14 +149,39 @@ async def get_download_url(
 )
 async def get_file_content(
     file_id: int,
+    if_none_match: str | None = Header(default=None, alias="If-None-Match"),
     svc: PartFileService = Depends(get_part_file_service),
 ):
+    # 304 路径只查 DB 不下 COS（service 内仍走 _object_cache 内存命中，
+    # 但 sha 校验失败时 0 字节返回前不进下载流程）
+    meta = await svc.get_meta_for_304(file_id)
+    if meta is None:
+        from core.error_code import ErrCode
+        from core.exception import BizError
+        raise BizError(
+            code=ErrCode.BIZ_PART_FILE_NOT_FOUND,
+            message=f"file {file_id} not found",
+            http_status=404,
+        )
+    if if_none_match and meta.content_sha256 and (
+        if_none_match.strip().strip('"') == meta.content_sha256
+    ):
+        return Response(
+            status_code=304,
+            headers={"ETag": f'"{meta.content_sha256}"'},
+        )
     data, content_type, filename = await svc.get_file_content(file_id)
     encoded = quote(filename, safe="")
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{encoded}",
+        "Cache-Control": "private, max-age=600",
+    }
+    if meta.content_sha256:
+        headers["ETag"] = f'"{meta.content_sha256}"'
     return Response(
         content=data,
         media_type=content_type,
-        headers={"Content-Disposition": f"inline; filename*=UTF-8''{encoded}"},
+        headers=headers,
     )
 
 

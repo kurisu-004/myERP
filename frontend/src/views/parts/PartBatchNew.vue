@@ -444,6 +444,29 @@
             </el-col>
           </el-row>
 
+          <!-- PR-H 2026-07-28：3D 模型批量上传（与 PDF / Excel 并排；命名约定 图号_名称.step） -->
+          <el-row :gutter="16" style="margin-top: 16px">
+            <el-col :span="24">
+              <el-upload
+                multiple
+                accept=".step,.stp,.iges,.igs,.stl,.obj,.3mf"
+                :auto-upload="false"
+                :file-list="threeDModelFiles"
+                :on-change="onThreeDModelChange"
+                :on-remove="onThreeDModelRemove"
+                drag
+              >
+                <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+                <div class="el-upload__text">拖拽或点击上传 3D 模型（可选；按文件名图号自动挂到对应零件行）</div>
+                <template #tip>
+                  <div class="el-upload__tip">
+                    支持格式：.step / .stp / .iges / .igs / .stl / .obj / .3mf · 文件名约定：<strong>图号_名称.ext</strong>，与下方独立零件 / 装配件子件的图号一致。提交后入库为 <code>kind=THREE_D_MODEL</code>。
+                  </div>
+                </template>
+              </el-upload>
+            </el-col>
+          </el-row>
+
           <div class="pdf-actions">
             <el-button
               type="primary"
@@ -543,6 +566,7 @@
                 </el-button>
               </div>
               <el-table
+                ref="standaloneTableRef"
                 :data="standaloneParts"
                 row-key="uid"
                 border
@@ -550,6 +574,11 @@
                 empty-text="还没有独立零件。可在「源文件区」勾选页后合并，或直接新增。"
                 class="pdf-standalone-table"
               >
+                <el-table-column width="36" align="center" label="">
+                  <template #default>
+                    <el-icon class="drag-handle" title="拖动排序"><Rank /></el-icon>
+                  </template>
+                </el-table-column>
                 <el-table-column label="图号" min-width="140" align="center">
                   <template #default="{ row }">
                     <el-input
@@ -587,6 +616,40 @@
                       controls-position="right"
                       style="width: 90px"
                     />
+                  </template>
+                </el-table-column>
+                <el-table-column label="含税单价" min-width="120" align="center">
+                  <template #default="{ row }">
+                    <el-input-number
+                      v-model="row.unit_price"
+                      :min="0"
+                      :precision="2"
+                      :step="1"
+                      size="small"
+                      controls-position="right"
+                      placeholder="可填"
+                      style="width: 110px"
+                      @change="(v: number | undefined) => onUnitPriceChange(row as StandalonePartRow, v)"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="含税价格" min-width="120" align="center">
+                  <template #default="{ row }">
+                    <el-input-number
+                      v-model="row.total_price"
+                      :min="0"
+                      :precision="2"
+                      :step="1"
+                      size="small"
+                      controls-position="right"
+                      placeholder="可填"
+                      style="width: 110px"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="3D" min-width="60" align="center">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.three_d_index != null" type="success" size="small">3D ✓</el-tag>
                   </template>
                 </el-table-column>
                 <el-table-column label="计划交期" min-width="160" align="center">
@@ -673,6 +736,7 @@
                 </el-button>
               </div>
               <el-table
+                ref="assembliesTableRef"
                 :data="assemblies"
                 row-key="uid"
                 border
@@ -680,6 +744,11 @@
                 empty-text="还没有装配件。可在「源文件区」勾选多页后合并，或直接新增。"
                 class="pdf-assembly-table"
               >
+                <el-table-column width="36" align="center" label="">
+                  <template #default>
+                    <el-icon class="drag-handle" title="拖动排序"><Rank /></el-icon>
+                  </template>
+                </el-table-column>
                 <el-table-column type="expand">
                   <template #default="{ row }">
                     <el-table :data="row.children" size="small" :show-header="true" class="child-table">
@@ -706,6 +775,40 @@
                             controls-position="right"
                             style="width: 90px"
                           />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="含税单价" min-width="110" align="center">
+                        <template #default="{ row: c }">
+                          <el-input-number
+                            v-model="c.unit_price"
+                            :min="0"
+                            :precision="2"
+                            :step="1"
+                            size="small"
+                            controls-position="right"
+                            placeholder="可填"
+                            style="width: 100px"
+                            @change="(v: number | undefined) => onChildUnitPriceChange(c as AssemblyChildRow, v)"
+                          />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="含税价格" min-width="110" align="center">
+                        <template #default="{ row: c }">
+                          <el-input-number
+                            v-model="c.total_price"
+                            :min="0"
+                            :precision="2"
+                            :step="1"
+                            size="small"
+                            controls-position="right"
+                            placeholder="可填"
+                            style="width: 100px"
+                          />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="3D" min-width="55" align="center">
+                        <template #default="{ row: c }">
+                          <el-tag v-if="c.three_d_index != null" type="success" size="small">3D ✓</el-tag>
                         </template>
                       </el-table-column>
                       <el-table-column label="计划交期" min-width="150" align="center">
@@ -949,7 +1052,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElMessage,
@@ -958,9 +1061,10 @@ import {
   type FormRules,
   type UploadFile,
 } from 'element-plus'
-import { DocumentAdd, Picture, Plus, Upload } from '@element-plus/icons-vue'
+import { DocumentAdd, Picture, Plus, Rank, Upload } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import Sortable from 'sortablejs'
 import { batchCreateParts, type PartBatchFilePayload, type PartCreatePayload } from '@/api/parts'
 import { listCustomers, type Customer } from '@/api/customer'
 import { createApplicant } from '@/api/applicant'
@@ -1026,6 +1130,10 @@ async function loadCustomers(): Promise<void> {
 
 onMounted(() => {
   void loadCustomers()
+  nextTick(() => {
+    initStandaloneSortable()
+    initAssembliesSortable()
+  })
 })
 
 // ============ 申请人候选（composable：只在客户切换时拉一次） ============
@@ -1530,6 +1638,8 @@ watch(
 // PDF / Excel 文件列表（el-upload 控件绑定）
 const pdfFiles = ref<UploadFile[]>([])
 const excelFiles = ref<UploadFile[]>([])
+// PR-H 2026-07-28：3D 模型批量上传（.step / .stp / .iges / .igs / .stl / .obj / .3mf）
+const threeDModelFiles = ref<UploadFile[]>([])
 const pdfBuildingTree = ref(false)
 const pdfSubmitting = ref(false)
 
@@ -1580,6 +1690,12 @@ interface StandalonePartRow {
   note: string | null
   is_urgent: boolean
   quantity: number
+  /** PR-H 2026-07-28：含税单价（来自历史价确认单 G 列，可手动覆盖） */
+  unit_price: number | null
+  /** PR-H 2026-07-28：含税总价（来自历史价确认单 I 列；空时 = unit_price × quantity） */
+  total_price: number | null
+  /** PR-H 2026-07-28：3D 模型数组下标；null = 不挂 */
+  three_d_index: number | null
 }
 
 /** 装配件子件。分厂 / 申请人由顶层 AssemblyRow 指定，提交时复制到每条 item。 */
@@ -1596,6 +1712,12 @@ interface AssemblyChildRow {
   system_delivery_date: string | null
   order_no: string | null
   note: string | null
+  /** PR-H 2026-07-28：含税单价（来自历史价确认单 G 列） */
+  unit_price: number | null
+  /** PR-H 2026-07-28：含税总价 */
+  total_price: number | null
+  /** PR-H 2026-07-28：3D 模型数组下标；null = 不挂 */
+  three_d_index: number | null
 }
 
 /** 装配件顶层行。 */
@@ -1622,6 +1744,11 @@ const allPdfs = ref<PdfSource[]>([])
 const selectedPages = ref<Set<string>>(new Set())
 const standaloneParts = ref<StandalonePartRow[]>([])
 const assemblies = ref<AssemblyRow[]>([])
+// PR-H 2026-07-28：拖拽排序 — 表格 DOM ref + Sortable 实例句柄
+const standaloneTableRef = ref<{ $el?: HTMLElement } | null>(null)
+const assembliesTableRef = ref<{ $el?: HTMLElement } | null>(null)
+let standaloneSortable: Sortable | null = null
+let assembliesSortable: Sortable | null = null
 
 /** 只用于源文件区表格展示的原始（未合成）PDF。 */
 const originalPdfs = computed(() => allPdfs.value.filter((s) => !s.synthesized))
@@ -1663,6 +1790,13 @@ function onExcelChange(file: UploadFile): void {
 }
 function onExcelRemove(file: UploadFile): void {
   excelFiles.value = excelFiles.value.filter((f) => f.uid !== file.uid)
+}
+// PR-H 2026-07-28：3D 模型上传钩子
+function onThreeDModelChange(file: UploadFile): void {
+  threeDModelFiles.value = fileList(threeDModelFiles.value, file, '.step,.stp,.iges,.igs,.stl,.obj,.3mf')
+}
+function onThreeDModelRemove(file: UploadFile): void {
+  threeDModelFiles.value = threeDModelFiles.value.filter((f) => f.uid !== file.uid)
 }
 
 /** 把新 file push 到 list（去重 by uid），扩展名校称校验。 */
@@ -1780,6 +1914,8 @@ async function rebuildFromUploads(): Promise<void> {
     assemblies.value = []
     selectedPages.value = new Set()
     if (excelByDrawingNo) applyExcelToAll(excelByDrawingNo)
+    // PR-H 2026-07-28：按 drawing_no 把 3D 模型挂到对应独立零件 / 装配件子件行
+    linkThreeDModelsToRows()
 
     if (unparsedPdfNames.length > 0) {
       ElMessage.warning(
@@ -1796,7 +1932,7 @@ async function rebuildFromUploads(): Promise<void> {
   }
 }
 
-/** 用 Excel 行覆盖表内字段（applicant / quantity / urgent / planned_delivery_date + 分厂 L2）。 */
+/** 用 Excel 行覆盖表内字段（applicant / quantity / urgent / planned_delivery_date + 分厂 L2 + 单价）。 */
 function applyExcelToAll(excelByDrawingNo: Map<string, BidRow>): void {
   for (const r of standaloneParts.value) {
     const matched = excelByDrawingNo.get(r.drawing_no)
@@ -1805,6 +1941,9 @@ function applyExcelToAll(excelByDrawingNo: Map<string, BidRow>): void {
     r.quantity = matched.quantity || r.quantity
     r.is_urgent = matched.isUrgent ?? r.is_urgent
     if (matched.plannedDeliveryDate) r.planned_delivery_date = matched.plannedDeliveryDate
+    // PR-H 2026-07-28：含税单价 / 总价
+    if (matched.unitPrice != null) r.unit_price = matched.unitPrice
+    if (matched.totalPrice != null) r.total_price = matched.totalPrice
     // 自动解析二级客户（分厂）
     if (!r.customer_id) {
       const l2Id = resolveL2CustomerId(matched.deptName)
@@ -1831,13 +1970,16 @@ function applyExcelToAll(excelByDrawingNo: Map<string, BidRow>): void {
       }
       a.applicant_name = firstHit.applicantName || a.applicant_name
     }
-    // 子件只继承 quantity / urgent / planned_delivery_date（分厂 / 申请人在提交时从顶层复制）
+    // 子件继承 quantity / urgent / planned_delivery_date / 单价 / 总价
     for (const c of a.children) {
       const matched = excelByDrawingNo.get(c.drawing_no)
       if (!matched) continue
       c.quantity = matched.quantity || c.quantity
       c.is_urgent = matched.isUrgent ?? c.is_urgent
       if (matched.plannedDeliveryDate) c.planned_delivery_date = matched.plannedDeliveryDate
+      // PR-H 2026-07-28：含税单价 / 总价
+      if (matched.unitPrice != null) c.unit_price = matched.unitPrice
+      if (matched.totalPrice != null) c.total_price = matched.totalPrice
     }
   }
 }
@@ -1850,6 +1992,81 @@ function resolveL2CustomerId(deptName: string): string | null {
     (c) => c.parent_id === pdfForm.customerL1Id && c.name.trim() === deptName.trim(),
   )
   return match?.id ?? null
+}
+
+/** PR-H 2026-07-28：含税单价改动 → 自动联动 total_price（仅在用户未手动锁定时）；
+ *  保留 Excel 回填值优先 —— 若 total_price 已被 Excel 写入过且与自动算的不一致，
+ *  仍按 Excel 的值，不强制覆盖（用户可手动改回）。 */
+function onUnitPriceChange(row: StandalonePartRow, v: number | undefined): void {
+  row.unit_price = v ?? null
+  // 仅当用户没明确设置过 total_price 时自动算
+  if (row.quantity > 0 && row.unit_price != null) {
+    row.total_price = row.unit_price * row.quantity
+  }
+}
+function onChildUnitPriceChange(c: AssemblyChildRow, v: number | undefined): void {
+  c.unit_price = v ?? null
+  if (c.quantity > 0 && c.unit_price != null) {
+    c.total_price = c.unit_price * c.quantity
+  }
+}
+
+/** PR-H 2026-07-28：3D 模型支持扩展名（与后端 _file_kind_policy.THREE_D_MODEL 对齐）。 */
+const THREE_D_EXTS = ['step', 'stp', 'iges', 'igs', 'stl', 'obj', '3mf']
+
+/** 把 3D 模型按文件名解析的 drawing_no 自动挂到独立零件 / 装配件子件行。
+ *  - 文件名约定：图号_名称.ext（与 PDF 解析共用 `parseDrawingFilename`，先剥扩展名）。
+ *  - 已挂过该图号的 → 跳过（不重复挂）。
+ *  - 找不到匹配行 → ElMessage.warning（不报错，整批仍可提交）。 */
+function linkThreeDModelsToRows(): void {
+  if (threeDModelFiles.value.length === 0) return
+  const warns: string[] = []
+  threeDModelFiles.value.forEach((f, idx) => {
+    const raw = f.raw as File | undefined
+    if (!raw) return
+    const fname = f.name
+    const noExt = THREE_D_EXTS.reduce(
+      (acc, ext) => acc.replace(new RegExp(`\\.${ext}$`, 'i'), ''),
+      fname,
+    )
+    const parsed = parseDrawingFilename(`${noExt}.pdf`) // 复用 PDF 解析逻辑
+    if (!parsed.drawingNo) {
+      warns.push(`3D 模型「${fname}」文件名无法识别图号，已忽略`)
+      return
+    }
+    // 先尝试独立零件，再试装配件子件
+    const spMatch = standaloneParts.value.find((r) => r.drawing_no === parsed.drawingNo)
+    if (spMatch) {
+      if (spMatch.three_d_index != null) {
+        warns.push(`图号 ${parsed.drawingNo} 已挂载 3D 模型，跳过「${fname}」`)
+        return
+      }
+      spMatch.three_d_index = idx
+      return
+    }
+    let attached = false
+    for (const a of assemblies.value) {
+      const childMatch = a.children.find((c) => c.drawing_no === parsed.drawingNo)
+      if (childMatch) {
+        if (childMatch.three_d_index != null) {
+          warns.push(`图号 ${parsed.drawingNo} 已挂载 3D 模型，跳过「${fname}」`)
+          attached = true
+          break
+        }
+        childMatch.three_d_index = idx
+        attached = true
+        break
+      }
+    }
+    if (!attached) warns.push(`未找到图号 ${parsed.drawingNo} 对应零件行，已忽略「${fname}」`)
+  })
+  if (warns.length > 0) {
+    ElMessage.warning(
+      `3D 模型挂载提示（${warns.length} 条）：\n` +
+        warns.slice(0, 5).join('\n') +
+        (warns.length > 5 ? '\n…' : ''),
+    )
+  }
 }
 
 /** 默认表单填充一个独立零件行。 */
@@ -1877,6 +2094,10 @@ function makeStandaloneRow(opts: {
     note: null,
     is_urgent: false,
     quantity: 1,
+    // PR-H 2026-07-28
+    unit_price: null,
+    total_price: null,
+    three_d_index: null,
   }
 }
 
@@ -1900,6 +2121,10 @@ function makeAssemblyChild(opts: {
     system_delivery_date: null,
     order_no: null,
     note: null,
+    // PR-H 2026-07-28
+    unit_price: null,
+    total_price: null,
+    three_d_index: null,
   }
 }
 
@@ -1937,6 +2162,18 @@ async function onSubmitPdfTree(): Promise<void> {
       contentType: 'application/pdf',
     }))
 
+    // PR-H 2026-07-28：3D 模型按 threeDModelFiles 顺序对齐（与 items[i].three_d_index 对齐）
+    const threeDModelPayloads: PartBatchFilePayload[] = []
+    for (const f of threeDModelFiles.value) {
+      const raw = f.raw
+      if (!raw) continue
+      threeDModelPayloads.push({
+        data: raw,
+        filename: f.name,
+        contentType: 'application/octet-stream',  // 后端按扩展名重新判
+      })
+    }
+
     // 独立零件：page_index 始终 0（合成 / 原 PDF 都按整体上传）
     for (const r of standaloneParts.value) {
       const pdfIndex = allPdfs.value.findIndex((s) => s.uid === r.pdfSourceUid)
@@ -1961,6 +2198,10 @@ async function onSubmitPdfTree(): Promise<void> {
         order_no: r.order_no,
         note: r.note,
         is_urgent: r.is_urgent,
+        // PR-H 2026-07-28
+        unit_price: r.unit_price ?? null,
+        total_price: r.total_price ?? null,
+        three_d_index: r.three_d_index ?? null,
       })
     }
 
@@ -2004,11 +2245,15 @@ async function onSubmitPdfTree(): Promise<void> {
           order_no: c.order_no,
           note: c.note,
           is_urgent: c.is_urgent,
+          // PR-H 2026-07-28
+          unit_price: c.unit_price ?? null,
+          total_price: c.total_price ?? null,
+          three_d_index: c.three_d_index ?? null,
         })
       }
     }
 
-    const res = await batchCreatePartsWithPdfs(items, assembliesPayload, files)
+    const res = await batchCreatePartsWithPdfs(items, assembliesPayload, files, threeDModelPayloads)
     if (res.failed && res.failed.length > 0) {
       const msgs = res.failed.slice(0, 5).map((f) => f.message).join('；')
       ElMessageBox.alert(
@@ -2028,6 +2273,7 @@ async function onSubmitPdfTree(): Promise<void> {
     selectedPages.value.clear()
     pdfFiles.value = []
     excelFiles.value = []
+    threeDModelFiles.value = []  // PR-H 2026-07-28
     activeTab.value = 'manual'
     router.push('/parts?status=PENDING')
   } catch (e) {
@@ -2078,7 +2324,68 @@ function closePdfPreview(): void {
 
 onBeforeUnmount(() => {
   closePdfPreview()
+  standaloneSortable?.destroy()
+  assembliesSortable?.destroy()
 })
+
+// ============ 拖拽排序（sortable.js） ============
+// PR-H 2026-07-28：拖动 handle 列重排行顺序。
+// - 不接受嵌套展开行（child-table 不挂 sortable）；仅顶层独立零件 / 装配件行。
+// - watch 行数 + 数据身份变化时重建实例（避免 v-if / 数据长度变化时 tbody 重建导致旧实例悬挂）。
+function initStandaloneSortable(): void {
+  const root = standaloneTableRef.value?.$el
+  if (!root) return
+  const tbody = root.querySelector(
+    '.el-table__body-wrapper .el-table__body > tbody',
+  ) as HTMLElement | null
+  if (!tbody) return
+  standaloneSortable?.destroy()
+  standaloneSortable = Sortable.create(tbody, {
+    handle: '.drag-handle',
+    draggable: 'tr',
+    animation: 150,
+    ghostClass: 'sortable-ghost',
+    onEnd(evt: { oldIndex?: number; newIndex?: number }) {
+      const { oldIndex, newIndex } = evt
+      if (oldIndex == null || newIndex == null || oldIndex === newIndex) return
+      const next = standaloneParts.value.slice()
+      const [moved] = next.splice(oldIndex, 1)
+      if (moved) next.splice(newIndex, 0, moved)
+      standaloneParts.value = next
+    },
+  })
+}
+function initAssembliesSortable(): void {
+  const root = assembliesTableRef.value?.$el
+  if (!root) return
+  const tbody = root.querySelector(
+    '.el-table__body-wrapper .el-table__body > tbody',
+  ) as HTMLElement | null
+  if (!tbody) return
+  assembliesSortable?.destroy()
+  assembliesSortable = Sortable.create(tbody, {
+    handle: '.drag-handle',
+    draggable: 'tr',
+    animation: 150,
+    ghostClass: 'sortable-ghost',
+    onEnd(evt: { oldIndex?: number; newIndex?: number }) {
+      const { oldIndex, newIndex } = evt
+      if (oldIndex == null || newIndex == null || oldIndex === newIndex) return
+      const next = assemblies.value.slice()
+      const [moved] = next.splice(oldIndex, 1)
+      if (moved) next.splice(newIndex, 0, moved)
+      assemblies.value = next
+    },
+  })
+}
+watch(
+  () => standaloneParts.value.length,
+  () => nextTick(initStandaloneSortable),
+)
+watch(
+  () => assemblies.value.length,
+  () => nextTick(initAssembliesSortable),
+)
 
 // ============ 源文件区：勾选 + 归组 + 删除 ============
 
@@ -2662,5 +2969,25 @@ async function confirmManualAssembly(): Promise<void> {
 
 :deep(.row-urgent) {
   background-color: #fdf6ec !important;
+}
+
+/* PR-H 2026-07-28：sortable.js 拖拽视觉 */
+.drag-handle {
+  cursor: grab;
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+.drag-handle:hover {
+  color: var(--el-color-primary);
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+:deep(.sortable-ghost) {
+  opacity: 0.4;
+  background-color: #f0f9ff !important;
+}
+:deep(.sortable-chosen) {
+  background-color: #ecf5ff !important;
 }
 </style>

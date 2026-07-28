@@ -197,6 +197,75 @@ async def download_object(key: str) -> bytes:
 
 
 # ============================================================
+# 下载（带进程内字节缓存）
+# ============================================================
+#
+# 设计：按 `content_sha256` 在进程内缓存 PDF / 图片字节，避免每次预览 /
+# 打印都重新走 COS。
+#
+# - 锁只覆盖同步 OrderedDict 操作；`download_object` 仍在锁外，避免阻塞
+#   事件循环。
+# - 写路径更新文件即换 sha（service/part_file.py 已存 `content_sha256`），
+#   旧字节随 LRU 自然淘汰，无需主动失效。
+# - 大于 `_OBJECT_CACHE_MAX_BYTES` 的对象不缓存，避免 OOM。
+# - 用 `OrderedDict.move_to_end` + `popitem(last=False)` 实现 LRU。
+from collections import OrderedDict
+from threading import Lock
+
+_OBJECT_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_OBJECT_CACHE_MAX_BYTES = 200 * 1024 * 1024  # 200 MB 进程上限
+_OBJECT_CACHE_MAX_ITEM_BYTES = 50 * 1024 * 1024  # 单个对象 > 50MB 不缓存
+_OBJECT_CACHE_LOCK = Lock()
+
+
+def _object_cache_stats() -> dict:
+    """调试用：返回缓存当前条目数与估算字节数。"""
+    with _OBJECT_CACHE_LOCK:
+        return {
+            "items": len(_OBJECT_CACHE),
+            "approx_bytes": sum(len(v) for v in _OBJECT_CACHE.values()),
+            "max_bytes": _OBJECT_CACHE_MAX_BYTES,
+        }
+
+
+def _object_cache_clear_for_testing() -> None:
+    """测试钩子：清空缓存。"""
+    with _OBJECT_CACHE_LOCK:
+        _OBJECT_CACHE.clear()
+
+
+async def download_object_cached(key: str, sha: str | None) -> bytes:
+    """下载 COS 对象到内存，带按 `content_sha256` 的进程内 LRU 缓存。
+
+    - `sha` 优先作为 cache key；同一 sha 跨 object_key 复用。
+    - 上传时（service/part_file.py）sha 与 object_key 一一对应；
+      旧版本文件被覆盖后 sha 变更，自动踢出缓存。
+    - 返回的字节与 `download_object` 一致；调用方无须感知缓存。
+    """
+    cache_key = sha or key
+    with _OBJECT_CACHE_LOCK:
+        cached = _OBJECT_CACHE.get(cache_key)
+        if cached is not None:
+            _OBJECT_CACHE.move_to_end(cache_key)
+            return cached
+    # 锁外做实际下载，避免阻塞事件循环
+    data = await download_object(key)
+    if len(data) > _OBJECT_CACHE_MAX_ITEM_BYTES:
+        # 太大不缓存，留给 COS / CDN 承担
+        return data
+    with _OBJECT_CACHE_LOCK:
+        _OBJECT_CACHE[cache_key] = data
+        _OBJECT_CACHE.move_to_end(cache_key)
+        # 淘汰最旧直到 ≤ 上限
+        while (
+            sum(len(v) for v in _OBJECT_CACHE.values()) > _OBJECT_CACHE_MAX_BYTES
+            and len(_OBJECT_CACHE) > 1
+        ):
+            _OBJECT_CACHE.popitem(last=False)
+    return data
+
+
+# ============================================================
 # 临时签名 URL
 # ============================================================
 

@@ -81,15 +81,18 @@ EventBroadcaster = Callable[[str, dict], Awaitable[None]]
 
 
 def _item_to_part_create_request(item: PartBatchTreeItem) -> PartCreateRequest:
-    """PartBatchTreeItem → PartCreateRequest。`create_parts_tree` 调单页 PDF 时复用 `create_part` 走标准路径。"""
+    """PartBatchTreeItem → PartCreateRequest。`create_parts_tree` 调单页 PDF 时复用 `create_part` 走标准路径。
+
+    PR-H 2026-07-28：unit_price / total_price 直接从 item 透传（历史价确认单回填）。
+    """
     return PartCreateRequest(
         name=item.name,
         drawing_no=item.drawing_no,
         applicant_name=item.applicant_name,
         applicant_id=item.applicant_id,
         quantity=item.quantity,
-        unit_price=Decimal("0"),
-        total_price=Decimal("0"),
+        unit_price=item.unit_price if item.unit_price is not None else Decimal("0"),
+        total_price=item.total_price if item.total_price is not None else Decimal("0"),
         request_date=item.request_date,
         planned_delivery_date=item.planned_delivery_date,
         is_urgent=item.is_urgent,
@@ -97,6 +100,37 @@ def _item_to_part_create_request(item: PartBatchTreeItem) -> PartCreateRequest:
         system_delivery_date=item.system_delivery_date,
         note=item.note,
         customer_id=item.customer_id,
+    )
+
+
+async def _maybe_upload_three_d_model(
+    *,
+    owner_id: int,
+    item: "PartBatchTreeItem",
+    three_d_payloads: dict[int, tuple[bytes, str, str | None]] | None,
+    part_files: "PartFileService",
+) -> None:
+    """PR-H 2026-07-28：若 item.three_d_index 指向有效 three_d_models 槽位，则上传
+    kind=THREE_D_MODEL 到 owner_id（t_part.id 或 t_assembly.id）。
+
+    item.three_d_index 缺失 / 越界 / 槽位为空 → 静默跳过；该挂载是 best-effort，
+    失败由 `part_files.upload` 内置 BizError 向上抛，事务回滚。
+    """
+    if item.three_d_index is None:
+        return
+    if not three_d_payloads:
+        return
+    payload = three_d_payloads.get(item.three_d_index)
+    if payload is None:
+        return
+    raw, fname, ctype = payload
+    from model.enums import PartFileKind
+    await part_files.upload(
+        owner_id=owner_id,
+        kind=PartFileKind.THREE_D_MODEL,
+        data=raw,
+        original_filename=fname,
+        content_type=ctype,
     )
 
 
@@ -602,6 +636,9 @@ class PartService:
         payload: PartBatchTreeRequest,
         *,
         file_payloads_by_pdf_index: dict[int, tuple[bytes, str, str | None]],
+        three_d_payloads_by_index: (
+            dict[int, tuple[bytes, str, str | None]] | None
+        ) = None,
         part_files: PartFileService,
         applicants: ApplicantService,
     ) -> PartBatchTreeResult:
@@ -611,12 +648,14 @@ class PartService:
           1. 前置校验：customer / 多页约束 / master 数量；失败 → `failed` 列表，0 写盘。
           2. Excel 申请人兜底：applicant_id 缺 + name 非空 → bulk_get_or_create 回填。
           3. 主循环（按 pdf_index）：
-             - 单页 → create_part + DRAWING 上传；
+             - 单页 → create_part + DRAWING 上传 + 若 three_d_index 非空 → THREE_D_MODEL 上传；
              - 多页 → acquire serial + 写 t_assembly + 逐 page 拆 + 写子件 + DRAWING 上传 +
+               若对应 page.three_d_index 非空 → THREE_D_MODEL 上传 +
                若有 master_item → ASSEMBLY_MASTER 上传。
           4. 事务边界：与 caller 共享 session；任一 upload 抛 BizError → 整批回滚。
 
-        2026-07-21 新增。`POST /parts/batch-with-pdfs` 调用本方法。
+        2026-07-21 新增；PR-H 2026-07-28 加 three_d_payloads_by_index。
+        `POST /parts/batch-with-pdfs` 调用本方法。
         """
         if self.assemblies is None:
             raise BizError(
@@ -757,6 +796,13 @@ class PartService:
                     original_filename=fname,
                     content_type=ctype,
                 )
+                # PR-H 2026-07-28：若挂 3D 模型则一并上传
+                await _maybe_upload_three_d_model(
+                    owner_id=part_out.id,
+                    item=page,
+                    three_d_payloads=three_d_payloads_by_index,
+                    part_files=part_files,
+                )
                 # 写 CREATED 事件（create_part 内部已写，此处无需重复）
                 # broadcast PART_CREATED
                 if self.event_broadcaster:
@@ -857,8 +903,13 @@ class PartService:
                         page.applicant_name or asm_meta.applicant_name or "(未知)"
                     ),
                     quantity=page.quantity,
-                    unit_price=Decimal("0"),
-                    total_price=Decimal("0"),
+                    # PR-H 2026-07-28：单价 / 总价直接透传（来自历史价确认单）
+                    unit_price=(
+                        page.unit_price if page.unit_price is not None else Decimal("0")
+                    ),
+                    total_price=(
+                        page.total_price if page.total_price is not None else Decimal("0")
+                    ),
                     request_date=asm_meta.request_date,
                     planned_delivery_date=(
                         page.planned_delivery_date or asm_meta.planned_delivery_date
@@ -883,6 +934,13 @@ class PartService:
                     data=page_bytes,
                     original_filename=f"{asm_drawing_no}_p{page.page_index + 1}.pdf",
                     content_type="application/pdf",
+                )
+                # PR-H 2026-07-28：若该 page 挂 3D 模型则一并上传到 child_id
+                await _maybe_upload_three_d_model(
+                    owner_id=child_id,
+                    item=page,
+                    three_d_payloads=three_d_payloads_by_index,
+                    part_files=part_files,
                 )
                 child_files.append(f_out)
 

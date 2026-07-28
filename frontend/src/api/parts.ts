@@ -348,6 +348,12 @@ export interface PartBatchTreeItemFE {
   order_no?: string | null
   note?: string | null
   is_urgent: boolean
+  /** PR-H 2026-07-28：含税单价（来自历史价确认单 G 列；可空） */
+  unit_price?: number | null
+  /** PR-H 2026-07-28：含税价格（来自历史价确认单 I 列；空时按 unit_price × quantity 计算） */
+  total_price?: number | null
+  /** PR-H 2026-07-28：3D 模型下标（指向 three_d_models 数组；null = 不挂） */
+  three_d_index?: number | null
 }
 
 export interface PartBatchTreePartResultFE {
@@ -380,16 +386,21 @@ export interface PartBatchTreeResultFE {
 /**
  * 批量树形创建：单页 PDF → 独立零件；多页 PDF → 装配件 + 子件。
  * 文件按 `pdf_index` 隐式对齐 `items`（frontend 端按上传顺序记录）。
+ * PR-H 2026-07-28：`threeDModels` 按 `items[i].three_d_index` 对齐。
  */
 export async function batchCreatePartsWithPdfs(
   items: PartBatchTreeItemFE[],
   assemblies: PartBatchTreeAssemblyFE[],
   files: PartBatchFilePayload[],
+  threeDModels: PartBatchFilePayload[] = [],
 ): Promise<PartBatchTreeResultFE> {
   const form = new FormData()
   form.append('data', JSON.stringify({ items, assemblies }))
   files.forEach((f) => {
     if (f.data) form.append('files', f.data, f.filename)
+  })
+  threeDModels.forEach((f) => {
+    if (f.data) form.append('three_d_models', f.data, f.filename)
   })
   // 批量上传可能耗时数分钟，单点延长到 10 分钟；全局 axios `timeout: 30_000` 不动（其他业务保持短超时）。
   const resp = await api.post<PartBatchTreeResultFE>(
