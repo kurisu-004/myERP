@@ -150,3 +150,21 @@ class PartEventRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def latest_sent_to_outsource_for_part(
+        self, part_id: int,
+    ) -> TPartEvent | None:
+        """PR-H 2026-07-29：取某 part 最近一次 SENT_TO_OUTSOURCE 事件（不限公司）。
+        用于 receive 时若 caller 没传 outsource_company_id / process_id，可兜底推断。
+        """
+        stmt = (
+            select(TPartEvent)
+            .where(
+                TPartEvent.event_type == PartEventType.SENT_TO_OUTSOURCE.value,
+                TPartEvent.part_id == part_id,
+            )
+            .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

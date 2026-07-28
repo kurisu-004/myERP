@@ -34,6 +34,7 @@ from schema.outsource_quote import (
     OutsourceQuoteOut,
     OutsourceQuoteRejectRequest,
     OutsourceQuoteUpdateRequest,
+    OutsourceReconciliationUpdateRequest,
 )
 from schema.part import PartListItem
 from service import OutsourceQuoteService
@@ -179,6 +180,22 @@ async def update_outsource_quote(
     svc: OutsourceQuoteService = Depends(get_outsource_quote_service),
 ) -> OutsourceQuoteOut:
     return await svc.update_quote(quote_id, payload)
+
+
+@write_router.post(
+    "/{quote_id}/reconcile-update",
+    response_model=OutsourceQuoteOut,
+    summary=(
+        "对账页更新（CLERK + MANAGER；PR-H 2026-07-29）："
+        "unit_price / quantity / is_billed；仅允许 OUTSOURCING/RECEIVED/BILLED 状态"
+    ),
+)
+async def reconcile_update_outsource_quote(
+    quote_id: str,
+    payload: OutsourceReconciliationUpdateRequest,
+    svc: OutsourceQuoteService = Depends(get_outsource_quote_service),
+) -> OutsourceQuoteOut:
+    return await svc.reconcile_update_quote(quote_id, payload)
 
 
 @write_router.post(

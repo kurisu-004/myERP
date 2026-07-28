@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_outsource_company_service
 from core.permission import require_roles
-from model.enums import UserRole
+from model.enums import OutsourceSentPartSortKey, SortDir, UserRole
 from schema.outsource_company import (
     OutsourceCompanyCreateRequest,
     OutsourceCompanyListOut,
@@ -114,8 +114,9 @@ write_router = APIRouter(
     "/{company_id}/sent-parts",
     response_model=OutsourceSentPartListOut,
     summary=(
-        "外协对账一览（2026-07-28 新增）：按外协公司聚合 SENT_TO_OUTSOURCE 事件，"
-        "列出所有送给该公司的零件 + 当前状态（MANAGER / CLERK）。"
+        "外协对账一览（2026-07-29 重写）：基于 t_outsource_quote 统一事实表，"
+        "列出所有送给该公司的零件 + 发送/回收时间 + 单价/数量/对账标记"
+        "（MANAGER / CLERK）。"
     ),
 )
 async def list_company_sent_parts(
@@ -123,6 +124,13 @@ async def list_company_sent_parts(
     keyword: str | None = Query(default=None),
     sent_from: datetime | None = Query(default=None, description="发送时间起点（含）"),
     sent_to: datetime | None = Query(default=None, description="发送时间终点（含）"),
+    received_from: datetime | None = Query(default=None, description="回收时间起点（含）"),
+    received_to: datetime | None = Query(default=None, description="回收时间终点（含）"),
+    sort_by: OutsourceSentPartSortKey = Query(
+        default=OutsourceSentPartSortKey.SENT_AT,
+        description="排序字段：PRICE / SENT_AT / RECEIVED_AT",
+    ),
+    sort_dir: SortDir = Query(default=SortDir.DESC, description="排序方向 ASC / DESC"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     svc: OutsourceCompanyService = Depends(get_outsource_company_service),
@@ -132,6 +140,8 @@ async def list_company_sent_parts(
         query=OutsourceSentPartListQuery(
             keyword=keyword,
             sent_from=sent_from, sent_to=sent_to,
+            received_from=received_from, received_to=received_to,
+            sort_by=sort_by, sort_dir=sort_dir,
             limit=limit, offset=offset,
         ),
     )

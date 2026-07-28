@@ -591,11 +591,15 @@ def get_outsource_company_service(
     processes: ProcessRepository = Depends(get_process_repo),
     part_repo: PartRepository = Depends(get_part_repository),
     part_events: PartEventRepository = Depends(get_part_event_repository),
+    session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> OutsourceCompanyService:
     return OutsourceCompanyService(
         companies=companies, junction=junction, processes=processes,
         part_repo=part_repo, part_events=part_events,
+        # PR-H 2026-07-29：对账页改为基于 t_outsource_quote
+        outsource_quotes=OutsourceQuoteRepository(session),
+        customers=CustomerRepository(session),
         current_user=user,
     )
 

@@ -197,26 +197,36 @@ class PartFileKind(str, enum.Enum):
 
 
 class OutsourceQuoteStatus(str, enum.Enum):
-    """外协报价单状态机（2026-07-16 新增）。
+    """外协报价单状态机（2026-07-16 新增；2026-07-29 升级为外协统一事实表）。
 
     DB 存 `varchar(16)` (`t_outsource_quote.status`)。
 
-    流转：
-        DRAFT ──submit──▶ SUBMITTED ──approve──▶ APPROVED ──mark_used──▶ USED
-                                          ╰──reject───▶ REJECTED（终态）
+    流转（PR-H 2026-07-29）：
+        DRAFT ──submit──▶ SUBMITTED ──approve──▶ APPROVED ──mark_outsourcing──▶ OUTSOURCING
+                                              ╰──reject───▶ REJECTED（终态）
+                                                                            ╰──mark_received──▶ RECEIVED
+                                                                                                  ╰──mark_billed──▶ BILLED
 
-    - DRAFT     CLERK 录入未提交
-    - SUBMITTED CLERK 已提交，待 MANAGER 审核
-    - APPROVED  MANAGER 通过；零件可发送外协（前置校验）
-    - REJECTED  MANAGER 拒绝（终态）
-    - USED      零件已成功发送外协后由 service 自动 mark_used（终态）
+    旧 USED 状态保留兼容（历史数据 + 数据迁移期），新流程不再产生。
+
+    - DRAFT        CLERK 录入未提交
+    - SUBMITTED    CLERK 已提交，待 MANAGER 审核
+    - APPROVED     MANAGER 通过；可发送外协（前置校验）
+    - REJECTED     MANAGER 拒绝（终态）
+    - OUTSOURCING  零件已发送外协公司，待接收
+    - RECEIVED     零件已从外协公司接收
+    - BILLED       该笔对账完成（终态）
+    - USED         [兼容保留] 旧流程 mark_used 终态
     """
 
     DRAFT = "DRAFT"
     SUBMITTED = "SUBMITTED"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
-    USED = "USED"
+    OUTSOURCING = "OUTSOURCING"
+    RECEIVED = "RECEIVED"
+    BILLED = "BILLED"
+    USED = "USED"  # 兼容保留
 
 
 class OutsourceQuoteEventType(str, enum.Enum):
@@ -227,7 +237,12 @@ class OutsourceQuoteEventType(str, enum.Enum):
     SUBMITTED = "SUBMITTED"  # DRAFT → SUBMITTED
     APPROVED = "APPROVED"    # SUBMITTED → APPROVED
     REJECTED = "REJECTED"    # SUBMITTED → REJECTED
-    USED = "USED"            # APPROVED → USED（自动）
+    USED = "USED"            # APPROVED → USED（自动）[PR-H 2026-07-29 后不再使用]
+    # PR-H 2026-07-29：外协统一事实表新增 3 个状态事件
+    MARKED_OUTSOURCING = "MARKED_OUTSOURCING"  # APPROVED → OUTSOURCING（自动，发送时）
+    MARKED_RECEIVED = "MARKED_RECEIVED"        # OUTSOURCING → RECEIVED（自动，接收时）
+    MARKED_BILLED = "MARKED_BILLED"            # RECEIVED → BILLED（手动，对账完成）
+    REOPENED_BILLED = "REOPENED_BILLED"        # BILLED → RECEIVED（手动，对账撤销）
 
 
 class OutsourceQuoteSortKey(str, enum.Enum):
@@ -296,3 +311,18 @@ class DeliveryNoteSortKey(str, enum.Enum):
     SUBMITTED_AT = "SUBMITTED_AT"
     PICKED_UP_AT = "PICKED_UP_AT"
     DELIVERY_NOTE_NO = "DELIVERY_NOTE_NO"
+
+
+class OutsourceSentPartSortKey(str, enum.Enum):
+    """外协对账页（一览）支持的排序字段（2026-07-29 新增）。
+
+    对应 `GET /outsource-companies/{id}/sent-parts?sort_by=...`。
+    排序直接作用于 `t_outsource_quote` 列：
+    - PRICE        → t_outsource_quote.price
+    - SENT_AT      → t_outsource_quote.sent_at
+    - RECEIVED_AT  → t_outsource_quote.received_at
+    """
+
+    PRICE = "PRICE"
+    SENT_AT = "SENT_AT"
+    RECEIVED_AT = "RECEIVED_AT"

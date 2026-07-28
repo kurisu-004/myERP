@@ -24,7 +24,9 @@ from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
 from model import TAssembly, TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
-from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone
+from model.enums import (
+    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone,
+)
 from repository.applicant import ApplicantRepository
 from repository.assembly import AssemblyRepository
 from repository.customer import CustomerRepository
@@ -84,6 +86,7 @@ from service._customer_helpers import (  # 2026-07-28：抽到共享模块
 )
 from service.applicant import ApplicantService
 from service.part_file import PartFileService
+from core.time import now_naive
 from utils.id_gen import new_id
 
 Broadcaster = Callable[[], Awaitable[None]]
@@ -1322,21 +1325,21 @@ class PartService:
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        # 6. 分支：是否需要报价审批（2026-07-28 新增）
+        # 6. PR-H 2026-07-29：报价处理（合并 APPROVAL + DIRECT 两条路径）
+        if self.outsource_quotes is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing outsource quote repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         if process.requires_approval:
-            # 6a. [2026-07-16] 已批报价防御闸
-            if self.outsource_quotes is None:
-                raise BizError(
-                    code=ErrCode.BIZ_INVALID_VALUE,
-                    message="server missing outsource quote repository",
-                    http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-            approved_quote = await self.outsource_quotes.get_one_approved(
+            # 6a. APPROVAL：找现有 APPROVED 报价
+            target_quote = await self.outsource_quotes.get_one_approved(
                 part_id=part.id,
                 outsource_company_id=company_id_int,
                 process_id=process_id_int,
             )
-            if approved_quote is None:
+            if target_quote is None:
                 raise BizError(
                     code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
                     message=(
@@ -1345,37 +1348,68 @@ class PartService:
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-
-            await refresh_for_state_machine(
-                self.parts.session, approved_quote, attrs=("status",),
-            )
-
-            # 7. 状态机转换
-            part.sm.send_to_outsource(
-                outsource_company=company, process=process,
-                event_repo=self.events, created_by=self._user_id,
-            )
-            part.updated_by = self._user_id
-            await self.parts.update(part)
-
-            # 8. [2026-07-16] 把 APPROVED 报价 mark_used → USED + 写事件
-            approved_quote.sm.mark_used(
-                event_repo=self.quote_events, created_by=self._user_id,
-            )
-            approved_quote.updated_by = self._user_id
-            await self.outsource_quotes.update(approved_quote)
         else:
-            # 6b. 直接发送分支（无需审批 2026-07-28）；前置货架校验已统一，本分支直接转换。
-            # 状态机转换（事件 note 自动追加 " / 直接发送（无需审批）"，
-            # TPartEvent.outsource_company_id 由 statemachine 从 company.id 自动推断）
-            part.sm.send_to_outsource(
-                outsource_company=company, process=process,
-                event_repo=self.events, created_by=self._user_id,
-                direct_send=True,
+            # 6b. DIRECT：自动创建一条 price=0 status=APPROVED 报价
+            # 重复检测：先查 (part, company, process) 是否已存在 OUTSOURCING/RECEIVED
+            existing = await self.outsource_quotes.get_one_active_for_tuple(
+                part_id=part.id,
+                outsource_company_id=company_id_int,
+                process_id=process_id_int,
             )
-            part.updated_by = self._user_id
-            await self.parts.update(part)
-            # 直接发送不写 quote、不 mark_used、不调 self.outsource_quotes
+            if existing is not None:
+                # 复用现有报价（避免对账时出现多行）
+                target_quote = existing
+            else:
+                from model.outsource_quote import TOutsourceQuote
+                from model.outsource_quote_event import TOutsourceQuoteEvent
+                from model.enums import OutsourceQuoteEventType
+                new_quote = TOutsourceQuote(
+                    id=new_id(),
+                    part_id=part.id,
+                    outsource_company_id=company_id_int,
+                    process_id=process_id_int,
+                    price=Decimal("0"),  # DIRECT 默认 0，对账页后填
+                    status=OutsourceQuoteStatus.APPROVED.value,
+                    review_note="系统自动创建（DIRECT 直接发送）",
+                    reviewed_at=now_naive(),
+                    created_by=self._user_id,
+                    updated_by=self._user_id,
+                )
+                await self.outsource_quotes.create(new_quote)
+                # 写 CREATED event
+                await self.quote_events.create(TOutsourceQuoteEvent(
+                    id=new_id(),
+                    quote_id=new_quote.id,
+                    event_type=OutsourceQuoteEventType.CREATED.value,
+                    from_status=None,
+                    to_status=OutsourceQuoteStatus.APPROVED.value,
+                    note="DIRECT 直接发送：系统自动创建并直接置为 APPROVED",
+                    created_by=self._user_id,
+                ))
+                target_quote = new_quote
+
+        # 7. 报价状态机：APPROVED → OUTSOURCING + 写 sent_at + quantity
+        await refresh_for_state_machine(
+            self.outsource_quotes.session, target_quote, attrs=("status", "version"),
+        )
+        target_quote.sm.mark_outsourcing(
+            event_repo=self.quote_events,
+            created_by=self._user_id,
+        )
+        target_quote.sent_at = now_naive()
+        target_quote.quantity = part.quantity
+        target_quote.updated_by = self._user_id
+        await self.outsource_quotes.update(target_quote)
+
+        # 8. part 状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
+        # 9. DIRECT 路径兼容：direct_send=True 透传给 statemachine（事件 note 追加"直接发送"）
+        part.sm.send_to_outsource(
+            outsource_company=company, process=process,
+            event_repo=self.events, created_by=self._user_id,
+            direct_send=not process.requires_approval,
+        )
+        part.updated_by = self._user_id
+        await self.parts.update(part)
 
         await self._broadcast()
         await self._check_parent_assembly(part)
@@ -1399,6 +1433,9 @@ class PartService:
 
         2026-07-28：`outsource_company_id` 入参（可空）写入 TPartEvent.outsource_company_id
         用于外协对账；前端从 part_event 历史查最近 SENT_TO_OUTSOURCE 的公司 id 填入。
+
+        PR-H 2026-07-29：反查 (part, company, process) 的 OUTSOURCING 报价 →
+        mark_received + 写 received_at（外协统一事实表生命周期）。
         """
         part = await self._get_part_or_404(part_id)
         await refresh_for_state_machine(
@@ -1436,6 +1473,19 @@ class PartService:
                 )
             outsource_company_id_int = parsed
 
+        # 5b. PR-H 2026-07-29：找 OUTSOURCING 状态的报价 → mark_received + 写 received_at
+        # 注意：data.next_process_id 是接收后的下一道 INHOUSE 工序，**不是**报价的
+        # OUTSOURCE 工序。part 在 OUTSOURCE 状态下 next_process_id 即外协工序
+        # （statemachine on_enter_OUTSOURCE 保证），用它做报价查找键。
+        current_outsource_proc_id = (
+            int(part.next_process_id) if part.next_process_id else None
+        )
+        await self._mark_quote_received_for_part(
+            part_id=part.id,
+            company_id=outsource_company_id_int,
+            process_id=current_outsource_proc_id,
+        )
+
         # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
         part.sm.receive_from_outsource(
             shelf=shelf, process=process,
@@ -1469,6 +1519,8 @@ class PartService:
         - outsource_company_id（2026-07-28 可选）：写入 TPartEvent.outsource_company_id 对账。
 
         复用现有 pass_inspection 实现二次转换（同一事务连续两次状态机调用）。
+
+        PR-H 2026-07-29：同 receive_from_outsource，反查 OUTSOURCING 报价 → mark_received。
         """
         part = await self._get_part_or_404(part_id)
         await refresh_for_state_machine(
@@ -1494,6 +1546,17 @@ class PartService:
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
             outsource_company_id_int = parsed
+
+        # 5b. PR-H 2026-07-29：找 OUTSOURCING 报价 → mark_received + 写 received_at
+        # 送检路径不指定 next_process_id，process_id 用 part 当前的 next_process_id
+        current_next_proc_id_int = (
+            int(part.next_process_id) if part.next_process_id else None
+        )
+        await self._mark_quote_received_for_part(
+            part_id=part.id,
+            company_id=outsource_company_id_int,
+            process_id=current_next_proc_id_int,
+        )
 
         # 第一次转换：OUTSOURCE → INSPECTION
         part.sm.inspect_from_outsource(
@@ -1718,6 +1781,53 @@ class PartService:
                 ),
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
+
+    async def _mark_quote_received_for_part(
+        self,
+        *,
+        part_id: int,
+        company_id: int | None,
+        process_id: int | None,
+    ) -> None:
+        """PR-H 2026-07-29：外协接收时反查 (part, company, process) 的 OUTSOURCING 报价
+        → mark_received + 写 received_at（外协统一事实表生命周期）。
+
+        调用方：receive_from_outsource / receive_from_outsource_to_inspection。
+
+        找不到匹配报价时静默跳过（兼容历史 USED 状态行 + 老流程；不阻塞接收主流程）。
+        """
+        if self.outsource_quotes is None or self.quote_events is None:
+            return
+        # 兜底：company_id / process_id 缺省时取 part 最近的 SENT 事件
+        if company_id is None or process_id is None:
+            latest_sent = await self.events.latest_sent_to_outsource_for_part(part_id)
+            if latest_sent is None:
+                return
+            if company_id is None and latest_sent.outsource_company_id is not None:
+                company_id = int(latest_sent.outsource_company_id)
+            if process_id is None and getattr(latest_sent, "process_id", None) is not None:
+                process_id = int(latest_sent.process_id)
+        if company_id is None or process_id is None:
+            return
+
+        quote = await self.outsource_quotes.find_active_for_part_company_process(
+            part_id=part_id,
+            company_id=company_id,
+            process_id=process_id,
+            statuses=[OutsourceQuoteStatus.OUTSOURCING.value],
+        )
+        if quote is None:
+            return
+        await refresh_for_state_machine(
+            self.outsource_quotes.session, quote, attrs=("status", "version"),
+        )
+        quote.sm.mark_received(
+            event_repo=self.quote_events,
+            created_by=self._user_id,
+        )
+        quote.received_at = now_naive()
+        quote.updated_by = self._user_id
+        await self.outsource_quotes.update(quote)
 
     async def _get_process(self, process_id: int) -> TProcess:
         """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""

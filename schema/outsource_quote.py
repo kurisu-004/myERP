@@ -22,7 +22,7 @@ from schema._types import IdStr, IdStrNonNull
 
 
 class OutsourceQuoteOut(BaseModel):
-    """单条外协报价展示用出参。
+    """单条外协报价展示用出参（PR-H 2026-07-29：扩为外协全生命周期统一事实表）。
 
     包含预解析字段（service 层手动注入），便于前端列表直接渲染而无需 JOIN。
     """
@@ -40,6 +40,11 @@ class OutsourceQuoteOut(BaseModel):
     submitted_at: datetime | None = None
     reviewed_at: datetime | None = None
     review_note: str | None = None
+    # PR-H 2026-07-29 新加字段
+    sent_at: datetime | None = None
+    received_at: datetime | None = None
+    quantity: int | None = None
+    is_billed: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -123,6 +128,22 @@ class OutsourceQuoteRejectRequest(BaseModel):
 
     version: int = Field(description="乐观锁版本号")
     review_note: str = Field(min_length=1, max_length=500)
+
+
+class OutsourceReconciliationUpdateRequest(BaseModel):
+    """PR-H 2026-07-29：对账页双击编辑（CLERK + MANAGER）。
+
+    允许状态 OUTSOURCING / RECEIVED / BILLED：
+    - unit_price / quantity：直接更新 quote 对应列
+    - is_billed 勾选/取消：触发 mark_billed（RECEIVED → BILLED）或
+      直接 ORM 写 status=RECEIVED（BILLED → RECEIVED，library 不允许 final 出向）
+    - 三者均可独立传 None 表示不更新该字段
+    """
+
+    version: int = Field(description="t_outsource_quote.version（OCC）")
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    quantity: int | None = Field(default=None, ge=1)
+    is_billed: bool | None = None
 
 
 # ============================================================

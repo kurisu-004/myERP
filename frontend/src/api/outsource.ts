@@ -16,9 +16,12 @@ import type {
   OutsourceQuoteRejectPayload,
   OutsourceQuoteStatus,
   OutsourceQuoteUpdatePayload,
+  OutsourceReconciliationUpdatePayload,
   OutsourceSentPartListResult,
+  OutsourceSentPartSortKey,
   SetOutsourceCompanyProcessesPayload,
 } from '@/types/outsource'
+import type { SortDir } from '@/types/parts'
 import type { PartItem, PartListItem } from '@/types/parts'
 
 function cleanParams<T extends object>(p: T): Record<string, unknown> {
@@ -225,8 +228,12 @@ export async function listCompanySentParts(
   companyId: string,
   params: {
     keyword?: string
-    sent_from?: string   // ISO datetime
-    sent_to?: string     // ISO datetime
+    sent_from?: string      // ISO datetime
+    sent_to?: string        // ISO datetime
+    received_from?: string  // ISO datetime
+    received_to?: string    // ISO datetime
+    sort_by?: OutsourceSentPartSortKey
+    sort_dir?: SortDir
     limit?: number
     offset?: number
   } = {},
@@ -236,4 +243,18 @@ export async function listCompanySentParts(
     { params: cleanParams(params) },
   )
   return resp.data
+}
+
+/**
+ * PR-H 2026-07-29：对账页行编辑（双击单价/数量/对账标记，Enter 确认 / Esc 取消）。
+ * POST /outsource-quotes/{quoteId}/reconcile-update
+ */
+export async function reconcileUpdateQuote(
+  quoteId: string,
+  payload: OutsourceReconciliationUpdatePayload,
+): Promise<void> {
+  await api.post(
+    `/outsource-quotes/${encodeURIComponent(quoteId)}/reconcile-update`,
+    payload,
+  )
 }

@@ -73,7 +73,11 @@ class OutsourceQuoteRepository:
         outsource_company_id: int,
         process_id: int,
     ) -> TOutsourceQuote | None:
-        """找同一 (part, company, process) 当前 DRAFT/SUBMITTED/APPROVED 的行（用于重复检测）。"""
+        """找同一 (part, company, process) 当前 DRAFT/SUBMITTED/APPROVED/OUTSOURCING/RECEIVED/BILLED/USED 的行（用于重复检测）。
+
+        PR-H 2026-07-29：增加 OUTSOURCING / RECEIVED / BILLED 状态（已发送/已接收/已对账
+        也算"活跃"行，避免同一 (part, company, process) 在对账完成前重复报价）。
+        """
         stmt = (
             select(TOutsourceQuote)
             .where(TOutsourceQuote.deleted_at.is_(None))
@@ -86,6 +90,9 @@ class OutsourceQuoteRepository:
                         OutsourceQuoteStatus.DRAFT.value,
                         OutsourceQuoteStatus.SUBMITTED.value,
                         OutsourceQuoteStatus.APPROVED.value,
+                        OutsourceQuoteStatus.OUTSOURCING.value,
+                        OutsourceQuoteStatus.RECEIVED.value,
+                        OutsourceQuoteStatus.BILLED.value,
                         OutsourceQuoteStatus.USED.value,
                     ]
                 )
@@ -93,6 +100,139 @@ class OutsourceQuoteRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def find_active_for_part_company_process(
+        self,
+        *,
+        part_id: int,
+        company_id: int,
+        process_id: int,
+        statuses: list[str],
+    ) -> TOutsourceQuote | None:
+        """PR-H 2026-07-29：按 (part, company, process) 找指定状态列表中的报价行。
+        接收外协时用：反查 OUTSOURCING 状态的报价。
+        排序：id DESC（最新优先），返回第一条。
+        """
+        if not statuses:
+            return None
+        stmt = (
+            select(TOutsourceQuote)
+            .where(TOutsourceQuote.deleted_at.is_(None))
+            .where(TOutsourceQuote.part_id == part_id)
+            .where(TOutsourceQuote.outsource_company_id == company_id)
+            .where(TOutsourceQuote.process_id == process_id)
+            .where(TOutsourceQuote.status.in_(statuses))
+            .order_by(TOutsourceQuote.id.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    # ===== 对账（PR-H 2026-07-29：基于 t_outsource_quote 的统一事实表）=====
+    def _build_reconciliation_stmt(
+        self,
+        *,
+        company_id: int,
+        part_ids_in: list[int] | None = None,
+        sent_from=None,
+        sent_to=None,
+        received_from=None,
+        received_to=None,
+    ):
+        """对账页共享 statement builder（list / count 复用）。
+
+        谓词：
+        - outsource_company_id = company_id
+        - status IN (OUTSOURCING, RECEIVED, BILLED) —— 已发送及以后的全部
+        - deleted_at IS NULL
+        - 可选 part_ids_in（keyword 过滤经 service 在 part_repo 上预先解析）
+        - 可选 sent_at / received_at 时间区间
+        """
+        from model.enums import OutsourceQuoteStatus as _S
+
+        stmt = select(TOutsourceQuote).where(
+            TOutsourceQuote.deleted_at.is_(None),
+            TOutsourceQuote.outsource_company_id == company_id,
+            TOutsourceQuote.status.in_([
+                _S.OUTSOURCING.value,
+                _S.RECEIVED.value,
+                _S.BILLED.value,
+            ]),
+        )
+        if part_ids_in is not None:
+            stmt = stmt.where(TOutsourceQuote.part_id.in_(part_ids_in))
+        if sent_from is not None:
+            stmt = stmt.where(TOutsourceQuote.sent_at >= sent_from)
+        if sent_to is not None:
+            stmt = stmt.where(TOutsourceQuote.sent_at <= sent_to)
+        if received_from is not None:
+            stmt = stmt.where(TOutsourceQuote.received_at >= received_from)
+        if received_to is not None:
+            stmt = stmt.where(TOutsourceQuote.received_at <= received_to)
+        return stmt
+
+    async def list_reconciliation_for_company(
+        self,
+        *,
+        company_id: int,
+        part_ids_in: list[int] | None = None,
+        sent_from=None,
+        sent_to=None,
+        received_from=None,
+        received_to=None,
+        sort_by=None,
+        sort_dir=None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[TOutsourceQuote]:
+        """对账页列表：某外协公司 + 已发送状态（OUTSOURCING/RECEIVED/BILLED）的报价行。
+
+        sort_by：OutsourceSentPartSortKey（PRICE / SENT_AT / RECEIVED_AT）。
+        NULL 值排序：PostgreSQL 默认 DESC 时 NULLS FIRST / ASC 时 NULLS LAST；
+        价格 / 回收时间 NULL 排末尾更符合直觉，用 nulls_last 统一。
+        """
+        from model.enums import OutsourceSentPartSortKey, SortDir as _Dir
+
+        if part_ids_in is not None and not part_ids_in:
+            return []
+        stmt = self._build_reconciliation_stmt(
+            company_id=company_id,
+            part_ids_in=part_ids_in,
+            sent_from=sent_from, sent_to=sent_to,
+            received_from=received_from, received_to=received_to,
+        )
+        if sort_by == OutsourceSentPartSortKey.PRICE:
+            col = TOutsourceQuote.price
+        elif sort_by == OutsourceSentPartSortKey.RECEIVED_AT:
+            col = TOutsourceQuote.received_at
+        else:
+            col = TOutsourceQuote.sent_at
+        order = col.asc().nulls_last() if sort_dir == _Dir.ASC else col.desc().nulls_last()
+        stmt = stmt.order_by(order, TOutsourceQuote.id.desc()).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_reconciliation_for_company(
+        self,
+        *,
+        company_id: int,
+        part_ids_in: list[int] | None = None,
+        sent_from=None,
+        sent_to=None,
+        received_from=None,
+        received_to=None,
+    ) -> int:
+        """对账页总数（与 list_reconciliation_for_company 同谓词）。"""
+        if part_ids_in is not None and not part_ids_in:
+            return 0
+        stmt = self._build_reconciliation_stmt(
+            company_id=company_id,
+            part_ids_in=part_ids_in,
+            sent_from=sent_from, sent_to=sent_to,
+            received_from=received_from, received_to=received_to,
+        ).with_only_columns(func.count(TOutsourceQuote.id))
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
 
     # ===== 批量 =====
     async def list_by_part_with_status(

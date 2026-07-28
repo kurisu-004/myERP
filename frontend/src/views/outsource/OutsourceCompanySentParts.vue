@@ -1,16 +1,31 @@
-<!-- 外协对账一览（2026-07-28 新增）
+<!-- 外协对账一览（2026-07-28 新增；2026-07-29 基于 t_outsource_quote 重写）
 
-按外协公司聚合 SENT_TO_OUTSOURCE 事件，列出所有送给该公司的零件 + 当前状态；
-文员拿这个表与外协公司发来的对账单核对。
+基于 t_outsource_quote 统一事实表（外协全生命周期），列出所有送给该公司的零件：
+- 图号 / 名称 / 客户（一级/二级）/ 数量 / 单价 / 总价（数量×单价）
+- 发送时间 / 回收时间（未回收显示「未回收」）
+- 状态（OUTSOURCING / RECEIVED / BILLED）/ 对账标记
+- 排序：单价 / 发送时间 / 回收时间
+- 双击行进入编辑（单价 + 数量 + 对账标记）；Enter 确认，Esc 取消（与零件一览一致）
+- 表格底部：合计行（总价求和）+ 当前页总数
 -->
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, type SummaryMethod } from 'element-plus'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
-import { listCompanySentParts, getOutsourceCompany } from '@/api/outsource'
-import type { OutsourceSentPartItem, OutsourceCompany } from '@/types/outsource'
+import {
+  getOutsourceCompany,
+  listCompanySentParts,
+  reconcileUpdateQuote,
+} from '@/api/outsource'
+import type {
+  OutsourceCompany,
+  OutsourceReconciliationUpdatePayload,
+  OutsourceSentPartItem,
+  OutsourceSentPartSortKey,
+} from '@/types/outsource'
+import type { SortDir } from '@/types/parts'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +42,8 @@ const filter = reactive({
   sent_from: '' as string,  // ISO datetime-local string
   sent_to: '' as string,
 })
+const sortBy = ref<OutsourceSentPartSortKey>('SENT_AT')
+const sortDir = ref<SortDir>('DESC')
 const paginationLayout = computed(() =>
   isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
 )
@@ -49,6 +66,8 @@ async function loadList(): Promise<void> {
       keyword: filter.keyword || undefined,
       sent_from: filter.sent_from || undefined,
       sent_to: filter.sent_to || undefined,
+      sort_by: sortBy.value,
+      sort_dir: sortDir.value,
       limit: 50, offset: 0,
     })
     items.value = r.items
@@ -72,6 +91,196 @@ function onReset(): void {
 
 function onBack(): void {
   void router.push('/outsource/companies')
+}
+
+// ============ 排序（sortable="custom"）============
+function onSortChange({
+  prop,
+  order,
+}: {
+  prop: string | null
+  order: 'ascending' | 'descending' | null
+}): void {
+  if (!prop || !order) return
+  if (prop === 'unit_price') sortBy.value = 'PRICE'
+  else if (prop === 'sent_at') sortBy.value = 'SENT_AT'
+  else if (prop === 'received_at') sortBy.value = 'RECEIVED_AT'
+  sortDir.value = order === 'ascending' ? 'ASC' : 'DESC'
+  void loadList()
+}
+
+// ============ 行内编辑（2026-07-29，对齐 PartsList 双击编辑范式）============
+interface EditBuffer {
+  unit_price: number | null
+  quantity: number | null
+  is_billed: boolean
+}
+const editingId = ref<string | null>(null)  // quote_id
+const savingEdit = ref(false)
+const editBuffer = reactive<EditBuffer>({
+  unit_price: null,
+  quantity: null,
+  is_billed: false,
+})
+
+function startEdit(row: OutsourceSentPartItem): void {
+  if (editingId.value && editingId.value !== row.quote_id) {
+    ElMessage.warning('请先保存或取消当前正在编辑的行')
+    return
+  }
+  editBuffer.unit_price =
+    row.unit_price !== null ? Number(row.unit_price) : null
+  editBuffer.quantity = row.quantity
+  editBuffer.is_billed = row.is_billed
+  editingId.value = row.quote_id
+}
+
+function onRowDblClick(row: OutsourceSentPartItem): void {
+  startEdit(row)
+}
+
+// Enter 保存 / Esc 取消（黑名单：filter-card / 下拉 popper / 日期 picker）
+const ENTER_BLACKLIST = [
+  '.filter-card',
+  '.el-popper.is-light',
+  '.el-select-dropdown',
+  '.el-date-picker',
+]
+function onEditEnter(e: KeyboardEvent): void {
+  if (e.key === 'Escape') {
+    if (editingId.value == null) return
+    const target = e.target as HTMLElement | null
+    if (target && ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+    e.preventDefault()
+    cancelEdit()
+    return
+  }
+  if (e.key !== 'Enter') return
+  if (editingId.value == null) return
+  const target = e.target as HTMLElement | null
+  if (target && ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
+  e.preventDefault()
+  const row = items.value.find((r) => r.quote_id === editingId.value)
+  if (row) void saveEdit(row)
+}
+
+watch(editingId, (val) => {
+  if (typeof document === 'undefined') return
+  if (val != null) {
+    document.addEventListener('keydown', onEditEnter)
+  } else {
+    document.removeEventListener('keydown', onEditEnter)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof document === 'undefined') return
+  document.removeEventListener('keydown', onEditEnter)
+})
+
+function cancelEdit(): void {
+  editingId.value = null
+}
+
+async function saveEdit(row: OutsourceSentPartItem): Promise<void> {
+  if (editBuffer.quantity !== null && editBuffer.quantity < 1) {
+    ElMessage.warning('数量必须 ≥ 1')
+    return
+  }
+  if (editBuffer.unit_price !== null && editBuffer.unit_price < 0) {
+    ElMessage.warning('单价必须 ≥ 0')
+    return
+  }
+  savingEdit.value = true
+  try {
+    const payload: OutsourceReconciliationUpdatePayload = {
+      version: row.version,
+      unit_price: editBuffer.unit_price,
+      quantity: editBuffer.quantity,
+      is_billed: editBuffer.is_billed,
+    }
+    await reconcileUpdateQuote(row.quote_id, payload)
+    // 就地回填该行（避免整表刷新闪烁）；total_price 由 displayTotalPrice 实时算
+    Object.assign(row, {
+      unit_price:
+        payload.unit_price !== null && payload.unit_price !== undefined
+          ? String(payload.unit_price)
+          : row.unit_price,
+      quantity: payload.quantity ?? row.quantity,
+      is_billed: payload.is_billed ?? row.is_billed,
+      version: row.version + 1,
+      status:
+        payload.is_billed === true && row.status === 'RECEIVED'
+          ? 'BILLED'
+          : payload.is_billed === false && row.status === 'BILLED'
+            ? 'RECEIVED'
+            : row.status,
+    })
+    editingId.value = null
+    ElMessage.success('保存成功')
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '保存失败')
+  } finally {
+    savingEdit.value = false
+  }
+}
+
+// 总价列响应式显示（编辑态用 editBuffer 实时算，非编辑态用行数据）
+function displayTotalPrice(row: OutsourceSentPartItem): string {
+  if (editingId.value === row.quote_id) {
+    const q = Number(editBuffer.quantity ?? row.quantity ?? 0)
+    const p = Number(editBuffer.unit_price ?? row.unit_price ?? 0)
+    return Number.isFinite(q) && Number.isFinite(p) && q > 0
+      ? (q * p).toFixed(2)
+      : '—'
+  }
+  if (row.total_price !== null && row.total_price !== undefined) {
+    return row.total_price
+  }
+  const q = Number(row.quantity ?? 0)
+  const p = Number(row.unit_price ?? 0)
+  return Number.isFinite(q) && Number.isFinite(p) && q > 0 && p > 0
+    ? (q * p).toFixed(2)
+    : '—'
+}
+
+// 状态列：OUTSOURCING / RECEIVED / BILLED
+const STATUS_LABEL: Record<string, string> = {
+  OUTSOURCING: '外协中',
+  RECEIVED: '已接收',
+  BILLED: '已对账',
+}
+function statusLabel(s: string): string {
+  return STATUS_LABEL[s] ?? s
+}
+function statusTagType(s: string): 'warning' | 'primary' | 'success' | 'info' {
+  if (s === 'OUTSOURCING') return 'warning'
+  if (s === 'RECEIVED') return 'primary'
+  if (s === 'BILLED') return 'success'
+  return 'info'
+}
+
+// 表格底部合计行（总价列求和 + 第一列显示当前页总数）
+const totalPriceSummary: SummaryMethod<OutsourceSentPartItem> = ({
+  columns,
+  data,
+}) => {
+  return columns.map((col, index) => {
+    if (col.label === '总价') {
+      const sum = data.reduce((acc, row) => {
+        const q = Number(row.quantity ?? 0)
+        const p = Number(row.unit_price ?? 0)
+        return acc + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0)
+      }, 0)
+      return sum.toFixed(2)
+    }
+    if (index === 0) return `合计（本页 ${data.length} 条）`
+    return ''
+  })
+}
+
+function fmtDt(v: string | null): string {
+  return v ? new Date(v).toLocaleString() : '—'
 }
 
 onMounted(() => {
@@ -126,43 +335,97 @@ watch(companyId, () => {
     <ResponsiveList
       :items="items"
       :loading="loading"
-      row-key="part_id"
+      row-key="quote_id"
       :empty-text="error ?? '暂无对账记录'"
       stripe
       border
       size="small"
+      show-summary
+      :summary-method="totalPriceSummary"
+      @row-dblclick="onRowDblClick"
+      @sort-change="onSortChange"
     >
-      <el-table-column prop="part_serial_no" label="序列号" min-width="100" align="center"/>
       <el-table-column prop="part_drawing_no" label="图号" min-width="120" align="center"/>
       <el-table-column prop="part_name" label="名称" min-width="160" show-overflow-tooltip align="center"/>
-      <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
-      <el-table-column label="单价(元)" min-width="100" align="right">
+      <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center">
         <template #default="{ row }">
-          {{ (row as OutsourceSentPartItem).unit_price ?? '—' }}
+          {{ (row as OutsourceSentPartItem).customer_path ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="发送时间" min-width="160" align="center">
+      <el-table-column label="数量" min-width="90" align="right">
         <template #default="{ row }">
-          {{ new Date((row as OutsourceSentPartItem).sent_at).toLocaleString() }}
+          <el-input-number
+            v-if="editingId === (row as OutsourceSentPartItem).quote_id"
+            v-model="editBuffer.quantity"
+            :min="1"
+            :max="999999"
+            :controls="false"
+            size="small"
+            style="width: 80px"
+            :disabled="savingEdit"
+          />
+          <span v-else>{{ (row as OutsourceSentPartItem).quantity ?? '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="回收时间" min-width="160" align="center">
+      <el-table-column label="单价(元)" prop="unit_price" min-width="110" align="right" sortable="custom">
+        <template #default="{ row }">
+          <el-input-number
+            v-if="editingId === (row as OutsourceSentPartItem).quote_id"
+            v-model="editBuffer.unit_price"
+            :min="0"
+            :precision="2"
+            :step="0.01"
+            :controls="false"
+            size="small"
+            style="width: 100px"
+            :disabled="savingEdit"
+            placeholder="待填"
+          />
+          <span v-else>
+            {{
+              (row as OutsourceSentPartItem).unit_price !== null &&
+              (row as OutsourceSentPartItem).unit_price !== undefined
+                ? (row as OutsourceSentPartItem).unit_price
+                : '—'
+            }}
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="总价" min-width="110" align="right">
+        <template #default="{ row }">
+          <span>{{ displayTotalPrice(row as OutsourceSentPartItem) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="发送时间" prop="sent_at" min-width="160" align="center" sortable="custom">
+        <template #default="{ row }">
+          {{ fmtDt((row as OutsourceSentPartItem).sent_at) }}
+        </template>
+      </el-table-column>
+      <el-table-column label="回收时间" prop="received_at" min-width="160" align="center" sortable="custom">
         <template #default="{ row }">
           <template v-if="(row as OutsourceSentPartItem).received_at">
-            {{ new Date((row as OutsourceSentPartItem).received_at!).toLocaleString() }}
+            {{ fmtDt((row as OutsourceSentPartItem).received_at) }}
           </template>
           <span v-else style="color: var(--el-color-warning);">未回收</span>
         </template>
       </el-table-column>
-      <el-table-column label="当前状态" min-width="120" align="center">
+      <el-table-column label="状态" min-width="90" align="center">
         <template #default="{ row }">
-          {{ (row as OutsourceSentPartItem).current_status }}
+          <el-tag :type="statusTagType((row as OutsourceSentPartItem).status)" size="small">
+            {{ statusLabel((row as OutsourceSentPartItem).status) }}
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column label="对账" min-width="80" align="center">
         <template #default="{ row }">
+          <el-switch
+            v-if="editingId === (row as OutsourceSentPartItem).quote_id"
+            v-model="editBuffer.is_billed"
+            size="small"
+            :disabled="savingEdit"
+          />
           <el-tag
-            v-if="(row as OutsourceSentPartItem).is_billed"
+            v-else-if="(row as OutsourceSentPartItem).is_billed"
             type="success"
             size="small"
           >已对</el-tag>
@@ -173,44 +436,50 @@ watch(companyId, () => {
       <template #card="{ row }">
         <div class="rl-card-head">
           <span class="rl-card-title">{{ (row as OutsourceSentPartItem).part_name || '未命名零件' }}</span>
-          <el-tag
-            v-if="(row as OutsourceSentPartItem).is_billed"
-            type="success"
-            size="small"
-          >已对账</el-tag>
-          <el-tag v-else type="info" size="small">未对账</el-tag>
+          <el-tag :type="statusTagType((row as OutsourceSentPartItem).status)" size="small">
+            {{ statusLabel((row as OutsourceSentPartItem).status) }}
+          </el-tag>
         </div>
         <div class="rl-card-sub">
           图号 {{ (row as OutsourceSentPartItem).part_drawing_no || '—' }} ·
-          序列号 {{ (row as OutsourceSentPartItem).part_serial_no || '—' }}
+          客户 {{ (row as OutsourceSentPartItem).customer_path || '—' }}
         </div>
         <div class="rl-kv">
           <div class="rl-kv__item">
             <span class="rl-kv__key">数量</span>
-            <span class="rl-kv__val">{{ (row as OutsourceSentPartItem).quantity }}</span>
+            <span class="rl-kv__val">{{ (row as OutsourceSentPartItem).quantity ?? '—' }}</span>
           </div>
           <div class="rl-kv__item">
             <span class="rl-kv__key">单价</span>
             <span class="rl-kv__val">{{ (row as OutsourceSentPartItem).unit_price ?? '—' }}</span>
           </div>
           <div class="rl-kv__item">
+            <span class="rl-kv__key">总价</span>
+            <span class="rl-kv__val">{{ displayTotalPrice(row as OutsourceSentPartItem) }}</span>
+          </div>
+          <div class="rl-kv__item">
             <span class="rl-kv__key">发送时间</span>
-            <span class="rl-kv__val">
-              {{ new Date((row as OutsourceSentPartItem).sent_at).toLocaleString() }}
-            </span>
+            <span class="rl-kv__val">{{ fmtDt((row as OutsourceSentPartItem).sent_at) }}</span>
           </div>
           <div class="rl-kv__item">
             <span class="rl-kv__key">回收时间</span>
             <span class="rl-kv__val">
               <template v-if="(row as OutsourceSentPartItem).received_at">
-                {{ new Date((row as OutsourceSentPartItem).received_at!).toLocaleString() }}
+                {{ fmtDt((row as OutsourceSentPartItem).received_at) }}
               </template>
               <span v-else style="color: var(--el-color-warning);">未回收</span>
             </span>
           </div>
-          <div class="rl-kv__item rl-kv__item--full">
-            <span class="rl-kv__key">当前状态</span>
-            <span class="rl-kv__val">{{ (row as OutsourceSentPartItem).current_status }}</span>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">对账</span>
+            <span class="rl-kv__val">
+              <el-tag
+                v-if="(row as OutsourceSentPartItem).is_billed"
+                type="success"
+                size="small"
+              >已对</el-tag>
+              <el-tag v-else type="info" size="small">未对</el-tag>
+            </span>
           </div>
         </div>
       </template>

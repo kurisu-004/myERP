@@ -18,8 +18,10 @@ from core.exception import BizError
 from core.permission import CurrentUser
 from model import TOutsourceCompany, TOutsourceCompanyProcess, TProcess
 from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory
+from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
+from repository.outsource_quote import OutsourceQuoteRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
@@ -48,6 +50,8 @@ class OutsourceCompanyService:
         processes: ProcessRepository,
         part_repo: PartRepository | None = None,
         part_events: PartEventRepository | None = None,
+        outsource_quotes: OutsourceQuoteRepository | None = None,
+        customers: CustomerRepository | None = None,
         *,
         current_user: CurrentUser | None = None,
     ) -> None:
@@ -56,6 +60,9 @@ class OutsourceCompanyService:
         self.processes = processes
         self.part_repo = part_repo
         self.part_events = part_events
+        # PR-H 2026-07-29：对账页改为基于 t_outsource_quote
+        self.outsource_quotes = outsource_quotes
+        self.customers = customers
         self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
@@ -109,7 +116,7 @@ class OutsourceCompanyService:
         ]
 
     # ============================================================
-    # 外协对账（2026-07-28 新增）
+    # 外协对账（2026-07-28 新增；2026-07-29 基于 t_outsource_quote 重写）
     # ============================================================
     async def list_sent_parts(
         self,
@@ -118,12 +125,13 @@ class OutsourceCompanyService:
     ) -> OutsourceSentPartListOut:
         """外协对账：列出发送给该外协公司所有零件一览（与对账单核对）。
 
-        数据源：
-        - `t_part_event.outsource_company_id` (SENT_TO_OUTSOURCE)
-        - 每个 part 最近一次 RECEIVED_FROM_OUTSOURCE（同公司）作为 received_at
-        - 当前 part.status / location 标识「还在公司手里」vs「已回收」
+        PR-H 2026-07-29：数据源从 t_part_event 改为 t_outsource_quote ——
+        该表已包含 part_id / company_id / process_id / price / quantity /
+        sent_at / received_at / status / is_billed 等一切对账所需字段。
 
-        过滤：keyword（图号/名称）、sent_from / sent_to（事件时间区间）。
+        过滤：keyword（图号/名称，经 part_repo 预解析为 part_ids_in）、
+        sent_from / sent_to / received_from / received_to（时间区间）、
+        sort_by（PRICE / SENT_AT / RECEIVED_AT）+ sort_dir。
         """
         cid = parse_snowflake_id(company_id, field_name="company_id")
         if cid is None:
@@ -132,77 +140,89 @@ class OutsourceCompanyService:
         if company is None:
             raise self._not_found(company_id)
 
-        if self.part_events is None or self.part_repo is None:
+        if self.outsource_quotes is None or self.part_repo is None:
             return OutsourceSentPartListOut(
                 items=[], total=0, limit=query.limit, offset=query.offset,
             )
 
-        # 1. 查该公司的 SENT_TO_OUTSOURCE 事件
-        events = await self.part_events.list_sent_to_company(
+        # 1. keyword → part_ids_in（drawing_no / name ILIKE）
+        part_ids_in: list[int] | None = None
+        if query.keyword and query.keyword.strip():
+            kw = query.keyword.strip()
+            part_rows = await self.part_repo.list_with_filters(keyword=kw, limit=10_000)
+            part_ids_in = [p.id for p in part_rows]
+            if not part_ids_in:
+                return OutsourceSentPartListOut(
+                    items=[], total=0, limit=query.limit, offset=query.offset,
+                )
+
+        # 2. 查 t_outsource_quote（已发送状态：OUTSOURCING / RECEIVED / BILLED）
+        total = await self.outsource_quotes.count_reconciliation_for_company(
             company_id=cid,
+            part_ids_in=part_ids_in,
             sent_from=query.sent_from, sent_to=query.sent_to,
+            received_from=query.received_from, received_to=query.received_to,
+        )
+        if total == 0:
+            return OutsourceSentPartListOut(
+                items=[], total=0, limit=query.limit, offset=query.offset,
+            )
+        quotes = await self.outsource_quotes.list_reconciliation_for_company(
+            company_id=cid,
+            part_ids_in=part_ids_in,
+            sent_from=query.sent_from, sent_to=query.sent_to,
+            received_from=query.received_from, received_to=query.received_to,
+            sort_by=query.sort_by, sort_dir=query.sort_dir,
             limit=query.limit, offset=query.offset,
         )
-        total = await self.part_events.count_sent_to_company(
-            company_id=cid,
-            sent_from=query.sent_from, sent_to=query.sent_to,
-        )
-        if not events:
-            return OutsourceSentPartListOut(
-                items=[], total=total, limit=query.limit, offset=query.offset,
-            )
 
-        # 2. 批查 part + process + 该批 part 的最近 RECEIVE 事件
-        part_ids = list({e.part_id for e in events})
+        # 3. 批查 part / process / customer（输出拼装用）
+        part_ids = list({q.part_id for q in quotes})
         parts = await self.part_repo.list_by_ids(part_ids) if part_ids else []
         part_map = {p.id: p for p in parts}
-        process_ids = list({e.part_id for e in events if False})  # 占位；下面单独取
-        # 实际需要 process_id：事件本身没存 process_id，要从 part.next_process_id 取
-        process_ids = list({
-            part_map[e.part_id].next_process_id
-            for e in events if e.part_id in part_map
-            and part_map[e.part_id].next_process_id is not None
-        })
-        process_map = {}
+
+        process_ids = list({q.process_id for q in quotes})
+        proc_map = {}
         if process_ids:
             procs = await self.processes.list_by_ids(process_ids)
-            process_map = {p.id: p for p in procs}
+            proc_map = {p.id: p for p in procs}
 
-        received_events = await self.part_events.list_received_from_company(
-            part_ids=part_ids, company_id=cid,
-        )
-        received_by_part: dict[int, object] = {}
-        for re in received_events:
-            cur = received_by_part.get(re.part_id)
-            if cur is None or re.created_at > cur.created_at:
-                received_by_part[re.part_id] = re
+        # customer_path（一级 / 二级）：复用 customer 批查 helper
+        from service._customer_helpers import make_customer_path_cached, preload_customer_cache
+        cust_cache = await preload_customer_cache(
+            self.customers,
+            [p.customer_id for p in parts if p.customer_id],
+        ) if self.customers is not None else {}
 
-        # 3. 拼装（keyword 过滤在 SQL 已做，这里仅做输出拼装）
+        # 4. 拼装
         items: list[OutsourceSentPartItem] = []
-        for e in events:
-            p = part_map.get(e.part_id)
-            if p is None:
-                continue
-            re = received_by_part.get(p.id)
-            next_proc = process_map.get(p.next_process_id) if p.next_process_id else None
+        for q in quotes:
+            p = part_map.get(q.part_id)
+            proc = proc_map.get(q.process_id)
+            customer_path: str | None = None
+            if p and p.customer_id and p.customer_id in cust_cache:
+                customer_path = make_customer_path_cached(
+                    cust_cache[p.customer_id], cust_cache,
+                )
+            total_price = None
+            if q.price is not None and q.quantity is not None:
+                total_price = q.price * q.quantity
             items.append(OutsourceSentPartItem(
-                part_id=p.id,
-                part_serial_no=p.serial_no,
-                part_drawing_no=p.drawing_no,
-                part_name=p.name,
-                customer_path=None,  # 不在事件行拼装；如需可补 part → customer 解析
-                process_id=p.next_process_id if p.next_process_id else 0,
-                process_name=next_proc.name if next_proc else None,
-                quantity=p.quantity or 0,
-                unit_price=None,  # SENT_TO_OUTSOURCE 事件不存报价；可由 TPart.unit_price 兜底
-                total_price=None,
-                sent_at=e.created_at,
-                received_at=re.created_at if re else None,
-                current_status=PartStatus(p.status),
-                current_location=(
-                    PartLocation(p.location) if p.location else None
-                ),
-                is_billed=False,
+                quote_id=q.id,
+                version=q.version,
+                part_id=q.part_id,
+                part_drawing_no=p.drawing_no if p else None,
+                part_name=p.name if p else None,
+                customer_path=customer_path,
+                process_id=q.process_id,
+                process_name=proc.name if proc else None,
+                quantity=q.quantity,
+                unit_price=q.price,
+                total_price=total_price,
+                sent_at=q.sent_at,
+                received_at=q.received_at,
+                status=q.status,
+                is_billed=bool(getattr(q, "is_billed", False)),
             ))
         return OutsourceSentPartListOut(
             items=items, total=total,

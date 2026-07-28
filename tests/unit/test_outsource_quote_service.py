@@ -21,7 +21,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
-from model.enums import OutsourceQuoteStatus, ProcessCategory
+from model.enums import OutsourceQuoteEventType, OutsourceQuoteStatus, ProcessCategory
 from model.outsource_company import TOutsourceCompany
 from model.outsource_quote import TOutsourceQuote
 from model.outsource_quote_event import TOutsourceQuoteEvent
@@ -741,5 +741,159 @@ class TestSearchQuotesStatusesMulti:
         # keyword 已传给 part_repo（_resolve_part_ids 路径）
         call_kwargs = svc.parts.count_with_filters.call_args.kwargs
         assert call_kwargs.get("keyword") == "NOMATCH"
+
+
+# =============================================================================
+# 对账页更新 reconcile_update_quote（PR-H 2026-07-29）
+# =============================================================================
+
+
+class TestReconcileUpdateQuote:
+    """对账页双击编辑：OUTSOURCING / RECEIVED / BILLED 状态可改
+    unit_price / quantity / is_billed（OCC 版本校验）。
+    """
+
+    async def test_edit_price_and_quantity_on_outsourcing(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+    ):
+        """OUTSOURCING 状态：允许改单价 + 数量；状态保持不变。"""
+        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
+        from decimal import Decimal
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.OUTSOURCING.value,
+            version=3, price=Decimal("0"),
+        )
+        q.sent_at = _now()
+        mock_quotes.get_by_id = AsyncMock(return_value=q)
+        mock_parts.list_by_ids = AsyncMock(return_value=[_make_part()])
+        mock_companies.list_by_ids = AsyncMock(return_value=[_make_company()])
+        mock_processes.list_by_ids = AsyncMock(return_value=[_make_process()])
+
+        out = await svc.reconcile_update_quote(
+            str(q.id),
+            OutsourceReconciliationUpdateRequest(
+                version=3,
+                unit_price=Decimal("45.50"),
+                quantity=8,
+            ),
+        )
+        assert q.price == Decimal("45.50")
+        assert q.quantity == 8
+        assert q.status == OutsourceQuoteStatus.OUTSOURCING.value
+        assert out.version == q.version
+
+    async def test_mark_billed_from_received(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+        mock_quote_events,
+    ):
+        """RECEIVED + is_billed=True → 状态机 mark_billed → BILLED。"""
+        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.RECEIVED.value, version=1,
+        )
+        q.is_billed = False
+        mock_quotes.get_by_id = AsyncMock(return_value=q)
+        mock_parts.list_by_ids = AsyncMock(return_value=[_make_part()])
+        mock_companies.list_by_ids = AsyncMock(return_value=[_make_company()])
+        mock_processes.list_by_ids = AsyncMock(return_value=[_make_process()])
+
+        await svc.reconcile_update_quote(
+            str(q.id),
+            OutsourceReconciliationUpdateRequest(version=1, is_billed=True),
+        )
+        assert q.status == OutsourceQuoteStatus.BILLED.value
+        # 状态机回调写 MARKED_BILLED 事件
+        assert mock_quote_events.add.called
+
+    async def test_reopen_billed_back_to_received(
+        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
+        mock_quote_events,
+    ):
+        """BILLED + is_billed=False → 直接 ORM 写 status=RECEIVED（library
+        不允许 final 状态出向转换）+ 写 REOPENED_BILLED 事件。"""
+        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.BILLED.value, version=2,
+        )
+        q.is_billed = True
+        mock_quotes.get_by_id = AsyncMock(return_value=q)
+        mock_parts.list_by_ids = AsyncMock(return_value=[_make_part()])
+        mock_companies.list_by_ids = AsyncMock(return_value=[_make_company()])
+        mock_processes.list_by_ids = AsyncMock(return_value=[_make_process()])
+
+        await svc.reconcile_update_quote(
+            str(q.id),
+            OutsourceReconciliationUpdateRequest(version=2, is_billed=False),
+        )
+        assert q.status == OutsourceQuoteStatus.RECEIVED.value
+        # REOPENED_BILLED 事件已写（不通过 sm 转换）
+        written = [c.args[0] for c in mock_quote_events.add.call_args_list]
+        assert any(
+            e.event_type == OutsourceQuoteEventType.REOPENED_BILLED.value
+            for e in written
+        )
+
+    async def test_version_conflict_409(
+        self, svc, mock_quotes,
+    ):
+        """OCC：version 不匹配 → BIZ_VERSION_CONFLICT 409。"""
+        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
+        from decimal import Decimal
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.OUTSOURCING.value, version=5,
+        )
+        mock_quotes.get_by_id = AsyncMock(return_value=q)
+
+        with pytest.raises(BizError) as exc:
+            await svc.reconcile_update_quote(
+                str(q.id),
+                OutsourceReconciliationUpdateRequest(
+                    version=3, unit_price=Decimal("10"),
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_VERSION_CONFLICT
+        assert exc.value.http_status == 409
+
+    async def test_reject_draft_status(
+        self, svc, mock_quotes,
+    ):
+        """DRAFT 状态不允许对账编辑。"""
+        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
+        from decimal import Decimal
+
+        q = _make_quote(status=OutsourceQuoteStatus.DRAFT.value, version=1)
+        mock_quotes.get_by_id = AsyncMock(return_value=q)
+
+        with pytest.raises(BizError) as exc:
+            await svc.reconcile_update_quote(
+                str(q.id),
+                OutsourceReconciliationUpdateRequest(
+                    version=1, unit_price=Decimal("10"),
+                ),
+            )
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION
+
+    async def test_mark_billed_requires_received(
+        self, svc, mock_quotes,
+    ):
+        """OUTSOURCING 状态直接勾 is_billed=True → 拒绝（必须先 RECEIVED）。"""
+        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
+
+        q = _make_quote(
+            status=OutsourceQuoteStatus.OUTSOURCING.value, version=1,
+        )
+        q.is_billed = False
+        mock_quotes.get_by_id = AsyncMock(return_value=q)
+
+        with pytest.raises(BizError) as exc:
+            await svc.reconcile_update_quote(
+                str(q.id),
+                OutsourceReconciliationUpdateRequest(version=1, is_billed=True),
+            )
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION
 
 

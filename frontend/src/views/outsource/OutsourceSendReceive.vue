@@ -3,11 +3,11 @@
 3 个 tab：
   - 可发送（默认）：列出至少有一条 APPROVED 报价的「可发送」零件
   - 待接收：列出 status=OUTSOURCE 的零件，等回收
-  - 已接收历史：列出 status=IN_PROCESS/INSPECTION/READY_TO_SHIP/DELIVERED/COMPLETED
-    的全部零件，前端按 part.events 是否含 SENT_TO_OUTSOURCE 过滤「曾外协过」
-    （更稳的方案是后端新增 GET /parts?has_outsource_history=true，本期先用前端 events 过滤）
 
-URL ?tab=sendable|receiving|received 记忆上次选择；初次进入默认 可发送。
+PR-H 2026-07-29：「已接收历史」tab 已移除 —— 功能由 per-company 对账页承担
+（/outsource/companies/:id/sent-parts，基于 t_outsource_quote 统一事实表）。
+
+URL ?tab=sendable|receiving 记忆上次选择；初次进入默认 可发送。
 -->
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
@@ -47,7 +47,7 @@ import type { PartListItem } from '@/types/parts'
  * OutsourceSendableItem 统一承担；每行已含 send_mode + source_status。 */
 type SendableItem = OutsourceSendableItem
 
-type TabName = 'sendable' | 'receiving' | 'received'
+type TabName = 'sendable' | 'receiving'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,16 +60,17 @@ const paginationLayout = computed(() =>
 
 // ============================================================
 // Tab 状态（URL ?tab= 同步）
+// PR-H 2026-07-29：「已接收历史」tab 已移除（功能由 per-company 对账页承担）。
 // ============================================================
 function readTabFromQuery(): TabName {
   const t = route.query.tab
-  if (t === 'receiving' || t === 'received') return t
+  if (t === 'receiving') return t
   return 'sendable'
 }
 const activeTab = ref<TabName>(readTabFromQuery())
 
 watch(() => route.query.tab, (q) => {
-  if (q === 'sendable' || q === 'receiving' || q === 'received') {
+  if (q === 'sendable' || q === 'receiving') {
     activeTab.value = q
   }
 })
@@ -531,8 +532,7 @@ async function onConfirmReceive(): Promise<void> {
     }
     receiveDialogVisible.value = false
     await refreshReceiving()
-    // 接收成功后该零件应出现在「已接收历史」tab
-    void refreshReceived()
+    // PR-H 2026-07-29：「已接收历史」tab 已移除（功能由 per-company 对账页承担）
   } catch (e) {
     ElMessage.error((e as Error).message ?? '操作失败')
   } finally {
@@ -557,72 +557,9 @@ function onReceivingPageSizeChange(size: number): void {
 }
 
 // ============================================================
-// Tab 3：已接收历史
-// ============================================================
-const receivedItems = ref<PartListItem[]>([])
-const receivedTotal = ref(0)
-const receivedLoading = ref(false)
-const receivedError = ref<string | null>(null)
-const receivedFilter = reactive({ keyword: '', customer_id: '' })
-const receivedPage = ref(1)
-const receivedPageSize = ref(20)
-
-// 「已接收历史」=「曾外协过」+ 已离开 OUTSOURCE（不等于 PENDING/OUTSOURCE/PROGRAMMING/CANCELLED）
-// 与 refreshReceiving 对称：一次 listParts + 服务端分页，无 N+1。
-const RECEIVED_STATUSES = [
-  'IN_PROCESS',
-  'INSPECTION',
-  'READY_TO_SHIP',
-  'DELIVERED',
-  'COMPLETED',
-] as const
-
-async function refreshReceived(): Promise<void> {
-  receivedLoading.value = true
-  receivedError.value = null
-  try {
-    const r = await listParts({
-      statuses: [...RECEIVED_STATUSES],
-      keyword: receivedFilter.keyword || undefined,
-      customer_id: receivedFilter.customer_id || undefined,
-      has_outsource_history: true,
-      limit: receivedPageSize.value,
-      offset: (receivedPage.value - 1) * receivedPageSize.value,
-    })
-    receivedItems.value = r.items
-    receivedTotal.value = r.total
-  } catch (e) {
-    receivedItems.value = []
-    receivedTotal.value = 0
-    receivedError.value = (e as Error).message ?? '加载已接收历史失败'
-    ElMessage.error(receivedError.value)
-  } finally {
-    receivedLoading.value = false
-  }
-}
-
-function onReceivedSearch(): void {
-  receivedPage.value = 1
-  void refreshReceived()
-}
-function onReceivedReset(): void {
-  receivedFilter.keyword = ''
-  receivedFilter.customer_id = ''
-  receivedPage.value = 1
-  void refreshReceived()
-}
-function onReceivedPageSizeChange(size: number): void {
-  receivedPageSize.value = size
-  receivedPage.value = 1
-  void refreshReceived()
-}
-
-function goPartDetail(row: PartListItem): void {
-  router.push(`/parts/${row.id}`)
-}
-
-// ============================================================
 // 初始化
+// PR-H 2026-07-29：「已接收历史」tab 已移除（功能由 per-company 对账页承担）；
+// receivedItems / refreshReceived / RECEIVED_STATUSES / goPartDetail 一并删除。
 // ============================================================
 onMounted(async () => {
   await loadLookups()
@@ -636,7 +573,6 @@ onMounted(async () => {
 watch(activeTab, async (t) => {
   if (t === 'sendable') void refreshSendable()
   else if (t === 'receiving') void refreshReceiving()
-  else if (t === 'received') void refreshReceived()
 })
 </script>
 
@@ -1002,107 +938,6 @@ watch(activeTab, async (t) => {
           </div>
         </el-tab-pane>
 
-        <!-- ====================== Tab 3: 已接收历史 ====================== -->
-        <el-tab-pane name="received" label="已接收历史">
-          <div class="filter-row">
-            <el-input
-              v-model="receivedFilter.keyword"
-              placeholder="图号 / 名称 / 序列号"
-              clearable
-              style="width: 280px"
-              @keyup.enter="onReceivedSearch"
-            />
-            <el-select
-              v-model="receivedFilter.customer_id"
-              clearable
-              placeholder="客户（L1）"
-              style="width: 220px"
-            >
-              <el-option
-                v-for="c in customers.filter((x) => x.parent_id === null)"
-                :key="c.id"
-                :label="c.name"
-                :value="c.id"
-              />
-            </el-select>
-            <el-button type="primary" @click="onReceivedSearch">查询</el-button>
-            <el-button @click="onReceivedReset">重置</el-button>
-            <span v-if="receivedTotal > 0" class="total-hint">共 {{ receivedTotal }} 条</span>
-          </div>
-          <ResponsiveList
-            :items="receivedItems"
-            :loading="receivedLoading"
-            row-key="id"
-            :empty-text="receivedError ?? '暂无已接收的零件'"
-            :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
-            stripe
-            border
-            size="small"
-          >
-            <el-table-column prop="serial_no" label="序列号" min-width="100" align="center"/>
-            <el-table-column prop="drawing_no" label="图号" min-width="120" align="center"/>
-            <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
-            <el-table-column label="状态" min-width="100" align="center">
-              <template #default="{ row }">
-                <el-tag size="small" effect="plain">{{ (row as PartListItem).status }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip align="center"/>
-            <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>
-            <el-table-column label="操作" min-width="100" fixed="right" align="center">
-              <template #default="{ row }">
-                <el-button
-                  link
-                  type="primary"
-                  size="small"
-                  @click="goPartDetail(row as unknown as PartListItem)"
-                >详情</el-button>
-              </template>
-            </el-table-column>
-
-            <template #card="{ row }">
-              <div class="rl-card-head">
-                <span class="rl-card-title">{{ (row as PartListItem).name }}</span>
-                <el-tag size="small" effect="plain">{{ (row as PartListItem).status }}</el-tag>
-              </div>
-              <div class="rl-card-sub">
-                图号 {{ (row as PartListItem).drawing_no || '—' }} · 序列号 {{ (row as PartListItem).serial_no || '—' }}
-              </div>
-              <div class="rl-kv">
-                <div class="rl-kv__item rl-kv__item--full">
-                  <span class="rl-kv__key">客户</span>
-                  <span class="rl-kv__val">{{ (row as PartListItem).customer_path || '—' }}</span>
-                </div>
-                <div class="rl-kv__item">
-                  <span class="rl-kv__key">计划交期</span>
-                  <span class="rl-kv__val">{{ (row as PartListItem).planned_delivery_date || '—' }}</span>
-                </div>
-              </div>
-              <div class="rl-card-actions">
-                <el-button
-                  link
-                  type="primary"
-                  size="small"
-                  @click="goPartDetail(row as PartListItem)"
-                >详情</el-button>
-              </div>
-            </template>
-          </ResponsiveList>
-          <div class="pagination">
-            <el-pagination
-              v-model:current-page="receivedPage"
-              v-model:page-size="receivedPageSize"
-              :page-sizes="[20, 50, 100]"
-              :total="receivedTotal"
-              :layout="paginationLayout"
-              :pager-count="isMobile ? 5 : 7"
-              background
-              size="small"
-              @current-change="refreshReceived"
-              @size-change="onReceivedPageSizeChange"
-            />
-          </div>
-        </el-tab-pane>
       </el-tabs>
     </el-card>
 

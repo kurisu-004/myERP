@@ -21,6 +21,7 @@ from core.permission import CurrentUser
 from model import TOutsourceQuote
 from model.customer import TCustomer
 from model.enums import (
+    OutsourceQuoteEventType,
     OutsourceQuoteSortKey,
     OutsourceQuoteStatus,
     PartEventType,
@@ -595,6 +596,87 @@ class OutsourceQuoteService:
         await self.quotes.soft_delete(quote)
 
     # ============================================================
+    # 对账页更新（PR-H 2026-07-29）：OUTSOURCING / RECEIVED 状态可改 unit_price / quantity / is_billed
+    # ============================================================
+    async def reconcile_update_quote(
+        self, quote_id: str, data,  # OutsourceReconciliationUpdateRequest
+    ) -> OutsourceQuoteOut:
+        """对账页双击编辑：单价 / 数量 / 对账标记。允许状态 OUTSOURCING / RECEIVED。
+
+        - 勾 is_billed=True 且当前 RECEIVED → mark_billed（RECEIVED → BILLED）
+        - 勾 is_billed=False 且当前 BILLED → 直接 ORM 写 status=RECEIVED（library
+          不允许 final 状态有出向转换）+ 写 REOPENED_BILLED event
+        - 其他状态不接受修改
+        """
+        qid = parse_snowflake_id(quote_id, field_name="quote_id")
+        if qid is None:
+            raise self._not_found(quote_id)
+        quote = await self.quotes.get_by_id(qid)
+        if quote is None:
+            raise self._not_found(quote_id)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("status", "version"),
+        )
+        if quote.version != data.version:
+            raise BizError(
+                code=ErrCode.BIZ_VERSION_CONFLICT,
+                message="该报价已被其他用户修改，请刷新后重试",
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
+        if quote.status not in (
+            OutsourceQuoteStatus.OUTSOURCING.value,
+            OutsourceQuoteStatus.RECEIVED.value,
+            OutsourceQuoteStatus.BILLED.value,
+        ):
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
+                message=(
+                    f"对账编辑仅允许 OUTSOURCING / RECEIVED / BILLED 状态；"
+                    f"当前 {quote.status}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 应用 patch
+        if data.unit_price is not None:
+            quote.price = data.unit_price
+        if data.quantity is not None:
+            quote.quantity = data.quantity
+        if data.is_billed is not None:
+            new_billed = bool(data.is_billed)
+            cur_billed = bool(quote.is_billed)
+            if new_billed and not cur_billed:
+                # RECEIVED → BILLED（mark_billed 状态机）
+                if quote.status != OutsourceQuoteStatus.RECEIVED.value:
+                    raise BizError(
+                        code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
+                        message="只有 RECEIVED 状态可以标记为已对账（BILLED）",
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                quote.sm.mark_billed(
+                    event_repo=self.quote_events,
+                    created_by=self._user_id,
+                )
+            elif not new_billed and cur_billed:
+                # BILLED → RECEIVED（library 不允许 final 状态有出向转换；直接 ORM）
+                quote.status = OutsourceQuoteStatus.RECEIVED.value
+                # 写 REOPENED_BILLED event（不通过 sm 转换）
+                from model.outsource_quote_event import TOutsourceQuoteEvent
+                self.quote_events.add(TOutsourceQuoteEvent(
+                    id=new_id(),
+                    quote_id=quote.id,
+                    event_type=OutsourceQuoteEventType.REOPENED_BILLED.value,
+                    from_status=OutsourceQuoteStatus.BILLED.value,
+                    to_status=OutsourceQuoteStatus.RECEIVED.value,
+                    note="对账撤销（误勾 is_billed）",
+                    created_by=self._user_id,
+                ))
+
+        quote.updated_by = self._user_id
+        await self.quotes.update(quote)
+        return await self._to_out(quote)
+
+    # ============================================================
     # 「外协发送」列表：至少有一条 APPROVED 报价 + 状态可发送的零件
     # ============================================================
 
@@ -870,6 +952,11 @@ class OutsourceQuoteService:
                 submitted_at=q.submitted_at,
                 reviewed_at=q.reviewed_at,
                 review_note=q.review_note,
+                # PR-H 2026-07-29：外协全生命周期字段
+                sent_at=q.sent_at,
+                received_at=q.received_at,
+                quantity=q.quantity,
+                is_billed=bool(getattr(q, "is_billed", False)),
                 created_at=q.created_at,
                 updated_at=q.updated_at,
                 part_serial_no=part.serial_no if part else None,

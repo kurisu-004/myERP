@@ -221,11 +221,14 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
     assert sent.next_process_id == world["outsource_process"].id
     assert sent.version > original_version
 
-    used_quote = await service.outsource_quotes.get_by_id(int(approved.id))
-    assert used_quote is not None
-    assert used_quote.status == OutsourceQuoteStatus.USED.value
-    quote_events = await service.quote_events.list_by_quote(used_quote.id)
-    assert quote_events[-1].event_type == OutsourceQuoteEventType.USED.value
+    # PR-H 2026-07-29：发送后报价为 OUTSOURCING（不再是 USED）
+    sent_quote = await service.outsource_quotes.get_by_id(int(approved.id))
+    assert sent_quote is not None
+    assert sent_quote.status == OutsourceQuoteStatus.OUTSOURCING.value
+    assert sent_quote.sent_at is not None
+    assert sent_quote.quantity == world["part"].quantity
+    quote_events = await service.quote_events.list_by_quote(sent_quote.id)
+    assert quote_events[-1].event_type == OutsourceQuoteEventType.MARKED_OUTSOURCING.value
 
     received = await service.receive_from_outsource(
         world["part"].id,
@@ -238,6 +241,12 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
     assert received.location == PartLocation.PRODUCTION_SHELF.value
     assert received.current_holder_id == world["production_shelf"].id
     assert received.next_process_id == world["inhouse_process"].id
+
+    # PR-H 2026-07-29：接收后报价为 RECEIVED + received_at 已写
+    received_quote = await service.outsource_quotes.get_by_id(int(approved.id))
+    assert received_quote is not None
+    assert received_quote.status == OutsourceQuoteStatus.RECEIVED.value
+    assert received_quote.received_at is not None
 
     part_events = await service.events.list_by_part(world["part"].id)
     assert [event.event_type for event in part_events] == [
@@ -315,9 +324,11 @@ async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db)
     assert received.status == PartStatus.READY_TO_SHIP
     assert received.location is None
 
-    used_quote = await service.outsource_quotes.get_by_id(int(approved.id))
-    assert used_quote is not None
-    assert used_quote.status == OutsourceQuoteStatus.USED.value
+    # PR-H 2026-07-29：接收后报价为 RECEIVED（不再是 USED）
+    received_quote = await service.outsource_quotes.get_by_id(int(approved.id))
+    assert received_quote is not None
+    assert received_quote.status == OutsourceQuoteStatus.RECEIVED.value
+    assert received_quote.received_at is not None
 
     part_events = await service.events.list_by_part(world["part"].id)
     assert [event.event_type for event in part_events] == [

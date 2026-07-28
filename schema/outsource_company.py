@@ -17,7 +17,9 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from model.enums import PartLocation, PartStatus, ProcessCategory
+from model.enums import (
+    OutsourceSentPartSortKey, PartLocation, PartStatus, ProcessCategory, SortDir,
+)
 from schema._types import IdStr, IdStrNonNull
 
 
@@ -127,34 +129,40 @@ class OutsourceCompanyListQuery(BaseModel):
 
 
 # ============================================================
-# 外协对账：发送给某外协公司的所有零件一览（2026-07-28 新增）
+# 外协对账：发送给某外协公司的所有零件一览（2026-07-28 新增；2026-07-29 基于 t_outsource_quote 重写）
 # ============================================================
 
 
 class OutsourceSentPartItem(BaseModel):
-    """外协对账端点返回项：一次 SENT_TO_OUTSOURCE 事件 + 当前 part 状态。
+    """外协对账端点返回项：一条 t_outsource_quote（OUTSOURCING / RECEIVED / BILLED）。
+
+    PR-H 2026-07-29：数据源从 t_part_event 改为 t_outsource_quote ——
+    该表已包含 part_id / company_id / process_id / price / quantity /
+    sent_at / received_at / status / is_billed 等一切对账所需字段。
 
     字段说明：
-    - sent_at / received_at：TPartEvent 的 created_at（事件时间）
-    - received_at 为 NULL 表示该 part 还在该公司手上（status=OUTSOURCE）
-    - unit_price / total_price：来自 APPROVED 报价；DIRECT 直发为 None
-    - is_billed：对账标记（当前固定 False；未来 POST mark-billed API 触发）
+    - quote_id：t_outsource_quote.id（行编辑端点入参）
+    - version：OCC 乐观锁
+    - unit_price：来自 quote.price；DIRECT 直发自动创建的报价为 0
+    - total_price：quote.price × quote.quantity（NULL 单价时 NULL）
+    - received_at 为 NULL 表示未回收（status=OUTSOURCING）
+    - 无 part_serial_no：送外协后序列号被回收，无业务意义（PR-H 2026-07-29 移除）
     """
 
+    quote_id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号；行编辑 OCC")
     part_id: IdStrNonNull
-    part_serial_no: str | None = None
     part_drawing_no: str | None = None
     part_name: str | None = None
     customer_path: str | None = None
     process_id: IdStrNonNull
     process_name: str | None = None
-    quantity: int
+    quantity: int | None = None
     unit_price: Decimal | None = None
     total_price: Decimal | None = None
-    sent_at: datetime
+    sent_at: datetime | None = None
     received_at: datetime | None = None
-    current_status: PartStatus
-    current_location: PartLocation | None = None
+    status: str = Field(description="OUTSOURCING / RECEIVED / BILLED")
     is_billed: bool = False
 
 
@@ -166,15 +174,23 @@ class OutsourceSentPartListOut(BaseModel):
 
 
 class OutsourceSentPartListQuery(BaseModel):
-    """外协对账一览查询参数（2026-07-28 新增）。"""
+    """外协对账一览查询参数（2026-07-28 新增；2026-07-29 补 sort_by / sort_dir）。"""
 
-    keyword: str | None = Field(default=None)
+    keyword: str | None = Field(default=None, description="按图号/名称模糊搜索")
     sent_from: datetime | None = Field(
         default=None, description="发送时间起点（含）",
     )
     sent_to: datetime | None = Field(
         default=None, description="发送时间终点（含）",
     )
+    received_from: datetime | None = Field(
+        default=None, description="回收时间起点（含）",
+    )
+    received_to: datetime | None = Field(
+        default=None, description="回收时间终点（含）",
+    )
+    sort_by: OutsourceSentPartSortKey = OutsourceSentPartSortKey.SENT_AT
+    sort_dir: SortDir = SortDir.DESC
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
 
