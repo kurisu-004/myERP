@@ -211,6 +211,8 @@ export interface OutsourceSendableItem {
   customer_path: string | null
   next_process_id: string
   next_process_name: string | null
+  /** PR-H 2026-07-28：源货架 code（绑了外协工序的货架，如 C2） */
+  shelf_code: string | null
   /** APPROVAL 单值；DIRECT 为 null（用 company_options） */
   outsource_company_id: string | null
   outsource_company_name: string | null

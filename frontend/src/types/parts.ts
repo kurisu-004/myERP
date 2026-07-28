@@ -105,6 +105,10 @@ export interface PartListItem {
   /** 所在位置（2026-07-11 接入）：装配体子件表用，PRODUCTION_SHELF→'货架 A-01'；
    * INSPECTION_SHELF→'品检 A-01'；WORKER→'工人 张三'；OFFICE→'编程员持有'。 */
   current_holder_display?: string | null
+  /** PR-H 2026-07-28：下一工序 id（NULL = 未设置；新建外协报价 picker 自动填工序用） */
+  next_process_id: string | null
+  /** PR-H 2026-07-28：下一工序名 */
+  next_process_name: string | null
 }
 
 /** 后端 PartEventType 枚举 */

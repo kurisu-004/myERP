@@ -188,9 +188,30 @@ def mock_part_events() -> PartEventRepository:
 
 
 @pytest.fixture
+def mock_shelves():
+    """PR-H 2026-07-28：PartListItem 拼装需要 shelf_code。"""
+    from repository.shelf import ShelfRepository
+    repo = ShelfRepository.__new__(ShelfRepository)
+    repo.session = MagicMock()
+    repo.list_by_ids = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture
+def mock_workers():
+    """PR-H 2026-07-28：PartListItem 拼装需要 worker_name。"""
+    from repository.worker import WorkerRepository
+    repo = WorkerRepository.__new__(WorkerRepository)
+    repo.session = MagicMock()
+    repo.list_by_ids = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture
 def svc(
     mock_quotes, mock_quote_events, mock_parts, mock_companies,
-    mock_processes, mock_customers, mock_part_events,
+    mock_processes, mock_customers, mock_shelves, mock_workers,
+    mock_part_events,
 ) -> OutsourceQuoteService:
     return OutsourceQuoteService(
         quotes=mock_quotes,
@@ -199,6 +220,8 @@ def svc(
         companies=mock_companies,
         processes=mock_processes,
         customers=mock_customers,
+        shelves=mock_shelves,
+        workers=mock_workers,
         part_events=mock_part_events,
         current_user=None,
     )

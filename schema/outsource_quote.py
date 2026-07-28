@@ -150,6 +150,8 @@ class ApprovedQuoteForSendItem(BaseModel):
     customer_path: str | None = None
     next_process_id: IdStr | None = None
     next_process_name: str | None = None
+    # PR-H 2026-07-28：源货架 code（绑了外协工序的货架，如 C2）
+    shelf_code: str | None = None
     # 已批准的最优报价（仅展示用途）
     outsource_company_id: IdStrNonNull
     outsource_company_name: str | None = None

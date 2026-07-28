@@ -75,6 +75,31 @@ class ShelfProcessRepository:
         result = await self.session.execute(stmt)
         return [int(pid) for pid in result.scalars().all()]
 
+    async def list_shelf_ids_with_process_category(
+        self, category: str, *, include_deleted: bool = False,
+    ) -> list[int]:
+        """反向按工序类别查架：返回所有「绑定了 category 类别工序」active 货架 id 集合（去重）。
+
+        用于：
+          - 发外协：源货架必须在 OUTSOURCE 集合中
+          - 新建报价 picker 默认筛选：候选零件 current_holder_id 必须在 OUTSOURCE 集合中
+
+        2026-07-28 PR-H 重构"外协统一走外协工序货架"时新增。
+        """
+        from model import TProcess
+        from sqlalchemy import distinct
+
+        stmt = (
+            select(distinct(TShelfProcess.shelf_id))
+            .join(TProcess, TProcess.id == TShelfProcess.process_id)
+            .where(TProcess.category == category)
+            .where(TProcess.deleted_at.is_(None))
+        )
+        if not include_deleted:
+            stmt = stmt.where(TShelfProcess.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return [int(sid) for sid in result.scalars().all()]
+
     async def list_all_mappings(self) -> dict[int, list[int]]:
         """批量取所有 active 映射，返回 `{shelf_id: [process_id, ...]}`。
 

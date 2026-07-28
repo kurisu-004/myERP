@@ -118,7 +118,8 @@ class ErrCode(IntEnum):
     BIZ_OUTSOURCE_PROCESS_NOT_MAPPED = 21204   # 公司未映射该 OUTSOURCE 工序
     BIZ_OUTSOURCE_COMPANY_IN_USE = 21205       # 被 part OUTSOURCE 引用 / 仍映射工序
     BIZ_PART_NOT_OUTSOURCEABLE = 21206         # 当前状态不允许发送外协（兜底，正常流不该撞）
-    BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF = 21207  # 直接发送外协要求零件位于 C2 / 生产/外协 C2 货架
+    BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF = 21207  # 直接发送外协要求零件位于绑定了外协工序的货架
+    BIZ_OUTSOURCE_NO_SHELF = 21208            # 系统无任何绑定了外协工序的货架（2026-07-28 PR-H）
 
     # ---- 外协报价（t_outsource_quote，2026-07-16 新增）----
     # 213xx：外协报价相关

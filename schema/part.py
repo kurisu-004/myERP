@@ -171,9 +171,9 @@ class PartListItem(BaseModel):
     与 PartOut 的差异：
     - 不含 `assembly_id` / `current_holder_id` / `current_holder_kind`：
       一览不再显示装配链接、多态 holder；
-    - 不含 `placed_at` / `next_process_id` / `next_process_name`：
-      一览不再显示「下一道工序」/「首次放上架时间」。
+    - 不含 `placed_at`：仅放上架时间不暴露给 picker。
 
+    2026-07-28 PR-H：补 `next_process_id` / `next_process_name` 给 picker 自动填工序用。
     详情 / 创建 / 编辑响应仍用 PartOut；本 schema 仅服务于 list 端点。
     """
 
@@ -229,6 +229,14 @@ class PartListItem(BaseModel):
         description=(
             "所在位置的人类可读描述；见 PartOut 字段说明"
         ),
+    )
+    # 2026-07-28 PR-H：picker 自动填工序
+    next_process_id: IdStr = Field(
+        default=None,
+        description="下一工序 id（NULL = 未设置；新建外协报价 picker 自动填工序用）",
+    )
+    next_process_name: str | None = Field(
+        default=None, description="下一工序名（NULL = 未设置）"
     )
 
 

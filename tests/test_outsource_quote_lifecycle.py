@@ -25,6 +25,8 @@ from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
+from repository.shelf import ShelfRepository
+from repository.worker import WorkerRepository
 from schema.outsource_quote import (
     OutsourceQuoteApproveRequest,
     OutsourceQuoteCreateRequest,
@@ -74,6 +76,8 @@ def _make_service(session) -> OutsourceQuoteService:
         companies=OutsourceCompanyRepository(session),
         processes=ProcessRepository(session),
         customers=CustomerRepository(session),
+        shelves=ShelfRepository(session),
+        workers=WorkerRepository(session),
         part_events=PartEventRepository(session),
     )
 

@@ -15,6 +15,7 @@ import {
   listApprovedForSend,
   listCompaniesByProcess,
   listOutsourceQuotes,
+  listQuotableParts,
   rejectOutsourceQuote,
   softDeleteOutsourceQuote,
   submitOutsourceQuote,
@@ -293,14 +294,10 @@ async function loadLookups(): Promise<void> {
     customers.value = await listCustomers()
     const ps = await listProcesses({ limit: 200 })
     processes.value = ps.items.filter((p) => p.category === 'OUTSOURCE')
-    // 报价只针对可继续流转的零件：PENDING / IN_PROCESS；按创建时间倒序，最多 500 条
-    const pt = await listParts({
-      statuses: ['PENDING', 'IN_PROCESS'],
-      sort_by: 'CREATED_AT',
-      sort_dir: 'DESC',
-      limit: 500,
-    })
-    parts.value = pt.items
+    // PR-H 2026-07-28：新建报价 picker 改为「仅显示外协工序货架上的零件」
+    // 旧版用 listParts({ statuses: ['PENDING','IN_PROCESS'], limit: 500 })；
+    // 新版走专用端点 GET /outsource-quotes/quotable-parts
+    parts.value = await listQuotableParts({ limit: 500 })
   } catch (e) {
     ElMessage.error((e as Error).message ?? '下拉数据加载失败')
   }
@@ -461,6 +458,28 @@ watch(
     void loadCompaniesByProcess(newPid)
   },
 )
+
+/** PR-H 2026-07-28：选择零件后自动填工序（仅当 next_process_id 类别 = OUTSOURCE）。
+ *  其他情况（INHOUSE / NULL）留空并提示。 */
+function onCreatePartChange(partId: string): void {
+  createForm.process_id = ''
+  createForm.outsource_company_id = ''
+  if (!partId) return
+  const part = parts.value.find((p) => p.id === partId)
+  if (!part?.next_process_id) {
+    if (part) ElMessage.info('该零件未设置下一工序，请手动选择')
+    return
+  }
+  // 仅当 next_process 类别 = OUTSOURCE 时自动填
+  const proc = processes.value.find((p) => p.id === part.next_process_id)
+  if (proc && proc.category === 'OUTSOURCE') {
+    createForm.process_id = part.next_process_id
+    // 触发 loadCompaniesByProcess 级联加载公司
+    void loadCompaniesByProcess(part.next_process_id)
+  } else {
+    ElMessage.info('该零件的下一工序不是外协工序，请手动选择')
+  }
+}
 async function onCreate(): Promise<void> {
   if (!createFormRef.value) return
   // el-form 校验：4 个必填字段 + price > 0；校验失败时 validate() reject，直接短路（红字提示）
@@ -904,12 +923,13 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
             v-model="createForm.part_id"
             filterable
             style="width:100%"
-            placeholder="可报价零件（待生产 / 生产中）按创建时间倒序，最多 500 条"
+            placeholder="可选报价零件（在外协工序货架上的在制件；按图号/名称筛选）"
+            @change="onCreatePartChange"
           >
             <el-option
               v-for="p in parts"
               :key="p.id"
-              :label="`${p.serial_no ?? '—'} | ${p.drawing_no ?? ''} | ${p.name}`"
+              :label="`${p.serial_no ?? '—'} | ${p.drawing_no ?? ''} | ${p.name} | ${p.shelf_code ?? ''}`"
               :value="p.id"
             />
           </el-select>

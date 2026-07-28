@@ -19,6 +19,7 @@ import type {
   OutsourceSentPartListResult,
   SetOutsourceCompanyProcessesPayload,
 } from '@/types/outsource'
+import type { PartItem, PartListItem } from '@/types/parts'
 
 function cleanParams<T extends object>(p: T): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -196,6 +197,21 @@ export async function listApprovedForSend(
 ): Promise<ApprovedForSendListResult> {
   const resp = await api.get<ApprovedForSendListResult>(
     '/outsource-quotes/approved-for-send',
+    { params: cleanParams(params) },
+  )
+  return resp.data
+}
+
+/**
+ * 新建报价 picker 默认筛选（PR-H 2026-07-28）：
+ * 仅返回「位于绑定了外协工序的货架上」的零件。
+ * 返回 PartListItem 列表（包含 next_process_id / next_process_name，用于自动填工序）。
+ */
+export async function listQuotableParts(
+  params: { keyword?: string; limit?: number } = {},
+): Promise<PartListItem[]> {
+  const resp = await api.get<PartListItem[]>(
+    '/outsource-quotes/quotable-parts',
     { params: cleanParams(params) },
   )
   return resp.data

@@ -24,6 +24,7 @@ from model.enums import (
     OutsourceQuoteSortKey,
     OutsourceQuoteStatus,
     PartEventType,
+    PartStatus,
     ProcessCategory,
     SortDir,
 )
@@ -36,6 +37,8 @@ from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
+from repository.shelf import ShelfRepository
+from repository.worker import WorkerRepository
 from schema.outsource_quote import (
     ApprovedForSendListOut,
     ApprovedQuoteForSendItem,
@@ -47,6 +50,7 @@ from schema.outsource_quote import (
     OutsourceQuoteRejectRequest,
     OutsourceQuoteUpdateRequest,
 )
+from schema.part import PartListItem
 from service._id_parse import parse_snowflake_id
 from service._session_refresh import refresh_for_state_machine
 from service._customer_helpers import (  # 2026-07-28：抽到共享模块
@@ -68,6 +72,8 @@ class OutsourceQuoteService:
         companies: OutsourceCompanyRepository,
         processes: ProcessRepository,
         customers: CustomerRepository,
+        shelves: ShelfRepository,
+        workers: WorkerRepository,
         *,
         part_events: PartEventRepository,
         current_user: CurrentUser | None = None,
@@ -78,6 +84,9 @@ class OutsourceQuoteService:
         self.companies = companies
         self.processes = processes
         self.customers = customers
+        # PR-H 2026-07-28：picker 端点要组装 PartListItem（含 shelf_code / worker_name）
+        self.shelves = shelves
+        self.workers = workers
         self.part_events = part_events
         self._user_id: int | None = current_user.id if current_user else None
 
@@ -125,6 +134,157 @@ class OutsourceQuoteService:
         if quote is None:
             raise self._not_found(quote_id)
         return await self._to_out(quote)
+
+    # ============================================================
+    # 新建报价 picker 默认筛选（PR-H 2026-07-28）
+    # ============================================================
+    async def list_quotable_parts_for_picker(
+        self,
+        *,
+        keyword: str | None,
+        limit: int,
+        shelf_processes: "ShelfProcessRepository",
+    ) -> list[PartListItem]:
+        """新建外协报价对话框 picker 默认数据源。
+
+        谓词：
+          - status='IN_PROCESS' AND location='PRODUCTION_SHELF'
+          - AND current_holder_id ∈ (绑定了 OUTSOURCE 工序的货架 id 集合)
+
+        返回 PartListItem 列表（包含 next_process_id / next_process_name 供前端
+        自动填工序；不含 assembly_id / current_holder_id）。
+
+        若系统无任何绑定了 OUTSOURCE 工序的货架，返回空列表（前端 picker 提示空）。
+        """
+        shelf_ids = await shelf_processes.list_shelf_ids_with_process_category(
+            ProcessCategory.OUTSOURCE.value,
+        )
+        if not shelf_ids:
+            return []
+        rows = await self.parts.list_quotable_for_outsource_quote(
+            keyword=keyword, shelf_ids_in=shelf_ids, limit=limit,
+        )
+        return await self._to_part_list_items(rows)
+
+    async def _to_part_list_items(self, rows: list[TPart]) -> list[PartListItem]:
+        """复用 PartService._to_list_out 的字段组装逻辑；输出 PartListItem。
+
+        简化版：只填 Picker 关心的字段（不依赖 shelves/workers/shelf_processes），
+        但需要 customer_name / parent_customer_name / customer_path / shelf_code /
+        worker_name / next_process_name 等展示字段。
+        """
+        if not rows:
+            return []
+
+        # 1. 客户批查（含 parent）
+        cust_ids = list({p.customer_id for p in rows})
+        cust_list = await self.customers.list_by_ids(cust_ids)
+        cust_map: dict[int, TCustomer] = {c.id: c for c in cust_list}
+        parent_ids = [c.parent_id for c in cust_list if c.parent_id]
+        parents = (
+            await self.customers.list_by_ids(parent_ids) if parent_ids else []
+        )
+        parent_map: dict[int, TCustomer] = {p.id: p for p in parents}
+
+        # 2. 工人批查（WORKER 持有）
+        worker_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location == "WORKER" and p.current_holder_id
+        ]
+        worker_map: dict[int, str] = {}
+        if worker_ids:
+            worker_rows = await self.workers.list_by_ids(worker_ids)
+            worker_map = {w.id: w.name for w in worker_rows}
+
+        # 3. 货架批查（PRODUCTION_SHELF / INSPECTION_SHELF 持有）
+        shelf_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
+            and p.current_holder_id
+        ]
+        shelf_map: dict[int, str] = {}
+        if shelf_ids:
+            shelf_rows = await self.shelves.list_by_ids(shelf_ids)
+            shelf_map = {s.id: s.code for s in shelf_rows}
+
+        # 4. 下一工序批查
+        next_process_ids = list({
+            int(p.next_process_id) for p in rows if p.next_process_id
+        })
+        process_map: dict[int, str] = {}
+        if next_process_ids:
+            proc_rows = await self.processes.list_by_ids(next_process_ids)
+            process_map = {pr.id: pr.name for pr in proc_rows}
+
+        out: list[PartListItem] = []
+        for p in rows:
+            cust = cust_map.get(p.customer_id)
+            parent = (
+                parent_map.get(cust.parent_id)
+                if cust and cust.parent_id else None
+            )
+            parent_name = parent.name if parent else None
+            child_name = cust.name if cust else None
+            path: str | None = None
+            if parent_name and child_name:
+                path = f"{parent_name} / {child_name}"
+            elif child_name:
+                path = child_name
+            elif parent_name:
+                path = parent_name
+
+            shelf_code: str | None = None
+            worker_name: str | None = None
+            if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and p.current_holder_id:
+                shelf_code = shelf_map.get(int(p.current_holder_id))
+            elif p.location == "WORKER" and p.current_holder_id:
+                worker_name = worker_map.get(int(p.current_holder_id))
+
+            holder_display: str | None = None
+            if shelf_code is not None:
+                prefix = "品检 " if p.location == "INSPECTION_SHELF" else ""
+                holder_display = f"货架 {prefix}{shelf_code}"
+            elif worker_name is not None:
+                holder_display = f"工人 {worker_name}"
+            elif p.location == "OFFICE":
+                holder_display = "编程员持有"
+
+            out.append(
+                PartListItem(
+                    id=p.id,
+                    version=p.version,
+                    serial_no=p.serial_no,
+                    name=p.name,
+                    drawing_no=p.drawing_no,
+                    applicant_name=p.applicant_name,
+                    quantity=p.quantity,
+                    unit_price=p.unit_price,
+                    request_date=p.request_date,
+                    planned_delivery_date=p.planned_delivery_date,
+                    actual_delivery_date=p.actual_delivery_date,
+                    is_urgent=p.is_urgent,
+                    status=PartStatus(p.status) if p.status else PartStatus.PENDING,
+                    order_no=p.order_no,
+                    system_delivery_date=p.system_delivery_date,
+                    note=p.note,
+                    customer_name=child_name,
+                    parent_customer_name=parent_name,
+                    customer_path=path,
+                    delivery_note_id=p.delivery_note_id,
+                    location=p.location,
+                    shelf_code=shelf_code,
+                    worker_name=worker_name,
+                    current_holder_display=holder_display,
+                    next_process_id=p.next_process_id,
+                    next_process_name=(
+                        process_map.get(int(p.next_process_id))
+                        if p.next_process_id else None
+                    ),
+                )
+            )
+        return out
 
     # ============================================================
     # 写
@@ -520,6 +680,18 @@ class OutsourceQuoteService:
             [p.customer_id for p in page_parts if p.customer_id is not None]
         )
 
+        # 4b. 批查货架 code（PR-H 2026-07-28：外协发送一览显示源货架）
+        shelf_holder_ids = [
+            int(p.current_holder_id)
+            for p in page_parts
+            if p.current_holder_id is not None
+            and p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
+        ]
+        shelf_code_map: dict[int, str] = {}
+        if shelf_holder_ids:
+            shelf_rows = await self.shelves.list_by_ids(list(set(shelf_holder_ids)))
+            shelf_code_map = {s.id: s.code for s in shelf_rows}
+
         # 5. 同步拼装 ApprovedQuoteForSendItem（无 await 在循环里）
         items: list[ApprovedQuoteForSendItem] = []
         for p in page_parts:
@@ -552,6 +724,11 @@ class OutsourceQuoteService:
                 customer_path=customer_path,
                 next_process_id=p.next_process_id,
                 next_process_name=next_proc.name if next_proc else None,
+                # PR-H 2026-07-28：源货架 code（绑了外协工序的货架）
+                shelf_code=(
+                    shelf_code_map.get(int(p.current_holder_id))
+                    if p.current_holder_id else None
+                ),
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
                 process_id=q.process_id,

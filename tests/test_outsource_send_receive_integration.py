@@ -34,6 +34,8 @@ from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
+from repository.shelf import ShelfRepository
+from repository.worker import WorkerRepository
 from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
 from repository.shelf_process import ShelfProcessRepository
@@ -53,7 +55,14 @@ from service.part import PartService
 pytestmark = pytest.mark.asyncio
 
 
-async def _seed_world(session, *, suffix: str, part_status: str = "PENDING"):
+async def _seed_world(
+    session, *, suffix: str,
+    part_status: str = PartStatus.IN_PROCESS.value,
+    part_location: str = PartLocation.PRODUCTION_SHELF.value,
+    part_holder_id: int | None = None,
+):
+    """PR-H 2026-07-28：默认 part 是 IN_PROCESS + PRODUCTION_SHELF + 在某货架上。"""
+    customer = TCustomer(name=f"外协收发测试客户-{suffix}")
     customer = TCustomer(name=f"外协收发测试客户-{suffix}")
     company = TOutsourceCompany(
         name=f"外协收发测试公司-{suffix}", is_active=True,
@@ -101,6 +110,12 @@ async def _seed_world(session, *, suffix: str, part_status: str = "PENDING"):
         process_id=inhouse_process.id,
         sort_order=0,
     )
+    # PR-H 2026-07-28：外协发送统一要求货架同时绑定了 OUTSOURCE 工序
+    shelf_process_outsource_mapping = TShelfProcess(
+        shelf_id=production_shelf.id,
+        process_id=outsource_process.id,
+        sort_order=1,
+    )
     part = TPart(
         serial_no=f"O{suffix[-4:]}",
         name=f"外协收发测试零件-{suffix}",
@@ -111,13 +126,10 @@ async def _seed_world(session, *, suffix: str, part_status: str = "PENDING"):
         planned_delivery_date=date(2026, 8, 15),
         customer_id=customer.id,
         status=part_status,
-        location=(
-            PartLocation.OFFICE.value
-            if part_status == PartStatus.PENDING.value
-            else None
-        ),
+        location=part_location,
+        current_holder_id=part_holder_id,
     )
-    session.add_all([mapping, shelf_process_mapping, part])
+    session.add_all([mapping, shelf_process_mapping, shelf_process_outsource_mapping, part])
     await session.flush()
     return {
         "customer": customer,
@@ -138,6 +150,8 @@ def _make_quote_service(session) -> OutsourceQuoteService:
         companies=OutsourceCompanyRepository(session),
         processes=ProcessRepository(session),
         customers=CustomerRepository(session),
+        shelves=ShelfRepository(session),
+        workers=WorkerRepository(session),
         part_events=PartEventRepository(session),
     )
 
@@ -188,6 +202,12 @@ def _send_request(world) -> SendToOutsourceRequest:
 
 async def test_send_to_outsource_marks_quote_used_then_receive_to_production(clean_db):
     world = await _seed_world(clean_db, suffix="FLOW")
+    # PR-H 2026-07-28：把 part 放到绑了 OUTSOURCE 工序的货架上（默认已是 IN_PROCESS 但
+    # holder 未设；下面设到 production_shelf 上）
+    world["part"].location = PartLocation.PRODUCTION_SHELF.value
+    world["part"].current_holder_id = world["production_shelf"].id
+    world["part"].next_process_id = world["outsource_process"].id
+    await clean_db.flush()
     approved = await _approve_quote(clean_db, world)
     service = _make_part_service(clean_db)
     original_version = world["part"].version
@@ -230,6 +250,11 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
 
 async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db):
     no_quote_world = await _seed_world(clean_db, suffix="NOQUOTE")
+    # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
+    no_quote_world["part"].location = PartLocation.PRODUCTION_SHELF.value
+    no_quote_world["part"].current_holder_id = no_quote_world["production_shelf"].id
+    no_quote_world["part"].next_process_id = no_quote_world["outsource_process"].id
+    await clean_db.flush()
     service = _make_part_service(clean_db)
 
     with pytest.raises(BizError) as no_quote_exc:
@@ -237,25 +262,35 @@ async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db)
             no_quote_world["part"].id, _send_request(no_quote_world),
         )
     assert no_quote_exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED
-    assert no_quote_world["part"].status == PartStatus.PENDING.value
-    assert no_quote_world["part"].location == PartLocation.OFFICE.value
+    # PR-H 2026-07-28：默认 part 已在 OUTSOURCE-bound 货架上（IN_PROCESS+PRODUCTION_SHELF）
+    assert no_quote_world["part"].status == PartStatus.IN_PROCESS.value
+    assert no_quote_world["part"].location == PartLocation.PRODUCTION_SHELF.value
 
     wrong_state_world = await _seed_world(
         clean_db,
         suffix="BADSTATE",
         part_status=PartStatus.READY_TO_SHIP.value,
+        part_location=PartLocation.OFFICE.value,
+        part_holder_id=None,
     )
     await _approve_quote(clean_db, wrong_state_world)
     with pytest.raises(BizError) as state_exc:
         await service.send_to_outsource(
             wrong_state_world["part"].id, _send_request(wrong_state_world),
         )
-    assert state_exc.value.code == ErrCode.BIZ_PART_NOT_OUTSOURCEABLE
+    # PR-H 2026-07-28：统一走 OUTSOURCE-bound 货架闸门；READY_TO_SHIP + OFFICE 抛
+    # BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF 422
+    assert state_exc.value.code == ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF
     assert wrong_state_world["part"].status == PartStatus.READY_TO_SHIP.value
 
 
 async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db):
     world = await _seed_world(clean_db, suffix="AUTOPASS")
+    # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
+    world["part"].location = PartLocation.PRODUCTION_SHELF.value
+    world["part"].current_holder_id = world["production_shelf"].id
+    world["part"].next_process_id = world["outsource_process"].id
+    await clean_db.flush()
     approved = await _approve_quote(clean_db, world)
 
     async def expire_state_after_first_transition(event_type: str, _payload: dict):

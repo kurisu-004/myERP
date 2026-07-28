@@ -14,12 +14,17 @@
 - POST  /outsource-quotes/{id}/reject      拒绝（SUBMITTED → REJECTED，MANAGER-only）
 - POST  /outsource-quotes/{id}/soft-delete 软删（DRAFT / REJECTED）
 - GET   /outsource-quotes/approved-for-send 外协发送列表页数据
+- GET   /outsource-quotes/quotable-parts   新建报价 picker 默认筛选（PR-H 2026-07-28）
 """
 from fastapi import APIRouter, Depends, Query, status as http_status
 
-from api.deps import get_outsource_quote_service
+from api.deps import (
+    get_outsource_quote_service,
+    get_shelf_process_repo,
+)
 from core.permission import require_role, require_roles
 from model.enums import OutsourceQuoteSortKey, OutsourceQuoteStatus, SortDir, UserRole
+from repository.shelf_process import ShelfProcessRepository
 from schema.outsource_quote import (
     ApprovedForSendListOut,
     OutsourceQuoteApproveRequest,
@@ -30,6 +35,7 @@ from schema.outsource_quote import (
     OutsourceQuoteRejectRequest,
     OutsourceQuoteUpdateRequest,
 )
+from schema.part import PartListItem
 from service import OutsourceQuoteService
 
 
@@ -94,6 +100,34 @@ async def list_approved_for_send(
     return await svc.list_approved_for_send(
         keyword=keyword, customer_id=customer_id,
         limit=limit, offset=offset,
+    )
+
+
+@read_router.get(
+    "/quotable-parts",
+    response_model=list[PartListItem],
+    summary=(
+        "新建报价 picker 默认筛选：仅返回「位于绑定了外协工序的货架上」的零件"
+        "（PR-H 2026-07-28；MANAGER / CLERK / INSPECTOR）"
+    ),
+)
+async def list_quotable_parts(
+    keyword: str | None = Query(default=None, description="按图号/名称模糊搜索"),
+    limit: int = Query(default=500, ge=1, le=1000),
+    svc: OutsourceQuoteService = Depends(get_outsource_quote_service),
+    shelf_processes: ShelfProcessRepository = Depends(get_shelf_process_repo),
+) -> list[PartListItem]:
+    """新建外协报价对话框的零件 picker 默认数据源。
+
+    谓词：
+      - status='IN_PROCESS' AND location='PRODUCTION_SHELF'
+      - AND current_holder_id ∈ (绑定了 OUTSOURCE 工序的货架 id 集合)
+      - AND (keyword IS NULL OR drawing_no/name ILIKE '%kw%')
+
+    若系统无任何绑定了 OUTSOURCE 工序的货架，返回空列表（前端 picker 提示空）。
+    """
+    return await svc.list_quotable_parts_for_picker(
+        keyword=keyword, limit=limit, shelf_processes=shelf_processes,
     )
 
 

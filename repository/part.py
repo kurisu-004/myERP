@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
@@ -616,34 +616,34 @@ class PartRepository:
     ):
         """外协发送一览的共享 statement builder（list / count 复用，避免谓词漂移）。
 
-        资格条件（跟前端按钮 enabled 逻辑 + 后端 send_to_outsource 服务端兜底一致）：
-        - status='PENDING'（办公室待生产）
-        - OR (status='IN_PROCESS' + location='PRODUCTION_SHELF'
-              + next_process.category='OUTSOURCE')
+        资格条件（2026-07-28 PR-H 重构：统一走外协工序货架）：
+        - status='IN_PROCESS'
+        - AND location='PRODUCTION_SHELF'
+        - AND current_holder_id IN (绑定了 OUTSOURCE 工序的货架 id 集合)
+
+        旧版允许 PENDING 状态直接外协（持有『起始外协』）；现在 PENDING 必须先上架。
 
         `part_ids_in` 用于把候选收敛到「有 APPROVED 报价」的零件集合（外协发送页专用）。
         空列表由调用方短路，不进这里。
         """
         from model import TProcess as _TProc
+        from model import TShelfProcess as _TSP
         from model.enums import ProcessCategory as _PC
 
-        outsource_proc_ids_subq = (
-            select(_TProc.id)
+        outsource_shelf_ids_subq = (
+            select(distinct(_TSP.shelf_id))
+            .join(_TProc, _TProc.id == _TSP.process_id)
             .where(_TProc.deleted_at.is_(None))
+            .where(_TSP.deleted_at.is_(None))
             .where(_TProc.category == _PC.OUTSOURCE.value)
         )
         stmt = select(TPart)
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
         stmt = stmt.where(
-            or_(
-                TPart.status == "PENDING",
-                and_(
-                    TPart.status == "IN_PROCESS",
-                    TPart.location == "PRODUCTION_SHELF",
-                    TPart.next_process_id.in_(outsource_proc_ids_subq),
-                ),
-            )
+            TPart.status == "IN_PROCESS",
+            TPart.location == "PRODUCTION_SHELF",
+            TPart.current_holder_id.in_(outsource_shelf_ids_subq),
         )
         if part_ids_in is not None:
             stmt = stmt.where(TPart.id.in_(part_ids_in))
@@ -1010,6 +1010,56 @@ class PartRepository:
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
             TPart.planned_delivery_date.asc(),
+            TPart.id.desc(),
+        ).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    # ============================================================
+    # 新建报价 picker 默认筛选（PR-H 2026-07-28）
+    # ============================================================
+    async def list_quotable_for_outsource_quote(
+        self,
+        *,
+        keyword: str | None = None,
+        shelf_ids_in: list[int],
+        limit: int = 500,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[TPart]:
+        """新建外协报价对话框零件 picker 默认数据源。
+
+        谓词：
+          - status='IN_PROCESS' AND location='PRODUCTION_SHELF'
+          - AND current_holder_id IN shelf_ids_in（已在外协工序货架上）
+          - 可选 keyword 模糊（drawing_no / name / serial_no）
+
+        排序：created_at DESC, id DESC（最新在工先）。
+        `shelf_ids_in` 由 service 从 shelf_process.list_shelf_ids_with_process_category
+        传入；本方法不交叉工序类别判定，避免重复 join。
+
+        返回 TPart 行，由 service 调 _to_list_out 组装 PartListItem 响应
+        （含 next_process_id / next_process_name，用于前端 picker 自动填工序）。
+        """
+        if not shelf_ids_in:
+            return []
+        stmt = select(TPart).where(
+            TPart.status == "IN_PROCESS",
+            TPart.location == "PRODUCTION_SHELF",
+            TPart.current_holder_id.in_(shelf_ids_in),
+        )
+        if not include_deleted:
+            stmt = stmt.where(TPart.deleted_at.is_(None))
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TPart.drawing_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
+                )
+        stmt = stmt.order_by(
+            TPart.created_at.desc(),
             TPart.id.desc(),
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)

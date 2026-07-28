@@ -1190,20 +1190,22 @@ class PartService:
     async def send_to_outsource(
         self, part_id: int, data: SendToOutsourceRequest,
     ) -> PartOut:
-        """PENDING / ON_SHELF / WITH_WORKER → OUTSOURCE：把零件发送给外协公司。
+        """IN_PROCESS + PRODUCTION_SHELF → OUTSOURCE：把零件从外协工序货架发送给外协公司。
+
+        2026-07-28 PR-H 重构：发送外协统一从「绑定了 OUTSOURCE 工序的货架」上发出，
+        PENDING 状态零件必须先上架再走外协。
 
         校验：
         - outsource_company_id 存在 + 未软删 + is_active=True
         - next_process_id 存在 + category=OUTSOURCE
         - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
+        - part 位于绑定了 OUTSOURCE 工序的货架（status=IN_PROCESS + location=PRODUCTION_SHELF + current_holder_id ∈ OUTSOURCE-bound shelves）
         - data.version 与 part.version 一致（OCC；2026-07-28 新增）
 
         行为分支（由 next_process.requires_approval 决定）：
         - True（默认）：必须有该 (part, company, process) 元组的 APPROVED 报价；
           发送后把报价 mark_used。
-        - False（无需审批，2026-07-28 新增）：跳过报价检查；要求 part 位于 C2 货架
-          （status=IN_PROCESS + location=PRODUCTION_SHELF + current_holder_id=C2.id）；
-          事件 note 追加「/ 直接发送（无需审批）」。
+        - False（无需审批，2026-07-28 新增）：跳过报价检查；事件 note 追加「直接发送（无需审批）」。
         """
         if self.outsource_companies is None or self.outsource_company_process is None:
             raise BizError(
@@ -1287,30 +1289,37 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 5. [2026-07-16] 状态资格防御闸：UI 按钮也会校验，这里兜底
-        next_process_obj = (
-            await self._get_process(part.next_process_id)
-            if part.next_process_id else None
-        )
-        next_cat = next_process_obj.category if next_process_obj else None
-        allowed = (
-            part.status == PartStatus.PENDING.value
-            or (
-                part.status == PartStatus.IN_PROCESS.value
-                and part.location == PartLocation.PRODUCTION_SHELF.value
-                and next_cat == ProcessCategory.OUTSOURCE.value
-            )
-        )
-        if not allowed:
+        # 5. [2026-07-28 PR-H] 状态资格防御闸：必须位于绑定了 OUTSOURCE 工序的货架
+        if self.shelf_process_repo is None:
             raise BizError(
-                code=ErrCode.BIZ_PART_NOT_OUTSOURCEABLE,
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing shelf_process repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        outsource_shelf_ids = await self.shelf_process_repo.list_shelf_ids_with_process_category(
+            ProcessCategory.OUTSOURCE.value,
+        )
+        if not outsource_shelf_ids:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_NO_SHELF,
                 message=(
-                    f"零件状态 status={part.status} location={part.location} "
-                    f"next_process.category={next_cat}，"
-                    "不符合发送外协条件（仅 PENDING 或 IN_PROCESS + PRODUCTION_SHELF "
-                    "+ 下一道=OUTSOURCE）"
+                    "系统无任何绑定了外协工序的货架，请先在 /shelves/{id}/processes 配置"
                 ),
-                http_status=http_status.HTTP_400_BAD_REQUEST,
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        if (
+            part.status != PartStatus.IN_PROCESS.value
+            or part.location != PartLocation.PRODUCTION_SHELF.value
+            or part.current_holder_id not in outsource_shelf_ids
+        ):
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF,
+                message=(
+                    f"发送外协必须从「绑定了外协工序的货架」上发出（当前 C2 等 OUTSOURCE 货架）；"
+                    f"当前 status={part.status} location={part.location} "
+                    f"current_holder_id={part.current_holder_id}"
+                ),
+                http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
         # 6. 分支：是否需要报价审批（2026-07-28 新增）
@@ -1356,45 +1365,7 @@ class PartService:
             approved_quote.updated_by = self._user_id
             await self.outsource_quotes.update(approved_quote)
         else:
-            # 6b. 直接发送分支（无需审批）：按 source_status 分场景校验（2026-07-28）
-            #   - 起始外协（PENDING, OFFICE）：不需要 C2 货架，直接从办公室发出
-            #   - 中间外协（IN_PROCESS + PRODUCTION_SHELF）：要求 part 位于 C2 货架
-            if part.status == PartStatus.PENDING.value:
-                # 起始外协：从 OFFICE 直接发，不要求 C2
-                pass
-            elif (
-                part.status == PartStatus.IN_PROCESS.value
-                and part.location == PartLocation.PRODUCTION_SHELF.value
-            ):
-                # 中间外协：要求 C2 货架
-                c2 = await self.shelves.get_by_code("C2")
-                if c2 is None or not c2.is_active or c2.zone != "PRODUCTION":
-                    raise BizError(
-                        code=ErrCode.BIZ_INVALID_VALUE,
-                        message="C2 货架未配置或不可用，请联系管理员",
-                        http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    )
-                if part.current_holder_id != c2.id:
-                    raise BizError(
-                        code=ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF,
-                        message=(
-                            f"中间外协直发要求零件位于 C2 / 生产/外协 C2 货架，"
-                            f"当前 status={part.status} location={part.location} "
-                            f"current_holder_id={part.current_holder_id}"
-                        ),
-                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    )
-            else:
-                # PENDING / IN_PROCESS+PRODUCTION_SHELF 之外的异常状态
-                raise BizError(
-                    code=ErrCode.BIZ_PART_NOT_OUTSOURCEABLE,
-                    message=(
-                        f"直接发送外协要求 part 处于 PENDING（起始外协）或 "
-                        f"IN_PROCESS+PRODUCTION_SHELF（中间外协）；"
-                        f"当前 status={part.status} location={part.location}"
-                    ),
-                    http_status=http_status.HTTP_400_BAD_REQUEST,
-                )
+            # 6b. 直接发送分支（无需审批 2026-07-28）；前置货架校验已统一，本分支直接转换。
             # 状态机转换（事件 note 自动追加 " / 直接发送（无需审批）"，
             # TPartEvent.outsource_company_id 由 statemachine 从 company.id 自动推断）
             part.sm.send_to_outsource(
@@ -2885,6 +2856,15 @@ class PartService:
             shelf_rows = await self.shelves.list_by_ids(shelf_ids)
             shelf_map = {s.id: s.code for s in shelf_rows}
 
+        # 2026-07-28 PR-H：批查 next_process_id 对应的 process.name（picker 自动填工序用）
+        next_process_ids = list({
+            int(p.next_process_id) for p in rows if p.next_process_id
+        })
+        process_map: dict[int, str] = {}
+        if next_process_ids:
+            proc_rows = await self.processes.list_by_ids(next_process_ids)
+            process_map = {pr.id: pr.name for pr in proc_rows}
+
         out: list[PartListItem] = []
         for p in rows:
             cust = cust_map.get(p.customer_id)
@@ -2946,6 +2926,12 @@ class PartService:
                     shelf_code=shelf_code,
                     worker_name=worker_name,
                     current_holder_display=holder_display,
+                    # 2026-07-28 PR-H：picker 自动填工序
+                    next_process_id=p.next_process_id,
+                    next_process_name=(
+                        process_map.get(int(p.next_process_id))
+                        if p.next_process_id else None
+                    ),
                 )
             )
         return out

@@ -761,9 +761,11 @@ watch(activeTab, async (t) => {
             <el-table-column prop="part_name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
             <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
             <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>
-            <el-table-column label="加急" min-width="60" align="center">
+            <el-table-column label="源货架" min-width="80" align="center">
               <template #default="{ row }">
-                <el-tag v-if="(row as SendableItem).is_urgent" type="danger" size="small">加急</el-tag>
+                <el-tag v-if="(row as SendableItem).shelf_code" type="info" size="small">
+                  {{ (row as SendableItem).shelf_code }}
+                </el-tag>
                 <span v-else>—</span>
               </template>
             </el-table-column>
@@ -771,12 +773,6 @@ watch(activeTab, async (t) => {
               <template #default="{ row }">
                 <el-tag v-if="(row as SendableItem).send_mode === 'DIRECT'" type="success" size="small">免审批</el-tag>
                 <el-tag v-else type="warning" size="small">已批报价</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="起始/中间" min-width="90" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="(row as SendableItem).source_status === 'PENDING'" type="info" size="small">起始</el-tag>
-                <el-tag v-else type="primary" size="small">中间</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center"/>
@@ -1121,11 +1117,7 @@ watch(activeTab, async (t) => {
         <div v-if="sendTarget.send_mode === 'DIRECT'" style="margin-bottom: 12px;">
           <el-tag type="success" size="default">免审批，直接发送</el-tag>
           <span style="margin-left: 8px; color: var(--el-text-color-secondary);">
-            {{
-              sendTarget.source_status === 'PENDING'
-                ? '无需报价，从 OFFICE 直接发出（起始外协）'
-                : '无需报价，要求 C2 货架（中间外协）'
-            }}
+            无需报价，要求位于绑定了外协工序的货架（当前 C2 等）
           </span>
         </div>
         <el-descriptions :column="1" border>

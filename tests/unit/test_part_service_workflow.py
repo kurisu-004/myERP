@@ -251,6 +251,8 @@ def mock_shelf_process_repo():
     repo = ShelfProcessRepository.__new__(ShelfProcessRepository)
     repo.list_process_ids_by_shelf = AsyncMock(return_value=[])
     repo.list_all_mappings = AsyncMock(return_value={})
+    # PR-H 2026-07-28：外协发送统一走 OUTSOURCE-bound 货架闸门
+    repo.list_shelf_ids_with_process_category = AsyncMock(return_value=[])
     return repo
 
 
@@ -1954,12 +1956,23 @@ class TestReleaseFromProgrammingPrerequisites:
 class TestSendToOutsource:
     """PENDING / IN_PROCESS → OUTSOURCE：发送零件到外协公司。"""
 
-    async def test_pending_to_outsource_happy(
+    async def test_inprocess_to_outsource_happy(
         self, service, mock_parts, mock_outsource_companies, mock_outsource_company_process,
-        mock_processes, mock_outsource_quotes, mock_quote_events,
+        mock_processes, mock_outsource_quotes, mock_quote_events, mock_shelf_process_repo,
     ) -> None:
-        part = _make_part(status=PartStatus.PENDING.value, location="OFFICE")
+        # PR-H 2026-07-28：发送外协统一从「绑定了 OUTSOURCE 工序的货架」上发出。
+        # PENDING 已不再支持，必须 IN_PROCESS + PRODUCTION_SHELF + holder 在 OUTSOURCE 集合中。
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location="PRODUCTION_SHELF",
+            current_holder_id=42,
+            next_process_id=99,
+        )
         mock_parts.get_by_id = AsyncMock(return_value=part)
+        # OUTSOURCE-bound shelves：当前 holder 42 在集合内
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[42],
+        )
 
         # 外协公司存在 + 启用
         company = MagicMock()
@@ -2209,10 +2222,23 @@ class TestSendToOutsourceDefenseGate:
     async def test_no_approved_quote(
         self, service, mock_parts, mock_outsource_companies,
         mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+        mock_shelf_process_repo,
     ) -> None:
-        """无 APPROVED 报价 → BIZ_OUTSOURCE_QUOTE_NOT_APPROVED 400。"""
-        part = _make_part(status=PartStatus.PENDING.value, location="OFFICE")
+        """无 APPROVED 报价 → BIZ_OUTSOURCE_QUOTE_NOT_APPROVED 400。
+
+        PR-H 2026-07-28：默认 part 在 OUTSOURCE-bound 货架上（IN_PROCESS+PRODUCTION_SHELF+holder=42），
+        通过新的闸门后到报价校验失败。
+        """
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            current_holder_id=42,
+            next_process_id=99,
+        )
         mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[42],
+        )
         company = MagicMock(id=500, name="X", is_active=True)
         mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
         from model.process import TProcess
@@ -2239,8 +2265,13 @@ class TestSendToOutsourceDefenseGate:
     async def test_status_not_eligible(
         self, service, mock_parts, mock_outsource_companies,
         mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+        mock_shelf_process_repo,
     ) -> None:
-        """IN_PROCESS + 工人手中（location=WORKER） → 拒绝发送外协。"""
+        """IN_PROCESS + 工人手中（location=WORKER） → 拒绝发送外协。
+
+        PR-H 2026-07-28：现在拒绝原因是 BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF 422
+        （统一闸门比 quote check 先到）。
+        """
         # worker 持有 → location=WORKER → 不在 PRODUCTION_SHELF
         part = _make_part(
             status=PartStatus.IN_PROCESS.value,
@@ -2248,6 +2279,10 @@ class TestSendToOutsourceDefenseGate:
             current_holder_id=42,
         )
         mock_parts.get_by_id = AsyncMock(return_value=part)
+        # 即使 OUTSOURCE-bound 集合非空，WORKER 也不在闸门内
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[42],
+        )
         company = MagicMock(id=500, name="X", is_active=True)
         mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
         from model.process import TProcess
@@ -2267,16 +2302,17 @@ class TestSendToOutsourceDefenseGate:
                     outsource_company_id="500", next_process_id="99", version=0,
                 ),
             )
-        assert exc.value.code == ErrCode.BIZ_PART_NOT_OUTSOURCEABLE
+        # PR-H 2026-07-28：闸门升级 → BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF
 
     async def test_inprocess_outsource_process_eligible(
         self, service, mock_parts, mock_outsource_companies,
         mock_outsource_company_process, mock_processes, mock_outsource_quotes,
-        mock_quote_events,
+        mock_quote_events, mock_shelf_process_repo,
     ) -> None:
-        """IN_PROCESS + PRODUCTION_SHELF + 下一道 OUTSOURCE + 有报价 → 成功。
+        """IN_PROCESS + PRODUCTION_SHELF + 在 OUTSOURCE-bound 货架 + 有报价 → 成功。
 
-        PENDING 之外唯一允许的状态资格组合。
+        PR-H 2026-07-28：除了原来状态资格外，还要求 part 位于绑了 OUTSOURCE 工序的货架。
         """
         # 准备 OUTSOURCE 工序对象用于读取 next_process.category
         from model.process import TProcess
@@ -2288,16 +2324,18 @@ class TestSendToOutsourceDefenseGate:
         out_proc.updated_at = datetime(2025, 1, 1)
         out_proc.description = None
         out_proc.deleted_at = None
-        # mock_processes.get_by_id 在校验 send proc 时返这个 OUTSOURCE 工序
-        # 在校验 next_process_id 时也返这个 OUTSOURCE 工序
         mock_processes.get_by_id = AsyncMock(return_value=out_proc)
 
         part = _make_part(
             status=PartStatus.IN_PROCESS.value,
             location=PartLocation.PRODUCTION_SHELF.value,
+            current_holder_id=42,  # 在 OUTSOURCE-bound 货架上
             next_process_id=200,
         )
         mock_parts.get_by_id = AsyncMock(return_value=part)
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[42],
+        )
         company = MagicMock(id=500, name="X", is_active=True)
         mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
         mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
@@ -2350,14 +2388,17 @@ class TestSendToOutsourceOCCAndDirect:
     async def test_direct_send_on_c2_success(
         self, service, mock_parts, mock_shelves, mock_outsource_companies,
         mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+        mock_shelf_process_repo,
     ) -> None:
-        """process.requires_approval=False + part 在 C2 货架 → 直接发送成功。
+        """process.requires_approval=False + part 在 OUTSOURCE-bound 货架 → 直接发送成功。
 
+        PR-H 2026-07-28：闸门升级为「绑了 OUTSOURCE 工序的货架」（C2 是其中一个）。
         关键不变性：
         - 不调 self.outsource_quotes.get_one_approved
         - 不调 approved_quote.sm.mark_used
         - 状态机 transition 正常推进；direct_send=True 透传给 statemachine
         """
+        # 旧 C2 fixture 留作示意；新闸门走 list_shelf_ids_with_process_category
         c2 = MagicMock(spec=TShelf)
         c2.id = 99
         c2.code = "C2"
@@ -2365,6 +2406,10 @@ class TestSendToOutsourceOCCAndDirect:
         c2.is_active = True
         c2.deleted_at = None
         mock_shelves.get_by_code = AsyncMock(return_value=c2)
+        # PR-H 2026-07-28：C2 在 OUTSOURCE-bound 集合中
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[99],
+        )
 
         from model.process import TProcess
         proc = TProcess(
@@ -2415,8 +2460,12 @@ class TestSendToOutsourceOCCAndDirect:
     async def test_direct_send_part_not_on_c2_raises_422(
         self, service, mock_parts, mock_shelves, mock_outsource_companies,
         mock_outsource_company_process, mock_processes, mock_outsource_quotes,
+        mock_shelf_process_repo,
     ) -> None:
-        """process.requires_approval=False 但 part 不在 C2 → BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF 422。"""
+        """process.requires_approval=False 但 part 不在 OUTSOURCE-bound 货架 → 422。
+
+        PR-H 2026-07-28：闸门从 C2 特例升级为 OUTSOURCE-bound 集合。
+        """
         c2 = MagicMock(spec=TShelf)
         c2.id = 99
         c2.code = "C2"
@@ -2424,6 +2473,10 @@ class TestSendToOutsourceOCCAndDirect:
         c2.is_active = True
         c2.deleted_at = None
         mock_shelves.get_by_code = AsyncMock(return_value=c2)
+        # OUTSOURCE-bound 集合只含 99 (C2)；part 坐在 11 (A1) 上
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[99],
+        )
 
         from model.process import TProcess
         proc = TProcess(
@@ -2465,10 +2518,16 @@ class TestSendToOutsourceOCCAndDirect:
 
     async def test_direct_send_c2_missing_raises_500(
         self, service, mock_parts, mock_shelves, mock_outsource_companies,
-        mock_outsource_company_process, mock_processes,
+        mock_outsource_company_process, mock_processes, mock_shelf_process_repo,
     ) -> None:
-        """C2 货架未配置 → BIZ_INVALID_VALUE 500（运维配置错误）。"""
+        """系统无任何 OUTSOURCE-bound 货架 → BIZ_OUTSOURCE_NO_SHELF 500（运维配置错误）。
+
+        PR-H 2026-07-28：从「C2 不存在」改为「OUTSOURCE-bound 货架集合为空」。
+        """
         mock_shelves.get_by_code = AsyncMock(return_value=None)
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[],  # 无任何 OUTSOURCE-bound 货架
+        )
 
         from model.process import TProcess
         proc = TProcess(
@@ -2503,7 +2562,7 @@ class TestSendToOutsourceOCCAndDirect:
                     outsource_company_id="500", next_process_id="200", version=0,
                 ),
             )
-        assert exc.value.code == ErrCode.BIZ_INVALID_VALUE
+        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_NO_SHELF
         assert exc.value.http_status == 500
 
 
