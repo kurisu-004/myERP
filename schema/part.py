@@ -345,6 +345,14 @@ class PartBatchTreeItem(BaseModel):
     system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
     note: str | None = Field(default=None, max_length=500, description="备注")
     is_urgent: bool = False
+    # —— 价格（PR-H 2026-07-28：批量导入时由历史价确认单回填，可空）——
+    unit_price: Decimal | None = Field(default=None, ge=0, description="含税单价；来自历史价确认单 G 列")
+    total_price: Decimal | None = Field(default=None, ge=0, description="含税价格；空时由 service 自动按 unit_price × quantity 计算")
+    # —— 3D 模型（PR-H 2026-07-28：批量导入 STEP 文件）——
+    three_d_index: int | None = Field(
+        default=None, ge=0,
+        description="0-based 对应 three_d_models 数组下标；null = 不挂 3D 模型",
+    )
 
     @field_validator("drawing_no", "name", "applicant_name")
     @classmethod

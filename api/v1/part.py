@@ -235,6 +235,13 @@ async def create_parts_tree(
         default=None,
         description="PDF 数组，按 items[i].pdf_index 对齐；可少于 items 长度（缺位报 failed）。",
     ),
+    three_d_models: list[UploadFile] | None = File(
+        default=None,
+        description=(
+            "3D 模型数组（.step/.stp/.iges/.igs/.stl/.obj/.3mf），"
+            "按 items[i].three_d_index 对齐；PR-H 2026-07-28 新增。"
+        ),
+    ),
     svc: PartService = Depends(get_part_service),
     part_file_svc: PartFileService = Depends(get_part_file_service),
     applicant_svc: ApplicantService = Depends(get_applicant_service),
@@ -247,9 +254,17 @@ async def create_parts_tree(
             file_payloads[idx] = (
                 raw, f.filename or f"page-{idx}.pdf", f.content_type,
             )
+    three_d_payloads: dict[int, tuple[bytes, str, str | None]] = {}
+    if three_d_models:
+        for idx, f in enumerate(three_d_models):
+            raw = await f.read()
+            three_d_payloads[idx] = (
+                raw, f.filename or f"model-{idx}.step", f.content_type,
+            )
     return await svc.create_parts_tree(
         payload,
         file_payloads_by_pdf_index=file_payloads,
+        three_d_payloads_by_index=three_d_payloads,
         part_files=part_file_svc,
         applicants=applicant_svc,
     )

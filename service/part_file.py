@@ -368,10 +368,20 @@ class PartFileService:
     async def get_file_content(
         self, file_id: int
     ) -> tuple[bytes, str, str]:
-        """获取文件内容（用于后端代理预览/下载）。返回 (data, content_type, filename)。"""
+        """获取文件内容（用于后端代理预览/下载）。返回 (data, content_type, filename)。
+
+        走 `download_object_cached` — 同一 `content_sha256` 进程内命中，省 COS GET。
+        """
         f = await self._get_or_404(file_id)
-        data = await cos_mod.download_object(f.object_key)
+        data = await cos_mod.download_object_cached(f.object_key, f.content_sha256)
         return data, f.content_type, f.original_filename
+
+    async def get_meta_for_304(self, file_id: int) -> TPartFile | None:
+        """只查 DB 元数据（不下 COS），给 ETag/304 处理路径用。"""
+        f = await self.files.get_by_id(file_id)
+        if f is None or f.deleted_at is not None:
+            return None
+        return f
 
     async def delete_file(self, file_id: int) -> None:
         f = await self._get_or_404(file_id)

@@ -335,8 +335,8 @@ def _detect_image_orientation(img: Image.Image) -> str:
 
 
 async def _download_drawing_bytes(drawing: TPartFile) -> bytes:
-    """从 COS 拉图纸原始字节。"""
-    return await cos_mod.download_object(drawing.object_key)
+    """从 COS 拉图纸原始字节（带进程内缓存，按 content_sha256 命中）。"""
+    return await cos_mod.download_object_cached(drawing.object_key, drawing.content_sha256)
 
 
 # ============================================================
