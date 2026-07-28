@@ -515,11 +515,20 @@ class PartStateMachine(StateChart):
         event_repo=None,
         *,
         created_by: int | None = None,
+        direct_send: bool = False,
+        outsource_company_id: int | None = None,
         **_,
     ):
         """→ OUTSOURCE：文员把零件发送给外协公司。
 
-        note 模板: "外协公司：{name} 外协工序：{code}"
+        note 模板: "外协公司：{name} 外协工序：{code}"（直接发送时追加 " / 直接发送（无需审批）"）
+
+        `direct_send=True` 由 service/part.py 在 process.requires_approval=False 时传入，
+        用于事件 note 区分「免审批直发」vs「正常审批流」（2026-07-28 新增）。
+
+        `outsource_company_id`（2026-07-28 新增）：外协对账审计字段，写入
+        TPartEvent.outsource_company_id 供后续按公司聚合发送事件；不传则从
+        outsource_company.id 取值。
         """
         if event_repo and self.model:
             parts = []
@@ -527,6 +536,8 @@ class PartStateMachine(StateChart):
                 parts.append(f"外协公司：{outsource_company.name}")
             if process is not None and hasattr(process, "code"):
                 parts.append(f"外协工序：{process.code}")
+            if direct_send:
+                parts.append("/ 直接发送（无需审批）")
             from_status = (
                 PartStatus(self._from_status) if self._from_status else None
             )
@@ -537,6 +548,11 @@ class PartStateMachine(StateChart):
                 to_status=PartStatus.OUTSOURCE,
                 note=" ".join(parts) or None,
                 created_by=created_by,
+                outsource_company_id=(
+                    outsource_company_id
+                    if outsource_company_id is not None
+                    else (outsource_company.id if outsource_company is not None else None)
+                ),
             ))
 
     def on_receive_from_outsource(
@@ -546,6 +562,7 @@ class PartStateMachine(StateChart):
         event_repo=None,
         *,
         created_by: int | None = None,
+        outsource_company_id: int | None = None,
         **_,
     ):
         """OUTSOURCE → IN_PROCESS：外协回收，下发到生产货架。
@@ -554,6 +571,10 @@ class PartStateMachine(StateChart):
         由 on_enter_ON_SHELF 设置；本回调只写事件。
 
         note 模板: "外协回收 下发货架：{shelf} 下一工序：{process}"
+
+        `outsource_company_id`（2026-07-28 新增）：外协对账审计字段，写入
+        TPartEvent.outsource_company_id 标识从哪家公司回收；由 service 层从
+        `part_event` 历史中查询最近一次 SENT_TO_OUTSOURCE 的公司 id 后传入。
         """
         if event_repo and self.model:
             parts = ["外协回收"]
@@ -568,6 +589,7 @@ class PartStateMachine(StateChart):
                 to_status=PartStatus.IN_PROCESS,
                 note=" ".join(parts),
                 created_by=created_by,
+                outsource_company_id=outsource_company_id,
             ))
 
     def on_inspect_from_outsource(
@@ -576,6 +598,7 @@ class PartStateMachine(StateChart):
         event_repo=None,
         *,
         created_by: int | None = None,
+        outsource_company_id: int | None = None,
         **_,
     ):
         """2026-07-16：OUTSOURCE → INSPECTION：外协件直接送检（跳过生产货架）。
@@ -584,6 +607,9 @@ class PartStateMachine(StateChart):
         holder=shelf.id）；本回调只写事件。
 
         note 模板: "外协回收送检：{shelf}"
+
+        2026-07-28：`outsource_company_id` 透传到 TPartEvent.outsource_company_id
+        用于外协对账（INSPECTED 事件 + from_status=OUTSOURCE 时标识从哪家公司送来）。
         """
         if event_repo and self.model:
             shelf_code = (
@@ -599,4 +625,5 @@ class PartStateMachine(StateChart):
                 to_status=PartStatus.INSPECTION,
                 note=f"外协回收送检：{shelf_code}" if shelf_code else "外协回收送检",
                 created_by=created_by,
+                outsource_company_id=outsource_company_id,
             ))

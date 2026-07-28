@@ -16,6 +16,7 @@ import type {
   OutsourceQuoteRejectPayload,
   OutsourceQuoteStatus,
   OutsourceQuoteUpdatePayload,
+  OutsourceSentPartListResult,
   SetOutsourceCompanyProcessesPayload,
 } from '@/types/outsource'
 
@@ -195,6 +196,27 @@ export async function listApprovedForSend(
 ): Promise<ApprovedForSendListResult> {
   const resp = await api.get<ApprovedForSendListResult>(
     '/outsource-quotes/approved-for-send',
+    { params: cleanParams(params) },
+  )
+  return resp.data
+}
+
+/**
+ * 外协对账一览（2026-07-28 新增）：列出发送给某外协公司的所有零件 + 当前状态。
+ * 用于与外协公司发来的对账单核对。
+ */
+export async function listCompanySentParts(
+  companyId: string,
+  params: {
+    keyword?: string
+    sent_from?: string   // ISO datetime
+    sent_to?: string     // ISO datetime
+    limit?: number
+    offset?: number
+  } = {},
+): Promise<OutsourceSentPartListResult> {
+  const resp = await api.get<OutsourceSentPartListResult>(
+    `/outsource-companies/${encodeURIComponent(companyId)}/sent-parts`,
     { params: cleanParams(params) },
   )
   return resp.data

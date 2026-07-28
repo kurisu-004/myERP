@@ -49,6 +49,11 @@ from schema.outsource_quote import (
 )
 from service._id_parse import parse_snowflake_id
 from service._session_refresh import refresh_for_state_machine
+from service._customer_helpers import (  # 2026-07-28：抽到共享模块
+    expand_customer_ids,
+    make_customer_path_cached,
+    preload_customer_cache,
+)
 from utils.id_gen import new_id
 
 
@@ -462,7 +467,7 @@ class OutsourceQuoteService:
                 return ApprovedForSendListOut(
                     items=[], total=0, limit=limit, offset=offset,
                 )
-            customer_ids_in = await self._expand_customer_ids(cid_int)
+            customer_ids_in = await expand_customer_ids(self.customers, cid_int)
 
         kw = keyword.strip() if keyword else None
         if not kw:
@@ -511,7 +516,7 @@ class OutsourceQuoteService:
                 if company_ids else []
             )
         }
-        cust_cache = await self._preload_customer_cache(
+        cust_cache = await preload_customer_cache(self.customers,
             [p.customer_id for p in page_parts if p.customer_id is not None]
         )
 
@@ -529,10 +534,11 @@ class OutsourceQuoteService:
             process = proc_map.get(q.process_id)
             customer_path: str | None = None
             if p.customer_id is not None and p.customer_id in cust_cache:
-                customer_path = self._make_customer_path_cached(
+                customer_path = make_customer_path_cached(
                     cust_cache[p.customer_id], cust_cache,
                 )
             items.append(ApprovedQuoteForSendItem(
+                version=p.version,  # OCC：前端发送时回传（2026-07-28 新增）
                 part_id=p.id,
                 part_serial_no=p.serial_no,
                 part_drawing_no=p.drawing_no,
@@ -568,14 +574,6 @@ class OutsourceQuoteService:
             http_status=http_status.HTTP_404_NOT_FOUND,
         )
 
-    async def _expand_customer_ids(self, root_customer_id: int) -> list[int]:
-        """L1 + L2 子节点展平。v1 客户树只有 2 层。"""
-        ids: list[int] = [root_customer_id]
-        children = await self.customers.list_children(root_customer_id)
-        if children:
-            ids.extend(c.id for c in children)
-        return list(dict.fromkeys(ids))
-
     async def _resolve_part_ids(
         self,
         *,
@@ -593,7 +591,7 @@ class OutsourceQuoteService:
             cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
             if cid_int is None:
                 return []
-            customer_ids_in = await self._expand_customer_ids(cid_int)
+            customer_ids_in = await expand_customer_ids(self.customers, cid_int)
 
         kw = keyword.strip() if keyword else None
         if not kw:
@@ -669,7 +667,7 @@ class OutsourceQuoteService:
         proc_map = {
             pr.id: pr for pr in await self.processes.list_by_ids(process_ids)
         }
-        cust_cache = await self._preload_customer_cache(
+        cust_cache = await preload_customer_cache(self.customers,
             [p.customer_id for p in part_map.values() if p.customer_id]
         )
 
@@ -680,7 +678,7 @@ class OutsourceQuoteService:
             process = proc_map.get(q.process_id)
             customer_path: str | None = None
             if part and part.customer_id and part.customer_id in cust_cache:
-                customer_path = self._make_customer_path_cached(
+                customer_path = make_customer_path_cached(
                     cust_cache[part.customer_id], cust_cache,
                 )
             out.append(OutsourceQuoteOut(
@@ -706,42 +704,3 @@ class OutsourceQuoteService:
                 customer_path=customer_path,
             ))
         return out
-
-    async def _preload_customer_cache(
-        self, leaf_ids: list[int],
-    ) -> dict[int, TCustomer]:
-        """按客户树深度逐层批量预载（list_by_ids），供 _make_customer_path_cached 用。
-
-        v1 客户树只有 2 层，通常 1~2 次查询即可覆盖全部祖先。
-        """
-        cache: dict[int, TCustomer] = {}
-        frontier = list({cid for cid in leaf_ids if cid is not None})
-        while frontier:
-            rows = await self.customers.list_by_ids(frontier)
-            if not rows:
-                break
-            for c in rows:
-                cache[c.id] = c
-            next_frontier: list[int] = []
-            for c in rows:
-                pid = c.parent_id
-                if pid and pid not in cache and pid not in next_frontier:
-                    next_frontier.append(pid)
-            frontier = next_frontier
-        return cache
-
-    def _make_customer_path_cached(
-        self, cust: TCustomer, cache: dict[int, TCustomer],
-    ) -> str | None:
-        """纯内存拼客户路径（不再逐条 get_by_id）。cache 缺祖先则安全截断。"""
-        cur: TCustomer | None = cust
-        path: list[str] = []
-        seen: set[int] = set()
-        while cur is not None and cur.id not in seen:
-            seen.add(cur.id)
-            path.append(cur.name)
-            if cur.parent_id is None:
-                break
-            cur = cache.get(cur.parent_id)
-        path.reverse()
-        return " / ".join(path) if path else None

@@ -136,6 +136,10 @@ class ApprovedQuoteForSendItem(BaseModel):
     直接返回 PartListItem 形态 + 预解析字段，便于外协发送列表页直接渲染。
     """
 
+    version: int = Field(
+        default=0,
+        description="零件 TPart.version（OCC；前端发送时需回传），2026-07-28 新增",
+    )
     part_id: IdStrNonNull
     part_serial_no: str | None = None
     part_drawing_no: str | None = None

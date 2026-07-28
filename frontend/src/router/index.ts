@@ -132,6 +132,22 @@ const routes: RouteRecordRaw[] = [
         redirect: { path: '/outsource/send-receive', query: { tab: 'receiving' } },
       },
       {
+        // 2026-07-28：外协对账一览（按公司聚合 SENT_TO_OUTSOURCE 事件）
+        path: 'outsource/companies/:id/sent-parts',
+        name: 'OutsourceCompanySentParts',
+        component: () => import('@/views/outsource/OutsourceCompanySentParts.vue'),
+        meta: {
+          title: '外协对账',
+          // 不暴露为独立菜单；通过公司列表的「对账」链接进入。
+          menuCode: 'outsource_companies_list',
+          breadcrumb: [
+            { label: '外协管理' },
+            { label: '外协厂一览', path: '/outsource/companies' },
+            { label: '外协对账' },
+          ],
+        },
+      },
+      {
         path: 'assemblies',
         name: 'AssemblyList',
         component: () => import('@/views/assemblies/AssemblyList.vue'),

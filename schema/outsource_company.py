@@ -7,15 +7,18 @@
   解耦，避免列表接口每次都 JOIN 出全部映射行。
 - `SetOutsourceCompanyProcessRequest` 用「整体替换」语义（参考
   schema/work_type_process.py::SetWorkTypeProcessRequest）。
+- 2026-07-28：新增 `OutsourceSentPartItem` / `OutsourceSentPartListOut`
+  用于外协对账端点（按公司聚合 SENT_TO_OUTSOURCE 事件）。
 """
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from model.enums import ProcessCategory
-from schema._types import IdStrNonNull
+from model.enums import PartLocation, PartStatus, ProcessCategory
+from schema._types import IdStr, IdStrNonNull
 
 
 # ============================================================
@@ -121,6 +124,59 @@ class OutsourceCompanyListQuery(BaseModel):
     is_active: bool | None = Field(default=None, description="是否启用过滤")
     limit: int = Field(default=100, ge=1, le=500, description="分页大小")
     offset: int = Field(default=0, ge=0, description="分页偏移")
+
+
+# ============================================================
+# 外协对账：发送给某外协公司的所有零件一览（2026-07-28 新增）
+# ============================================================
+
+
+class OutsourceSentPartItem(BaseModel):
+    """外协对账端点返回项：一次 SENT_TO_OUTSOURCE 事件 + 当前 part 状态。
+
+    字段说明：
+    - sent_at / received_at：TPartEvent 的 created_at（事件时间）
+    - received_at 为 NULL 表示该 part 还在该公司手上（status=OUTSOURCE）
+    - unit_price / total_price：来自 APPROVED 报价；DIRECT 直发为 None
+    - is_billed：对账标记（当前固定 False；未来 POST mark-billed API 触发）
+    """
+
+    part_id: IdStrNonNull
+    part_serial_no: str | None = None
+    part_drawing_no: str | None = None
+    part_name: str | None = None
+    customer_path: str | None = None
+    process_id: IdStrNonNull
+    process_name: str | None = None
+    quantity: int
+    unit_price: Decimal | None = None
+    total_price: Decimal | None = None
+    sent_at: datetime
+    received_at: datetime | None = None
+    current_status: PartStatus
+    current_location: PartLocation | None = None
+    is_billed: bool = False
+
+
+class OutsourceSentPartListOut(BaseModel):
+    items: list[OutsourceSentPartItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class OutsourceSentPartListQuery(BaseModel):
+    """外协对账一览查询参数（2026-07-28 新增）。"""
+
+    keyword: str | None = Field(default=None)
+    sent_from: datetime | None = Field(
+        default=None, description="发送时间起点（含）",
+    )
+    sent_to: datetime | None = Field(
+        default=None, description="发送时间终点（含）",
+    )
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 class OutsourceCompanyListOut(BaseModel):

@@ -194,6 +194,13 @@ def get_part_repository(
     return PartRepository(session)
 
 
+def get_part_event_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PartEventRepository:
+    """2026-07-28 新增：供 `get_outsource_company_service` 对账端点用。"""
+    return PartEventRepository(session)
+
+
 def get_process_repo(
     session: AsyncSession = Depends(get_session),
 ) -> ProcessRepository:
@@ -582,10 +589,13 @@ def get_outsource_company_service(
         get_outsource_company_process_repo,
     ),
     processes: ProcessRepository = Depends(get_process_repo),
+    part_repo: PartRepository = Depends(get_part_repository),
+    part_events: PartEventRepository = Depends(get_part_event_repository),
     user: CurrentUser = Depends(get_current_user),
 ) -> OutsourceCompanyService:
     return OutsourceCompanyService(
         companies=companies, junction=junction, processes=processes,
+        part_repo=part_repo, part_events=part_events,
         current_user=user,
     )
 

@@ -9,8 +9,12 @@
 另外提供：
 - `GET /outsource-companies/by-process/{process_id}`：按工序反查能做此工序的
   活跃公司，给发送外协对话框前端过滤候选用。
+- `GET /outsource-companies/{company_id}/sent-parts`（2026-07-28 新增）：外协对账一览，
+  按公司聚合 SENT_TO_OUTSOURCE 事件，列出所有送给该公司的零件。
 """
-from fastapi import APIRouter, Depends, status as http_status
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query, status as http_status
 
 from api.deps import get_outsource_company_service
 from core.permission import require_roles
@@ -22,6 +26,8 @@ from schema.outsource_company import (
     OutsourceCompanyOut,
     OutsourceCompanyUpdateRequest,
     OutsourceCompanyWithProcessesOut,
+    OutsourceSentPartListOut,
+    OutsourceSentPartListQuery,
     SetOutsourceCompanyProcessRequest,
 )
 from service import OutsourceCompanyService
@@ -102,6 +108,33 @@ write_router = APIRouter(
         Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))
     ],
 )
+
+
+@read_router.get(
+    "/{company_id}/sent-parts",
+    response_model=OutsourceSentPartListOut,
+    summary=(
+        "外协对账一览（2026-07-28 新增）：按外协公司聚合 SENT_TO_OUTSOURCE 事件，"
+        "列出所有送给该公司的零件 + 当前状态（MANAGER / CLERK）。"
+    ),
+)
+async def list_company_sent_parts(
+    company_id: str,
+    keyword: str | None = Query(default=None),
+    sent_from: datetime | None = Query(default=None, description="发送时间起点（含）"),
+    sent_to: datetime | None = Query(default=None, description="发送时间终点（含）"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    svc: OutsourceCompanyService = Depends(get_outsource_company_service),
+) -> OutsourceSentPartListOut:
+    return await svc.list_sent_parts(
+        company_id=company_id,
+        query=OutsourceSentPartListQuery(
+            keyword=keyword,
+            sent_from=sent_from, sent_to=sent_to,
+            limit=limit, offset=offset,
+        ),
+    )
 
 
 @write_router.post(

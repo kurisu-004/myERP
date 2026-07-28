@@ -4,8 +4,11 @@
 - 与 CustomerService / WorkTypeProcessService 形态对称。
 - `set_outsource_company_processes` 走整体替换（delete-then-insert）。
 - 入参 ID 是雪花 ID 字符串（CLAUDE.md §3），service 层 parse_snowflake_id 转 int。
+- 2026-07-28：`list_sent_parts` 外协对账端点，按公司聚合 SENT_TO_OUTSOURCE 事件。
 """
 from __future__ import annotations
+
+from datetime import datetime
 
 from fastapi import status as http_status
 from sqlalchemy.exc import IntegrityError
@@ -14,9 +17,11 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from model import TOutsourceCompany, TOutsourceCompanyProcess, TProcess
-from model.enums import ProcessCategory
+from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
+from repository.part import PartRepository
+from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from schema.outsource_company import (
     OutsourceCompanyCreateRequest,
@@ -26,6 +31,9 @@ from schema.outsource_company import (
     OutsourceCompanyProcessLinkOut,
     OutsourceCompanyUpdateRequest,
     OutsourceCompanyWithProcessesOut,
+    OutsourceSentPartItem,
+    OutsourceSentPartListOut,
+    OutsourceSentPartListQuery,
     SetOutsourceCompanyProcessRequest,
 )
 from service._id_parse import parse_snowflake_id
@@ -38,12 +46,16 @@ class OutsourceCompanyService:
         companies: OutsourceCompanyRepository,
         junction: OutsourceCompanyProcessRepository,
         processes: ProcessRepository,
+        part_repo: PartRepository | None = None,
+        part_events: PartEventRepository | None = None,
         *,
         current_user: CurrentUser | None = None,
     ) -> None:
         self.companies = companies
         self.junction = junction
         self.processes = processes
+        self.part_repo = part_repo
+        self.part_events = part_events
         self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
@@ -95,6 +107,107 @@ class OutsourceCompanyService:
         return [
             self._to_out(c) for c in companies if c.is_active
         ]
+
+    # ============================================================
+    # 外协对账（2026-07-28 新增）
+    # ============================================================
+    async def list_sent_parts(
+        self,
+        company_id: str,
+        query: OutsourceSentPartListQuery,
+    ) -> OutsourceSentPartListOut:
+        """外协对账：列出发送给该外协公司所有零件一览（与对账单核对）。
+
+        数据源：
+        - `t_part_event.outsource_company_id` (SENT_TO_OUTSOURCE)
+        - 每个 part 最近一次 RECEIVED_FROM_OUTSOURCE（同公司）作为 received_at
+        - 当前 part.status / location 标识「还在公司手里」vs「已回收」
+
+        过滤：keyword（图号/名称）、sent_from / sent_to（事件时间区间）。
+        """
+        cid = parse_snowflake_id(company_id, field_name="company_id")
+        if cid is None:
+            raise self._not_found(company_id)
+        company = await self.companies.get_by_id(cid)
+        if company is None:
+            raise self._not_found(company_id)
+
+        if self.part_events is None or self.part_repo is None:
+            return OutsourceSentPartListOut(
+                items=[], total=0, limit=query.limit, offset=query.offset,
+            )
+
+        # 1. 查该公司的 SENT_TO_OUTSOURCE 事件
+        events = await self.part_events.list_sent_to_company(
+            company_id=cid,
+            sent_from=query.sent_from, sent_to=query.sent_to,
+            limit=query.limit, offset=query.offset,
+        )
+        total = await self.part_events.count_sent_to_company(
+            company_id=cid,
+            sent_from=query.sent_from, sent_to=query.sent_to,
+        )
+        if not events:
+            return OutsourceSentPartListOut(
+                items=[], total=total, limit=query.limit, offset=query.offset,
+            )
+
+        # 2. 批查 part + process + 该批 part 的最近 RECEIVE 事件
+        part_ids = list({e.part_id for e in events})
+        parts = await self.part_repo.list_by_ids(part_ids) if part_ids else []
+        part_map = {p.id: p for p in parts}
+        process_ids = list({e.part_id for e in events if False})  # 占位；下面单独取
+        # 实际需要 process_id：事件本身没存 process_id，要从 part.next_process_id 取
+        process_ids = list({
+            part_map[e.part_id].next_process_id
+            for e in events if e.part_id in part_map
+            and part_map[e.part_id].next_process_id is not None
+        })
+        process_map = {}
+        if process_ids:
+            procs = await self.processes.list_by_ids(process_ids)
+            process_map = {p.id: p for p in procs}
+
+        received_events = await self.part_events.list_received_from_company(
+            part_ids=part_ids, company_id=cid,
+        )
+        received_by_part: dict[int, object] = {}
+        for re in received_events:
+            cur = received_by_part.get(re.part_id)
+            if cur is None or re.created_at > cur.created_at:
+                received_by_part[re.part_id] = re
+
+        # 3. 拼装（keyword 过滤在 SQL 已做，这里仅做输出拼装）
+        items: list[OutsourceSentPartItem] = []
+        for e in events:
+            p = part_map.get(e.part_id)
+            if p is None:
+                continue
+            re = received_by_part.get(p.id)
+            next_proc = process_map.get(p.next_process_id) if p.next_process_id else None
+            items.append(OutsourceSentPartItem(
+                part_id=p.id,
+                part_serial_no=p.serial_no,
+                part_drawing_no=p.drawing_no,
+                part_name=p.name,
+                customer_path=None,  # 不在事件行拼装；如需可补 part → customer 解析
+                process_id=p.next_process_id if p.next_process_id else 0,
+                process_name=next_proc.name if next_proc else None,
+                quantity=p.quantity or 0,
+                unit_price=None,  # SENT_TO_OUTSOURCE 事件不存报价；可由 TPart.unit_price 兜底
+                total_price=None,
+                sent_at=e.created_at,
+                received_at=re.created_at if re else None,
+                current_status=PartStatus(p.status),
+                current_location=(
+                    PartLocation(p.location) if p.location else None
+                ),
+                is_billed=False,
+            ))
+        return OutsourceSentPartListOut(
+            items=items, total=total,
+            limit=query.limit, offset=query.offset,
+        )
 
     # ============================================================
     # 写

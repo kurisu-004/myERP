@@ -147,8 +147,12 @@ export interface OutsourceQuoteRejectPayload {
   review_note: string
 }
 
-/** 「外协发送」列表（ApprovedQuoteForSendItem） */
+/** 「外协发送」列表（ApprovedQuoteForSendItem）—— 2026-07-28 后已被
+ * OutsourceSendableItem 取代；保留以兼容旧 API。
+ */
 export interface ApprovedQuoteForSendItem {
+  /** 乐观锁版本号（零件 TPart.version）；发送时必须随 SendToOutsourcePayload.version 一同传入（2026-07-28 OCC） */
+  version: number
   part_id: string
   part_serial_no: string | null
   part_drawing_no: string | null
@@ -169,6 +173,89 @@ export interface ApprovedQuoteForSendItem {
 
 export interface ApprovedForSendListResult {
   items: ApprovedQuoteForSendItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+
+// ============================================================
+// 统一外协可发送一览（2026-07-28 新增，取代 ApprovedQuoteForSendItem / DirectOutsourceCandidateItem）
+// ============================================================
+
+/** 发送模式：APPROVAL 需审批，DIRECT 无需审批可直发 */
+export type OutsourceSendMode = 'APPROVAL' | 'DIRECT'
+
+/** 来源状态：PENDING 起始外协（OFFICE），IN_PROCESS 中间外协（在生产架） */
+export type OutsourceSourceStatus = 'PENDING' | 'IN_PROCESS'
+
+/** 可发送候选公司选项（DIRECT 时由 UI 选择） */
+export interface OutsourceCompanyOption {
+  id: string
+  name: string
+}
+
+/** 外协可发送一览的统一返回项 */
+export interface OutsourceSendableItem {
+  /** 乐观锁版本号（OCC；前端发送时回传） */
+  version: number
+  send_mode: OutsourceSendMode
+  source_status: OutsourceSourceStatus
+  part_id: string
+  part_serial_no: string | null
+  part_drawing_no: string | null
+  part_name: string | null
+  quantity: number | null
+  planned_delivery_date: string | null
+  is_urgent: boolean
+  customer_path: string | null
+  next_process_id: string
+  next_process_name: string | null
+  /** APPROVAL 单值；DIRECT 为 null（用 company_options） */
+  outsource_company_id: string | null
+  outsource_company_name: string | null
+  /** DIRECT 时为该 part 可用的全部公司；APPROVAL 时为空数组（用单值字段） */
+  company_options: OutsourceCompanyOption[]
+  /** APPROVAL 时为该报价的 Decimal 字符串；DIRECT 为 null（直发无报价） */
+  price: string | null
+  status_label: 'sendable'
+}
+
+export interface OutsourceSendableListResult {
+  items: OutsourceSendableItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+
+// ============================================================
+// 外协对账（2026-07-28 新增）
+// ============================================================
+
+export interface OutsourceSentPartItem {
+  part_id: string
+  part_serial_no: string | null
+  part_drawing_no: string | null
+  part_name: string | null
+  customer_path: string | null
+  process_id: string
+  process_name: string | null
+  quantity: number
+  /** Decimal 字符串 */
+  unit_price: string | null
+  total_price: string | null
+  sent_at: string
+  received_at: string | null
+  /** PartStatus value */
+  current_status: string
+  /** PartLocation value | null */
+  current_location: string | null
+  is_billed: boolean
+}
+
+export interface OutsourceSentPartListResult {
+  items: OutsourceSentPartItem[]
   total: number
   limit: number
   offset: number

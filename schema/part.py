@@ -452,6 +452,15 @@ class PlaceOnShelfRequest(BaseModel):
 
     shelf_id: int = Field(description="目标生产货架 id")
     next_process_id: int = Field(description="下一道工序 id（必填）")
+    # 2026-07-28：外协对账审计字段，仅 receive_from_outsource 路径写入
+    # TPartEvent.outsource_company_id；place_on_shelf 路径忽略。可空。
+    outsource_company_id: str | None = Field(
+        default=None,
+        description=(
+            "外协公司雪花 ID 字符串（仅 receive_from_outsource 用，对账审计）；"
+            "可选；空时 TPartEvent.outsource_company_id 为 NULL"
+        ),
+    )
 
     @field_validator("shelf_id", "next_process_id")
     @classmethod
@@ -560,6 +569,14 @@ class SendToOutsourceRequest(BaseModel):
     - outsource_company_id 存在 + 未软删 + is_active=True
     - next_process_id 存在 + category=OUTSOURCE
     - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
+    - version 与 part.version 一致（OCC）；不一致返 BIZ_VERSION_CONFLICT 409
+
+    行为分支（由 next_process.requires_approval 决定，2026-07-28 新增）：
+    - True（默认）：必须有该 (part, company, process) 元组的 APPROVED 报价；
+      发送后把报价 mark_used。
+    - False（无需审批）：跳过报价检查；要求 part 位于 C2 货架
+      （BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF 422）；事件 note 追加
+      「直接发送（无需审批）」。
 
     雪花 ID 入参用 `str`（CLAUDE.md §3 — 19 位 > JS Number.MAX_SAFE_INTEGER），
     service 层 `parse_snowflake_id` 转 int。
@@ -571,6 +588,12 @@ class SendToOutsourceRequest(BaseModel):
     next_process_id: str = Field(
         description="外协工序 id（雪花 ID 字符串；service 层 parse_snowflake_id 转 int）",
     )
+    version: int = Field(
+        description=(
+            "乐观锁版本号；必须与 part.version 一致，否则返回 BIZ_VERSION_CONFLICT 409。"
+            "前端从 PartOut.version 取值后传入；AuditMixin 自动给 UPDATE 加 WHERE version=? 保证并发安全。"
+        ),
+    )
 
     @field_validator("next_process_id")
     @classmethod
@@ -578,6 +601,91 @@ class SendToOutsourceRequest(BaseModel):
         if not v or v == "0":
             raise ValueError("must be non-empty snowflake id")
         return v
+
+
+class DirectOutsourceCompanyOption(BaseModel):
+    """直接发送外协候选返回的可用公司选项。"""
+
+    id: IdStrNonNull
+    name: str
+
+
+class OutsourceSendableItem(BaseModel):
+    """外协可发送一览的统一返回项（2026-07-28 新增，取代旧的 ApprovedQuoteForSendItem /
+    DirectOutsourceCandidateItem 在「可发送」tab 中的角色）。
+
+    `send_mode` 决定后端 send_to_outsource 的校验分支：
+    - `APPROVAL`：必须已有 APPROVED 报价；前端用 `outsource_company_id` 直接发送。
+    - `DIRECT`：跳过报价检查；按 `source_status` 走两条路径：
+      - PENDING（起始外协）：OFFICE 直接发出，不要求 C2 货架。
+      - IN_PROCESS（中间外协）：要求 part 位于 C2 货架。
+      前端用 `company_options` 选公司。
+
+    `source_status` 区分起始 vs 中间外协（前端 UI 提示用）。
+    """
+
+    version: int = Field(
+        default=0,
+        description="零件 TPart.version（OCC；前端发送时需回传）",
+    )
+    send_mode: Literal["APPROVAL", "DIRECT"]
+    source_status: Literal["PENDING", "IN_PROCESS"]
+    part_id: IdStrNonNull
+    part_serial_no: str | None = None
+    part_drawing_no: str | None = None
+    part_name: str | None = None
+    quantity: int | None = None
+    planned_delivery_date: str | None = None
+    is_urgent: bool = False
+    customer_path: str | None = None
+    next_process_id: IdStrNonNull
+    next_process_name: str | None = None
+    # APPROVAL 单值（直接发送时也用单值，因前端可能选过）；DIRECT 多值（默认无）
+    outsource_company_id: IdStrNonNull | None = None
+    outsource_company_name: str | None = None
+    company_options: list[DirectOutsourceCompanyOption] = Field(
+        default_factory=list,
+        description="DIRECT 时为该 part 可用的全部外协公司；APPROVAL 时为空（用 single 字段）",
+    )
+    # APPROVAL 时为该报价的 Decimal 价格；DIRECT 时为 None（直发无报价）
+    price: Decimal | None = None
+    status_label: Literal["sendable"] = "sendable"
+
+
+class OutsourceSendableListOut(BaseModel):
+    items: list[OutsourceSendableItem]
+    total: int
+    limit: int
+    offset: int
+
+
+# 兼容旧字段：DirectOutsourceCandidateItem 仍保留，供仍在使用的服务层路径
+# （已迁移到 OutsourceSendableItem + send_mode='DIRECT'，旧 list 端点已下线）。
+# 前端不再使用。后续可删除。
+class DirectOutsourceCandidateItem(BaseModel):
+    """旧版直接发送外协候选（已被 OutsourceSendableItem.send_mode='DIRECT' 取代）。"""
+
+    version: int = Field(default=0)
+    part_id: IdStrNonNull
+    part_serial_no: str | None = None
+    part_drawing_no: str | None = None
+    part_name: str | None = None
+    quantity: int | None = None
+    planned_delivery_date: str | None = None
+    is_urgent: bool = False
+    customer_path: str | None = None
+    next_process_id: IdStrNonNull
+    next_process_name: str | None = None
+    requires_approval: Literal[False] = False
+    status_label: Literal["sendable"] = "sendable"
+    company_options: list[DirectOutsourceCompanyOption]
+
+
+class DirectOutsourceCandidateListOut(BaseModel):
+    items: list[DirectOutsourceCandidateItem]
+    total: int
+    limit: int
+    offset: int
 
 
 class ReceiveToInspectionRequest(BaseModel):
@@ -595,6 +703,13 @@ class ReceiveToInspectionRequest(BaseModel):
     auto_pass_inspection: bool = Field(
         default=False,
         description="True 时连发 pass_inspection 一次性推到 READY_TO_SHIP",
+    )
+    # 2026-07-28：外协对账审计字段，写入 TPartEvent.outsource_company_id；可空。
+    outsource_company_id: str | None = Field(
+        default=None,
+        description=(
+            "外协公司雪花 ID 字符串（对账审计）；可选；空时 TPartEvent.outsource_company_id 为 NULL"
+        ),
     )
 
 

@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, String
+from sqlalchemy import BigInteger, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import EventTimestampMixin
@@ -19,7 +19,7 @@ class TPartEvent(Base, EventTimestampMixin):
     - `event_type` / `from_status` / `to_status` 是 `varchar(...)`，
       取值合法性由 Python Enum（`PartEventType` / `PartStatus`）
       在 service 层校验。**不**用 PostgreSQL 原生 ENUM。
-    - `part_id` / `worker_id` 是逻辑外键，无 DB FK 约束。
+    - `part_id` / `worker_id` / `outsource_company_id` 是逻辑外键，无 DB FK 约束。
 
     事件型 append-only：继承 `EventTimestampMixin`（只要 `created_at`），
     与业务主表的 `AuditMixin` 不共用——后者带 `updated_at` / 操作人 / 软删，
@@ -57,6 +57,25 @@ class TPartEvent(Base, EventTimestampMixin):
         String(50), nullable=True, comment="扫码事件时传入的工牌码"
     )
 
+    # 外协对账字段（2026-07-28 新增）：
+    # SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE 时填入对应外协公司 id；
+    # 后续可按此列聚合每个外协公司的发送/接收事件，与对账单核对。
+    # 不加 DB FK（CLAUDE.md §1）。
+    outsource_company_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+        comment="SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE 时填入；外协对账按此列聚合",
+    )
+
     note: Mapped[str | None] = mapped_column(
         String(500), nullable=True, comment="可选备注 / 扩展元数据"
+    )
+
+    __table_args__ = (
+        # 部分索引：仅 outsource_company_id 非 NULL 的事件占索引空间；
+        # 99% 的非外协事件不占。t_part_event 是 append-only，无 deleted_at 列。
+        Index(
+            "ix_t_part_event_outsource_company_id",
+            "outsource_company_id",
+            postgresql_where=text("outsource_company_id IS NOT NULL"),
+        ),
     )
