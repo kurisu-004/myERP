@@ -17,7 +17,7 @@ import { Promotion } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
-import { listApprovedForSend } from '@/api/outsource'
+import { listApprovedForSend, listOutsourceInFlight } from '@/api/outsource'
 import { listCustomers, type Customer } from '@/api/customer'
 import { listShelves } from '@/api/shelves'
 import type { Shelf as ShelfItem } from '@/types/shelf'
@@ -34,14 +34,13 @@ import {
   listOutsourceSendable,
   type SendToOutsourcePayload,
   type PartItem,
-  listParts,
 } from '@/api/parts'
 import type {
   ApprovedQuoteForSendItem,
+  OutsourceInFlightItem,
   OutsourceSendableItem,
 } from '@/types/outsource'
 import type { DirectOutsourceCandidateItem } from '@/types/directOutsource'
-import type { PartListItem } from '@/types/parts'
 
 /** 合并后的可发送项：2026-07-28 后由 GET /parts/outsource-sendable 单端点返回
  * OutsourceSendableItem 统一承担；每行已含 send_mode + source_status。 */
@@ -140,6 +139,7 @@ async function refreshSendable(): Promise<void> {
 const sendDialogVisible = ref(false)
 const sendTarget = ref<SendableItem | null>(null)
 const sendSelectedCompanyId = ref<string>('')
+const sendQuantity = ref<number>(0)
 const sendSubmitting = ref(false)
 
 function canSend(item: SendableItem): boolean {
@@ -156,6 +156,7 @@ function openSend(item: SendableItem): void {
     return
   }
   sendTarget.value = item
+  sendQuantity.value = item.batch_quantity
   // 直接发送：默认选第一家公司（不能为空数组；前端必有 ≥1）
   if (item.send_mode === 'DIRECT') {
     sendSelectedCompanyId.value = item.company_options[0]?.id ?? ''
@@ -171,6 +172,10 @@ async function onConfirmSend(): Promise<void> {
     ElMessage.warning('请选择外协公司')
     return
   }
+  if (sendQuantity.value < 1 || sendQuantity.value > target.batch_quantity) {
+    ElMessage.warning(`数量必须在 1 ~ ${target.batch_quantity} 之间`)
+    return
+  }
   const companyId: string = target.send_mode === 'DIRECT'
     ? sendSelectedCompanyId.value
     : (target.outsource_company_id ?? '')
@@ -179,7 +184,7 @@ async function onConfirmSend(): Promise<void> {
     : (target.outsource_company_name ?? '')
   try {
     await ElMessageBox.confirm(
-      `确认把「${target.part_drawing_no}」（批次 ${target.batch_no}，${target.batch_quantity} 件）发送到「${companyName}」？`,
+      `确认把「${target.part_drawing_no}」（批次 ${target.batch_no}，${sendQuantity.value} / ${target.batch_quantity} 件）发送到「${companyName}」？`,
       '发送外协',
       { type: 'warning', confirmButtonText: '确认发送', cancelButtonText: '取消' },
     )
@@ -195,6 +200,7 @@ async function onConfirmSend(): Promise<void> {
       // 2026-07-29 PR-fix-0.2.0 批次化：显式携带 batch_id，
       // 多批次工单下避免 _resolve_target_batch fallback 选错批次。
       batch_id: target.batch_id,
+      quantity: sendQuantity.value === target.batch_quantity ? null : sendQuantity.value,
     }
     await sendPartToOutsource(target.part_id, payload)
     ElMessage.success('已发送至外协')
@@ -245,6 +251,8 @@ interface SendQueueItem {
   version: number
   /** 2026-07-29 PR-fix-0.2.0 批次化：可发送批次 id（雪花 ID 字符串） */
   batch_id: string
+  /** 2026-07-30：发送数量（默认批次全量） */
+  quantity: number
   // 入队后做标记，给 UI 看
   _failed?: boolean
   _failMsg?: string
@@ -307,6 +315,8 @@ async function handleScannedSerialForSend(code: string): Promise<void> {
     version: match.version,
     // 2026-07-29 PR-fix-0.2.0 批次化：携带 batch_id 供发送时回传
     batch_id: match.batch_id,
+    // 2026-07-30：默认批次全量
+    quantity: match.batch_quantity,
   })
   ElMessage.success(`已加入发送队列：${part.serial_no ?? trimmed}`)
 }
@@ -353,6 +363,7 @@ async function onConfirmBatchSend(): Promise<void> {
         version: item.version,
         // 2026-07-29 PR-fix-0.2.0 批次化：显式携带 batch_id。
         batch_id: item.batch_id,
+        quantity: item.quantity,
       }
       await sendPartToOutsource(item.part.id, payload)
       okCount++
@@ -406,7 +417,7 @@ onBeforeUnmount(() => {
 // ============================================================
 // Tab 2：待接收
 // ============================================================
-const receivingItems = ref<PartListItem[]>([])
+const receivingItems = ref<OutsourceInFlightItem[]>([])
 const receivingTotal = ref(0)
 const receivingLoading = ref(false)
 const receivingError = ref<string | null>(null)
@@ -418,15 +429,13 @@ async function refreshReceiving(): Promise<void> {
   receivingLoading.value = true
   receivingError.value = null
   try {
-    const r = await listParts({
-      statuses: ['OUTSOURCE'],
+    const items = await listOutsourceInFlight({
       keyword: receivingFilter.keyword || undefined,
-      customer_id: receivingFilter.customer_id || undefined,
       limit: receivingPageSize.value,
       offset: (receivingPage.value - 1) * receivingPageSize.value,
     })
-    receivingItems.value = r.items
-    receivingTotal.value = r.total
+    receivingItems.value = items
+    receivingTotal.value = items.length
   } catch (e) {
     receivingItems.value = []
     receivingTotal.value = 0
@@ -438,8 +447,9 @@ async function refreshReceiving(): Promise<void> {
 }
 
 const receiveDialogVisible = ref(false)
-const receiveTarget = ref<PartListItem | null>(null)
+const receiveTarget = ref<OutsourceInFlightItem | null>(null)
 const receiveSubmitting = ref(false)
+const receiveQuantity = ref<number>(0)
 type Branch = 'production' | 'inspection'
 const receiveBranch = ref<Branch>('production')
 const receiveShelf = ref('')
@@ -475,12 +485,13 @@ const {
   }),
 )
 
-function openReceive(row: PartListItem): void {
+function openReceive(row: OutsourceInFlightItem): void {
   receiveTarget.value = row
   receiveBranch.value = 'production'
   receiveShelf.value = ''
   receiveProcess.value = ''
   autoPass.value = false
+  receiveQuantity.value = row.quantity
   receiveDialogVisible.value = true
   // 2026-07-17：弹窗打开后异步加载映射（仅在 shelves/processes 已就绪时有效）
   void loadReceiveMap()
@@ -511,9 +522,13 @@ async function onConfirmReceive(): Promise<void> {
     ElMessage.warning('生产分支请选择下一道 INHOUSE 工序')
     return
   }
+  if (receiveQuantity.value < 1 || receiveQuantity.value > receiveTarget.value.quantity) {
+    ElMessage.warning(`数量必须在 1 ~ ${receiveTarget.value.quantity} 之间`)
+    return
+  }
   try {
     await ElMessageBox.confirm(
-      `确认接收「${receiveTarget.value.drawing_no}」（${receiveBranchLabel.value}）？`,
+      `确认接收「${receiveTarget.value.drawing_no}」（批次 ${receiveTarget.value.batch_no}，${receiveQuantity.value} / ${receiveTarget.value.quantity} 件，${receiveBranchLabel.value}）？`,
       '接收外协件',
       { type: 'warning', confirmButtonText: '确认接收', cancelButtonText: '取消' },
     )
@@ -522,16 +537,21 @@ async function onConfirmReceive(): Promise<void> {
   }
   receiveSubmitting.value = true
   try {
+    const qty = receiveQuantity.value === receiveTarget.value.quantity ? null : receiveQuantity.value
     if (receiveBranch.value === 'production') {
-      await receiveFromOutsource(receiveTarget.value.id, {
+      await receiveFromOutsource(receiveTarget.value.part_id, {
         shelf_id: receiveShelf.value,
         next_process_id: receiveProcess.value,
+        batch_id: receiveTarget.value.batch_id,
+        quantity: qty,
       })
       ElMessage.success('已下发到生产货架')
     } else {
-      await receiveFromOutsourceToInspection(receiveTarget.value.id, {
+      await receiveFromOutsourceToInspection(receiveTarget.value.part_id, {
         shelf_id: receiveShelf.value,
         auto_pass_inspection: autoPass.value,
+        batch_id: receiveTarget.value.batch_id,
+        quantity: qty,
       })
       ElMessage.success(
         autoPass.value
@@ -636,6 +656,7 @@ watch(activeTab, async (t) => {
             <el-table-column prop="part.name" label="名称" min-width="160" show-overflow-tooltip align="center"/>
             <el-table-column prop="outsource_company_name" label="外协公司" min-width="160" show-overflow-tooltip align="center"/>
             <el-table-column prop="process_name" label="外协工序" min-width="120" align="center"/>
+            <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
             <el-table-column prop="price" label="单价(元)" min-width="80" align="right" />
             <el-table-column label="状态" min-width="80" align="center">
               <template #default="{ row }">
@@ -880,9 +901,8 @@ watch(activeTab, async (t) => {
           <ResponsiveList
             :items="receivingItems"
             :loading="receivingLoading"
-            row-key="id"
+            row-key="batch_id"
             :empty-text="receivingError ?? '暂无待接收的零件'"
-            :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
             stripe
             border
             size="small"
@@ -890,17 +910,20 @@ watch(activeTab, async (t) => {
             <el-table-column prop="serial_no" label="序列号" min-width="100" align="center"/>
             <el-table-column prop="drawing_no" label="图号" min-width="120" align="center"/>
             <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
-            <el-table-column label="当前外协公司" min-width="160" show-overflow-tooltip align="center">
+            <el-table-column label="批次号" min-width="80" align="center">
               <template #default="{ row }">
-                <!-- PartListItem 不含 outsource_company_name 字段（仅 PartOut 有）；
-                     用 any cast 读取，service 实际会填上 current_holder_display 但
-                     这里直接展示「外协中」即可。 -->
-                <el-tag type="warning" size="small">外协中</el-tag>
+                <el-tag type="info" size="small">批次 {{ (row as OutsourceInFlightItem).batch_no }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="下一道工序" min-width="160" show-overflow-tooltip align="center">
+            <el-table-column prop="quantity" label="数量" min-width="80" align="right"/>
+            <el-table-column label="外协公司" min-width="160" show-overflow-tooltip align="center">
               <template #default="{ row }">
-                <span class="muted">—</span>
+                {{ (row as OutsourceInFlightItem).outsource_company_name || '—' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="发送时间" min-width="160" align="center">
+              <template #default="{ row }">
+                {{ (row as OutsourceInFlightItem).sent_at ? new Date((row as OutsourceInFlightItem).sent_at!).toLocaleString() : '—' }}
               </template>
             </el-table-column>
             <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip align="center"/>
@@ -909,38 +932,46 @@ watch(activeTab, async (t) => {
                 <el-button
                   size="small"
                   type="primary"
-                  @click="openReceive(row as unknown as PartListItem)"
+                  @click="openReceive(row as OutsourceInFlightItem)"
                 >接收</el-button>
               </template>
             </el-table-column>
 
             <template #card="{ row }">
               <div class="rl-card-head">
-                <span class="rl-card-title">{{ (row as PartListItem).name }}</span>
+                <span class="rl-card-title">{{ (row as OutsourceInFlightItem).name }}</span>
                 <el-tag type="warning" size="small">外协中</el-tag>
               </div>
               <div class="rl-card-sub">
-                图号 {{ (row as PartListItem).drawing_no || '—' }} · 序列号 {{ (row as PartListItem).serial_no || '—' }}
+                图号 {{ (row as OutsourceInFlightItem).drawing_no || '—' }} · 序列号 {{ (row as OutsourceInFlightItem).serial_no || '—' }}
               </div>
               <div class="rl-kv">
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">批次号</span>
+                  <span class="rl-kv__val">{{ (row as OutsourceInFlightItem).batch_no }}</span>
+                </div>
+                <div class="rl-kv__item">
+                  <span class="rl-kv__key">数量</span>
+                  <span class="rl-kv__val">{{ (row as OutsourceInFlightItem).quantity }}</span>
+                </div>
+                <div class="rl-kv__item rl-kv__item--full">
+                  <span class="rl-kv__key">外协公司</span>
+                  <span class="rl-kv__val">{{ (row as OutsourceInFlightItem).outsource_company_name || '—' }}</span>
+                </div>
                 <div class="rl-kv__item rl-kv__item--full">
                   <span class="rl-kv__key">客户</span>
-                  <span class="rl-kv__val">{{ (row as PartListItem).customer_path || '—' }}</span>
+                  <span class="rl-kv__val">{{ (row as OutsourceInFlightItem).customer_path || '—' }}</span>
                 </div>
                 <div class="rl-kv__item">
-                  <span class="rl-kv__key">当前状态</span>
-                  <span class="rl-kv__val">外协中</span>
-                </div>
-                <div class="rl-kv__item">
-                  <span class="rl-kv__key">下一道工序</span>
-                  <span class="rl-kv__val">—</span>
+                  <span class="rl-kv__key">发送时间</span>
+                  <span class="rl-kv__val">{{ (row as OutsourceInFlightItem).sent_at ? new Date((row as OutsourceInFlightItem).sent_at!).toLocaleString() : '—' }}</span>
                 </div>
               </div>
               <div class="rl-card-actions">
                 <el-button
                   size="small"
                   type="primary"
-                  @click="openReceive(row as PartListItem)"
+                  @click="openReceive(row as OutsourceInFlightItem)"
                 >接收</el-button>
               </div>
             </template>
@@ -999,6 +1030,17 @@ watch(activeTab, async (t) => {
           <el-descriptions-item label="单价">
             {{ sendTarget.send_mode === 'DIRECT' ? '—' : `${sendTarget.price} 元` }}
           </el-descriptions-item>
+          <el-descriptions-item label="发送数量">
+            <el-input-number
+              v-model="sendQuantity"
+              :min="1"
+              :max="sendTarget.batch_quantity"
+              :controls="false"
+              size="small"
+              style="width: 120px"
+            />
+            <span style="margin-left: 8px; color: var(--el-text-color-secondary);">/ {{ sendTarget.batch_quantity }} 件</span>
+          </el-descriptions-item>
         </el-descriptions>
       </template>
       <template #footer>
@@ -1049,6 +1091,17 @@ watch(activeTab, async (t) => {
               :value="p.id"
             />
           </el-select>
+        </el-form-item>
+        <el-form-item label="接收数量">
+          <el-input-number
+            v-model="receiveQuantity"
+            :min="1"
+            :max="receiveTarget?.quantity ?? 1"
+            :controls="false"
+            size="small"
+            style="width: 120px"
+          />
+          <span v-if="receiveTarget" style="margin-left: 8px; color: var(--el-text-color-secondary);">/ {{ receiveTarget.quantity }} 件</span>
         </el-form-item>
       </el-form>
       <template #footer>

@@ -65,12 +65,15 @@ export interface SetOutsourceCompanyProcessesPayload {
 // 外协报价 (OutsourceQuote) — 2026-07-16 新增
 // ============================================================
 
-/** 报价状态枚举 */
+/** 报价状态枚举（含 legacy 值，后端可能返回历史数据） */
 export type OutsourceQuoteStatus =
   | 'DRAFT'
   | 'SUBMITTED'
   | 'APPROVED'
   | 'REJECTED'
+  | 'OUTSOURCING'
+  | 'RECEIVED'
+  | 'BILLED'
   | 'USED'
 
 export const OUTSOURCE_QUOTE_STATUS_LABEL: Record<OutsourceQuoteStatus, string> = {
@@ -78,6 +81,9 @@ export const OUTSOURCE_QUOTE_STATUS_LABEL: Record<OutsourceQuoteStatus, string> 
   SUBMITTED: '待审核',
   APPROVED: '已批准',
   REJECTED: '已拒绝',
+  OUTSOURCING: '外协中(legacy)',
+  RECEIVED: '已回收(legacy)',
+  BILLED: '已对账(legacy)',
   USED: '已使用',
 }
 
@@ -86,6 +92,9 @@ export const OUTSOURCE_QUOTE_STATUS_TAG: Record<OutsourceQuoteStatus, 'info' | '
   SUBMITTED: 'warning',
   APPROVED: 'success',
   REJECTED: 'danger',
+  OUTSOURCING: 'warning',
+  RECEIVED: 'info',
+  BILLED: 'success',
   USED: '',
 }
 
@@ -247,24 +256,27 @@ export interface OutsourceSendableListResult {
 export type OutsourceSentPartSortKey = 'PRICE' | 'SENT_AT' | 'RECEIVED_AT'
 
 export interface OutsourceSentPartItem {
-  /** t_outsource_quote.id（行编辑端点入参） */
-  quote_id: string
-  /** OCC 乐观锁 */
+  /** t_outsource_shipment.id（行编辑端点入参） */
+  shipment_id: string
+  /** OCC 乐观锁（shipment.version） */
   version: number
+  quote_id: string
   part_id: string
   part_drawing_no: string | null
   part_name: string | null
   customer_path: string | null
+  /** 历史行可能为 null */
+  batch_no: number | null
   process_id: string
   process_name: string | null
-  quantity: number | null
+  quantity: number
   /** Decimal 字符串；DIRECT 直发自动创建的报价为 "0" */
-  unit_price: string | null
-  /** Decimal 字符串；unit_price × quantity；单价 NULL 时 NULL */
-  total_price: string | null
-  sent_at: string | null
+  unit_price: string
+  /** Decimal 字符串；unit_price × quantity */
+  total_price: string
+  sent_at: string
   received_at: string | null
-  /** OUTSOURCING / RECEIVED / BILLED */
+  /** OUTSOURCING / RECEIVED */
   status: string
   is_billed: boolean
 }
@@ -276,7 +288,7 @@ export interface OutsourceSentPartListResult {
   offset: number
 }
 
-/** PR-H 2026-07-29：对账页行编辑 payload（POST /outsource-quotes/{id}/reconcile-update） */
+/** PR-H 2026-07-30：对账页行编辑 payload（POST /outsource-shipments/{shipment_id}/reconcile-update） */
 export interface OutsourceReconciliationUpdatePayload {
   version: number
   /** 单价；null = 不更新 */
@@ -285,4 +297,33 @@ export interface OutsourceReconciliationUpdatePayload {
   quantity?: number | null
   /** 对账标记；null = 不更新 */
   is_billed?: boolean | null
+}
+
+// ============================================================
+// 外协中批次列表（2026-07-30 新增）
+// ============================================================
+
+export interface OutsourceInFlightItem {
+  part_id: string
+  batch_id: string
+  batch_no: number
+  quantity: number
+  serial_no: string | null
+  drawing_no: string | null
+  name: string | null
+  customer_path: string | null
+  next_process_id: string | null
+  next_process_name: string | null
+  outsource_company_id: string | null
+  outsource_company_name: string | null
+  sent_at: string | null
+  /** 批次 version（OCC） */
+  version: number
+}
+
+export interface OutsourceInFlightListResult {
+  items: OutsourceInFlightItem[]
+  total: number
+  limit: number
+  offset: number
 }

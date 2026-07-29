@@ -623,18 +623,22 @@ export interface SendToOutsourcePayload {
   /** 外协工序 id（雪花 ID 字符串；JS Number 会丢精度） */
   next_process_id: string
   /**
-   * 乐观锁版本号；与后端 PartOut.version 必须一致，否则返 BIZ_VERSION_CONFLICT 409。
-   * 前端从 PartItem.version / PartOut.version 取值后传入。
+   * 乐观锁版本号；与目标批次 TPartBatch.version 必须一致，否则返 BIZ_VERSION_CONFLICT 409。
+   * 前端从 OutsourceSendableItem.version（批次级 version）取值后传入。
    * 2026-07-28 新增。
-   * 2026-07-29 PR-fix-0.2.0 批次化：从 TPartBatch.version 取值（v 是 OutsourceSendableItem.batch_id 对应批次的 version）。
+   * 2026-07-29 PR-fix-0.2.0 批次化：改为批次 version。
    */
   version: number
   /**
    * 2026-07-29 PR-fix-0.2.0 批次化：可发送批次 id（雪花 ID 字符串）。
    * 选填 —— 缺省时后端用 _resolve_target_batch 在该 part 的活跃批次里自动选唯一者；
-   * 多批次元单建议显式传入，避免歧义。Picker 选中行时建议把 row.batch_id 一起回传。
+   * 多批次工单建议显式传入，避免歧义。Picker 选中行时建议把 row.batch_id 一起回传。
    */
   batch_id?: string
+  /**
+   * 2026-07-30：部分发送数量；≤ 批次量，缺省 = 批次全量。
+   */
+  quantity?: number | null
 }
 
 /**
@@ -695,12 +699,20 @@ export interface ReceiveFromOutsourcePayload {
   shelf_id: string
   /** 下一道工序 id（雪花 ID 字符串；JS Number 会丢精度） */
   next_process_id: string
+  /** 2026-07-30：目标批次 id；缺省按状态唯一批次解析 */
+  batch_id?: string | null
+  /** 2026-07-30：部分接收数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 export interface ReceiveToInspectionPayload {
   shelf_id: string
   /** True: 自动通过品检 → READY_TO_SHIP（"送货流程"快捷分支，2026-07-16 加） */
   auto_pass_inspection?: boolean
+  /** 2026-07-30：目标批次 id；缺省按状态唯一批次解析 */
+  batch_id?: string | null
+  /** 2026-07-30：部分接收数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 /**

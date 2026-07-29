@@ -82,9 +82,13 @@ function initialSearch(): SearchState {
 }
 const search = reactive<SearchState>(initialSearch())
 
+/** 报价列表有效筛选状态（不含 legacy 数据状态） */
+const ACTIVE_QUOTE_STATUSES: OutsourceQuoteStatus[] = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED']
+
 const statusOptions: { value: OutsourceQuoteStatus; label: string }[] = (
   Object.entries(OUTSOURCE_QUOTE_STATUS_LABEL) as [OutsourceQuoteStatus, string][]
-).map(([value, label]) => ({ value, label }))
+).filter(([value]) => ACTIVE_QUOTE_STATUSES.includes(value))
+  .map(([value, label]) => ({ value, label }))
 
 const statusFilterActive = computed(() => search.statuses.length > 0)
 const customerFilterActive = computed(() => search.customerId !== '')
@@ -1014,6 +1018,13 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
       :top="reviewDlg.top.value"
     >
       <el-form label-width="100px">
+        <el-alert
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          通过后将自动拒绝该零件同工序的其他报价。
+        </el-alert>
         <el-form-item label="审批意见">
           <el-input v-model="reviewNote" type="textarea" placeholder="可留空" />
         </el-form-item>
