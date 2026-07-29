@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
-from model import TOutsourceQuote
+from model import TOutsourceQuote, TPart, TPartBatch
 from model.customer import TCustomer
 from model.enums import (
     OutsourceQuoteEventType,
@@ -146,14 +146,16 @@ class OutsourceQuoteService:
         limit: int,
         shelf_processes: "ShelfProcessRepository",
     ) -> list[PartListItem]:
-        """新建外协报价对话框 picker 默认数据源。
+        """新建外协报价对话框 picker 默认数据源（2026-07-29 批次化，行=批次）。
 
-        谓词：
-          - status='IN_PROCESS' AND location='PRODUCTION_SHELF'
-          - AND current_holder_id ∈ (绑定了 OUTSOURCE 工序的货架 id 集合)
+        谓词（PR-fix-0.2.0 hotfix：谓词走 TPartBatch，不再读 TPart rollup 字段）：
+          - TPartBatch.status='IN_PROCESS' AND TPartBatch.location='PRODUCTION_SHELF'
+          - AND TPartBatch.current_holder_id ∈ (绑定了 OUTSOURCE 工序的货架 id 集合)
 
-        返回 PartListItem 列表（包含 next_process_id / next_process_name 供前端
-        自动填工序；不含 assembly_id / current_holder_id）。
+        返回 PartListItem 列表，包含：
+          - next_process_id / next_process_name（前端自动填工序）
+          - batch_id / batch_no / batch_quantity（picker 选中时传给报价，
+            与 picker 行对应的那条批次；多批次工单下避免整张工单报价）
 
         若系统无任何绑定了 OUTSOURCE 工序的货架，返回空列表（前端 picker 提示空）。
         """
@@ -162,27 +164,46 @@ class OutsourceQuoteService:
         )
         if not shelf_ids:
             return []
-        # 2026-07-29：rows 现在是 list[tuple[TPartBatch, TPart]]（批次化 picker 调用），
-        # _to_part_list_items 同步接受并填充 batch 字段。
+        # 2026-07-29 PR-fix-0.2.0 hotfix：rows 是 list[tuple[TPartBatch, TPart]]；
+        # _to_part_list_items 的 contract 现在严格只接受这种 tuple 形状（不再鸭子
+        # 类型兼容 list[TPart]）。修的是上一轮 PR 漏掉的一处：`rows` 元素是 tuple，
+        # 但 `_to_part_list_items` 在批查时直接 `for p in rows: p.customer_id`
+        # 把 tuple 当 TPart 用 → 500。
         rows = await self.parts.list_quotable_for_outsource_quote(
             keyword=keyword, shelf_ids_in=shelf_ids, limit=limit,
         )
         return await self._to_part_list_items(rows)
 
     async def _to_part_list_items(
-        self, rows: list | list[TPart] | list[tuple],
+        self, rows: list[tuple[TPartBatch, TPart]],
     ) -> list[PartListItem]:
-        """复用 PartService._to_list_out 的字段组装逻辑；输出 PartListItem。
+        """批次化 picker 的字段组装器：行 = (TPartBatch, TPart)，把 TPart 字段映射到
+        PartListItem，并把批次字段（batch_id / batch_no / batch_quantity）一并填上。
 
         简化版：只填 Picker 关心的字段（不依赖 shelves/workers/shelf_processes），
         但需要 customer_name / parent_customer_name / customer_path / shelf_code /
         worker_name / next_process_name 等展示字段。
+
+        Contract（2026-07-29 PR-fix-0.2.0 hotfix）：
+        - rows 必须是 list[tuple[TPartBatch, TPart]]（批次化 repo 返回形状）。
+        - 工单级 location / current_holder_id 已 rollup 到 TPart 字段（与批次行
+          视图保持一致），但 picker 关心的展示字段（status / serial_no 等）从
+          TPart 取就够了。
+
+        重构背景：早期实现接受 list[TPart]（工单级）+ 内部鸭子类型解包 list[tuple]
+        + 一个迟到的 normalized 列表，结果在 4 个批查（customer / worker / shelf /
+        process）那里就先用 `for p in rows` 访问 .customer_id，rows 还是 tuple 时直接
+        'tuple' object has no attribute 'customer_id' 500。锁住单一 contract 让回归
+        测试一次性拍死此类 bug。
         """
         if not rows:
             return []
 
+        # 立刻解包：所有下游访问都从 parts 列表（去 tuple 后）取，避免再误用 tuple 字段
+        parts: list[TPart] = [p for _, p in rows]
+
         # 1. 客户批查（含 parent）
-        cust_ids = list({p.customer_id for p in rows})
+        cust_ids = list({p.customer_id for p in parts})
         cust_list = await self.customers.list_by_ids(cust_ids)
         cust_map: dict[int, TCustomer] = {c.id: c for c in cust_list}
         parent_ids = [c.parent_id for c in cust_list if c.parent_id]
@@ -194,7 +215,7 @@ class OutsourceQuoteService:
         # 2. 工人批查（WORKER 持有）
         worker_ids = [
             int(p.current_holder_id)
-            for p in rows
+            for p in parts
             if p.location == "WORKER" and p.current_holder_id
         ]
         worker_map: dict[int, str] = {}
@@ -205,7 +226,7 @@ class OutsourceQuoteService:
         # 3. 货架批查（PRODUCTION_SHELF / INSPECTION_SHELF 持有）
         shelf_ids = [
             int(p.current_holder_id)
-            for p in rows
+            for p in parts
             if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
             and p.current_holder_id
         ]
@@ -216,25 +237,15 @@ class OutsourceQuoteService:
 
         # 4. 下一工序批查
         next_process_ids = list({
-            int(p.next_process_id) for p in rows if p.next_process_id
+            int(p.next_process_id) for p in parts if p.next_process_id
         })
         process_map: dict[int, str] = {}
         if next_process_ids:
             proc_rows = await self.processes.list_by_ids(next_process_ids)
             process_map = {pr.id: pr.name for pr in proc_rows}
 
-        # 2026-07-29 PR-fix-0.2.0：批次化 picker 把 rows 解析为 (batch, part) 元组
-        # 时填充 batch_id / batch_no / batch_quantity；list[TPart] 旧调用 batch=None。
-        normalized: list[tuple[TPart, object]] = []
-        for row in rows:
-            if isinstance(row, tuple) and len(row) == 2:
-                batch_, p = row
-                normalized.append((p, batch_))
-            else:
-                normalized.append((row, None))
-
         out: list[PartListItem] = []
-        for p, batch in normalized:
+        for batch, p in rows:
             cust = cust_map.get(p.customer_id)
             parent = (
                 parent_map.get(cust.parent_id)
@@ -297,10 +308,11 @@ class OutsourceQuoteService:
                         process_map.get(int(p.next_process_id))
                         if p.next_process_id else None
                     ),
-                    # 2026-07-29 PR-fix-0.2.0：批次化字段（仅批次化 picker 调用填）
-                    batch_id=batch.id if batch else None,
-                    batch_no=batch.batch_no if batch else None,
-                    batch_quantity=batch.quantity if batch else None,
+                    # 2026-07-29 PR-fix-0.2.0：批次化字段
+                    # 行=批次：把 batch 字段填进 PartListItem，picker 选中时回传给报价。
+                    batch_id=batch.id,
+                    batch_no=batch.batch_no,
+                    batch_quantity=batch.quantity,
                 )
             )
         return out

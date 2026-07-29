@@ -59,6 +59,8 @@ def _make_part(
     quantity: int = 5,
     customer_id: int | None = 200,
 ):
+    from datetime import date
+    from decimal import Decimal
     p = MagicMock()
     p.id = id
     p.serial_no = serial_no
@@ -67,6 +69,19 @@ def _make_part(
     p.quantity = quantity
     p.customer_id = customer_id
     p.deleted_at = None
+    # 2026-07-29 PR-fix-0.2.0 hotfix：PartListItem 走 Pydantic 校验，
+    # 这些字段如果留 MagicMock 会触发 ValidationError。给上安全默认值。
+    p.applicant_name = "(未知)"
+    p.unit_price = Decimal("0")
+    p.total_price = Decimal("0")
+    p.request_date = date(2026, 7, 1)
+    p.planned_delivery_date = date(2026, 8, 1)
+    p.actual_delivery_date = None
+    p.is_urgent = False
+    p.order_no = None
+    p.system_delivery_date = None
+    p.note = None
+    p.delivery_note_id = None
     return p
 
 
@@ -721,6 +736,71 @@ class TestListApprovedForSend:
         # process/company 各只批查一次
         svc.processes.list_by_ids.assert_awaited_once()
         svc.companies.list_by_ids.assert_awaited_once()
+
+
+class TestListQuotablePartsForPicker:
+    """2026-07-29 PR-fix-0.2.0 hotfix 回归测试。
+
+    上轮 commit 把 repository 改为返回 list[tuple[TPartBatch, TPart]]，但 service
+    的 _to_part_list_items 在批查（customer / worker / shelf / process）那里
+    仍 `for p in rows: p.customer_id` 把 tuple 当 TPart 用 → 500。
+    本测试锁住 picker 的 batch-tuple 契约：rows 必须是 tuple，response 里 batch
+    字段必须被填进 PartListItem。
+    """
+
+    async def test_picker_unpacks_batch_tuples(
+        self, svc, mock_parts, mock_customers, mock_processes,
+        mock_shelves, mock_workers,
+    ):
+        """PR-fix-0.2.0 hotfix 回归：rows 是 list[tuple[TPartBatch, TPart]] 时，
+        _to_part_list_items 必须立刻解包，不能再 for p in rows: p.customer_id。
+        """
+        from repository.shelf_process import ShelfProcessRepository
+
+        # 1. 构造一个 (batch, part) 元组 —— 这就是当前 repo 的 contract
+        batch = _make_batch(
+            id=999, part_id=100, batch_no=2, quantity=20,
+            status="IN_PROCESS", location="PRODUCTION_SHELF",
+            current_holder_id=10, next_process_id=20,
+        )
+        part = _make_part(id=100, customer_id=501)
+        part.status = "IN_PROCESS"
+        part.location = "PRODUCTION_SHELF"
+        part.current_holder_id = 10
+        part.next_process_id = 20
+
+        # 关键：mock 返回 [(batch, part)] 而不是 [part]
+        mock_parts.list_quotable_for_outsource_quote = AsyncMock(
+            return_value=[(batch, part)],
+        )
+
+        # 2. 下游批查一律返回空（避免引入额外 mock 复杂度）
+        mock_customers.list_by_ids = AsyncMock(return_value=[])
+        mock_processes.list_by_ids = AsyncMock(return_value=[])
+        mock_shelves.list_by_ids = AsyncMock(return_value=[])
+        mock_workers.list_by_ids = AsyncMock(return_value=[])
+
+        # 3. shelf_processes 入参只需要 list_shelf_ids_with_process_category 一个方法
+        shelf_process_repo = ShelfProcessRepository.__new__(ShelfProcessRepository)
+        shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[10],   # 一个绑了 OUTSOURCE 工序的货架
+        )
+
+        # 4. 调用 picker —— 不应抛 AttributeError
+        items = await svc.list_quotable_parts_for_picker(
+            keyword=None, limit=500, shelf_processes=shelf_process_repo,
+        )
+
+        # 5. 验证：返回 PartListItem，batch 字段被填上
+        assert isinstance(items, list)
+        assert len(items) == 1
+        item = items[0]
+        # IdStrNonNull 在 Python 里是 int；JSON 序列化时变 str。
+        assert item.id == 100
+        # IdStr（可空外键）同理；PartListItem.batch_id 是 IdStr（可空）。
+        assert item.batch_id == 999
+        assert item.batch_no == 2
+        assert item.batch_quantity == 20
 
 
 class TestListQuotesNoN1:
