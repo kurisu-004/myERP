@@ -60,6 +60,10 @@ export interface PartItem {
    * 其它端点为 null。
    */
   last_inspection_fail_note?: string | null
+  /** 2026-07-29 批次化：批次级列表（扫码台/品检待办）填充；quantity 为批次量 */
+  batch_id?: string | null
+  batch_no?: number | null
+  batch_label?: string | null
 }
 
 export interface PartListResult {
@@ -150,6 +154,10 @@ export interface PartPickUpPayload {
   serial_no: string
   shelf_id: string
   badge_code: string
+  /** 2026-07-29 批次化：目标批次 id（扫码台卡片回传） */
+  batch_id?: string | null
+  /** 领取数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 export interface PartScanPayload {
@@ -160,11 +168,20 @@ export interface PartScanPayload {
   target_inspection_shelf_id?: string | null
   /** 仅 RETURNED 需要；工人指定的下一道工序 id */
   next_process_id?: string | null
+  /** 2026-07-29 批次化：目标批次 id（扫码台卡片回传） */
+  batch_id?: string | null
+  /** 归还/送检数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 export interface PartEvent {
   id: string
   part_id: string
+  /** 2026-07-29 批次化：事件归属批次（NULL = 工单级事件） */
+  batch_id: string | null
+  batch_no: number | null
+  /** 本次事件涉及的数量 */
+  quantity: number | null
   worker_id: string | null
   worker_name: string | null
   event_type: string
@@ -429,9 +446,15 @@ export async function updatePart(
   return resp.data
 }
 
-/** INSPECTION → READY_TO_SHIP：品检合格。 */
-export async function passInspection(id: string): Promise<PartItem> {
-  const resp = await api.post<PartItem>(`/parts/${id}/pass-inspection`)
+/** INSPECTION → READY_TO_SHIP：品检合格（2026-07-29：可选批次/部分数量）。 */
+export async function passInspection(
+  id: string,
+  payload?: BatchActionPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/pass-inspection`,
+    payload ?? undefined,
+  )
   return resp.data
 }
 
@@ -446,6 +469,10 @@ export interface FailInspectionPayload {
   next_process_id: string
   /** 品检员填的不合格原因等（写入 t_part_event.note，事件历史一览可见） */
   note?: string | null
+  /** 2026-07-29：目标批次 id；缺省取唯一 INSPECTION 批次 */
+  batch_id?: string | null
+  /** 2026-07-29：部分数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 export async function failInspection(
@@ -695,5 +722,83 @@ export async function receiveFromOutsourceToInspection(
     `/parts/${encodeURIComponent(partId)}/receive-from-outsource-to-inspection`,
     payload,
   )
+  return resp.data
+}
+
+// ============================================================
+// 批次（2026-07-29 批次化）
+// ============================================================
+
+/** 批次监控条目（详情页批次卡片） */
+export interface PartBatch {
+  id: string
+  version: number
+  part_id: string
+  batch_no: number
+  batch_label: string
+  quantity: number
+  status: string
+  location: string | null
+  current_holder_id: string | null
+  current_holder_display: string | null
+  next_process_id: string | null
+  next_process_name: string | null
+  placed_at: string | null
+  delivery_note_id: string | null
+  delivery_note_no: string | null
+  parent_batch_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** 无 body 流转端点的可选批次参数 */
+export interface BatchActionPayload {
+  batch_id?: string | null
+  quantity?: number | null
+}
+
+export async function listPartBatches(partId: string): Promise<PartBatch[]> {
+  const resp = await api.get<PartBatch[]>(`/parts/${partId}/batches`)
+  return resp.data
+}
+
+export async function splitPartBatch(
+  partId: string,
+  payload: { batch_id: string; quantity: number },
+): Promise<PartBatch[]> {
+  const resp = await api.post<PartBatch[]>(
+    `/parts/${partId}/batches/split`,
+    payload,
+  )
+  return resp.data
+}
+
+export async function cancelPartBatch(
+  partId: string,
+  batchId: string,
+): Promise<PartBatch[]> {
+  const resp = await api.post<PartBatch[]>(
+    `/parts/${partId}/batches/${batchId}/cancel`,
+  )
+  return resp.data
+}
+
+/** 品检待办（批次级；行=批次） */
+export interface InspectionBatchListResult {
+  items: PartItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export async function listInspectionBatches(params: {
+  keyword?: string
+  customer_id?: string
+  limit?: number
+  offset?: number
+} = {}): Promise<InspectionBatchListResult> {
+  const resp = await api.get<InspectionBatchListResult>('/parts/inspection-batches', {
+    params: cleanParams(params),
+  })
   return resp.data
 }

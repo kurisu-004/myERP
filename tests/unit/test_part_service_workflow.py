@@ -38,6 +38,7 @@ from schema.part import (
     PlaceOnShelfRequest,
 )
 from service.part import PartService
+from tests.unit._fake_batches import FakePartBatchRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -322,6 +323,12 @@ def service(
     """
     svc = PartService(
         parts=mock_parts,
+        part_batches=FakePartBatchRepository(
+            # 测试常在 fixture 后重绑 get_by_id/get_by_serial → 调用时再解析。
+            parts_provider=FakePartBatchRepository.chain_attrs(
+                mock_parts, "get_by_id", "get_by_serial",
+            ),
+        ),
         customers=mock_customers,
         workers=mock_workers,
         events=mock_events,
@@ -384,9 +391,9 @@ class TestPlaceOnShelf:
             1001, PlaceOnShelfRequest(shelf_id=1, next_process_id=42)
         )
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
-        mock_shelves.get_by_id.assert_awaited_once_with(1)
-        mock_processes.get_by_id.assert_awaited_once_with(42)
+        mock_parts.get_by_id.assert_awaited_with(1001)
+        mock_shelves.get_by_id.assert_awaited_with(1)
+        mock_processes.get_by_id.assert_awaited_with(42)
         part.sm.place_on_shelf.assert_called_once_with(
             shelf=shelf, process=process, event_repo=mock_events,
             created_by=None,
@@ -409,7 +416,7 @@ class TestPlaceOnShelf:
 
         assert exc.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
-        mock_parts.get_by_id.assert_awaited_once_with(999)
+        mock_parts.get_by_id.assert_awaited_with(999)
 
     async def test_shelf_not_found(
         self,
@@ -426,7 +433,7 @@ class TestPlaceOnShelf:
 
         assert exc.value.code == ErrCode.BIZ_SHELF_NOT_FOUND
         assert exc.value.http_status == http_status.HTTP_404_NOT_FOUND
-        mock_shelves.get_by_id.assert_awaited_once_with(99)
+        mock_shelves.get_by_id.assert_awaited_with(99)
 
     async def test_shelf_deleted(
         self,
@@ -517,9 +524,9 @@ class TestPickUpByScan:
 
         result = await service.pick_up_by_scan(data)
 
-        mock_shelves.get_by_id.assert_awaited_once_with(1)
+        mock_shelves.get_by_id.assert_awaited_with(1)
         mock_workers.get_by_badge_code.assert_awaited_once_with("W001")
-        mock_parts.get_by_serial.assert_awaited_once_with("L0001")
+        mock_parts.get_by_serial.assert_any_await("L0001")  # 批次化：fake provider 另有一次 int 调用
         part.sm.pick_up.assert_called_once_with(
             worker=worker, shelf=shelf, event_repo=mock_events,
             created_by=None,
@@ -1129,7 +1136,7 @@ class TestPassInspection:
 
         result = await service.pass_inspection(1001)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_parts.get_by_id.assert_awaited_with(1001)
         part.sm.pass_inspection.assert_called_once_with(
             event_repo=mock_events, created_by=None,
         )
@@ -1198,7 +1205,7 @@ class TestFailInspection:
         )
         result = await service.fail_inspection(1001, payload)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_parts.get_by_id.assert_awaited_with(1001)
         service._validate_production_shelf_and_process.assert_awaited_once_with(1, 100)
         assert part.next_process_id == 100  # 保留（覆盖原有 42）
         part.sm.fail_inspection.assert_called_once_with(
@@ -1420,16 +1427,20 @@ class TestDeliver:
 
         result = await service.deliver(1001)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_parts.get_by_id.assert_awaited_with(1001)
         part.sm.deliver.assert_called_once_with(
             worker=None, event_repo=mock_events,
             created_by=None,
         )
         mock_parts.update.assert_awaited_once_with(part)
         service._check_parent_assembly.assert_awaited_once_with(part)
-        # actual_delivery_date 默认填今天
-        assert part.actual_delivery_date == date.today()
         assert result is mock_out
+        # 2026-07-29 批次化：actual_delivery_date 由 rollup 在全部活跃批次
+        # DELIVERED 时写入（mock sm 不翻转状态，这里显式模拟后验证 rollup）。
+        batch = next(iter(service.part_batches.store.values()))
+        batch.status = "DELIVERED"
+        await service._rollup_part_status(part)
+        assert part.actual_delivery_date == date.today()
 
     async def test_with_explicit_actual_delivery_date(
         self,
@@ -1466,11 +1477,16 @@ class TestDeliver:
         result = await service.deliver(1001, worker_badge_code="18059214776")
 
         mock_workers.get_by_badge_code.assert_awaited_once_with("18059214776")
-        mock_work_types.get_by_id.assert_awaited_once_with(99)
+        mock_work_types.get_by_id.assert_awaited_with(99)
         part.sm.deliver.assert_called_once_with(
             worker=driver, event_repo=mock_events if False else service.events,
             created_by=None,
         )
+        # 2026-07-29 批次化：actual_delivery_date 由 rollup 写入（mock sm 不翻转
+        # 状态，这里显式模拟后验证 rollup）。
+        batch = next(iter(service.part_batches.store.values()))
+        batch.status = "DELIVERED"
+        await service._rollup_part_status(part)
         assert part.actual_delivery_date == date.today()
         assert result is not None
 
@@ -1558,7 +1574,7 @@ class TestComplete:
 
         result = await service.complete(1001)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_parts.get_by_id.assert_awaited_with(1001)
         part.sm.complete.assert_called_once_with(
             event_repo=mock_events, created_by=None,
         )
@@ -1589,7 +1605,7 @@ class TestStartRepair:
 
         result = await service.start_repair(1001)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_parts.get_by_id.assert_awaited_with(1001)
         part.sm.start_repair.assert_called_once_with(
             event_repo=mock_events, created_by=None,
         )
@@ -1623,8 +1639,8 @@ class TestCompleteRepair:
 
         result = await service.complete_repair(1001, shelf_id=1)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
-        mock_shelves.get_by_id.assert_awaited_once_with(1)
+        mock_parts.get_by_id.assert_awaited_with(1001)
+        mock_shelves.get_by_id.assert_awaited_with(1)
         part.sm.complete_repair.assert_called_once_with(
             shelf=shelf, event_repo=mock_events,
             created_by=None,
@@ -1703,7 +1719,7 @@ class TestCancel:
 
         result = await service.cancel(1001)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1001)
+        mock_parts.get_by_id.assert_awaited_with(1001)
         part.sm.cancel.assert_called_once_with(
             event_repo=mock_events, created_by=None,
         )

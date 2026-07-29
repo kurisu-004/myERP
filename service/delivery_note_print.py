@@ -46,6 +46,7 @@ from model.part import TPart
 from repository.customer import CustomerRepository
 from repository.delivery_note import DeliveryNoteRepository
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 
 logger = logging.getLogger(__name__)
 
@@ -118,17 +119,19 @@ TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
 # 服务层
 # ============================================================
 class DeliveryNotePrintService:
-    """加载 Excel 模板 → 按 note 当前关联的 part 填行 → 返回 .xlsx 字节流 + prefix。"""
+    """加载 Excel 模板 → 按 note 当前关联的批次行填行 → 返回 .xlsx 字节流 + prefix。"""
 
     def __init__(
         self,
         notes: DeliveryNoteRepository,
         parts: PartRepository,
         customers: CustomerRepository,
+        part_batches: PartBatchRepository | None = None,
     ) -> None:
         self.notes = notes
         self.parts = parts
         self.customers = customers
+        self.part_batches = part_batches
 
     async def render(self, note: TDeliveryNote) -> tuple[bytes, str]:
         """填模板并返回字节流 + 模板 prefix。"""
@@ -191,17 +194,24 @@ class DeliveryNotePrintService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             ) from e
 
-        # 2) 拉 note 关联的零件（picked_up 后 delivery_note_id 仍指本单，因此也能拉到）
-        linked = await self.notes.list_parts(note.id)
-        rows: list[TPart] = []
-        for p in linked:
+        # 2) 拉 note 关联的批次行（2026-07-29 批次级：行=批次，数量=批次量；
+        #    picked_up 后 delivery_note_id 仍指本单，因此也能拉到）
+        if self.part_batches is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing part batch repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        linked = await self.part_batches.list_by_delivery_note(note.id)
+        rows: list[tuple[Any, TPart]] = []  # (batch, part)
+        for b, p in linked:
             if not p.serial_no or not p.drawing_no:
                 logger.warning(
                     "delivery_note_print: skip part id=%s (serial_no=%r drawing_no=%r)",
                     p.id, p.serial_no, p.drawing_no,
                 )
                 continue
-            rows.append(p)
+            rows.append((b, p))
         if not rows:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
@@ -210,7 +220,7 @@ class DeliveryNotePrintService:
             )
 
         # 3) 一次性查每个 part 的 L2 叶子客户 + L1 父（customer_name 用 L2、parent_name 留作备用）
-        leaf_ids = list({p.customer_id for p in rows})
+        leaf_ids = list({p.customer_id for _b, p in rows})
         leaf_list = await self.customers.list_by_ids(leaf_ids) if leaf_ids else []
         leaf_map: dict[int, TCustomer] = {c.id: c for c in leaf_list}
         parent_ids = [c.parent_id for c in leaf_list if c.parent_id]
@@ -222,12 +232,15 @@ class DeliveryNotePrintService:
 
         # 4) 分页填表：每页最多 cfg.max_rows 行；超出自动续到下一份（复制模板 sheet）。
         #    openpyxl CPU-bound + 无重 IO，用 asyncio.to_thread 包裹整段同步逻辑。
-        def _fill_row(sheet, idx_in_page: int, p: TPart) -> None:
+        def _fill_row(sheet, idx_in_page: int, row: tuple[Any, TPart]) -> None:
+            b, p = row
             target_row = cfg.start_row + idx_in_page - 1
             leaf = leaf_map.get(p.customer_id)
             ctx: dict[str, Any] = {
                 "row_index": idx_in_page,
                 "part": p,
+                # 2026-07-29 批次级：数量列取批次量（part.quantity 不脏写）
+                "quantity_override": b.quantity,
                 "customer_name": leaf.name if leaf else "",
                 "parent_name": (
                     parent_map[leaf.parent_id].name
@@ -292,6 +305,9 @@ def _resolve_cell(binding: CellBinding, ctx: dict[str, Any]) -> Any:
         part = ctx.get("part")
         if part is None:
             return None
+        # 2026-07-29 批次级：数量列优先取批次量（行=批次）
+        if field_name == "quantity" and ctx.get("quantity_override") is not None:
+            return ctx["quantity_override"]
         val = getattr(part, field_name, None)
         # 日期对象保持原状由 openpyxl 写为 Excel 日期；空值写 None 跳过
         return val

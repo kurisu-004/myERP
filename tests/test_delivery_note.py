@@ -38,6 +38,7 @@ from repository.delivery_note import (
     DeliveryNoteRepository,
 )
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.work_type import WorkTypeRepository
 from repository.worker import WorkerRepository
@@ -92,7 +93,15 @@ async def _make_part(
     )
     session.add(p)
     await session.flush()
+    from tests.conftest import seed_root_batch
+    p.root_batch = await seed_root_batch(session, p)  # transient，测试取批次 id 用
     return p
+
+
+def _item(part, qty=None):
+    """构造 DeliveryNoteAddPartsItem（批次级入单条目）。"""
+    from schema.delivery_note import DeliveryNoteAddPartsItem
+    return DeliveryNoteAddPartsItem(batch_id=str(part.root_batch.id), quantity=qty)
 
 
 def _make_service(session) -> DeliveryNoteService:
@@ -102,6 +111,7 @@ def _make_service(session) -> DeliveryNoteService:
         note_events=DeliveryNoteEventRepository(session),
         counter=DeliveryNoteCounterRepository(session),
         parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),
         customers=CustomerRepository(session),
         workers=WorkerRepository(session),
         part_events=None,            # state machine 提交时也会写 part 事件；非每个测试都需要
@@ -117,6 +127,7 @@ def _make_pickup_service(session) -> DeliveryNoteService:
         note_events=DeliveryNoteEventRepository(session),
         counter=DeliveryNoteCounterRepository(session),
         parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),
         customers=CustomerRepository(session),
         workers=WorkerRepository(session),
         work_types=WorkTypeRepository(session),
@@ -191,10 +202,10 @@ async def test_add_parts_accepts_inspection_status(clean_db):
     note = await svc.create_draft(customer_id=str(customer.id))
 
     out = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     # 2026-07-23：IdStrNonNull 在 Python 内部仍是 int；直接 int 对比
-    assert any(li.id == int(part.id) for li in out.line_items)
+    assert any(li.part_id == int(part.id) for li in out.line_items)
 
 
 # ============================================================
@@ -210,7 +221,7 @@ async def test_add_parts_rejects_non_inspection_or_ready_to_ship(clean_db):
 
     with pytest.raises(BizError) as exc_info:
         await svc.add_parts(
-            note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+            note_id=str(note.id), items=[_item(part)], version=note.version,
         )
     assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_PART_NOT_READY
 
@@ -227,9 +238,9 @@ async def test_add_parts_accepts_ready_to_ship(clean_db):
     note = await svc.create_draft(customer_id=str(customer.id))
 
     out = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
-    assert any(li.id == int(part.id) for li in out.line_items)
+    assert any(li.part_id == int(part.id) for li in out.line_items)
 
 
 # ============================================================
@@ -255,7 +266,7 @@ async def test_add_parts_rejects_cross_l1_root(clean_db):
     with pytest.raises(BizError) as exc_info:
         await svc.add_parts(
             note_id=str(note.id),
-            part_ids=[str(part_f.id), str(other_part.id)],
+            items=[_item(part_f), _item(other_part)],
             version=note.version,
         )
     assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_PARTS_MULTIPLE_CUSTOMERS
@@ -274,7 +285,7 @@ async def test_submit_writes_submitted_event_and_handles_inspection_part(clean_d
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     # 注意：含 INSPECTION-status 件，submit 不重检 part 状态，应该成功。
     # 但当前 submit 的部分检查（legacy）会要求所有 part 是 READY_TO_SHIP。
@@ -299,7 +310,7 @@ async def test_submit_ready_to_ship_succeeds_and_writes_event(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
 
     # 关键：调用 submit 不能抛 MissingGreenlet，且 response 应有 updated_at
@@ -356,7 +367,7 @@ async def test_partial_update_allows_submitted(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     submitted = await svc.submit(note_id=str(note.id), version=detail.version)
 
@@ -405,7 +416,7 @@ async def test_list_candidate_parts_filters_status_and_active_notes(clean_db):
     # 2) 把 p1 放进 DRAFT（active 单），应被排除
     note = await svc.create_draft(customer_id=str(l1.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(p1.id)], version=note.version,
+        note_id=str(note.id), items=[_item(p1)], version=note.version,
     )
     candidates_after = await svc.list_candidate_parts(str(l1.id))
     cand_ids_after = {c.id for c in candidates_after}
@@ -425,7 +436,7 @@ async def test_to_detail_line_items_have_extended_fields(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     detail = await svc.get_with_parts(str(note.id))
     assert detail.line_items, "应有 line_items"
@@ -455,7 +466,7 @@ async def test_recall_resets_status_to_draft(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     submitted = await svc.submit(note_id=str(note.id), version=detail.version)
     assert submitted.status == DeliveryNoteStatus.SUBMITTED
@@ -500,7 +511,7 @@ async def test_pickup_finalize_stops_at_picked_up_and_delivers_parts(clean_db):
 
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     submitted = await svc.submit(note_id=str(note.id), version=detail.version)
 
@@ -558,7 +569,7 @@ async def test_pickup_rejects_non_driver_worker(clean_db):
     svc = _make_pickup_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     submitted = await svc.submit(note_id=str(note.id), version=detail.version)
     await svc.pickup_scan(note_id=str(note.id), part_serial="F6001")
@@ -590,7 +601,7 @@ async def test_print_xlsx_delivery_date_fala(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     # 显式设置送货日期（覆盖默认今天）
     target_date = date(2026, 7, 23)
@@ -619,7 +630,7 @@ async def test_print_xlsx_delivery_date_luda(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     target_date = date(2026, 7, 23)
     await svc.update(
@@ -652,7 +663,7 @@ async def test_print_xlsx_null_delivery_date_falls_back_to_today(clean_db):
 
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     # 把 delivery_date 显式置 None（模拟旧库 010 之前的数据）
     await svc.update(
@@ -687,7 +698,7 @@ async def test_add_parts_blocked_when_submitted(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(p1.id)], version=note.version,
+        note_id=str(note.id), items=[_item(p1)], version=note.version,
     )
     submitted = await svc.submit(
         note_id=str(note.id), version=detail.version,
@@ -695,7 +706,7 @@ async def test_add_parts_blocked_when_submitted(clean_db):
 
     with pytest.raises(BizError) as exc_info:
         await svc.add_parts(
-            note_id=str(note.id), part_ids=[str(p2.id)],
+            note_id=str(note.id), items=[_item(p2)],
             version=submitted.version,
         )
     assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED
@@ -718,7 +729,7 @@ async def test_remove_parts_blocked_when_submitted(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(p1.id), str(p2.id)],
+        note_id=str(note.id), items=[_item(p1), _item(p2)],
         version=note.version,
     )
     submitted = await svc.submit(
@@ -727,7 +738,7 @@ async def test_remove_parts_blocked_when_submitted(clean_db):
 
     with pytest.raises(BizError) as exc_info:
         await svc.remove_parts(
-            note_id=str(note.id), part_ids=[str(p1.id)],
+            note_id=str(note.id), batch_ids=[str(p1.root_batch.id)],
             version=submitted.version,
         )
     assert exc_info.value.code == ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED
@@ -749,7 +760,7 @@ async def test_add_parts_allowed_after_recall(clean_db):
     svc = _make_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(p1.id)], version=note.version,
+        note_id=str(note.id), items=[_item(p1)], version=note.version,
     )
     submitted = await svc.submit(
         note_id=str(note.id), version=detail.version,
@@ -760,7 +771,7 @@ async def test_add_parts_allowed_after_recall(clean_db):
     assert recalled.status == DeliveryNoteStatus.DRAFT
 
     detail2 = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(p2.id)], version=recalled.version,
+        note_id=str(note.id), items=[_item(p2)], version=recalled.version,
     )
     assert detail2.status == DeliveryNoteStatus.DRAFT
 
@@ -777,7 +788,7 @@ async def test_recall_after_pickup_fails_state_machine(clean_db):
     svc = _make_pickup_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     submitted = await svc.submit(
         note_id=str(note.id), version=detail.version,
@@ -807,7 +818,7 @@ async def test_pickup_after_recall_fails_state_machine(clean_db):
     svc = _make_pickup_service(clean_db)
     note = await svc.create_draft(customer_id=str(customer.id))
     detail = await svc.add_parts(
-        note_id=str(note.id), part_ids=[str(part.id)], version=note.version,
+        note_id=str(note.id), items=[_item(part)], version=note.version,
     )
     submitted = await svc.submit(
         note_id=str(note.id), version=detail.version,

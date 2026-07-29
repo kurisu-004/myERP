@@ -28,7 +28,10 @@ class ErrCode(IntEnum):
     BIZ_PART_SERIAL_EXHAUSTED = 20105  # 序列号池耗尽（>5000 活跃/PREFIX）
     # 20106/20107 留空，避免与未来 PART 相关码冲突
     BIZ_SERIAL_PREFIX_UNKNOWN = 20108  # t_serial_counter 找不到对应 prefix
+    BIZ_PART_BATCH_NOT_FOUND = 20109  # 2026-07-29：批次不存在 / 不属于该工单
     BIZ_PART_PRICE_LOCKED_BY_ASSEMBLY = 20110  # 2026-07-24：父装配体已设总价，子件不能再单独改价（PartService.update_part 抛）
+    BIZ_PART_BATCH_INVALID_QUANTITY = 20111  # 2026-07-29：拆分/部分流转数量非法（≤0 或超过批次量）
+    BIZ_PART_QUANTITY_LOCKED = 20112  # 2026-07-29：已拆分或已流转的工单禁止改总量
 
     BIZ_WORKER_NOT_FOUND = 20201
     BIZ_WORKER_INACTIVE = 20202

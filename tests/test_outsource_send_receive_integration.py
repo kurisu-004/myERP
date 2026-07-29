@@ -32,6 +32,7 @@ from repository.outsource_company_process import OutsourceCompanyProcessReposito
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from repository.shelf import ShelfRepository
@@ -131,6 +132,8 @@ async def _seed_world(
     )
     session.add_all([mapping, shelf_process_mapping, shelf_process_outsource_mapping, part])
     await session.flush()
+    from tests.conftest import seed_root_batch
+    root_batch = await seed_root_batch(session, part)
     return {
         "customer": customer,
         "company": company,
@@ -139,6 +142,7 @@ async def _seed_world(
         "production_shelf": production_shelf,
         "inspection_shelf": inspection_shelf,
         "part": part,
+        "root_batch": root_batch,
     }
 
 
@@ -159,6 +163,7 @@ def _make_quote_service(session) -> OutsourceQuoteService:
 def _make_part_service(session, *, event_broadcaster=None) -> PartService:
     return PartService(
         parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),
         customers=CustomerRepository(session),
         workers=WorkerRepository(session),
         events=PartEventRepository(session),
@@ -192,6 +197,20 @@ async def _approve_quote(session, world):
     )
 
 
+async def _place_on_shelf(session, world) -> None:
+    """2026-07-29 批次化：测试夹具把 part 摆上货架时，part 与根批次同步。
+
+    批次是状态机载体：service 只读批次；part 字段由 rollup 派生。
+    """
+    part = world["part"]
+    batch = world["root_batch"]
+    for m in (part, batch):
+        m.location = PartLocation.PRODUCTION_SHELF.value
+        m.current_holder_id = world["production_shelf"].id
+        m.next_process_id = world["outsource_process"].id
+    await session.flush()
+
+
 def _send_request(world) -> SendToOutsourceRequest:
     return SendToOutsourceRequest(
         outsource_company_id=str(world["company"].id),
@@ -204,10 +223,7 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
     world = await _seed_world(clean_db, suffix="FLOW")
     # PR-H 2026-07-28：把 part 放到绑了 OUTSOURCE 工序的货架上（默认已是 IN_PROCESS 但
     # holder 未设；下面设到 production_shelf 上）
-    world["part"].location = PartLocation.PRODUCTION_SHELF.value
-    world["part"].current_holder_id = world["production_shelf"].id
-    world["part"].next_process_id = world["outsource_process"].id
-    await clean_db.flush()
+    await _place_on_shelf(clean_db, world)
     approved = await _approve_quote(clean_db, world)
     service = _make_part_service(clean_db)
     original_version = world["part"].version
@@ -260,10 +276,7 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
 async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db):
     no_quote_world = await _seed_world(clean_db, suffix="NOQUOTE")
     # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
-    no_quote_world["part"].location = PartLocation.PRODUCTION_SHELF.value
-    no_quote_world["part"].current_holder_id = no_quote_world["production_shelf"].id
-    no_quote_world["part"].next_process_id = no_quote_world["outsource_process"].id
-    await clean_db.flush()
+    await _place_on_shelf(clean_db, no_quote_world)
     service = _make_part_service(clean_db)
 
     with pytest.raises(BizError) as no_quote_exc:
@@ -296,10 +309,7 @@ async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db)
 async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db):
     world = await _seed_world(clean_db, suffix="AUTOPASS")
     # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
-    world["part"].location = PartLocation.PRODUCTION_SHELF.value
-    world["part"].current_holder_id = world["production_shelf"].id
-    world["part"].next_process_id = world["outsource_process"].id
-    await clean_db.flush()
+    await _place_on_shelf(clean_db, world)
     approved = await _approve_quote(clean_db, world)
 
     async def expire_state_after_first_transition(event_type: str, _payload: dict):

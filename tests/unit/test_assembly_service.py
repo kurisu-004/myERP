@@ -484,13 +484,13 @@ class TestCancelAssembly:
         # Act
         result = await svc.cancel_assembly(1001)
 
-        # Assert both children got cancelled
-        child_active.sm.cancel.assert_called_once()
-        child_pending.sm.cancel.assert_called_once()
+        # 2026-07-29 批次化：子件取消走 PartService.cancel（级联批次 + rollup）
+        svc.part_service.cancel.assert_any_await(child_active.id)
+        svc.part_service.cancel.assert_any_await(child_pending.id)
+        assert svc.part_service.cancel.await_count == 2
         asm.sm.cancel.assert_called_once()
         assert result.assembly.status == "IN_PROCESS"
 
-        svc.parts.session.flush.assert_called()
         svc.assemblies.session.flush.assert_called_once()
 
     async def test_not_found(self, svc):

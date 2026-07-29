@@ -105,6 +105,7 @@ class PartEventType(str, enum.Enum):
     QUOTE_APPROVED = "QUOTE_APPROVED"                     # 报价审核通过（2026-07-16 新增）
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
+    SPLIT = "SPLIT"   # 批次拆分（2026-07-29 新增）：从源批次拆出新批次
 
 
 # 扫码类事件（pick-up / return / inspect）的子集；

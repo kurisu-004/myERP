@@ -18,7 +18,7 @@
             <template v-if="g.items.length > 0">
               <div
                 v-for="item in g.items.slice(0, 10)"
-                :key="item.id"
+                :key="item.batch_id || item.id"
                 :class="['shelf-item', { urgent: item.is_urgent }]"
               >
                 <span class="item-serial">{{ item.serial_no || '—' }}</span>
@@ -45,7 +45,7 @@
         <div class="inprocess-items">
           <div
             v-for="p in workerParts"
-            :key="p.id"
+            :key="p.batch_id || p.id"
             class="inprocess-pill"
           >
             <span class="pill-serial">{{ p.serial_no || '—' }}</span>

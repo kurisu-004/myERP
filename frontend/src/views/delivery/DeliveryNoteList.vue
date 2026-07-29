@@ -24,6 +24,7 @@ import {
   recallNote,
   softDeleteNote,
   submitNote,
+  type AddPartsItem,
 } from '@/api/deliveryNote'
 import {
   DELIVERY_NOTE_STATUS_LABEL,
@@ -125,7 +126,7 @@ const createDeliveryDate = ref<string>(formatToday())
 const createNoteText = ref<string>('')
 const creating = ref(false)
 /** 候选弹框选出的 part id 列表（弹框 emit submit 时合并） */
-const selectedPartIds = ref<string[]>([])
+const selectedItems = ref<AddPartsItem[]>([])
 /** 候选弹框自身的可见性（PartPickerDialog 的 v-model） */
 const pickerDialogOpen = ref(false)
 
@@ -141,13 +142,13 @@ function openCreate() {
   createCustomerId.value = ''
   createDeliveryDate.value = formatToday()
   createNoteText.value = ''
-  selectedPartIds.value = []
+  selectedItems.value = []
   createDialogOpen.value = true
 }
 
-/** 当用户在弹框里勾完零件，按下「加入 (N)」时回传 */
-function onPickerSubmit(partIds: string[]) {
-  selectedPartIds.value = partIds
+/** 当用户在弹框里勾完零件，按下「加入 (N)」时回传（2026-07-29 批次条目） */
+function onPickerSubmit(items: AddPartsItem[]) {
+  selectedItems.value = items
 }
 
 async function submitCreate() {
@@ -164,11 +165,11 @@ async function submitCreate() {
     const note = await createNoteApi({
       customer_id: createCustomerId.value,
       delivery_date: createDeliveryDate.value,
-      part_ids: selectedPartIds.value,
+      items: selectedItems.value,
       note: createNoteText.value.trim() || null,
     })
     ElMessage.success(
-      `已创建草稿 ${note.delivery_note_no}（含 ${selectedPartIds.value.length} 件）`,
+      `已创建草稿 ${note.delivery_note_no}（含 ${selectedItems.value.length} 批）`,
     )
     createDialogOpen.value = false
     router.push(`/delivery-notes/${note.id}`)
@@ -493,11 +494,11 @@ function noteNoOf(id: string): string {
           <div class="picker-summary">
             <el-tag v-if="!createCustomerId" type="info" effect="plain">请先选客户</el-tag>
             <template v-else>
-              <el-tag v-if="!selectedPartIds.length" type="warning" effect="plain">
-                暂未勾选（可在弹出框里勾选 INSPECTION / READY_TO_SHIP 件）
+              <el-tag v-if="!selectedItems.length" type="warning" effect="plain">
+                暂未勾选（可在弹出框里勾选 INSPECTION / READY_TO_SHIP 批次）
               </el-tag>
               <el-tag v-else type="success" effect="plain">
-                已勾 {{ selectedPartIds.length }} 件
+                已勾 {{ selectedItems.length }} 批
               </el-tag>
               <el-button
                 size="small"
@@ -505,7 +506,7 @@ function noteNoOf(id: string): string {
                 style="margin-left: 8px"
                 @click="pickerDialogOpen = true"
               >
-                {{ selectedPartIds.length ? '重新选择' : '选择零件' }}
+                {{ selectedItems.length ? '重新选择' : '选择零件' }}
               </el-button>
             </template>
           </div>

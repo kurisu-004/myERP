@@ -50,6 +50,7 @@ from schema.part import (
     PartUpdateRequest,
 )
 from service.part import PartService
+from tests.unit._fake_batches import FakePartBatchRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -208,6 +209,9 @@ def service(
 ) -> PartService:
     return PartService(
         parts=mock_parts,
+        part_batches=FakePartBatchRepository(
+            parts_provider=mock_parts.get_by_id,
+        ),
         customers=mock_customers,
         workers=mock_workers,
         events=mock_events,
@@ -238,6 +242,9 @@ def service_with_assemblies(
     """2026-07-24：注入 assemblies 的 PartService（用于父装配体已设总价场景）。"""
     return PartService(
         parts=mock_parts,
+        part_batches=FakePartBatchRepository(
+            parts_provider=mock_parts.get_by_id,
+        ),
         customers=mock_customers,
         workers=mock_workers,
         events=mock_events,
@@ -260,6 +267,9 @@ def service_with_wtp(
     """PartService 装了 work_type_process 仓储（PICK_UP 列表需要）。"""
     return PartService(
         parts=mock_parts,
+        part_batches=FakePartBatchRepository(
+            parts_provider=mock_parts.get_by_id,
+        ),
         customers=mock_customers,
         workers=mock_workers,
         events=mock_events,
@@ -301,7 +311,7 @@ class TestListParts:
         result = await service.list_parts(query)
 
         # ── assert ───────────────────────────────────────────────
-        mock_customers.get_by_id.assert_awaited_once_with(10)
+        mock_customers.get_by_id.assert_awaited_with(10)
         mock_customers.list_children.assert_not_awaited()
         mock_parts.list_with_filters.assert_awaited_once_with(
             customer_ids_in=[10],
@@ -368,7 +378,7 @@ class TestListParts:
         await service.list_parts(query)
 
         # ── assert ───────────────────────────────────────────────
-        mock_customers.get_by_id.assert_awaited_once_with(10)
+        mock_customers.get_by_id.assert_awaited_with(10)
         mock_customers.list_children.assert_awaited_once_with(10)
         mock_parts.list_with_filters.assert_awaited_once_with(
             customer_ids_in=[10, 20, 21],
@@ -449,7 +459,7 @@ class TestListParts:
         with pytest.raises(BizError) as exc_info:
             await service.list_parts(query)
 
-        mock_customers.get_by_id.assert_awaited_once_with(999)
+        mock_customers.get_by_id.assert_awaited_with(999)
         mock_parts.list_with_filters.assert_not_awaited()
         mock_parts.count_with_filters.assert_not_awaited()
         assert exc_info.value.code == ErrCode.BIZ_CUSTOMER_NOT_FOUND
@@ -667,7 +677,7 @@ class TestGetPart:
         result = await service.get_part(42)
 
         # ── assert ───────────────────────────────────────────────
-        mock_parts.get_by_id.assert_awaited_once_with(42)
+        mock_parts.get_by_id.assert_awaited_with(42)
         assert isinstance(result, PartOut)
         assert result.id == 42
         assert result.serial_no == "L2507001"
@@ -686,7 +696,7 @@ class TestGetPart:
         with pytest.raises(BizError) as exc_info:
             await service.get_part(999)
 
-        mock_parts.get_by_id.assert_awaited_once_with(999)
+        mock_parts.get_by_id.assert_awaited_with(999)
         assert exc_info.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert "part 999" in exc_info.value.message
         assert exc_info.value.http_status == 404
@@ -723,7 +733,7 @@ class TestListEvents:
         result = await service.list_events(1)
 
         # ── assert ───────────────────────────────────────────────
-        mock_parts.get_by_id.assert_awaited_once_with(1)
+        mock_parts.get_by_id.assert_awaited_with(1)
         mock_events.list_by_part.assert_awaited_once_with(1)
         mock_workers.list_with_filters.assert_awaited_once_with(
             is_active=None, limit=max(100, 1)
@@ -753,7 +763,7 @@ class TestListEvents:
         with pytest.raises(BizError) as exc_info:
             await service.list_events(999)
 
-        mock_parts.get_by_id.assert_awaited_once_with(999)
+        mock_parts.get_by_id.assert_awaited_with(999)
         assert exc_info.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert exc_info.value.http_status == 404
 
@@ -821,7 +831,7 @@ class TestCreatePart:
             result = await service.create_part(data)
 
         # ── assert repository calls ──────────────────────────────
-        mock_customers.get_by_id.assert_awaited_once_with(10)
+        mock_customers.get_by_id.assert_awaited_with(10)
         mock_serial_counters.acquire_serial.assert_awaited_once_with("L")
         mock_parts.create.assert_awaited_once()
         mock_events.create.assert_awaited_once()
@@ -966,7 +976,7 @@ class TestCreatePart:
         with pytest.raises(BizError) as exc_info:
             await service.create_part(data)
 
-        mock_customers.get_by_id.assert_awaited_once_with(999)
+        mock_customers.get_by_id.assert_awaited_with(999)
         assert exc_info.value.code == ErrCode.BIZ_CUSTOMER_NOT_FOUND
         assert exc_info.value.http_status == 404
 
@@ -1022,7 +1032,7 @@ class TestCreatePart:
         with pytest.raises(BizError) as exc_info:
             await service.create_part(data)
 
-        mock_customers.get_by_id.assert_awaited_once_with(10)
+        mock_customers.get_by_id.assert_awaited_with(10)
         assert exc_info.value.code == ErrCode.BIZ_CUSTOMER_NOT_FOUND
         assert exc_info.value.http_status == 400
         assert "未配置一级客户「UnknownCorp」" in exc_info.value.message
@@ -1234,7 +1244,7 @@ class TestUpdatePart:
         result = await service.update_part(1, data)
 
         # ── assert ───────────────────────────────────────────────
-        mock_parts.get_by_id.assert_awaited_once_with(1)
+        mock_parts.get_by_id.assert_awaited_with(1)
         mock_parts.update.assert_awaited_once_with(part)
 
         assert part.name == "Updated Name"
@@ -1261,7 +1271,7 @@ class TestUpdatePart:
         with pytest.raises(BizError) as exc_info:
             await service.update_part(999, data)
 
-        mock_parts.get_by_id.assert_awaited_once_with(999)
+        mock_parts.get_by_id.assert_awaited_with(999)
         mock_parts.update.assert_not_awaited()
         assert exc_info.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert exc_info.value.http_status == 404
@@ -1285,8 +1295,8 @@ class TestUpdatePart:
         with pytest.raises(BizError) as exc_info:
             await service.update_part(1, data)
 
-        mock_parts.get_by_id.assert_awaited_once_with(1)
-        mock_customers.get_by_id.assert_awaited_once_with(99)
+        mock_parts.get_by_id.assert_awaited_with(1)
+        mock_customers.get_by_id.assert_awaited_with(99)
         mock_parts.update.assert_not_awaited()
         assert exc_info.value.code == ErrCode.BIZ_CUSTOMER_NOT_FOUND
         assert exc_info.value.http_status == 404
@@ -1599,7 +1609,7 @@ class TestSoftDeletePart:
         result = await service.soft_delete_part(1)
 
         # ── assert ───────────────────────────────────────────────
-        mock_parts.get_by_id.assert_awaited_once_with(1)
+        mock_parts.get_by_id.assert_awaited_with(1)
         mock_parts.soft_delete.assert_awaited_once_with(part)
         assert result is None
 
@@ -1616,7 +1626,7 @@ class TestSoftDeletePart:
         with pytest.raises(BizError) as exc_info:
             await service.soft_delete_part(999)
 
-        mock_parts.get_by_id.assert_awaited_once_with(999)
+        mock_parts.get_by_id.assert_awaited_with(999)
         mock_parts.soft_delete.assert_not_awaited()
         assert exc_info.value.code == ErrCode.BIZ_PART_NOT_FOUND
         assert exc_info.value.http_status == 404
@@ -1809,7 +1819,11 @@ class TestListPickablePartsSingleShelf:
         """正常路径：service 拿到 process_ids 后透传给 repo（含 NULL 过滤由 repo 加）。"""
         mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20, 30]
         part = _make_part(id=100, customer_id=1, status=PartStatus.IN_PROCESS.value)
-        mock_parts.list_for_work_type.return_value = [part]
+        # 2026-07-29 批次级：service 调 part_batches.list_for_work_type（返回 (batch, part)）
+        batch = service_with_wtp.part_batches.seed(part)
+        service_with_wtp.part_batches.list_for_work_type = AsyncMock(
+            return_value=[(batch, part)],
+        )
         mock_customers.list_by_ids.return_value = []
         mock_shelves.list_by_ids.return_value = []
 
@@ -1817,9 +1831,9 @@ class TestListPickablePartsSingleShelf:
             work_type_id=7, shelf_id=42,
         )
 
-        # service 必须把 (shelf_id, mapped_process_ids) 原样透传给 repo；
+        # service 必须把 (shelf_id, mapped_process_ids) 原样透传给批次 repo；
         # NULL 过滤在 repo 层处理（不在 service 入参里）。
-        mock_parts.list_for_work_type.assert_awaited_once_with(
+        service_with_wtp.part_batches.list_for_work_type.assert_awaited_once_with(
             shelf_id=42,
             mapped_process_ids=[10, 20, 30],
         )
@@ -1872,7 +1886,10 @@ class TestListPickablePartsAllShelves:
     ) -> None:
         """shelf_ids=None（默认）→ repo 拿到 None，不加 current_holder_id 过滤。"""
         mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20]
-        mock_parts.list_for_work_type_all_shelves.return_value = []
+        # 2026-07-29 批次级：透传到 part_batches
+        service_with_wtp.part_batches.list_for_work_type_all_shelves = AsyncMock(
+            return_value=[],
+        )
         mock_customers.list_by_ids.return_value = []
         mock_shelves.list_by_ids.return_value = []
 
@@ -1880,7 +1897,7 @@ class TestListPickablePartsAllShelves:
             work_type_id=7, shelf_ids=None,
         )
 
-        mock_parts.list_for_work_type_all_shelves.assert_awaited_once_with(
+        service_with_wtp.part_batches.list_for_work_type_all_shelves.assert_awaited_once_with(
             mapped_process_ids=[10, 20],
             shelf_ids=None,
         )
@@ -1915,7 +1932,12 @@ class TestListPickablePartsAllShelves:
         mock_work_type_process.list_process_ids_by_work_type.return_value = [10, 20]
         part_a = _make_part(id=100, customer_id=1, current_holder_id=1)
         part_b = _make_part(id=101, customer_id=1, current_holder_id=2)
-        mock_parts.list_for_work_type_all_shelves.return_value = [part_a, part_b]
+        # 2026-07-29 批次级：(batch, part) 元组
+        ba = service_with_wtp.part_batches.seed(part_a)
+        bb = service_with_wtp.part_batches.seed(part_b)
+        service_with_wtp.part_batches.list_for_work_type_all_shelves = AsyncMock(
+            return_value=[(ba, part_a), (bb, part_b)],
+        )
         mock_customers.list_by_ids.return_value = []
         mock_shelves.list_by_ids.return_value = []
 
@@ -1923,7 +1945,7 @@ class TestListPickablePartsAllShelves:
             work_type_id=7, shelf_ids=[1, 2, 3],
         )
 
-        mock_parts.list_for_work_type_all_shelves.assert_awaited_once_with(
+        service_with_wtp.part_batches.list_for_work_type_all_shelves.assert_awaited_once_with(
             mapped_process_ids=[10, 20],
             shelf_ids=[1, 2, 3],
         )
@@ -1964,12 +1986,17 @@ class TestListPartsHeldByWorker:
         mock_customers: AsyncMock,
         mock_shelves: AsyncMock,
     ) -> None:
-        """正常路径：worker_id=42 → repo.list_held_by_worker(worker_id=42)。"""
-        mock_parts.list_held_by_worker.return_value = []
+        """正常路径：worker_id=42 → part_batches.list_held_by_worker(worker_id=42)。"""
+        # 2026-07-29 批次级：透传到 part_batches
+        service_with_wtp.part_batches.list_held_by_worker = AsyncMock(
+            return_value=[],
+        )
         mock_customers.list_by_ids.return_value = []
         mock_shelves.list_by_ids.return_value = []
 
         result = await service_with_wtp.list_parts_held_by_worker(worker_id=42)
 
-        mock_parts.list_held_by_worker.assert_awaited_once_with(worker_id=42)
+        service_with_wtp.part_batches.list_held_by_worker.assert_awaited_once_with(
+            worker_id=42,
+        )
         assert result == []

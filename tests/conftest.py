@@ -203,6 +203,7 @@ _BUSINESS_TABLES = (
     "t_outsource_quote_event",
     "t_outsource_quote",
     "t_part_event",
+    "t_part_batch",
     "t_work_type_process",
     "t_part_file",
     "t_part",
@@ -219,6 +220,30 @@ _BUSINESS_TABLES = (
     "t_role_menu",
     "t_menu",
 )
+
+
+async def seed_root_batch(session: AsyncSession, part) -> "object":
+    """2026-07-29 批次化：给直接 session.add(TPart) 的 fixture 补根批次。
+
+    服务层所有流转都走批次；测试夹具若绕过 create_part 直接插 t_part 行，
+    必须配套一条 batch_no=1 的根批次（镜像 status/location/holder/quantity）。
+    """
+    from model import TPartBatch
+
+    batch = TPartBatch(
+        part_id=part.id,
+        batch_no=1,
+        quantity=part.quantity,
+        status=part.status,
+        location=part.location,
+        current_holder_id=part.current_holder_id,
+        next_process_id=part.next_process_id,
+        placed_at=part.placed_at,
+        delivery_note_id=part.delivery_note_id,
+    )
+    session.add(batch)
+    await session.flush()
+    return batch
 
 
 async def _truncate_all(session: AsyncSession) -> None:

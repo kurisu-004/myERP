@@ -1,6 +1,10 @@
 """Part 状态机：管理 TPart.status 和 TPart.location 的转换。
 
 扁平化设计（9 个顶级状态），ON_SHELF / WITH_WORKER 映射到同一个 DB status="IN_PROCESS"。
+
+2026-07-29 批次化：model 也可以是 `TPartBatch`（字段与 TPart 的报工字段同名，
+鸭子类型复用）。此时事件写入 `part_id=批次所属工单 id`、`batch_id=批次 id`、
+`quantity=批次 quantity`；model 是 TPart 时 `batch_id=None`（工单级事件）。
 """
 from __future__ import annotations
 
@@ -13,10 +17,11 @@ from model.part_event import TPartEvent
 
 if TYPE_CHECKING:
     from model.part import TPart
+    from model.part_batch import TPartBatch
 
 
 class PartStateMachine(StateChart):
-    """TPart 状态机。
+    """TPart / TPartBatch 状态机。
 
     Usage::
 
@@ -93,7 +98,7 @@ class PartStateMachine(StateChart):
     # Init — restore state from model.status + model.location
     # ============================================================
 
-    def __init__(self, model: TPart | None = None, **kwargs):
+    def __init__(self, model: TPart | TPartBatch | None = None, **kwargs):
         start_value = kwargs.pop("start_value", None)
         if model is not None and start_value is None:
             status = getattr(model, "status", None)
@@ -197,13 +202,65 @@ class PartStateMachine(StateChart):
         if self.model:
             self.model.status = "COMPLETED"
             self.model.location = None
-            self.model.serial_no = None
+            # 批次没有 serial_no 列（serial 在工单层、全部终态后由 rollup 释放）。
+            if hasattr(self.model, "serial_no"):
+                self.model.serial_no = None
 
     def on_enter_CANCELLED(self, **_):
         if self.model:
             self.model.status = "CANCELLED"
             self.model.location = None
-            self.model.serial_no = None
+            if hasattr(self.model, "serial_no"):
+                self.model.serial_no = None
+
+    # ============================================================
+    # Event helpers — 批次感知（2026-07-29）
+    # ============================================================
+
+    def _event_refs(self) -> tuple[int | None, int | None]:
+        """返回 (part_id, batch_id)。
+
+        model 是 TPart → (part.id, None)（工单级事件）；
+        model 是 TPartBatch → (batch.part_id, batch.id)（批次级事件）。
+        鸭子判定：TPartBatch 才有 part_id 属性。
+        """
+        m = self.model
+        if m is None:
+            return None, None
+        parent_part_id = getattr(m, "part_id", None)
+        if parent_part_id is None:
+            return m.id, None
+        return parent_part_id, m.id
+
+    def _add_event(self, event_repo, **fields) -> None:
+        """统一的事件写入入口：自动带 part_id / batch_id / quantity。
+
+        quantity = model.quantity：批次流转时即「本次操作数量」（service 已
+        先拆分，被流转批次的 quantity 就是本次移动的量）；工单级事件
+        （CREATED / 终态 rollup）= 工单总量。
+        """
+        if not event_repo or not self.model:
+            return
+        part_id, batch_id = self._event_refs()
+        event_repo.add(TPartEvent(
+            part_id=part_id,
+            batch_id=batch_id,
+            quantity=getattr(self.model, "quantity", None),
+            **fields,
+        ))
+
+    @staticmethod
+    def _serial_of(model) -> str | None:
+        """事件 drawing_code 取号。
+
+        批次无 serial 列：service 在解析/拆分批次时注入 transient 属性
+        ``_part_serial``（不落库、不被 SQLAlchemy 跟踪）；model 是 TPart
+        时直接读 serial_no。
+        """
+        return (
+            getattr(model, "_part_serial", None)
+            or getattr(model, "serial_no", None)
+        )
 
     # ============================================================
     # Event callbacks — create PartEvent records
@@ -226,14 +283,14 @@ class PartStateMachine(StateChart):
                 note_parts.append(f"下发货架：{shelf_code}")
             if process_code:
                 note_parts.append(f"下一工序：{process_code}")
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.PLACED_ON_SHELF,
                 from_status=PartStatus.PENDING,
                 to_status=PartStatus.IN_PROCESS,
                 note=" ".join(note_parts) or None,
                 created_by=created_by,
-            ))
+            )
 
     def on_send_to_programming(
         self,
@@ -243,13 +300,13 @@ class PartStateMachine(StateChart):
         **_,
     ):
         if event_repo and self.model:
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.SENT_TO_PROGRAMMING,
                 from_status=PartStatus.PENDING,
                 to_status=PartStatus.PROGRAMMING,
                 created_by=created_by,
-            ))
+            )
 
     def on_release_from_programming(
         self,
@@ -268,14 +325,14 @@ class PartStateMachine(StateChart):
                 note_parts.append(f"下发货架：{shelf_code}")
             if process_code:
                 note_parts.append(f"下一工序：{process_code}")
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.CNC_RELEASED,
                 from_status=PartStatus.PROGRAMMING,
                 to_status=PartStatus.IN_PROCESS,
                 note=" ".join(note_parts) or None,
                 created_by=created_by,
-            ))
+            )
 
     def on_pick_up(
         self,
@@ -287,16 +344,16 @@ class PartStateMachine(StateChart):
         **_,
     ):
         if event_repo and self.model and worker:
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.PICKED_UP,
                 from_status=PartStatus.IN_PROCESS,
                 to_status=PartStatus.IN_PROCESS,
                 worker_id=worker.id,
-                drawing_code=self.model.serial_no,
+                drawing_code=self._serial_of(self.model),
                 badge_code=worker.badge_code if hasattr(worker, "badge_code") else None,
                 created_by=created_by,
-            ))
+            )
 
     def on_return_to_shelf(
         self,
@@ -326,17 +383,17 @@ class PartStateMachine(StateChart):
                 f"归还货架 {shelf_code or '无'} "
                 f"下一工序 {process_code or '无'}"
             )
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.RETURNED,
                 from_status=PartStatus.IN_PROCESS,
                 to_status=PartStatus.IN_PROCESS,
                 worker_id=worker.id if worker else None,
-                drawing_code=self.model.serial_no,
+                drawing_code=self._serial_of(self.model),
                 badge_code=worker.badge_code if worker and hasattr(worker, "badge_code") else None,
                 note=note,
                 created_by=created_by,
-            ))
+            )
 
     def on_inspect(
         self,
@@ -349,17 +406,17 @@ class PartStateMachine(StateChart):
     ):
         if event_repo and self.model:
             shelf_code = target_shelf.code if target_shelf and hasattr(target_shelf, "code") else ""
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.INSPECTED,
                 from_status=PartStatus.IN_PROCESS,
                 to_status=PartStatus.INSPECTION,
                 worker_id=worker.id if worker else None,
-                drawing_code=self.model.serial_no,
+                drawing_code=self._serial_of(self.model),
                 badge_code=worker.badge_code if worker and hasattr(worker, "badge_code") else None,
                 note=f"送检到货架：{shelf_code}" if shelf_code else None,
                 created_by=created_by,
-            ))
+            )
 
     def on_pass_inspection(
         self,
@@ -369,13 +426,13 @@ class PartStateMachine(StateChart):
         **_,
     ):
         if event_repo and self.model:
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.STATUS_CHANGED,
                 from_status=PartStatus.INSPECTION,
                 to_status=PartStatus.READY_TO_SHIP,
                 created_by=created_by,
-            ))
+            )
 
     def on_fail_inspection(
         self,
@@ -407,14 +464,14 @@ class PartStateMachine(StateChart):
                 final_note = (f"{base} | 备注：{note}")[:500]
             else:
                 final_note = base
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.INSPECTION_FAILED,
                 from_status=PartStatus.INSPECTION,
                 to_status=PartStatus.IN_PROCESS,
                 note=final_note,
                 created_by=created_by,
-            ))
+            )
 
     def on_deliver(
         self,
@@ -431,16 +488,16 @@ class PartStateMachine(StateChart):
         worker=None，仍走通用 STATUS_CHANGED 事件。
         """
         if event_repo and self.model:
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.STATUS_CHANGED,
                 from_status=PartStatus.READY_TO_SHIP,
                 to_status=PartStatus.DELIVERED,
                 worker_id=worker.id if worker else None,
-                drawing_code=self.model.serial_no,
+                drawing_code=self._serial_of(self.model),
                 badge_code=worker.badge_code if worker and hasattr(worker, "badge_code") else None,
                 created_by=created_by,
-            ))
+            )
 
     def on_complete(
         self,
@@ -450,13 +507,13 @@ class PartStateMachine(StateChart):
         **_,
     ):
         if event_repo and self.model:
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.COMPLETED,
                 from_status=PartStatus.DELIVERED,
                 to_status=PartStatus.COMPLETED,
                 created_by=created_by,
-            ))
+            )
 
     def on_start_repair(
         self,
@@ -467,13 +524,13 @@ class PartStateMachine(StateChart):
     ):
         if event_repo and self.model:
             from_status = PartStatus(self._from_status) if self._from_status else None
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.REPAIR_STARTED,
                 from_status=from_status,
                 to_status=PartStatus.REPAIRING,
                 created_by=created_by,
-            ))
+            )
 
     def on_complete_repair(
         self,
@@ -483,13 +540,13 @@ class PartStateMachine(StateChart):
         **_,
     ):
         if event_repo and self.model:
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.REPAIR_COMPLETED,
                 from_status=PartStatus.REPAIRING,
                 to_status=PartStatus.IN_PROCESS,
                 created_by=created_by,
-            ))
+            )
 
     def on_cancel(
         self,
@@ -500,13 +557,13 @@ class PartStateMachine(StateChart):
     ):
         if event_repo and self.model:
             from_status = PartStatus(self._from_status) if self._from_status else None
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.CANCELLED,
                 from_status=from_status,
                 to_status=PartStatus.CANCELLED,
                 created_by=created_by,
-            ))
+            )
 
     def on_send_to_outsource(
         self,
@@ -541,8 +598,8 @@ class PartStateMachine(StateChart):
             from_status = (
                 PartStatus(self._from_status) if self._from_status else None
             )
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.SENT_TO_OUTSOURCE,
                 from_status=from_status,
                 to_status=PartStatus.OUTSOURCE,
@@ -553,7 +610,7 @@ class PartStateMachine(StateChart):
                     if outsource_company_id is not None
                     else (outsource_company.id if outsource_company is not None else None)
                 ),
-            ))
+            )
 
     def on_receive_from_outsource(
         self,
@@ -582,15 +639,15 @@ class PartStateMachine(StateChart):
                 parts.append(f"下发货架：{shelf.code}")
             if process is not None and hasattr(process, "code"):
                 parts.append(f"下一工序：{process.code}")
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 event_type=PartEventType.RECEIVED_FROM_OUTSOURCE,
                 from_status=PartStatus.OUTSOURCE,
                 to_status=PartStatus.IN_PROCESS,
                 note=" ".join(parts),
                 created_by=created_by,
                 outsource_company_id=outsource_company_id,
-            ))
+            )
 
     def on_inspect_from_outsource(
         self,
@@ -616,8 +673,8 @@ class PartStateMachine(StateChart):
                 target_shelf.code
                 if target_shelf and hasattr(target_shelf, "code") else ""
             )
-            event_repo.add(TPartEvent(
-                part_id=self.model.id,
+            self._add_event(
+                event_repo,
                 # t_part_event.event_type is VARCHAR(30); reuse the existing
                 # inspection event and keep the outsource origin in note/from_status.
                 event_type=PartEventType.INSPECTED,
@@ -626,4 +683,4 @@ class PartStateMachine(StateChart):
                 note=f"外协回收送检：{shelf_code}" if shelf_code else "外协回收送检",
                 created_by=created_by,
                 outsource_company_id=outsource_company_id,
-            ))
+            )

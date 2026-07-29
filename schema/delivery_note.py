@@ -47,17 +47,21 @@ class DeliveryNoteOut(BaseModel):
 class DeliveryNoteLineItem(BaseModel):
     """送货单下一行零件的投影（2026-07-23 扩展：含完整打印字段 + 二级客户）。
 
-    与 ``frontend/src/views/parts/PartsList.vue`` 列对齐；详情页用它
-    渲染内嵌的 line_items el-table，并被 ``XLSX 打印`` 与 ``详情`` 接口共享。
+    2026-07-29 批次化：行=批次。`id` 为批次 id（行身份），`part_id` 为工单 id；
+    quantity/status 取批次值。与 ``frontend/src/views/parts/PartsList.vue`` 列对齐；
+    详情页用它渲染内嵌的 line_items el-table，并被 ``XLSX 打印`` 与 ``详情`` 接口共享。
     """
 
-    id: IdStrNonNull
+    id: IdStrNonNull = Field(description="批次 id（行身份）")
+    part_id: IdStrNonNull = Field(description="工单 id")
+    batch_no: int | None = Field(default=None, description="批次序号")
+    batch_label: str | None = Field(default=None, description="批次展示码")
     serial_no: str = Field(description="序列号")
     drawing_no: str
     name: str
-    quantity: int
+    quantity: int = Field(description="批次量（本行送货数量）")
     is_urgent: bool
-    status: PartStatus
+    status: PartStatus = Field(description="批次状态")
 
     # —— 2026-07-23 新增 ——
     applicant_name: str | None = Field(
@@ -120,19 +124,29 @@ class DeliveryNoteEventOut(BaseModel):
 # ============================================================
 # 入参
 # ============================================================
+class DeliveryNoteAddPartsItem(BaseModel):
+    """入单条目（2026-07-29 批次化）：批次 + 可选部分数量。"""
+
+    batch_id: str = Field(description="批次 id（雪花 ID 字符串）")
+    quantity: int | None = Field(
+        default=None, gt=0,
+        description="本次入单数量；缺省 = 批次全量；小于批次量时服务端自动拆分",
+    )
+
+
 class DeliveryNoteCreateRequest(BaseModel):
-    """POST /delivery-notes：创建草稿（2026-07-23 扩展 + delivery_date / part_ids）。"""
+    """POST /delivery-notes：创建草稿（2026-07-23 扩展 + delivery_date / items）。"""
 
     customer_id: str = Field(description="一级客户（L1 root）雪花 ID 字符串")
     delivery_date: date | None = Field(
         default=None,
         description="送货日期；默认 = 创建当天（服务端 fallback）",
     )
-    part_ids: list[str] = Field(
+    items: list[DeliveryNoteAddPartsItem] = Field(
         default_factory=list, max_length=500,
         description=(
-            "原子带入首批零件；服务层先 create_draft 再 add_parts。"
-            "允许 status ∈ {INSPECTION, READY_TO_SHIP}；同 L1。"
+            "原子带入首批零件（批次级）；服务层先 create_draft 再 add_parts。"
+            "允许批次 status ∈ {INSPECTION, READY_TO_SHIP}；同 L1。"
         ),
     )
     note: str | None = Field(default=None, max_length=500)
@@ -153,15 +167,21 @@ class DeliveryNoteUpdateRequest(BaseModel):
 
 
 class DeliveryNoteCandidatePart(BaseModel):
-    """候选入单零件（INSPECTION + READY_TO_SHIP）"""
+    """候选入单零件（批次级：INSPECTION + READY_TO_SHIP 批次）。
 
-    id: IdStrNonNull
+    2026-07-29 批次化：行=批次；quantity 为批次量（可改小，服务端入单时自动拆）。
+    """
+
+    id: IdStrNonNull = Field(description="工单 id（展示 / 反查用）")
+    batch_id: IdStrNonNull = Field(description="批次 id（入单回传用）")
+    batch_no: int | None = Field(default=None, description="批次序号")
+    batch_label: str | None = Field(default=None, description="批次展示码")
     serial_no: str
     drawing_no: str
     name: str
-    quantity: int
+    quantity: int = Field(description="批次量（可入单的最大数量）")
     applicant_name: str | None = None
-    status: PartStatus
+    status: PartStatus = Field(description="批次状态")
     planned_delivery_date: date | None = None
 
 
@@ -169,16 +189,26 @@ class DeliveryNoteCandidatePartsOut(BaseModel):
     """GET /delivery-notes/candidate-parts 响应。"""
 
     items: list[DeliveryNoteCandidatePart] = Field(
-        description="同 L1 根、status IN (INSPECTION, READY_TO_SHIP) 的零件",
+        description="同 L1 根、status IN (INSPECTION, READY_TO_SHIP) 的批次",
     )
 
 
-class DeliveryNotePartIdsRequest(BaseModel):
-    """POST /delivery-notes/{id}/{add,remove}-parts：version OCC + 雪花 ID 列表。"""
+class DeliveryNoteAddPartsRequest(BaseModel):
+    """POST /delivery-notes/{id}/add-parts（2026-07-29 批次化）。"""
 
-    part_ids: list[str] = Field(
+    items: list[DeliveryNoteAddPartsItem] = Field(
         min_length=1, max_length=500,
-        description="雪花 ID 字符串列表；service 层 int() 转换",
+        description="入单批次条目；quantity 小于批次量时服务端自动拆分",
+    )
+    version: int = Field(description="乐观锁版本号；不匹配 → BIZ_VERSION_CONFLICT")
+
+
+class DeliveryNoteRemovePartsRequest(BaseModel):
+    """POST /delivery-notes/{id}/remove-parts（2026-07-29 批次化）。"""
+
+    batch_ids: list[str] = Field(
+        min_length=1, max_length=500,
+        description="要移出的批次 id（雪花 ID 字符串列表）",
     )
     version: int = Field(description="乐观锁版本号；不匹配 → BIZ_VERSION_CONFLICT")
 

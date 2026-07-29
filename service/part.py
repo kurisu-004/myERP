@@ -23,7 +23,7 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
-from model import TAssembly, TCustomer, TPart, TPartEvent, TProcess, TShelf, TWorker, TWorkType
+from model import TAssembly, TCustomer, TPart, TPartBatch, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import (
     OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone,
 )
@@ -37,6 +37,7 @@ from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from repository.serial_counter import SerialCounterRepository
@@ -77,6 +78,10 @@ from schema.part import (
 from schema.assembly import AssemblyOut
 from schema._types import IdStr, IdStrNonNull
 from schema.part_file import PartFileOut
+from service._batch_ops import (
+    ROLLUP_PROGRESS as _BATCH_ROLLUP_PROGRESS,
+    TERMINAL_STATUSES as _BATCH_TERMINAL_STATUSES,
+)
 from service._id_parse import parse_snowflake_id
 from service._session_refresh import refresh_for_state_machine
 from service._customer_helpers import (  # 2026-07-28：抽到共享模块
@@ -196,12 +201,14 @@ class PartService:
         outsource_company_process: OutsourceCompanyProcessRepository | None = None,
         outsource_quotes: OutsourceQuoteRepository | None = None,
         quote_events: OutsourceQuoteEventRepository | None = None,
+        part_batches: PartBatchRepository | None = None,  # 2026-07-29：批次化
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
         current_user: CurrentUser | None = None,
     ) -> None:
         self.parts = parts
+        self.part_batches = part_batches
         self.customers = customers
         self.workers = workers
         self.events = events
@@ -307,6 +314,13 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         events = await self.events.list_by_part(part_id)
+        # 批次号映射（2026-07-29）：事件带 batch_id，时间线展示「批次N」。
+        batch_ids = {e.batch_id for e in events if e.batch_id}
+        batch_no_map: dict[int, int] = {}
+        if batch_ids and self.part_batches is not None:
+            for b in await self.part_batches.list_by_part(part_id):
+                if b.id in batch_ids:
+                    batch_no_map[b.id] = b.batch_no
         worker_ids = {e.worker_id for e in events if e.worker_id}
         worker_map: dict[int, TWorker] = {}
         if worker_ids:
@@ -334,6 +348,9 @@ class PartService:
             PartEventOut(
                 id=e.id,
                 part_id=e.part_id,
+                batch_id=e.batch_id,
+                batch_no=batch_no_map.get(e.batch_id) if e.batch_id else None,
+                quantity=e.quantity,
                 worker_id=e.worker_id,
                 worker_name=worker_map[e.worker_id].name
                 if e.worker_id in worker_map
@@ -420,6 +437,159 @@ class PartService:
             "worker_name": worker_name,
             "shelf_code": shelf_code,
         }
+
+    # ============================================================
+    # 批次原语（2026-07-29 批次化：拆分 / 解析 / rollup）
+    # ============================================================
+
+    # 工单 rollup 进度序 / 终态集合：与 service/_batch_ops.py 共享一份。
+    _ROLLUP_PROGRESS = _BATCH_ROLLUP_PROGRESS
+    _TERMINAL_STATUSES = _BATCH_TERMINAL_STATUSES
+
+    def _batches(self) -> PartBatchRepository:
+        if self.part_batches is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing part batch repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return self.part_batches
+
+    async def _split_batch(
+        self, part: TPart, batch: TPartBatch, qty: int,
+    ) -> TPartBatch:
+        """从 `batch` 拆出 `qty` 件为新批次（继承源批次状态/位置/holder/工序）。
+
+        - 并发：`get_for_update`（FOR UPDATE + populate_existing）锁源批次行，
+          同事单的拆分串行化；锁内重校验数量边界。
+        - batch_no：锁内 MAX+1，保证 (part_id, batch_no) 唯一。
+        - 新批次 **不继承** delivery_note_id（源批次若在送货单上，拆出的量
+          默认不跟单；要跟单走送货单 add_parts 重新挂）。
+        - 写 SPLIT 事件（挂在新批次上，quantity=拆出量）。
+        """
+        from service._batch_ops import split_batch as _split
+        return await _split(
+            batches=self._batches(), events=self.events,
+            part=part, batch=batch, qty=qty, user_id=self._user_id,
+        )
+
+    async def _maybe_split(
+        self, part: TPart, batch: TPartBatch, quantity: int | None,
+    ) -> TPartBatch:
+        """部分量入口：quantity 缺省 / 等于批次量 → 原批次；否则先拆再返回新批次。"""
+        if quantity is None:
+            return batch
+        if quantity <= 0 or quantity > batch.quantity:
+            raise BizError(
+                code=ErrCode.BIZ_PART_BATCH_INVALID_QUANTITY,
+                message=(
+                    f"操作数量必须 ∈ [1, {batch.quantity}]"
+                    f"（批次 {batch.batch_no} 当前 {batch.quantity} 件），got {quantity}"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if quantity == batch.quantity:
+            return batch
+        return await self._split_batch(part, batch, quantity)
+
+    async def _resolve_target_batch(
+        self,
+        part: TPart,
+        batch_id: int | None,
+        *,
+        expect: "Callable[[TPartBatch], bool] | None" = None,
+        action: str = "操作",
+    ) -> TPartBatch:
+        """解析本次流转的目标批次。
+
+        - `batch_id` 显式指定 → 校验属于该工单；
+        - 缺省 → 在 `expect` 谓词筛出的候选里取唯一者；
+          0 个 → BIZ_INVALID_TRANSITION；>1 个 → 400 要求指定 batch_id。
+        """
+        batches = await self._batches().list_by_part(part.id)
+        if batch_id is not None:
+            target = next((b for b in batches if b.id == batch_id), None)
+            if target is None:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+                    message=f"batch {batch_id} 不属于工单 {part.id} 或不存在",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            target._part_serial = part.serial_no  # transient：SM 事件 drawing_code 用
+            return target
+        candidates = [b for b in batches if expect(b)] if expect else batches
+        if not candidates:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=f"{action}：工单 {part.id} 当前没有可操作的批次",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if len(candidates) > 1:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"{action}：工单有 {len(candidates)} 个可操作批次"
+                    f"（{', '.join(f'批次{b.batch_no}:{b.quantity}件' for b in candidates)}），"
+                    "请指定 batch_id"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return candidates[0]
+
+    async def _rollup_part_status(self, part: TPart) -> None:
+        """批次流转后重算工单派生状态（就地改 part 字段；caller 负责 update/flush）。
+
+        规则：
+        - 有活跃批次 → part.status/location/holder/next_process_id =
+          「最落后」活跃批次的同名字段（进度序见 _ROLLUP_PROGRESS，同级取 batch_no 小者）。
+        - 全部终态 → 全部 CANCELLED ⇒ CANCELLED，否则 COMPLETED；
+          释放 serial_no（回池），写工单级终态事件（batch_id=NULL）。
+        - 全部活跃批次都已 DELIVERED（或更后）且 actual_delivery_date 未填 → 记今天。
+        """
+        from service._batch_ops import rollup_part_status as _rollup
+        await _rollup(
+            batches=self._batches(), events=self.events,
+            part=part, user_id=self._user_id,
+        )
+
+    async def _after_batch_transition(self, part: TPart) -> None:
+        """批次流转统一收尾：rollup → part update → 看板广播 → 装配体联动。
+
+        rollup 前显式刷新派生字段：审计列 onupdate / 测试 hook 可能把
+        status/location 等标 expired，rollup 的 sync 读（prev_status /
+        actual_delivery_date）在 async session 会触发 MissingGreenlet
+        （CLAUDE.md §MissingGreenlet；反例见 receive_to_inspection auto_pass 链路）。
+        """
+        await refresh_for_state_machine(
+            self.parts.session, part,
+            attrs=(
+                "status", "location", "current_holder_id",
+                "next_process_id", "serial_no", "actual_delivery_date",
+            ),
+        )
+        await self._rollup_part_status(part)
+        part.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._broadcast()
+        await self._check_parent_assembly(part)
+
+    async def create_root_batch(self, part: TPart) -> TPartBatch:
+        """新工单建根批次（batch_no=1，quantity=工单总量，状态跟随 part）。"""
+        root = TPartBatch(
+            id=new_id(),
+            part_id=part.id,
+            batch_no=1,
+            quantity=part.quantity,
+            status=part.status,
+            location=part.location,
+            current_holder_id=part.current_holder_id,
+            next_process_id=part.next_process_id,
+            placed_at=part.placed_at,
+        )
+        root.created_by = self._user_id
+        root.updated_by = self._user_id
+        await self._batches().create(root)
+        return root
 
     # ============================================================
     # 写操作
@@ -524,13 +694,23 @@ class PartService:
         part.created_by = self._user_id
         part.updated_by = self._user_id
         await self.parts.create(part)
-        await self._write_event(
-            part=part,
-            event_type=PartEventType.CREATED,
+        # 2026-07-29 批次化：每个工单创建时生成根批次（batch_no=1，qty=总量）。
+        root_batch = await self.create_root_batch(part)
+        event = TPartEvent(
+            id=new_id(),
+            part_id=part.id,
+            batch_id=root_batch.id,
+            worker_id=None,
+            event_type=PartEventType.CREATED.value,
             from_status=None,
-            to_status=PartStatus.PENDING,
+            to_status=PartStatus.PENDING.value,
+            drawing_code=None,
+            badge_code=None,
+            note=None,
+            quantity=part.quantity,
             created_by=self._user_id,
         )
+        await self.events.create(event)
         items = await self._to_out([part])
         return items[0]
 
@@ -940,6 +1120,8 @@ class PartService:
                     tpart.created_by = self._user_id
                     tpart.updated_by = self._user_id
                 await self.parts.create(tpart)
+                # 2026-07-29 批次化：子件同样建根批次
+                child_root_batch = await self.create_root_batch(tpart)
 
                 f_out = await part_files.upload(
                     owner_id=child_id,
@@ -961,6 +1143,7 @@ class PartService:
                 await self.events.create(TPartEvent(
                     id=new_id(),
                     part_id=child_id,
+                    batch_id=child_root_batch.id,
                     worker_id=None,
                     event_type=PartEventType.CREATED.value,
                     from_status=None,
@@ -968,6 +1151,7 @@ class PartService:
                     drawing_code=None,
                     badge_code=None,
                     note=None,
+                    quantity=page.quantity,
                     created_by=self._user_id,
                 ))
 
@@ -1075,6 +1259,22 @@ class PartService:
         if data.applicant_name is not None:
             part.applicant_name = data.applicant_name.strip()
         if data.quantity is not None:
+            # 2026-07-29 批次化：总量变更只允许「唯一根批次且仍 PENDING」的工单
+            # （尚未下发/领取/拆分），同步根批次数量保持 Σ批次=总量 不变量。
+            if data.quantity != part.quantity:
+                batches = await self._batches().list_by_part(part.id)
+                if len(batches) != 1 or batches[0].status != "PENDING":
+                    raise BizError(
+                        code=ErrCode.BIZ_PART_QUANTITY_LOCKED,
+                        message=(
+                            "工单已下发或已拆分批次，禁止直接修改总量；"
+                            "如需调整请取消后重建或拆分批次"
+                        ),
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                batches[0].quantity = data.quantity
+                batches[0].updated_by = self._user_id
+                await self._batches().update(batches[0])
             part.quantity = data.quantity
         if data.unit_price is not None:
             part.unit_price = data.unit_price
@@ -1128,6 +1328,10 @@ class PartService:
             )
         part.updated_by = self._user_id
         await self.parts.soft_delete(part)
+        # 2026-07-29 批次化：级联软删全部批次
+        for b in await self._batches().list_by_part(part.id):
+            b.updated_by = self._user_id
+            await self._batches().soft_delete(b)
         await self._broadcast()  # `deleted_at` 让该零件从 dashboard 快照消失
 
     # ============================================================
@@ -1140,22 +1344,30 @@ class PartService:
 
         `shelf_id` 必须在 t_shelf 中存在 / is_active / zone=PRODUCTION。
         `next_process_id` 必填，service 校验 process 存在后喂给状态机。
+
+        2026-07-29 批次化：可选 `batch_id`（默认唯一 PENDING 批次）+
+        `quantity`（默认批次全量；部分量先拆再下发）。
         """
         part = await self._get_part_or_404(part_id)
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
         )
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            expect=lambda b: b.status == "PENDING",
+            action="下发上架",
+        )
+        target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
 
         # state machine handles status/location/holder mutation + event creation;
         # 状态机 on_enter_ON_SHELF 会同时把 next_process_id 设到 model 上。
-        part.sm.place_on_shelf(
+        target.sm.place_on_shelf(
             shelf=shelf, process=process, event_repo=self.events,
             created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "PLACED_ON_SHELF",
@@ -1167,20 +1379,99 @@ class PartService:
         )
         return items[0]
 
-    async def send_to_programming(self, part_id: int) -> PartOut:
+    def _parse_batch_id(self, data) -> int | None:
+        """请求体里的 batch_id（雪花 ID 字符串）→ int；未携带 → None。"""
+        raw = getattr(data, "batch_id", None)
+        if raw is None or raw == "":
+            return None
+        parsed = parse_snowflake_id(raw, field_name="batch_id")
+        if parsed is None:
+            raise BizError(
+                code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+                message=f"batch_id 不是合法的雪花 ID：{raw!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return parsed
+
+    async def _resolve_scan_batch(
+        self,
+        part: TPart,
+        batch_id: int | None,
+        *,
+        location: str,
+        holder_id: int,
+        action: str,
+    ) -> TPartBatch:
+        """扫码路径的批次解析（领取/归还/送检）。
+
+        缺省 batch_id 时的候选收窄顺序保持旧错误码语义：
+        1. 状态/位置不符 → BIZ_INVALID_TRANSITION；
+        2. 有候选但都不在 holder 手 → BIZ_AUTH_SHELF_MISMATCH（越权/拿错架）；
+        3. holder 手有多个 → 400 要求指定 batch_id。
+        """
+        if batch_id is not None:
+            return await self._resolve_target_batch(part, batch_id, action=action)
+        batches = await self._batches().list_by_part(part.id)
+        candidates = [
+            b for b in batches
+            if b.status == "IN_PROCESS" and b.location == location
+        ]
+        if not candidates:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"{action}：工单 {part.id} 没有 IN_PROCESS + {location} 的批次"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        mine = [b for b in candidates if b.current_holder_id == holder_id]
+        if not mine:
+            raise BizError(
+                code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
+                message=(
+                    f"{action}：批次不在 holder {holder_id} 手上"
+                    f"（当前持有者 {[b.current_holder_id for b in candidates]}）"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if len(mine) > 1:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"{action}：该位置有 {len(mine)} 个批次"
+                    f"（{', '.join(f'批次{b.batch_no}:{b.quantity}件' for b in mine)}），"
+                    "请指定 batch_id"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        target = mine[0]
+        target._part_serial = part.serial_no  # transient：SM 事件 drawing_code 用
+        return target
+
+    async def send_to_programming(
+        self, part_id: int, *, batch_id: int | None = None,
+        quantity: int | None = None,
+    ) -> PartOut:
         """PENDING → PROGRAMMING：把零件发送至 CNC 编程。
 
         编程员在「待编程一览」看到这个零件，下载图纸/3D → 写程序 →
         上传 G 代码 → 在编程员端调用 `release_from_programming` 下发到货架。
+
+        2026-07-29 批次化：可选 batch_id / quantity（部分量先拆再送）。
         """
         part = await self._get_part_or_404(part_id)
-        part.sm.send_to_programming(
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status == "PENDING",
+            action="送编程",
+        )
+        target = await self._maybe_split(part, batch, quantity)
+        target.sm.send_to_programming(
             event_repo=self.events, created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "SENT_TO_PROGRAMMING",
@@ -1218,11 +1509,6 @@ class PartService:
             )
 
         part = await self._get_part_or_404(part_id)
-        await refresh_for_state_machine(
-            self.parts.session,
-            part,
-            attrs=("status", "location", "next_process_id"),
-        )
 
         # 0. OCC 校验（2026-07-28 新增）：AuditMixin 已自动给 UPDATE 加 WHERE version=?，
         # 这里显式校验是为了在拿到最新 version 后立即拦截并发冲突，给前端更明确的报错。
@@ -1293,6 +1579,12 @@ class PartService:
             )
 
         # 5. [2026-07-28 PR-H] 状态资格防御闸：必须位于绑定了 OUTSOURCE 工序的货架
+        # 2026-07-29 批次化：批次解析放在公司/工序校验之后（保持错误码优先级），
+        # 不设 expect —— 不合格状态统一由下面的闸门抛 422（与旧错误码一致）。
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            action="发送外协",
+        )
         if self.shelf_process_repo is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
@@ -1311,16 +1603,16 @@ class PartService:
                 http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if (
-            part.status != PartStatus.IN_PROCESS.value
-            or part.location != PartLocation.PRODUCTION_SHELF.value
-            or part.current_holder_id not in outsource_shelf_ids
+            batch.status != PartStatus.IN_PROCESS.value
+            or batch.location != PartLocation.PRODUCTION_SHELF.value
+            or batch.current_holder_id not in outsource_shelf_ids
         ):
             raise BizError(
                 code=ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF,
                 message=(
                     f"发送外协必须从「绑定了外协工序的货架」上发出（当前 C2 等 OUTSOURCE 货架）；"
-                    f"当前 status={part.status} location={part.location} "
-                    f"current_holder_id={part.current_holder_id}"
+                    f"批次 {batch.batch_no} 当前 status={batch.status} location={batch.location} "
+                    f"current_holder_id={batch.current_holder_id}"
                 ),
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
@@ -1397,22 +1689,25 @@ class PartService:
             created_by=self._user_id,
         )
         target_quote.sent_at = now_naive()
-        target_quote.quantity = part.quantity
+        # 2026-07-29 批次化：报价 quantity 跟实际发送的批次走（sender 可能是拆出的子批）
+        target_quote.quantity = batch.quantity
         target_quote.updated_by = self._user_id
         await self.outsource_quotes.update(target_quote)
 
-        # 8. part 状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
-        # 9. DIRECT 路径兼容：direct_send=True 透传给 statemachine（事件 note 追加"直接发送"）
-        part.sm.send_to_outsource(
+        # 8. 批次状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
+        # 2026-07-29 批次化：部分量先拆再发，状态机作用在拆出的子批上
+        target = await self._maybe_split(
+            part, batch, getattr(data, "quantity", None),
+        )
+        target.sm.send_to_outsource(
             outsource_company=company, process=process,
             event_repo=self.events, created_by=self._user_id,
             direct_send=not process.requires_approval,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
 
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "SENT_TO_OUTSOURCE",
@@ -1438,10 +1733,10 @@ class PartService:
         mark_received + 写 received_at（外协统一事实表生命周期）。
         """
         part = await self._get_part_or_404(part_id)
-        await refresh_for_state_machine(
-            self.parts.session,
-            part,
-            attrs=("status", "location", "next_process_id"),
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            expect=lambda b: b.status == PartStatus.OUTSOURCE.value,
+            action="外协回收",
         )
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
@@ -1487,15 +1782,15 @@ class PartService:
         )
 
         # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
-        part.sm.receive_from_outsource(
+        target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
+        target.sm.receive_from_outsource(
             shelf=shelf, process=process,
             event_repo=self.events, created_by=self._user_id,
             outsource_company_id=outsource_company_id_int,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "RECEIVED_FROM_OUTSOURCE",
@@ -1523,10 +1818,10 @@ class PartService:
         PR-H 2026-07-29：同 receive_from_outsource，反查 OUTSOURCING 报价 → mark_received。
         """
         part = await self._get_part_or_404(part_id)
-        await refresh_for_state_machine(
-            self.parts.session,
-            part,
-            attrs=("status", "location", "next_process_id"),
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            expect=lambda b: b.status == PartStatus.OUTSOURCE.value,
+            action="外协回收送检",
         )
         target_shelf = await self._validate_inspection_shelf(data.shelf_id)
 
@@ -1559,15 +1854,15 @@ class PartService:
         )
 
         # 第一次转换：OUTSOURCE → INSPECTION
-        part.sm.inspect_from_outsource(
+        target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
+        target.sm.inspect_from_outsource(
             target_shelf=target_shelf,
             event_repo=self.events, created_by=self._user_id,
             outsource_company_id=outsource_company_id_int,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "RECEIVED_FROM_OUTSOURCE_INSPECTED",
@@ -1579,7 +1874,7 @@ class PartService:
 
         # auto_pass_inspection=True：再触发 INSPECTION → READY_TO_SHIP（品检通过）
         if data.auto_pass_inspection:
-            return await self.pass_inspection(part.id)
+            return await self.pass_inspection(part.id, batch_id=target.id)
         return items[0]
 
     async def _validate_inspection_shelf(self, shelf_id: str) -> TShelf:
@@ -1642,15 +1937,20 @@ class PartService:
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
         )
-        # 3) 状态机转换
-        part.sm.release_from_programming(
+        # 3) 批次解析 + 状态机转换（2026-07-29 批次化）
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            expect=lambda b: b.status == "PROGRAMMING",
+            action="编程下发",
+        )
+        target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
+        target.sm.release_from_programming(
             shelf=shelf, process=process, event_repo=self.events,
             created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "CNC_RELEASED",
@@ -1891,34 +2191,44 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
 
-        if part.status != "IN_PROCESS" or part.location != "PRODUCTION_SHELF":
+        # 2026-07-29 批次化：定位目标批次（默认该货架上唯一 ON_SHELF 批次；
+        # 前端卡片列表已带 batch_id）。部分量 → 先拆再领。
+        batch = await self._resolve_scan_batch(
+            part, self._parse_batch_id(data),
+            location="PRODUCTION_SHELF",
+            holder_id=shelf.id,
+            action="领取",
+        )
+        if batch.status != "IN_PROCESS" or batch.location != "PRODUCTION_SHELF":
             raise BizError(
                 code=ErrCode.BIZ_INVALID_TRANSITION,
                 message=(
                     f"pick-up requires IN_PROCESS on PRODUCTION_SHELF; "
-                    f"current status={part.status}, location={part.location}"
+                    f"batch {batch.batch_no} status={batch.status}, location={batch.location}"
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        if part.current_holder_id != shelf.id:
+        if batch.current_holder_id != shelf.id:
             raise BizError(
                 code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
                 message=(
-                    f"part is currently held by {part.current_holder_id}; "
+                    f"batch is currently held by {batch.current_holder_id}; "
                     f"expected this shelf {shelf.id}"
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        target = await self._maybe_split(
+            part, batch, getattr(data, "quantity", None),
+        )
         # state machine handles holder switch + event creation
-        part.sm.pick_up(
+        target.sm.pick_up(
             worker=worker, shelf=shelf, event_repo=self.events,
             created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
             "PICKED_UP",
@@ -1966,16 +2276,23 @@ class PartService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
 
-        from_status = _parse_status(part.status)
         event_type = _parse_event_type(data.event_type)
 
+        # 2026-07-29 批次化：定位工人持有的批次（默认唯一；部分量先拆再转）。
+        batch = await self._resolve_scan_batch(
+            part, self._parse_batch_id(data),
+            location="WORKER",
+            holder_id=worker.id,
+            action="归还/送检",
+        )
+
         if event_type == PartEventType.RETURNED:
-            if part.status != "IN_PROCESS" or part.location != "WORKER":
+            if batch.status != "IN_PROCESS" or batch.location != "WORKER":
                 raise BizError(
                     code=ErrCode.BIZ_INVALID_TRANSITION,
                     message=(
                         f"return requires IN_PROCESS with WORKER location; "
-                        f"current status={part.status}, location={part.location}"
+                        f"batch {batch.batch_no} status={batch.status}, location={batch.location}"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
@@ -1988,11 +2305,11 @@ class PartService:
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            if part.current_holder_id != worker.id:
+            if batch.current_holder_id != worker.id:
                 raise BizError(
                     code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
                     message=(
-                        f"part is not held by worker {worker.id}; "
+                        f"batch is not held by worker {worker.id}; "
                         "only the current holder can return it"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
@@ -2009,8 +2326,8 @@ class PartService:
             await self._assert_shelf_maps_process(shelf, new_process)
             # 解析 prev_process_code 与 worker_work_type_code 给状态机 note 用
             prev_process_code: str | None = None
-            if self.processes is not None and part.next_process_id is not None:
-                prev = await self.processes.get_by_id(part.next_process_id)
+            if self.processes is not None and batch.next_process_id is not None:
+                prev = await self.processes.get_by_id(batch.next_process_id)
                 if prev is not None:
                     prev_process_code = prev.code
             worker_work_type_code: str | None = None
@@ -2022,7 +2339,10 @@ class PartService:
                 if wt is not None:
                     worker_work_type_code = wt.code
 
-            part.sm.return_to_shelf(
+            target = await self._maybe_split(
+                part, batch, getattr(data, "quantity", None),
+            )
+            target.sm.return_to_shelf(
                 worker=worker,
                 shelf=shelf,
                 process=new_process,
@@ -2031,10 +2351,9 @@ class PartService:
                 event_repo=self.events,
                 created_by=self._user_id,
             )
-            part.updated_by = self._user_id
-            await self.parts.update(part)
-            await self._broadcast()
-            await self._check_parent_assembly(part)
+            target.updated_by = self._user_id
+            await self._batches().update(target)
+            await self._after_batch_transition(part)
             items = await self._to_out([part])
             await self._broadcast_event(
                 "RETURNED",
@@ -2054,43 +2373,45 @@ class PartService:
                     message="INSPECTED requires target_inspection_shelf_id",
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            target = await self.shelves.get_by_id(data.target_inspection_shelf_id)
-            if target is None or target.deleted_at is not None:
+            target_shelf = await self.shelves.get_by_id(data.target_inspection_shelf_id)
+            if target_shelf is None or target_shelf.deleted_at is not None:
                 raise BizError(
                     code=ErrCode.BIZ_SHELF_NOT_FOUND,
                     message=f"inspection shelf {data.target_inspection_shelf_id} not found",
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
-            if target.zone != ShelfZone.INSPECTION.value:
+            if target_shelf.zone != ShelfZone.INSPECTION.value:
                 raise BizError(
                     code=ErrCode.BIZ_INVALID_VALUE,
                     message=(
-                        f"target shelf {target.code!r} is zone={target.zone!r}; "
+                        f"target shelf {target_shelf.code!r} is zone={target_shelf.zone!r}; "
                         "INSPECTED requires INSPECTION zone"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            if not target.is_active:
+            if not target_shelf.is_active:
                 raise BizError(
                     code=ErrCode.BIZ_SHELF_IN_USE,
-                    message=f"inspection shelf {target.code!r} is inactive",
+                    message=f"inspection shelf {target_shelf.code!r} is inactive",
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            if part.current_holder_id != worker.id:
+            if batch.current_holder_id != worker.id:
                 raise BizError(
                     code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
-                    message="part is not held by current worker",
+                    message="batch is not held by current worker",
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
 
-            part.sm.inspect(
-                worker=worker, target_shelf=target, event_repo=self.events,
+            target = await self._maybe_split(
+                part, batch, getattr(data, "quantity", None),
+            )
+            target.sm.inspect(
+                worker=worker, target_shelf=target_shelf, event_repo=self.events,
                 created_by=self._user_id,
             )
-            part.updated_by = self._user_id
-            await self.parts.update(part)
-            await self._broadcast()
-            await self._check_parent_assembly(part)
+            target.updated_by = self._user_id
+            await self._batches().update(target)
+            await self._after_batch_transition(part)
             items = await self._to_out([part])
             await self._broadcast_event(
                 "INSPECTED",
@@ -2098,7 +2419,7 @@ class PartService:
                     part,
                     customer_path=items[0].customer_path,
                     worker_name=worker.name,
-                    shelf_code=target.code,
+                    shelf_code=target_shelf.code,
                 ),
             )
             return items[0]
@@ -2134,11 +2455,11 @@ class PartService:
         )
         if not process_ids:
             return []
-        rows = await self.parts.list_for_work_type(
+        rows = await self._batches().list_for_work_type(
             shelf_id=shelf_id,
             mapped_process_ids=process_ids,
         )
-        return await self._to_out(rows)
+        return await self._to_batch_out(rows)
 
     async def list_pickable_parts_all_shelves(
         self,
@@ -2167,11 +2488,11 @@ class PartService:
             return []
         if shelf_ids is not None and not shelf_ids:
             return []  # 非 HMI 角色 → HMI scope 为空，短路免 DB
-        rows = await self.parts.list_for_work_type_all_shelves(
+        rows = await self._batches().list_for_work_type_all_shelves(
             mapped_process_ids=process_ids,
             shelf_ids=shelf_ids,
         )
-        return await self._to_out(rows)
+        return await self._to_batch_out(rows)
 
     async def list_parts_held_by_worker(
         self,
@@ -2187,8 +2508,41 @@ class PartService:
         """
         if not worker_id:
             return []
-        rows = await self.parts.list_held_by_worker(worker_id=worker_id)
-        return await self._to_out(rows)
+        rows = await self._batches().list_held_by_worker(worker_id=worker_id)
+        return await self._to_batch_out(rows)
+
+    async def list_inspection_batches(
+        self,
+        *,
+        keyword: str | None = None,
+        customer_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> tuple[list[PartOut], int]:
+        """品检待办（2026-07-29 批次级）：INSPECTION 批次 + 工单展示字段。
+
+        行=批次：同一工单多个品检批次各占一行，pass/fail 操作回传 batch_id。
+        返回 (items, total)。
+        """
+        customer_ids_in: list[int] | None = None
+        if customer_id:
+            cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
+            if cid_int is not None:
+                customer_ids_in = await expand_customer_ids(self.customers, cid_int)
+        kw = (keyword or "").strip() or None
+        rows = await self._batches().list_batches_with_part(
+            statuses=[PartStatus.INSPECTION.value],
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+            limit=limit,
+            offset=offset,
+        )
+        total = await self._batches().count_batches_with_part(
+            statuses=[PartStatus.INSPECTION.value],
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+        )
+        return await self._to_batch_out(rows), total
 
     # ============================================================
     # 统一外协可发送一览（2026-07-28 新增；取代 list_direct_outsource_candidates）
@@ -2473,27 +2827,27 @@ class PartService:
             items=items, total=unified.total, limit=limit, offset=offset,
         )
 
-    async def pass_inspection(self, part_id: int) -> PartOut:
-        """INSPECTION -> READY_TO_SHIP：品检合格。"""
-        part = await self.parts.get_by_id(part_id)
-        if part is None:
-            raise BizError(
-                code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part {part_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        await refresh_for_state_machine(
-            self.parts.session,
-            part,
-            attrs=("status", "location", "next_process_id"),
+    async def pass_inspection(
+        self, part_id: int, *, batch_id: int | None = None,
+        quantity: int | None = None,
+    ) -> PartOut:
+        """INSPECTION -> READY_TO_SHIP：品检合格。
+
+        2026-07-29 批次化：可选 batch_id / quantity（部分通过先拆再过）。
+        """
+        part = await self._get_part_or_404(part_id)
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status == "INSPECTION",
+            action="品检通过",
         )
-        part.sm.pass_inspection(
+        target = await self._maybe_split(part, batch, quantity)
+        target.sm.pass_inspection(
             event_repo=self.events, created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
 
@@ -2503,6 +2857,8 @@ class PartService:
         *,
         actual_delivery_date: date | None = None,
         worker_badge_code: str | None = None,
+        batch_id: int | None = None,
+        quantity: int | None = None,
     ) -> PartOut:
         """READY_TO_SHIP -> DELIVERED：发货。
 
@@ -2511,6 +2867,9 @@ class PartService:
         - 扫码台司机调用：worker_badge_code 必填；service 层校验
           `t_worker.work_type.code == '送货司机'` 且 is_active；写入
           `part.actual_delivery_date = today()` 与 PartEvent.worker_id / badge_code。
+        - 2026-07-29 批次化：可选 batch_id / quantity（部分送货先拆再发）；
+          part.actual_delivery_date 由 rollup 在全部活跃批次 DELIVERED 时写入，
+          显式传 actual_delivery_date（文员补录）优先。
 
         实际送货日期入参用于 CLERK 补录（默认 None 即「今天」）。
         """
@@ -2555,63 +2914,101 @@ class PartService:
                 )
             driver = worker
 
-        part.actual_delivery_date = actual_delivery_date or date.today()
-        part.sm.deliver(
+        if actual_delivery_date is not None:
+            part.actual_delivery_date = actual_delivery_date
+
+        # 2026-07-29 批次化：定位 READY_TO_SHIP 批次（部分送货先拆再发）。
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status == "READY_TO_SHIP",
+            action="发货",
+        )
+        target = await self._maybe_split(part, batch, quantity)
+        target.sm.deliver(
             worker=driver, event_repo=self.events,
             created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
 
-    async def complete(self, part_id: int) -> PartOut:
-        """DELIVERED -> COMPLETED：确认完成，释放流水号。"""
-        part = await self.parts.get_by_id(part_id)
-        if part is None:
+    async def complete(
+        self, part_id: int, *, batch_id: int | None = None,
+    ) -> PartOut:
+        """DELIVERED -> COMPLETED：确认完成。
+
+        2026-07-29 批次化：
+        - batch_id 指定 → 完成该 DELIVERED 批次；
+        - 缺省 → 完成**全部** DELIVERED 批次（与原「整单完成」语义对齐）；
+        - 全部批次终态后由 rollup 把工单置 COMPLETED 并释放流水号。
+        """
+        part = await self._get_part_or_404(part_id)
+        batches = await self._batches().list_by_part(part.id)
+        if batch_id is not None:
+            targets = [b for b in batches if b.id == batch_id]
+            if not targets:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+                    message=f"batch {batch_id} 不属于工单 {part_id} 或不存在",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            targets = [b for b in batches if b.status == "DELIVERED"]
+        if not targets:
             raise BizError(
-                code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part {part_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=f"part {part_id} 没有 DELIVERED 状态的批次可完成",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        part.sm.complete(
+        for target in targets:
+            target.sm.complete(
+                event_repo=self.events, created_by=self._user_id,
+            )
+            target.updated_by = self._user_id
+            await self._batches().update(target)
+        await self._after_batch_transition(part)
+        items = await self._to_out([part])
+        return items[0]
+
+    async def start_repair(
+        self, part_id: int, *, batch_id: int | None = None,
+        quantity: int | None = None,
+    ) -> PartOut:
+        """-> REPAIRING：开始返修（从 INSPECTION / READY_TO_SHIP / DELIVERED 进入）。
+
+        2026-07-29 批次化：可选 batch_id / quantity（部分返修先拆再转）。
+        """
+        part = await self._get_part_or_404(part_id)
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status in ("INSPECTION", "READY_TO_SHIP", "DELIVERED"),
+            action="开始返修",
+        )
+        target = await self._maybe_split(part, batch, quantity)
+        target.sm.start_repair(
             event_repo=self.events, created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
 
-    async def start_repair(self, part_id: int) -> PartOut:
-        """-> REPAIRING：开始返修（从 INSPECTION / READY_TO_SHIP / DELIVERED 进入）。"""
-        part = await self.parts.get_by_id(part_id)
-        if part is None:
-            raise BizError(
-                code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part {part_id} not found",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
-        part.sm.start_repair(
-            event_repo=self.events, created_by=self._user_id,
-        )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
-        items = await self._to_out([part])
-        return items[0]
-
-    async def complete_repair(self, part_id: int, shelf_id: int) -> PartOut:
+    async def complete_repair(
+        self, part_id: int, shelf_id: int, *,
+        batch_id: int | None = None,
+    ) -> PartOut:
         """REPAIRING -> IN_PROCESS：返修完成，放回生产货架。
 
         2026-07-17：补 shelf↔process 校验——REPAIRING 期间 `next_process_id`
         由 start_repair 透传保留（ON_SHELF 进入时不传 process，next_process_id
         沿用 REPAIRING 之前）；如果 caller 选了不兼容的 shelf，422 拒绝。
         `next_process_id IS NULL`（fail_inspection 已清空）时跳过校验。
+
+        2026-07-29 批次化：可选 batch_id（默认唯一 REPAIRING 批次）；
+        shelf↔process 校验读批次的 next_process_id。
         """
         part = await self.parts.get_by_id(part_id)
         if part is None:
@@ -2639,17 +3036,21 @@ class PartService:
                 message=f"shelf {shelf.code!r} is zone={shelf.zone!r}; complete_repair requires PRODUCTION",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        if part.next_process_id is not None:
-            carried_process = await self._get_process(part.next_process_id)
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status == "REPAIRING",
+            action="完成返修",
+        )
+        if batch.next_process_id is not None:
+            carried_process = await self._get_process(batch.next_process_id)
             await self._assert_shelf_maps_process(shelf, carried_process)
-        part.sm.complete_repair(
+        batch.sm.complete_repair(
             shelf=shelf, event_repo=self.events,
             created_by=self._user_id,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        batch.updated_by = self._user_id
+        await self._batches().update(batch)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
 
@@ -2676,11 +3077,16 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        if part.status != PartStatus.INSPECTION.value:
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            expect=lambda b: b.status == PartStatus.INSPECTION.value,
+            action="品检打回",
+        )
+        if batch.status != PartStatus.INSPECTION.value:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_TRANSITION,
                 message=(
-                    f"part {part_id} status={part.status!r}; "
+                    f"batch {batch.batch_no} status={batch.status!r}; "
                     f"fail_inspection requires INSPECTION"
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
@@ -2692,21 +3098,31 @@ class PartService:
         shelf, process = await self._validate_production_shelf_and_process(
             shelf_id_int, process_id_int,
         )
-        part.next_process_id = process.id  # 保留 inspector 指定的下一道工序
-        part.sm.fail_inspection(
+        target = await self._maybe_split(
+            part, batch, getattr(data, "quantity", None),
+        )
+        target.next_process_id = process.id  # 保留 inspector 指定的下一道工序
+        target.sm.fail_inspection(
             shelf=shelf, process=process, event_repo=self.events,
             created_by=self._user_id,
             note=data.note,
         )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
 
-    async def cancel(self, part_id: int) -> PartOut:
-        """-> CANCELLED：取消零件，释放流水号。"""
+    async def cancel(
+        self, part_id: int, *, batch_id: int | None = None,
+    ) -> PartOut:
+        """-> CANCELLED：取消（级联），释放流水号。
+
+        2026-07-29 批次化：
+        - batch_id 指定 → 仅取消该批次（须非终态）；其余批次不受影响；
+        - 缺省 → 级联取消**全部非终态**批次（与原「整单取消」语义对齐）；
+        - 全部批次终态后由 rollup 把工单置 CANCELLED/COMPLETED 并释放流水号。
+        """
         part = await self.parts.get_by_id(part_id)
         if part is None:
             raise BizError(
@@ -2714,15 +3130,168 @@ class PartService:
                 message=f"part {part_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        part.sm.cancel(
-            event_repo=self.events, created_by=self._user_id,
-        )
-        part.updated_by = self._user_id
-        await self.parts.update(part)
-        await self._broadcast()
-        await self._check_parent_assembly(part)
+        batches = await self._batches().list_by_part(part.id)
+        if batch_id is not None:
+            targets = [b for b in batches if b.id == batch_id]
+            if not targets:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+                    message=f"batch {batch_id} 不属于工单 {part_id} 或不存在",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if targets[0].status in self._TERMINAL_STATUSES:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_TRANSITION,
+                    message=(
+                        f"批次 {targets[0].batch_no} 已是终态 "
+                        f"{targets[0].status}，不能取消"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            targets = [
+                b for b in batches if b.status not in self._TERMINAL_STATUSES
+            ]
+        if not targets:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=f"part {part_id} 没有可取消的非终态批次",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        for target in targets:
+            target.sm.cancel(
+                event_repo=self.events, created_by=self._user_id,
+            )
+            target.updated_by = self._user_id
+            await self._batches().update(target)
+        await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
+
+    # ============================================================
+    # 批次监控 / 手动拆分 / 批次取消（2026-07-29）
+    # ============================================================
+    async def list_batches(self, part_id: int) -> list["PartBatchOut"]:
+        """工单的全部批次（详情页批次监控卡片）。"""
+        from schema.part import PartBatchOut
+
+        part = await self._get_part_or_404(part_id)
+        batches = await self._batches().list_by_part(part.id)
+        if not batches:
+            return []
+
+        # holder / 工序 / 送货单 名称批查
+        shelf_ids = [
+            int(b.current_holder_id) for b in batches
+            if b.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
+            and b.current_holder_id
+        ]
+        shelf_map: dict[int, str] = {}
+        if shelf_ids:
+            shelf_map = {s.id: s.code for s in await self.shelves.list_by_ids(shelf_ids)}
+        worker_ids = [
+            int(b.current_holder_id) for b in batches
+            if b.location == "WORKER" and b.current_holder_id
+        ]
+        worker_map: dict[int, str] = {}
+        if worker_ids:
+            worker_map = {w.id: w.name for w in await self.workers.list_by_ids(worker_ids)}
+        company_ids = [
+            int(b.current_holder_id) for b in batches
+            if b.location == "OUTSOURCE_COMPANY" and b.current_holder_id
+        ]
+        company_map: dict[int, str] = {}
+        if company_ids and self.outsource_companies is not None:
+            company_map = {
+                c.id: c.name
+                for c in await self.outsource_companies.list_by_ids(company_ids)
+            }
+        process_ids = {int(b.next_process_id) for b in batches if b.next_process_id}
+        process_map: dict[int, str] = {}
+        if process_ids and self.processes is not None:
+            process_map = {
+                pr.id: pr.name
+                for pr in await self.processes.list_by_ids(list(process_ids))
+            }
+        note_ids = {int(b.delivery_note_id) for b in batches if b.delivery_note_id}
+        note_map: dict[int, str] = {}
+        if note_ids and self.delivery_notes_repo is not None:
+            notes = await self.delivery_notes_repo.list_by_ids(list(note_ids))
+            note_map = {n.id: n.delivery_note_no for n in notes}
+
+        out: list[PartBatchOut] = []
+        for b in batches:
+            holder_display: str | None = None
+            if b.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and b.current_holder_id:
+                code = shelf_map.get(int(b.current_holder_id))
+                if code:
+                    prefix = "品检 " if b.location == "INSPECTION_SHELF" else ""
+                    holder_display = f"货架 {prefix}{code}"
+            elif b.location == "WORKER" and b.current_holder_id:
+                name = worker_map.get(int(b.current_holder_id))
+                holder_display = f"工人 {name}" if name else None
+            elif b.location == "OUTSOURCE_COMPANY" and b.current_holder_id:
+                name = company_map.get(int(b.current_holder_id))
+                holder_display = f"外协 {name}" if name else None
+            elif b.location == "OFFICE":
+                holder_display = "编程员持有" if b.status == "PROGRAMMING" else "办公室"
+
+            out.append(PartBatchOut(
+                id=b.id,
+                version=b.version,
+                part_id=b.part_id,
+                batch_no=b.batch_no,
+                batch_label=(
+                    f"{part.serial_no}B{b.batch_no:02d}"
+                    if part.serial_no else f"批次{b.batch_no}"
+                ),
+                quantity=b.quantity,
+                status=b.status,
+                location=b.location,
+                current_holder_id=b.current_holder_id,
+                current_holder_display=holder_display,
+                next_process_id=b.next_process_id,
+                next_process_name=(
+                    process_map.get(int(b.next_process_id))
+                    if b.next_process_id else None
+                ),
+                placed_at=b.placed_at,
+                delivery_note_id=b.delivery_note_id,
+                delivery_note_no=(
+                    note_map.get(int(b.delivery_note_id))
+                    if b.delivery_note_id else None
+                ),
+                parent_batch_id=b.parent_batch_id,
+                created_at=b.created_at,
+                updated_at=b.updated_at,
+            ))
+        return out
+
+    async def split_batch(
+        self, part_id: int, *, batch_id: int, quantity: int,
+    ) -> list["PartBatchOut"]:
+        """手动拆分批次（详情页操作）：源批次必须非终态。
+
+        拆分只移动数量，不改变状态；返回最新批次列表。
+        """
+        part = await self._get_part_or_404(part_id)
+        batch = await self._resolve_target_batch(part, batch_id, action="拆分")
+        if batch.status in self._TERMINAL_STATUSES:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=f"批次 {batch.batch_no} 已是终态 {batch.status}，不能拆分",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        await self._split_batch(part, batch, quantity)
+        await self._broadcast()
+        return await self.list_batches(part_id)
+
+    async def cancel_batch(
+        self, part_id: int, *, batch_id: int,
+    ) -> list["PartBatchOut"]:
+        """取消单个批次（详情页操作）；返回最新批次列表。"""
+        await self.cancel(part_id, batch_id=batch_id)
+        return await self.list_batches(part_id)
 
     async def _check_parent_assembly(self, part: TPart) -> None:
         """Part 状态变更后，检查并自动更新父 Assembly 状态。"""
@@ -2812,11 +3381,19 @@ class PartService:
             process_map = {pr.id: pr.name for pr in procs}
 
         # 批查所属送货单（PR-G 2026-07-22）：detail 页需要单号 + 状态
-        delivery_note_ids = {
-            int(p.delivery_note_id)
-            for p in rows
-            if p.delivery_note_id
-        }
+        # 2026-07-29 批次化：t_part.delivery_note_id 已停写（保留历史数据），
+        # 改从活跃批次的 delivery_note_id 解析（一单多件时取第一张单号展示）。
+        part_note_ids: dict[int, int] = {}
+        for p in rows:
+            if p.delivery_note_id:
+                part_note_ids[p.id] = int(p.delivery_note_id)
+        if self.part_batches is not None:
+            for b in await self.part_batches.list_active_by_part_ids(
+                [p.id for p in rows]
+            ):
+                if b.delivery_note_id and b.part_id not in part_note_ids:
+                    part_note_ids[b.part_id] = int(b.delivery_note_id)
+        delivery_note_ids = set(part_note_ids.values())
         delivery_note_map: dict[int, tuple[str, str]] = {}
         if delivery_note_ids and self.delivery_notes_repo is not None:
             notes = await self.delivery_notes_repo.list_by_ids(
@@ -2895,17 +3472,17 @@ class PartService:
                     parent_customer_name=parent_name,
                     customer_path=path,
                     assembly_id=p.assembly_id,
-                    delivery_note_id=p.delivery_note_id,
+                    delivery_note_id=part_note_ids.get(p.id),
                     delivery_note_no=(
-                        delivery_note_map.get(int(p.delivery_note_id))[0]
-                        if p.delivery_note_id
-                        and delivery_note_map.get(int(p.delivery_note_id))
+                        delivery_note_map.get(part_note_ids[p.id])[0]
+                        if p.id in part_note_ids
+                        and delivery_note_map.get(part_note_ids[p.id])
                         else None
                     ),
                     delivery_note_status=(
-                        delivery_note_map.get(int(p.delivery_note_id))[1]
-                        if p.delivery_note_id
-                        and delivery_note_map.get(int(p.delivery_note_id))
+                        delivery_note_map.get(part_note_ids[p.id])[1]
+                        if p.id in part_note_ids
+                        and delivery_note_map.get(part_note_ids[p.id])
                         else None
                     ),
                     current_holder_id=p.current_holder_id,
@@ -2925,6 +3502,107 @@ class PartService:
                     last_inspection_fail_note=getattr(p, "last_inspection_fail_note", None),
                 )
             )
+        return out
+
+    async def _to_batch_out(
+        self, rows: list[tuple[TPartBatch, TPart]],
+    ) -> list[PartOut]:
+        """批次级列表输出（2026-07-29）：展示字段来自工单，状态/数量/位置来自批次。
+
+        用于扫码台可领列表 / 工人持有列表 / 品检待办等「行=批次」的场景：
+        - PartOut.quantity = 批次量；status/location/holder/next_process = 批次值；
+        - batch_id / batch_no / batch_label 填充供请求回传与展示。
+        """
+        if not rows:
+            return []
+        base = await self._to_out([p for _, p in rows])
+        base_map = {o.id: o for o in base}
+
+        # 批次级 holder / 工序名称批查（与 _to_out 同路径，主体换成批次）
+        shelf_ids = [
+            int(b.current_holder_id) for b, _ in rows
+            if b.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
+            and b.current_holder_id
+        ]
+        shelf_map: dict[int, str] = {}
+        if shelf_ids:
+            shelf_map = {s.id: s.code for s in await self.shelves.list_by_ids(shelf_ids)}
+        worker_ids = [
+            int(b.current_holder_id) for b, _ in rows
+            if b.location == "WORKER" and b.current_holder_id
+        ]
+        worker_map: dict[int, str] = {}
+        if worker_ids:
+            worker_map = {w.id: w.name for w in await self.workers.list_by_ids(worker_ids)}
+        company_ids = [
+            int(b.current_holder_id) for b, _ in rows
+            if b.location == "OUTSOURCE_COMPANY" and b.current_holder_id
+        ]
+        company_map: dict[int, str] = {}
+        if company_ids and self.outsource_companies is not None:
+            company_map = {
+                c.id: c.name
+                for c in await self.outsource_companies.list_by_ids(company_ids)
+            }
+        process_ids = {int(b.next_process_id) for b, _ in rows if b.next_process_id}
+        process_map: dict[int, str] = {}
+        if process_ids and self.processes is not None:
+            process_map = {
+                pr.id: pr.name
+                for pr in await self.processes.list_by_ids(list(process_ids))
+            }
+
+        out: list[PartOut] = []
+        for b, p in rows:
+            o = base_map[p.id]
+            holder_kind: str | None = None
+            shelf_code: str | None = None
+            worker_name: str | None = None
+            company_name: str | None = None
+            if b.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and b.current_holder_id:
+                holder_kind = "shelf"
+                shelf_code = shelf_map.get(int(b.current_holder_id))
+            elif b.location == "WORKER" and b.current_holder_id:
+                holder_kind = "worker"
+                worker_name = worker_map.get(int(b.current_holder_id))
+            elif b.location == "OUTSOURCE_COMPANY" and b.current_holder_id:
+                holder_kind = "outsource_company"
+                company_name = company_map.get(int(b.current_holder_id))
+
+            holder_display: str | None = None
+            if shelf_code is not None:
+                prefix = "品检 " if b.location == "INSPECTION_SHELF" else ""
+                holder_display = f"货架 {prefix}{shelf_code}"
+            elif worker_name is not None:
+                holder_display = f"工人 {worker_name}"
+            elif company_name is not None:
+                holder_display = f"外协 {company_name}"
+            elif b.location == "OFFICE":
+                holder_display = "编程员持有"
+
+            out.append(o.model_copy(update={
+                "batch_id": b.id,
+                "batch_no": b.batch_no,
+                "batch_label": (
+                    f"{p.serial_no}B{b.batch_no:02d}"
+                    if p.serial_no else f"批次{b.batch_no}"
+                ),
+                "quantity": b.quantity,
+                "status": _parse_status(b.status) or PartStatus.PENDING,
+                "location": b.location,
+                "current_holder_id": b.current_holder_id,
+                "current_holder_kind": holder_kind,
+                "shelf_code": shelf_code,
+                "worker_name": worker_name,
+                "outsource_company_name": company_name,
+                "current_holder_display": holder_display,
+                "next_process_id": b.next_process_id,
+                "next_process_name": (
+                    process_map.get(int(b.next_process_id))
+                    if b.next_process_id else None
+                ),
+                "placed_at": b.placed_at,
+            }))
         return out
 
     async def _to_list_out(self, rows: list[TPart]) -> list[PartListItem]:

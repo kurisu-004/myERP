@@ -225,6 +225,44 @@ INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
 
 ---
 
+## 13. 部分数量批次化（2026-07-29 引入）
+
+核心思想：**所有数量永远活在批次里**（`t_part_batch.quantity`），`t_part.quantity` 是工单总容量，向后兼容；批次即可拆可合，工单 `status / location / holder / next_process_id` 由「最落后」的活跃批次 rollup 派生。
+
+### 模型与不变量
+- **t_part_batch**（新表，`AuditMixin`）：`id, part_id, batch_no（per-part 递增）, quantity, status, location, current_holder_id, next_process_id, placed_at, delivery_note_id, parent_batch_id（拆分谱系）`；索引：`(part_id)`, `(status, current_holder_id)`, `(location, status, next_process_id)`, `unique(part_id, batch_no)`；**删除物理禁用**，取消走 CANCELLED 终态。
+- **t_part_event** 新增：`batch_id`（事件归属批次；工单级事件 NULL）、`quantity`（本次数量）。
+- **不变量**：`Σ(未删除批次.quantity) = t_part.quantity`，service 层强制（`_split_batch` 取锁重校验、`_rollup_part_status` 自动维护）。
+
+### 状态机鸭子复用
+`PartStateMachine` 通过 `model.status / location` 字段恢复起始状态，进入态 `on_enter_*` 直接写 `self.model` 属性。`TPartBatch` 与 `TPart` 对该 SM 暴露同名字段，`sm` property 直接复用，零改 SM。所有事件回调经 `_add_event` 统一从 `model` 反射 `part_id / batch_id / quantity`（批次 `part_id = self.model.part_id`、`batch_id = self.model.id`）。批次无 `serial_no` 列，service 在解析/拆出批次时写入 transient 属性 `model._part_serial = part.serial_no`，SM 的 `_serial_of(model)` 优先读它，否则回退 `model.serial_no`（兼工单级事件）。
+
+### 父子批次生命周期
+- **创建工单**：自动生成 `batch_no=1` 的根批次（quantity = 工单总量，镜像工单当前 status / location / holder）。
+- **拆分**（`_split_batch` in `service/_batch_ops.py`）：`get_for_update`（`FOR UPDATE + populate_existing`）锁源批次行；锁内重校验数量边界；`MAX(batch_no)+1` 取新号；新批次**继承**源批次的 status / location / current_holder_id / next_process_id / placed_at，**不继承** `delivery_note_id`（跟单量留在源批）；同步刷源 batch 的 `version`；写 SPLIT 事件（挂在新批次上，`quantity=拆出量`）。
+- **合并**：v1 未实现（v2 候选）；同架同工序的两个批次需经 service 手动合并。
+
+### 工单 rollup（核心简化点）
+- `_after_batch_transition` 是所有流转端点的统一收尾：**先 `refresh_for_state_machine(part, attrs=(status/location/...))` 刷新派生字段**（防 MissingGreenlet，跟 keepwith CLAUDE.md §12 同源）→ `_rollup_part_status`：
+  - 有活跃批次 → `part.status / location / holder / next_process_id` = `min(active, key=(ROLLUP_PROGRESS[status], batch_no))`（`ROLLUP_PROGRESS = {PENDING:0, PROGRAMMING:1, IN_PROCESS:2, REPAIRING:2, OUTSOURCE:3, INSPECTION:4, READY_TO_SHIP:5, DELIVERED:6}`）。
+  - 全部终态 → 全部 `CANCELLED` ⇒ `CANCELLED`，否则 `COMPLETED`；`part.serial_no = None`（回池），写 `batch_id=NULL` 的工单级终态事件。
+  - 全部活跃批次 `DELIVERED` 且 `actual_delivery_date IS NULL` → 写当天（送货单 pickup / auto-complete 共用）。
+
+### 通用拆分原语
+现有所有流转端点接受可选 `batch_id`（显式目标）+ `quantity`（部分量）参数。Service 调用 `_maybe_split(part, batch, quantity)`：
+- `quantity is None or == batch.quantity` → 不拆，直接拿批次流转；
+- 否则 `_split_batch(...)` 后取新批次。
+
+`pick_up_by_scan` / `scan_event` 用专用 `_resolve_scan_batch`：先按 `holder_id` 收窄到唯一者，0 命中抛 `BIZ_INVALID_TRANSITION`，>1 命中要求指定 `batch_id`，**保持旧错误码语义**（`BIZ_AUTH_SHELF_MISMATCH` 等）。
+
+### 错误码新增
+`BIZ_PART_BATCH_NOT_FOUND` / `BIZ_PART_BATCH_INVALID_QUANTITY` / `BIZ_PART_QUANTITY_LOCKED`（已拆分禁止改工单总量）；`t_part.delivery_note_id` 列为兼容保留，**新写入仅写 `t_part_batch.delivery_note_id`**；`_to_out` 派生送货单字段时优先取 part 列，回退到活跃批次的 `delivery_note_id`。
+
+### 集成测试
+`tests/test_part_batch.py` 覆盖：拆分守恒 / 边界 / 终态保护、部分领取 / 归还 / 品检通过 / 打回 / 发货全链路、rollup 终态 + serial 释放、cancel 级联 / 单批次、update_part 总量保护、送货单部分量入单（自动拆）+ 批次送货、多批次必须指定 batch_id。
+
+---
+
 ## SQLAlchemy 异步陷阱（务必牢记）
 
 ### MissingGreenlet

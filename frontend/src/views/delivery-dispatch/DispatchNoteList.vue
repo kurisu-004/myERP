@@ -81,6 +81,9 @@
               <div class="line-main">
                 <div class="line-top">
                   <span class="line-serial">{{ item.serial_no || item.drawing_no || item.id }}</span>
+                  <el-tag v-if="item.batch_no" type="info" size="small" effect="plain">
+                    批次{{ item.batch_no }}
+                  </el-tag>
                   <span class="line-name">{{ item.name }}</span>
                 </div>
                 <div class="line-sub">
@@ -188,17 +191,23 @@ function isScanned(noteId: string, item: DeliveryNoteLineItem): boolean {
   return states[noteId]?.scanned.has(scanKey(item)) ?? false
 }
 
+/** 2026-07-29 批次级：进度按行计——同一 serial 的多个批次行一次扫描全部勾掉。 */
+function scannedLineCount(detail: DeliveryNoteDetailOut, scanned: Set<string>): number {
+  return detail.line_items.filter((it) => scanned.has(scanKey(it))).length
+}
+
 function applyScanState(noteId: string, detail: DeliveryNoteDetailOut): void {
   const scanned = new Set(detail.scanned_serials)
   const expected = detail.line_items.length
+  const count = scannedLineCount(detail, scanned)
   states[noteId] = {
     detail,
     loading: false,
     finalizing: states[noteId]?.finalizing ?? false,
     scanned,
-    scannedCount: scanned.size,
+    scannedCount: count,
     expectedCount: expected,
-    ready: expected > 0 && scanned.size >= expected,
+    ready: expected > 0 && count >= expected,
   }
 }
 
@@ -247,7 +256,8 @@ const unsubscribe = onScan(async (code) => {
       badge_code: worker.value?.badge_code ?? null,
     })
     st.scanned.add(serial)
-    st.scannedCount = st.scanned.size
+    // 批次级：按行计数（同 serial 多批次行视为全部勾掉）
+    st.scannedCount = scannedLineCount(st.detail, st.scanned)
     st.ready = st.expectedCount > 0 && st.scannedCount >= st.expectedCount
     ElMessage.success(`已扫: ${serial}`)
     if (st.ready) void confirmDelivery(noteId)

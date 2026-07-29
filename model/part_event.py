@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Index, String, text
+from sqlalchemy import BigInteger, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from model.audit import EventTimestampMixin
@@ -34,6 +34,19 @@ class TPartEvent(Base, EventTimestampMixin):
 
     # 逻辑外键 → t_part.id
     part_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # 逻辑外键 → t_part_batch.id（2026-07-29 批次化新增）：
+    # 批次级流转事件归属的具体批次；工单级事件（CREATED / 终态 rollup）为 NULL。
+    batch_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+        comment="逻辑外键 → t_part_batch.id；NULL = 工单级事件",
+    )
+    # 本次事件涉及的数量（2026-07-29 批次化新增）：
+    # 批次流转 = 被流转批次的 quantity（拆分后操作哪个批次记哪个）；
+    # SPLIT 事件 = 拆出新批次的数量；历史回填数据为 NULL。
+    quantity: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+        comment="本次事件涉及的数量；NULL = 历史数据 / 不适用",
+    )
     # 逻辑外键 → t_worker.id；无工人参与的事件（CREATED / RELEASED 等）为 NULL
     worker_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # 操作者：调用 service 的登录用户 ID（雪花 ID），NULL = 系统 / 历史数据
@@ -77,5 +90,11 @@ class TPartEvent(Base, EventTimestampMixin):
             "ix_t_part_event_outsource_company_id",
             "outsource_company_id",
             postgresql_where=text("outsource_company_id IS NOT NULL"),
+        ),
+        # 批次事件反查（批次时间线）；工单级事件（batch_id IS NULL）不占。
+        Index(
+            "ix_t_part_event_batch_id",
+            "batch_id",
+            postgresql_where=text("batch_id IS NOT NULL"),
         ),
     )

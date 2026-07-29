@@ -376,6 +376,8 @@ class AssemblyService:
                 tpart.created_by = self._user_id
                 tpart.updated_by = self._user_id
                 await self.parts.create(tpart)
+                # 2026-07-29 批次化：子件同样建根批次
+                child_root_batch = await self.part_service.create_root_batch(tpart)
                 child_parts.append(tpart)
 
                 # 上传该子件的单页 PDF 到独立 COS 对象
@@ -392,6 +394,7 @@ class AssemblyService:
                 part_event = TPartEvent(
                     id=new_id(),
                     part_id=tpart.id,
+                    batch_id=child_root_batch.id,
                     worker_id=None,
                     event_type=PartEventType.CREATED.value,
                     from_status=None,
@@ -399,6 +402,7 @@ class AssemblyService:
                     drawing_code=None,
                     badge_code=None,
                     note=None,
+                    quantity=child.quantity,
                     created_by=self._user_id,
                 )
                 await self.events.create(part_event)
@@ -787,6 +791,8 @@ class AssemblyService:
         tpart.created_by = self._user_id
         tpart.updated_by = self._user_id
         await self.parts.create(tpart)
+        # 2026-07-29 批次化：子件同样建根批次
+        child_root_batch = await self.part_service.create_root_batch(tpart)
 
         if pdf_bytes is not None and pdf_filename is not None:
             await self.part_files.upload(
@@ -800,6 +806,7 @@ class AssemblyService:
         part_event = TPartEvent(
             id=new_id(),
             part_id=tpart.id,
+            batch_id=child_root_batch.id,
             worker_id=None,
             event_type=PartEventType.CREATED.value,
             from_status=None,
@@ -807,6 +814,7 @@ class AssemblyService:
             drawing_code=None,
             badge_code=None,
             note=None,
+            quantity=child.quantity,
             created_by=self._user_id,
         )
         await self.events.create(part_event)
@@ -835,12 +843,12 @@ class AssemblyService:
             )
 
         # 级联取消所有非终态子件
+        # 2026-07-29 批次化：走 PartService.cancel（级联取消子件全部批次 +
+        # rollup 工单状态 + 释放流水号），不再直接调 child.sm.cancel。
         children = await self.parts.list_children(assembly_id)
         for child in children:
             if child.status not in ("COMPLETED", "CANCELLED"):
-                child.sm.cancel(event_repo=self.events)
-                child.updated_by = self._user_id
-                await self.parts.session.flush()
+                await self.part_service.cancel(child.id)
 
         # 取消装配体自身
         asm.sm.cancel()

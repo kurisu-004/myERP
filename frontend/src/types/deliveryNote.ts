@@ -37,7 +37,12 @@ export type DeliveryNoteSortKey =
 export type DeliveryNoteSortDir = 'ASC' | 'DESC'
 
 export interface DeliveryNoteLineItem {
+  /** 批次 id（行身份；2026-07-29 批次化） */
   id: string
+  /** 工单 id */
+  part_id: string
+  batch_no: number | null
+  batch_label: string | null
   serial_no: string
   drawing_no: string
   name: string
@@ -97,7 +102,12 @@ export interface DeliveryNoteDetailOut extends DeliveryNoteOut {
  * 不在 active 单上的件）。`PartPickerDialog` 用此类型勾选。
  */
 export interface DeliveryNoteCandidatePart {
+  /** 工单 id */
   id: string
+  /** 批次 id（入单回传用；2026-07-29 批次化） */
+  batch_id: string
+  batch_no: number | null
+  batch_label: string | null
   serial_no: string
   drawing_no: string
   name: string

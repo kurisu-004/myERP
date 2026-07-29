@@ -2,6 +2,9 @@
 
 export interface DashboardPartItem {
   id: string
+  /** 2026-07-29 批次化：卡片行=批次；quantity 为批次量 */
+  batch_id: string | null
+  batch_no: number | null
   serial_no: string | null
   name: string
   drawing_no: string

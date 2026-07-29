@@ -18,6 +18,7 @@ from sqlalchemy import select
 from model import TCustomer, TPart, TPartEvent, TProcess, TShelf, TShelfProcess
 from model.enums import PartEventType, PartStatus, ShelfZone
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
 from repository.shelf import ShelfRepository
@@ -247,6 +248,8 @@ async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db
             location="OFFICE",
         )
     )
+    from tests.conftest import seed_root_batch
+    await seed_root_batch(session, part)
 
     files_repo = PartFileRepository(session)
     files_svc = PartFileService(files=files_repo)
@@ -255,6 +258,7 @@ async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db
     _P("service.part_file.cos_mod.upload_object", new=_AM()).start()
     part_svc = PartService(
         parts=part_repo,
+        part_batches=PartBatchRepository(session),
         customers=CustomerRepository(session),
         workers=None,
         events=PartEventRepository(session),

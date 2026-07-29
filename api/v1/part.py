@@ -24,11 +24,15 @@ from model.enums import PartEventType, UserRole
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
 from schema.part import (
+    BatchSplitRequest,
+    InspectionBatchListOut,
     DirectOutsourceCandidateListOut,
     FailInspectionRequest,
     OutsourceSendableListOut,
+    PartBatchActionRequest,
     PartBatchCreateRequest,
     PartBatchCreateResult,
+    PartBatchOut,
     PartBatchTreeRequest,
     PartBatchTreeResult,
     PartCreateRequest,
@@ -342,6 +346,29 @@ async def list_outsource_sendable(
 
 
 @router.get(
+    "/inspection-batches",
+    response_model=InspectionBatchListOut,
+    summary="品检待办（批次级；MANAGER / INSPECTOR）",
+    description=(
+        "2026-07-29 批次化：行=批次（INSPECTION 状态），同一工单多个品检批次各占一行；"
+        "pass/fail 操作回传 batch_id。须注册在 /{part_id} 之前避免被 catch-all 截胡。"
+    ),
+    dependencies=_inspector_dep,
+)
+async def list_inspection_batches(
+    keyword: str | None = Query(default=None),
+    customer_id: str | None = Query(default=None),
+    limit: int = Query(default=200, le=500),
+    offset: int = Query(default=0, ge=0),
+    svc: PartService = Depends(get_part_service),
+) -> InspectionBatchListOut:
+    items, total = await svc.list_inspection_batches(
+        keyword=keyword, customer_id=customer_id, limit=limit, offset=offset,
+    )
+    return InspectionBatchListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get(
     "/{part_id}",
     response_model=PartOut,
     summary="零件详情（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
@@ -389,9 +416,26 @@ async def place_part_on_shelf(
 )
 async def send_part_to_programming(
     part_id: int,
+    payload: PartBatchActionRequest | None = None,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.send_to_programming(part_id)
+    batch_id, quantity = _batch_action(payload)
+    return await svc.send_to_programming(
+        part_id, batch_id=batch_id, quantity=quantity,
+    )
+
+
+def _batch_action(
+    payload: PartBatchActionRequest | None,
+) -> tuple[int | None, int | None]:
+    """可选 body → (batch_id int|None, quantity int|None)。"""
+    if payload is None:
+        return None, None
+    batch_id = (
+        parse_snowflake_id(payload.batch_id, field_name="batch_id")
+        if payload.batch_id else None
+    )
+    return batch_id, payload.quantity
 
 
 @router.post(
@@ -484,9 +528,13 @@ async def receive_part_from_outsource_to_inspection(
 )
 async def pass_part_inspection(
     part_id: int,
+    payload: PartBatchActionRequest | None = None,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.pass_inspection(part_id)
+    batch_id, quantity = _batch_action(payload)
+    return await svc.pass_inspection(
+        part_id, batch_id=batch_id, quantity=quantity,
+    )
 
 
 @router.post(
@@ -521,9 +569,11 @@ async def fail_part_inspection(
 )
 async def deliver_part(
     part_id: int,
+    payload: PartBatchActionRequest | None = None,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.deliver(part_id)
+    batch_id, quantity = _batch_action(payload)
+    return await svc.deliver(part_id, batch_id=batch_id, quantity=quantity)
 
 
 # ============================================================
@@ -572,9 +622,11 @@ async def scan_deliver_part(
 )
 async def complete_part(
     part_id: int,
+    payload: PartBatchActionRequest | None = None,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.complete(part_id)
+    batch_id, _quantity = _batch_action(payload)
+    return await svc.complete(part_id, batch_id=batch_id)
 
 
 @router.post(
@@ -585,9 +637,13 @@ async def complete_part(
 )
 async def start_part_repair(
     part_id: int,
+    payload: PartBatchActionRequest | None = None,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.start_repair(part_id)
+    batch_id, quantity = _batch_action(payload)
+    return await svc.start_repair(
+        part_id, batch_id=batch_id, quantity=quantity,
+    )
 
 
 @router.post(
@@ -599,9 +655,10 @@ async def start_part_repair(
 async def complete_part_repair(
     part_id: int,
     shelf_id: int = Query(..., description="目标生产货架 id"),
+    batch_id: int | None = Query(default=None, description="目标批次 id（可选）"),
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.complete_repair(part_id, shelf_id)
+    return await svc.complete_repair(part_id, shelf_id, batch_id=batch_id)
 
 
 @router.post(
@@ -612,9 +669,11 @@ async def complete_part_repair(
 )
 async def cancel_part(
     part_id: int,
+    payload: PartBatchActionRequest | None = None,
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.cancel(part_id)
+    batch_id, _quantity = _batch_action(payload)
+    return await svc.cancel(part_id, batch_id=batch_id)
 
 
 @router.get(
@@ -628,6 +687,59 @@ async def list_part_events(
     svc: PartService = Depends(get_part_service),
 ) -> list[PartEventOut]:
     return await svc.list_events(part_id)
+
+
+# ============================================================
+# 批次监控 / 拆分 / 取消（2026-07-29 批次化）
+# ============================================================
+@router.get(
+    "/{part_id}/batches",
+    response_model=list[PartBatchOut],
+    summary="工单的全部批次（详情页批次监控；MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）",
+    dependencies=_read_part_dep,
+)
+async def list_part_batches(
+    part_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> list[PartBatchOut]:
+    return await svc.list_batches(part_id)
+
+
+@router.post(
+    "/{part_id}/batches/split",
+    response_model=list[PartBatchOut],
+    summary="手动拆分批次（MANAGER / CLERK）；返回最新批次列表",
+    dependencies=_office_dep,
+)
+async def split_part_batch(
+    part_id: int,
+    payload: BatchSplitRequest,
+    svc: PartService = Depends(get_part_service),
+) -> list[PartBatchOut]:
+    batch_id = parse_snowflake_id(payload.batch_id, field_name="batch_id")
+    if batch_id is None:
+        raise BizError(
+            code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+            message=f"batch_id 不是合法的雪花 ID：{payload.batch_id!r}",
+            http_status=http_status.HTTP_400_BAD_REQUEST,
+        )
+    return await svc.split_batch(
+        part_id, batch_id=batch_id, quantity=payload.quantity,
+    )
+
+
+@router.post(
+    "/{part_id}/batches/{batch_id}/cancel",
+    response_model=list[PartBatchOut],
+    summary="取消单个批次（MANAGER / CLERK）；返回最新批次列表",
+    dependencies=_office_dep,
+)
+async def cancel_part_batch(
+    part_id: int,
+    batch_id: int,
+    svc: PartService = Depends(get_part_service),
+) -> list[PartBatchOut]:
+    return await svc.cancel_batch(part_id, batch_id=batch_id)
 
 
 # ============================================================

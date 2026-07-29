@@ -31,6 +31,7 @@ from .outsource_company_process import TOutsourceCompanyProcess
 from .outsource_quote import TOutsourceQuote
 from .outsource_quote_event import TOutsourceQuoteEvent
 from .part import TPart
+from .part_batch import TPartBatch
 from .part_event import TPartEvent
 from .part_file import TPartFile
 from .process import TProcess
@@ -59,6 +60,7 @@ __all__ = [
     "TOutsourceQuote",
     "TOutsourceQuoteEvent",
     "TPart",
+    "TPartBatch",
     "TPartEvent",
     "TPartFile",
     "TProcess",
