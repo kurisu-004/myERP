@@ -177,29 +177,7 @@
       </div>
     </div>
 
-    <!-- 2026-07-26：工控机触屏友好 — 右下角两个浮动滚动按钮（touch 友好） -->
-    <div v-if="parts.length > 1" class="scroll-fab">
-      <el-button
-        type="primary"
-        circle
-        size="large"
-        :disabled="atTop"
-        aria-label="滚动到顶部"
-        @click="scrollToTop"
-      >
-        <el-icon><ArrowUp /></el-icon>
-      </el-button>
-      <el-button
-        type="primary"
-        circle
-        size="large"
-        :disabled="atBottom"
-        aria-label="滚动到底部"
-        @click="scrollToBottom"
-      >
-        <el-icon><ArrowDown /></el-icon>
-      </el-button>
-    </div>
+    <ScrollFabPair :target="contentRef" />
 
     <!-- 图纸 / 图片 全屏预览 -->
     <el-dialog
@@ -259,13 +237,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Aim,
-  ArrowDown,
-  ArrowUp,
   Avatar,
   Back,
   Box,
@@ -287,6 +263,7 @@ import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useActiveShelfSelection } from '@/composables/useActiveShelfSelection'
 import { useScanBus } from '@/composables/useScanBus'
 import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
+import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
 import { listPartsByWorkTypeAllShelves, pickUpPart, type PartItem } from '@/api/parts'
 
 const router = useRouter()
@@ -301,30 +278,7 @@ const shelfSel = useActiveShelfSelection()
 const shelfId = ref<string>('')
 const parts = ref<PartItem[]>([])
 
-// --- 2026-07-26：工控机触屏友好 — 右下浮动滚动按钮的状态与控制 ---
-// scroll-fab 监听 .content 的 scroll 事件；端点禁用避免无意义点击；
-// 不在状态栏/购物车等高度变化时刷新（onContentScroll 同时挂为 scroll 事件回调）
 const contentRef = ref<HTMLElement | null>(null)
-const atTop = ref(true)
-const atBottom = ref(false)
-function onContentScroll(): void {
-  const el = contentRef.value
-  if (!el) return
-  atTop.value = el.scrollTop <= 1
-  atBottom.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 1
-}
-function scrollToTop(): void {
-  contentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
-}
-function scrollToBottom(): void {
-  const el = contentRef.value
-  if (!el) return
-  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-}
-onMounted(() => {
-  contentRef.value?.addEventListener('scroll', onContentScroll, { passive: true })
-  onContentScroll()
-})
 const loadingList = ref(false)
 const selectedPart = ref<PartItem | null>(null)
 const submitting = ref(false)
@@ -493,7 +447,6 @@ const unsub = onScan((code) => { void onScanCode(code) })
 
 onBeforeUnmount(() => {
   unsub()
-  contentRef.value?.removeEventListener('scroll', onContentScroll)
   if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
 })
 
@@ -765,20 +718,6 @@ function backToBadge(): void {
   margin: 0; color: #606266; font-size: 14px;
 }
 
-// 2026-07-26：右下浮动滚动按钮（工控机触屏拖页不便）
-.scroll-fab {
-  position: fixed;
-  right: 24px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  z-index: 100;
-}
-.scroll-fab .el-button {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
 .qty-input {
   width: 110px;
   vertical-align: middle;
