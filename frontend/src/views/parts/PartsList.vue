@@ -157,9 +157,9 @@
       ref="partsListRef"
       :items="items"
       :loading="loading"
-      row-key="id"
+      :row-key="rowKey"
       :empty-text="emptyText"
-      :card-class="(row) => (row.is_urgent ? 'rl-card--urgent' : '')"
+      :card-class="(row: PartListItem) => (row.is_urgent ? 'rl-card--urgent' : '')"
       stripe
       border
       size="small"
@@ -168,6 +168,9 @@
       :row-style="{ cursor: batchMode ? 'pointer' : 'default' }"
       show-summary
       :summary-method="totalPriceSummary"
+      lazy
+      :load="loadChildren"
+      :tree-props="{ hasChildren: 'has_children', children: 'children' }"
       @sort-change="onSortChange"
       @selection-change="onSelectionChange"
       @row-click="onBatchRowClick"
@@ -238,9 +241,14 @@
             v-model="editBuffer.name"
             size="small"
           />
-          <router-link v-else :to="`/parts/${row.id}`" class="name-link">
-            {{ row.name }}
-          </router-link>
+          <template v-else>
+            <el-tag v-if="row.row_type === 'ASSEMBLY'" type="warning" size="small" effect="plain" style="margin-right: 4px;">
+              装配件
+            </el-tag>
+            <router-link :to="row.row_type === 'ASSEMBLY' ? `/assemblies/${row.id}` : `/parts/${row.id}`" class="name-link">
+              {{ row.name }}
+            </router-link>
+          </template>
         </template>
       </el-table-column>
 
@@ -524,16 +532,16 @@
             <el-button link size="small" @click="cancelEdit">取消</el-button>
           </template>
           <template v-else>
-            <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
+            <el-button link type="primary" size="small" @click="$router.push(row.row_type === 'ASSEMBLY' ? `/assemblies/${row.id}` : `/parts/${row.id}`)">详情</el-button>
             <el-button
-              v-if="canEdit"
+              v-if="canEdit && row.row_type !== 'ASSEMBLY'"
               link
               type="warning"
               size="small"
               @click="startEdit(row as PartListItem)"
             >编辑</el-button>
             <el-button
-              v-if="!isInspector && row.status === 'PENDING'"
+              v-if="!isInspector && row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'"
               link
               type="success"
               size="small"
@@ -546,7 +554,10 @@
       <!-- 手机卡片：关键字段 + 操作按钮 -->
       <template #card="{ row }">
         <div class="rl-card-head">
-          <router-link :to="`/parts/${row.id}`" class="rl-card-title name-link">
+          <router-link :to="row.row_type === 'ASSEMBLY' ? `/assemblies/${row.id}` : `/parts/${row.id}`" class="rl-card-title name-link">
+            <el-tag v-if="row.row_type === 'ASSEMBLY'" type="warning" size="small" effect="plain" style="margin-right: 4px;">
+              装配件
+            </el-tag>
             {{ row.name }}
           </router-link>
           <el-tag :type="statusTagType(row.status)" effect="plain" size="small">
@@ -575,16 +586,16 @@
           </div>
         </div>
         <div class="rl-card-actions">
-          <el-button link type="primary" size="small" @click="router.push(`/parts/${row.id}`)">详情</el-button>
+          <el-button link type="primary" size="small" @click="router.push(row.row_type === 'ASSEMBLY' ? `/assemblies/${row.id}` : `/parts/${row.id}`)">详情</el-button>
           <el-button
-            v-if="canEdit"
+            v-if="canEdit && row.row_type !== 'ASSEMBLY'"
             link
             type="warning"
             size="small"
             @click="startEdit(row as PartListItem)"
           >编辑</el-button>
           <el-button
-            v-if="!isInspector && row.status === 'PENDING'"
+            v-if="!isInspector && row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'"
             link
             type="success"
             size="small"
@@ -886,6 +897,7 @@ import {
   type ListPartsParams,
   type PartUpdatePayload,
 } from '@/api/parts'
+import { getAssembly } from '@/api/assembly'
 import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
@@ -1083,6 +1095,37 @@ function locationText(row: PartListItem): string {
   return '—'
 }
 
+// 2026-07-30：树表 row-key（避免顶层与子件 id 冲突）
+function rowKey(row: PartListItem): string {
+  if (row.row_type === 'ASSEMBLY') return `ASM_${row.id}`
+  if ((row as any).__is_child) return `CHILD_${row.id}`
+  return `PART_${row.id}`
+}
+
+// 2026-07-30：懒加载装配件子件
+async function loadChildren(
+  row: PartListItem,
+  _treeNode: unknown,
+  resolve: (children: PartListItem[]) => void,
+): Promise<void> {
+  if (row.row_type !== 'ASSEMBLY') {
+    resolve([])
+    return
+  }
+  try {
+    const detail = await getAssembly(row.id)
+    const children = (detail.children ?? []).map((child) => ({
+      ...child,
+      __is_child: true,
+      row_type: 'PART' as const,
+      has_children: false,
+    })) as PartListItem[]
+    resolve(children)
+  } catch {
+    resolve([])
+  }
+}
+
 // ============ 表格 / 排序 ============
 const items = ref<PartListItem[]>([])
 const total = ref(0)
@@ -1110,13 +1153,17 @@ let batchPrintBlobUrl = ''
 const partsListRef = ref<InstanceType<typeof ResponsiveList> | null>(null)
 
 function isBatchSelectable(row: PartListItem): boolean {
-  if (batchAction.value === 'print') return true          // 打印：所有状态
-  return row.status === 'PENDING'                         // 下发：仅 PENDING
+  if (batchAction.value === 'print') return true          // 打印：所有行（含装配件）
+  return row.status === 'PENDING' && row.row_type !== 'ASSEMBLY' // 下发：仅零件且 PENDING
 }
+
+/** 2026-07-30：记录每个选中 id 的行类型，用于批量打印拆分 */
+const selectedRowTypes = reactive(new Map<string, 'PART' | 'ASSEMBLY'>())
 
 function clearAllSelection(): void {
   selectedIds.clear()
   selectedRows.value = []
+  selectedRowTypes.clear()
   partsListRef.value?.elTableRef?.clearSelection()
 }
 
@@ -1135,24 +1182,28 @@ function onExitBatchMode(): void {
   clearAllSelection()
 }
 function onSelectionChange(rows: PartListItem[]): void {
-  // 按 ID 合并：先移除当前页所有 ID（不论是否还在 rows 中），再加入 rows 中 PENDING 行的 ID
+  // 按 ID 合并：先移除当前页所有 ID（不论是否还在 rows 中），再加入 rows 中可选行的 ID
   const currentPageIds = new Set(items.value.map((r) => r.id))
   for (const id of [...selectedIds]) {
     if (currentPageIds.has(id)) selectedIds.delete(id)
   }
   for (const r of rows) {
-    if (isBatchSelectable(r)) selectedIds.add(r.id)
+    if (isBatchSelectable(r)) {
+      selectedIds.add(r.id)
+      selectedRowTypes.set(r.id, r.row_type === 'ASSEMBLY' ? 'ASSEMBLY' : 'PART')
+    }
   }
   rebuildSelectedRows(rows)
 }
 function onSelectAllPage(): void {
-  // 只勾选当前页的 PENDING 行；非 PENDING 不参与
+  // 只勾选当前页的可选行
   const table = partsListRef.value?.elTableRef
   if (!table) return
   for (const row of items.value) {
     if (isBatchSelectable(row)) {
       table.toggleRowSelection(row, true)
       selectedIds.add(row.id)
+      selectedRowTypes.set(row.id, row.row_type === 'ASSEMBLY' ? 'ASSEMBLY' : 'PART')
     }
   }
   rebuildSelectedRows(items.value)
@@ -1190,14 +1241,16 @@ function onBatchRowClick(
   const shouldSelect = !selectedIds.has(row.id)
   table.toggleRowSelection(row, shouldSelect)
   // toggleRowSelection 不会同步触发 @selection-change（在已保留勾选状态下切换时
-  // 视实现可能不触发），所以这里手动维护 selectedIds/selectedRows。
+  // 视实现可能不触发），所以这里手动维护 selectedIds/selectedRows/selectedRowTypes。
   if (shouldSelect) {
     selectedIds.add(row.id)
+    selectedRowTypes.set(row.id, row.row_type === 'ASSEMBLY' ? 'ASSEMBLY' : 'PART')
     if (!selectedRows.value.find((r) => r.id === row.id)) {
       selectedRows.value = [...selectedRows.value, row]
     }
   } else {
     selectedIds.delete(row.id)
+    selectedRowTypes.delete(row.id)
     selectedRows.value = selectedRows.value.filter((r) => r.id !== row.id)
   }
 }
@@ -1206,13 +1259,19 @@ function restoreTableSelection(): void {
   if (!batchMode.value) return
   const table = partsListRef.value?.elTableRef
   if (!table) return
-  // 清理：移除 selectedIds 中已不在当前 items 中或已变非 PENDING 的 id
+  // 清理：移除 selectedIds 中已不在当前 items 中或已变不可选的 id
   const currentIds = new Set(items.value.map((r) => r.id))
   for (const id of [...selectedIds]) {
     if (!currentIds.has(id)) selectedIds.delete(id)
   }
   for (const r of items.value) {
     if (!isBatchSelectable(r)) selectedIds.delete(r.id)
+  }
+  // 同步 row types（防止 items 刷新后类型变化）
+  for (const r of items.value) {
+    if (selectedIds.has(r.id)) {
+      selectedRowTypes.set(r.id, r.row_type === 'ASSEMBLY' ? 'ASSEMBLY' : 'PART')
+    }
   }
   rebuildSelectedRows(items.value)
   nextTick(() => {
@@ -1227,11 +1286,20 @@ function restoreTableSelection(): void {
 }
 
 async function onBatchPrint(): Promise<void> {
-  if (selectedRows.value.length === 0) return
+  if (selectedIds.size === 0) return
   batchPrinting.value = true
   try {
-    const ids = selectedRows.value.map((r) => r.id)
-    const blob = await printPartDrawingBatch(ids)
+    const partIds: string[] = []
+    const assemblyIds: string[] = []
+    for (const [id, type] of selectedRowTypes) {
+      if (type === 'ASSEMBLY') assemblyIds.push(id)
+      else partIds.push(id)
+    }
+    // 兜底：selectedRowTypes 可能缺失某些 id（如跨页后快照丢失），缺省按 PART 处理
+    for (const id of selectedIds) {
+      if (!selectedRowTypes.has(id)) partIds.push(id)
+    }
+    const blob = await printPartDrawingBatch(partIds, assemblyIds.length > 0 ? assemblyIds : undefined)
     if (batchPrintBlobUrl) URL.revokeObjectURL(batchPrintBlobUrl)
     batchPrintBlobUrl = URL.createObjectURL(blob)
     const iframe = batchPrintIframeRef.value
@@ -1313,6 +1381,7 @@ function buildParams(): ListPartsParams {
     sort_dir: sortDir.value,
     limit: pageSize.value,
     offset: (page.value - 1) * pageSize.value,
+    include_assemblies: true,
   }
 }
 

@@ -100,6 +100,8 @@ export interface ListPartsParams {
   sort_dir?: SortDir
   limit?: number
   offset?: number
+  /** 2026-07-30：零件一览合并装配件 */
+  include_assemblies?: boolean
 }
 
 export interface PartCreatePayload {
@@ -605,10 +607,13 @@ export async function printPartDrawing(partId: string): Promise<Blob> {
  * 后端把 N 个 part 的双面 PDF 用 pypdf.PdfWriter 顺序拼接成单文件返回。
  * 前端拿到 Blob 后用单 iframe 一次 print()，避免 N 次打印弹窗。
  */
-export async function printPartDrawingBatch(partIds: string[]): Promise<Blob> {
+export async function printPartDrawingBatch(
+  partIds: string[],
+  assemblyIds?: string[],
+): Promise<Blob> {
   const resp = await api.post<Blob>(
     '/parts/print-drawing-batch',
-    { part_ids: partIds },
+    { part_ids: partIds, assembly_ids: assemblyIds },
     { responseType: 'blob' },
   )
   return resp.data

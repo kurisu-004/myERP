@@ -58,7 +58,7 @@ const props = withDefaults(
   defineProps<{
     items: any[]
     loading?: boolean
-    rowKey?: string
+    rowKey?: string | ((row: any) => string)
     emptyText?: string
     /** 卡片额外 class：字符串或按行计算（如加急高亮） */
     cardClass?: string | ((row: any) => string)
@@ -81,6 +81,9 @@ const emit = defineEmits<{
 const { isMobile } = useBreakpoint()
 
 function rowKeyOf(row: any, index: number): string | number {
+  if (typeof props.rowKey === 'function') {
+    return String(props.rowKey(row) ?? index)
+  }
   const k = row?.[props.rowKey]
   return k ?? index
 }

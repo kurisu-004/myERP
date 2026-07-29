@@ -148,10 +148,9 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // 2026-07-30：装配件一览退役，合并到零件一览
         path: 'assemblies',
-        name: 'AssemblyList',
-        component: () => import('@/views/assemblies/AssemblyList.vue'),
-        meta: { title: '装配件一览', icon: 'Connection', menuCode: 'assemblies_list', breadcrumb: [{ label: '订单管理', path: '/assemblies' }, { label: '装配件一览' }] },
+        redirect: '/parts',
       },
       {
         path: 'delivery-notes',
