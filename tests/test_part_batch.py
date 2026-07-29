@@ -514,3 +514,80 @@ async def test_ambiguous_batches_require_batch_id(clean_db):
     assert batches[0].status == "IN_PROCESS"
     assert batches[1].status == "PENDING"
     assert part.status == "PENDING"  # 最落后
+
+
+
+# ============================================================
+# 批次化外协可发送一览（2026-07-29 PR-fix-0.2.0 回归）
+# ============================================================
+async def test_outsource_sendable_lists_qualifying_batch_in_multibatch_order(clean_db):
+    """批次化后外协可发送候选必须按批次过滤。
+
+    场景：工单拆为两个批次，一个 PENDING 在 OFFICE，一个 IN_PROCESS + PRODUCTION_SHELF
+    在绑了 OUTSOURCE 工序的货架上。工单 rollup 仍是 PENDING（最落后），旧版候选查询
+    因此把整张工单过滤掉。修复后必须返回可外发的那个批次。
+    """
+    from model import TShelfProcess
+    from model.enums import ProcessCategory, PartLocation
+
+    # 1. 建世界（OUTSOURCE 工序 + C2 货架 + 货架↔工序映射）
+    # _make_world 用 prefix 当 serial_prefix，必须 1 字符；这里用 "O"（外协）。
+    world = await _make_world(clean_db, prefix="O")
+    outsource_process = TProcess(
+        code=f"OUT-O-1", name="外协工序1",
+        category=ProcessCategory.OUTSOURCE.value, sort_order=10,
+    )
+    clean_db.add(outsource_process)
+    await clean_db.flush()
+    # 在原生产架 (world["shelf"]) 上加 OUTSOURCE 映射 → 该货架绑了外协工序
+    clean_db.add(TShelfProcess(
+        shelf_id=world["shelf"].id, process_id=outsource_process.id, sort_order=10,
+    ))
+    await clean_db.flush()
+
+    # 2. 建工单（qty=50 → 根批次 qty=50）
+    part = await _make_part(clean_db, world["customer"], qty=50, serial="OB0001")
+    svc = _make_service(clean_db)
+
+    # 3. 拆：50 → 30 (PENDING) + 20 (IN_PROCESS 可外发)
+    root = (await _batches(clean_db, part.id))[0]
+    await svc.split_batch(part.id, batch_id=root.id, quantity=20)
+
+    # 4. place_on_shelf：把批次 1 (qty=20) 放到 OUTSOURCE 货架上
+    batches = await _batches(clean_db, part.id)
+    # 找出 qty=20 的批次
+    target_batch = next(b for b in batches if b.quantity == 20)
+    await svc.place_on_shelf(
+        part.id,
+        PlaceOnShelfRequest(
+            shelf_id=world["shelf"].id,
+            next_process_id=outsource_process.id,
+            batch_id=str(target_batch.id),
+        ),
+    )
+
+    # 5. 重新读：rollup 应该是 PENDING（最落后）
+    part = await PartRepository(clean_db).get_by_id(part.id)
+    assert part.status == PartStatus.PENDING.value, (
+        "工单 rollup 应为 PENDING（批次 2 还在 PENDING）"
+    )
+    batches = await _batches(clean_db, part.id)
+    assert any(b.status == PartStatus.PENDING.value for b in batches)
+    assert any(b.status == PartStatus.IN_PROCESS.value for b in batches)
+
+    # 6. 调用 list_outsource_sendable —— 应只返回那个可外发的批次
+    parts_repo = PartRepository(clean_db)
+    rows = await parts_repo.list_outsource_sendable(limit=10, offset=0)
+    assert len(rows) == 1, (
+        f"PR-fix-0.2.0 回归失败：期望 1 行（批次 2），实际 {len(rows)} 行"
+        "——多批次工单的可外发批次被 rollup 过滤掉了"
+    )
+    batch, p = rows[0]
+    assert p.id == part.id
+    assert batch.quantity == 20
+    assert batch.status == PartStatus.IN_PROCESS.value
+    assert batch.location == PartLocation.PRODUCTION_SHELF.value
+
+    # 7. count 也应只数 1 行（按批次计）
+    count = await parts_repo.count_outsource_sendable()
+    assert count == 1

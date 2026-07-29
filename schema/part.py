@@ -302,6 +302,17 @@ class PartListItem(BaseModel):
     next_process_name: str | None = Field(
         default=None, description="下一工序名（NULL = 未设置）"
     )
+    # 2026-07-29 PR-fix-0.2.0：批次化字段（仅 picker 走批次时填充；普通 /parts 列表为 NULL）
+    batch_id: IdStr = Field(
+        default=None,
+        description="批次 id（仅 /outsource-quotes/quotable-parts 走批次时填充）",
+    )
+    batch_no: int | None = Field(
+        default=None, description="批次号（per-part 递增）",
+    )
+    batch_quantity: int | None = Field(
+        default=None, description="批次数量（picker 选中的可报价批次量）",
+    )
 
 
 class PartListOut(BaseModel):
@@ -741,7 +752,7 @@ class OutsourceSendableItem(BaseModel):
 
     version: int = Field(
         default=0,
-        description="零件 TPart.version（OCC；前端发送时需回传）",
+        description="批次 TPartBatch.version（OCC；前端发送时需回传，2026-07-29 由工单 version 改为批次 version）",
     )
     send_mode: Literal["APPROVAL", "DIRECT"]
     source_status: Literal["PENDING", "IN_PROCESS"]
@@ -749,7 +760,18 @@ class OutsourceSendableItem(BaseModel):
     part_serial_no: str | None = None
     part_drawing_no: str | None = None
     part_name: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(
+        default=None,
+        description="可发送数量（2026-07-29 批次化：等于批次 quantity；同 batch_quantity 字段保持兼容）",
+    )
+    # 2026-07-29 PR-fix-0.2.0：批次级字段（行=批次）
+    batch_id: IdStrNonNull = Field(
+        description="可发送批次 id（每行=一个批次；前端 picker 直接回传）",
+    )
+    batch_no: int = Field(description="批次号（per-part 递增；前端展示「批次 N」）")
+    batch_quantity: int = Field(
+        description="批次数量（等于 quantity；显式暴露避免与 part.quantity 混淆）",
+    )
     planned_delivery_date: str | None = None
     is_urgent: bool = False
     customer_path: str | None = None

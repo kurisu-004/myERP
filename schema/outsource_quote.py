@@ -155,17 +155,27 @@ class ApprovedQuoteForSendItem(BaseModel):
     """报价已批准且零件可发送外协时的快捷列出。
 
     直接返回 PartListItem 形态 + 预解析字段，便于外协发送列表页直接渲染。
+
+    2026-07-29 PR-fix-0.2.0 批次化：行=批次，添加 batch_id / batch_no / batch_quantity，
+    version 改为批次 version（OCC 在批次上）。
     """
 
     version: int = Field(
         default=0,
-        description="零件 TPart.version（OCC；前端发送时需回传），2026-07-28 新增",
+        description="批次 TPartBatch.version（OCC；前端发送时需回传，2026-07-29 由工单 version 改为批次 version）",
     )
     part_id: IdStrNonNull
     part_serial_no: str | None = None
     part_drawing_no: str | None = None
     part_name: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(
+        default=None,
+        description="可发送数量（2026-07-29 批次化：等于 batch_quantity）",
+    )
+    # 2026-07-29 PR-fix-0.2.0：批次级字段
+    batch_id: IdStrNonNull = Field(description="可发送批次 id")
+    batch_no: int = Field(description="批次号（per-part 递增）")
+    batch_quantity: int = Field(description="批次数量")
     planned_delivery_date: str | None = None
     is_urgent: bool = False
     customer_path: str | None = None

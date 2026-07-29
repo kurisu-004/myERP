@@ -2557,11 +2557,12 @@ class PartService:
     ) -> OutsourceSendableListOut:
         """外协可发送一览（统一查询）：合并 APPROVAL（有报价）和 DIRECT（无需审批可直发）两路。
 
+        2026-07-29 PR-fix-0.2.0 批次化：行=批次（之前行=工单，因 rollup 派生字段而漏显可发批次）。
         谓词：
-        - APPROVAL：part_id ∈ part_ids_with_approved_quote ∩ next_process_id ∈ approval_proc_ids
-          ∩ (status=PENDING OR IN_PROCESS+PRODUCTION_SHELF)
-        - DIRECT：next_process_id ∈ direct_proc_ids
-          ∩ (status=PENDING OR IN_PROCESS+PRODUCTION_SHELF)
+        - APPROVAL：TPartBatch.part_id ∈ part_ids_with_approved_quote ∩ TPartBatch.next_process_id ∈ approval_proc_ids
+          ∩ (TPartBatch.status=PENDING OR TPartBatch.status=IN_PROCESS+location=PRODUCTION_SHELF)
+        - DIRECT：TPartBatch.next_process_id ∈ direct_proc_ids
+          ∩ (TPartBatch.status=PENDING OR TPartBatch.status=IN_PROCESS+location=PRODUCTION_SHELF)
 
         C2 货架**不**在此过滤；send_to_outsource 服务层在中间外协（IN_PROCESS）路径
         做 C2 前置校验。起始外协（PENDING）直发不要求 C2。
@@ -2641,11 +2642,11 @@ class PartService:
 
         kw = (keyword or "").strip() or None
 
-        # 5. 并发查直发 + 审批 + 计数（limit*2 给合并留余量）
+        # 5. 并发查直发 + 审批 + 计数（按批次行；limit*2 给合并留余量）
         big_limit = max(limit * 2, 100)
         big_offset = max(offset - limit, 0)
-        direct_parts: list = []
-        approval_parts: list = []
+        direct_rows: list[tuple[TPartBatch, TPart]] = []
+        approval_rows: list[tuple[TPartBatch, TPart]] = []
         direct_total = 0
         approval_total = 0
         if direct_proc_to_active_companies:
@@ -2655,7 +2656,7 @@ class PartService:
                 process_ids=sendable_direct_ids,
             )
             if direct_total:
-                direct_parts = await self.parts.list_direct_outsource_sendable(
+                direct_rows = await self.parts.list_direct_outsource_sendable(
                     customer_ids_in=customer_ids_in, keyword=kw,
                     process_ids=sendable_direct_ids,
                     limit=big_limit, offset=big_offset,
@@ -2666,25 +2667,25 @@ class PartService:
                 customer_ids_in=customer_ids_in, keyword=kw,
             )
             if approval_total:
-                approval_parts = await self.parts.list_approved_outsource_sendable(
+                approval_rows = await self.parts.list_approved_outsource_sendable(
                     part_ids=approval_part_ids, process_ids=list(approval_proc_ids),
                     customer_ids_in=customer_ids_in, keyword=kw,
                     limit=big_limit, offset=big_offset,
                 )
 
-        # 6. 拼装 + 合并排序
+        # 6. 拼装 + 合并排序（行=批次）
         cust_cache = await preload_customer_cache(self.customers, [
-            p.customer_id for p in direct_parts
+            p.customer_id for _, p in direct_rows
             if p.customer_id is not None
         ] + [
-            p.customer_id for p in approval_parts
+            p.customer_id for _, p in approval_rows
             if p.customer_id is not None
         ])
         items: list[OutsourceSendableItem] = []
 
-        # 6a. DIRECT items
-        for p in direct_parts:
-            cids = direct_proc_to_active_companies.get(p.next_process_id, [])
+        # 6a. DIRECT items（按批次）
+        for batch, p in direct_rows:
+            cids = direct_proc_to_active_companies.get(batch.next_process_id, [])
             company_opts = [
                 DirectOutsourceCompanyOption(
                     id=cid,
@@ -2694,28 +2695,31 @@ class PartService:
             ]
             if not company_opts:
                 continue
-            next_proc = process_map.get(p.next_process_id)
+            next_proc = process_map.get(batch.next_process_id)
             customer_path: str | None = None
             if p.customer_id is not None and p.customer_id in cust_cache:
                 customer_path = make_customer_path_cached(
                     cust_cache[p.customer_id], cust_cache,
                 )
             items.append(OutsourceSendableItem(
-                version=p.version,
+                version=batch.version,  # OCC 在批次上；前端发送时回传
                 send_mode="DIRECT",
-                source_status=p.status,
+                source_status=batch.status,  # PENDING 或 IN_PROCESS
                 part_id=p.id,
                 part_serial_no=p.serial_no,
                 part_drawing_no=p.drawing_no,
                 part_name=p.name,
-                quantity=p.quantity,
+                quantity=batch.quantity,  # 行=批次，quantity=批次量
+                batch_id=batch.id,
+                batch_no=batch.batch_no,
+                batch_quantity=batch.quantity,
                 planned_delivery_date=(
                     p.planned_delivery_date.isoformat()
                     if p.planned_delivery_date else None
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=p.next_process_id,
+                next_process_id=batch.next_process_id,
                 next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=None,
                 outsource_company_name=None,
@@ -2724,7 +2728,7 @@ class PartService:
                 status_label="sendable",
             ))
 
-        # 6b. APPROVAL items
+        # 6b. APPROVAL items（按批次）
         # 审批端需要的 company_id/name：从 APPROVED 报价拿
         approval_company_ids = {
             q.outsource_company_id for q in approved_by_part.values()
@@ -2733,7 +2737,7 @@ class PartService:
         if approval_company_ids:
             comps = await self.outsource_companies.list_by_ids(list(approval_company_ids))
             approval_company_map = {c.id: c for c in comps}
-        for p in approval_parts:
+        for batch, p in approval_rows:
             q = approved_by_part.get(p.id)
             if q is None:
                 continue
@@ -2745,21 +2749,24 @@ class PartService:
                     cust_cache[p.customer_id], cust_cache,
                 )
             items.append(OutsourceSendableItem(
-                version=p.version,
+                version=batch.version,  # OCC 在批次上
                 send_mode="APPROVAL",
-                source_status=p.status,
+                source_status=batch.status,
                 part_id=p.id,
                 part_serial_no=p.serial_no,
                 part_drawing_no=p.drawing_no,
                 part_name=p.name,
-                quantity=p.quantity,
+                quantity=batch.quantity,
+                batch_id=batch.id,
+                batch_no=batch.batch_no,
+                batch_quantity=batch.quantity,
                 planned_delivery_date=(
                     p.planned_delivery_date.isoformat()
                     if p.planned_delivery_date else None
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=p.next_process_id,
+                next_process_id=batch.next_process_id,
                 next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,

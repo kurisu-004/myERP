@@ -70,6 +70,32 @@ def _make_part(
     return p
 
 
+def _make_batch(
+    id: int = 999,
+    part_id: int = 100,
+    batch_no: int = 1,
+    quantity: int = 10,
+    status: str = "PENDING",
+    location: str | None = "OFFICE",
+    current_holder_id: int | None = None,
+    next_process_id: int | None = None,
+    version: int = 1,
+):
+    """Mock 一个 TPartBatch（2026-07-29 批次化后测试用）。"""
+    b = MagicMock()
+    b.id = id
+    b.part_id = part_id
+    b.batch_no = batch_no
+    b.quantity = quantity
+    b.status = status
+    b.location = location
+    b.current_holder_id = current_holder_id
+    b.next_process_id = next_process_id
+    b.version = version
+    b.deleted_at = None
+    return b
+
+
 def _make_company(id: int = 10, name: str = "外协A", is_active: bool = True) -> TOutsourceCompany:
     c = TOutsourceCompany(id=id, name=name, is_active=is_active)
     c.created_at = _now()
@@ -625,8 +651,12 @@ class TestListApprovedForSend:
         part.next_process_id = 20
         part.is_urgent = False
         part.planned_delivery_date = date(2026, 7, 20)
+        # 2026-07-29 PR-fix-0.2.0 批次化：list_outsource_sendable 现在返回
+        # list[tuple[TPartBatch, TPart]]；mock 也返回元组。
+        batch = _make_batch(id=999, part_id=100, status="PENDING",
+                            location="OFFICE", next_process_id=20, quantity=10)
         svc.parts.count_outsource_sendable = AsyncMock(return_value=1)
-        svc.parts.list_outsource_sendable = AsyncMock(return_value=[part])
+        svc.parts.list_outsource_sendable = AsyncMock(return_value=[(batch, part)])
 
         # 两层客户：list_by_ids 按 frontier 逐层返回
         from model.customer import TCustomer
@@ -662,6 +692,7 @@ class TestListApprovedForSend:
         mock_quotes.list_all_approved = AsyncMock(return_value=quotes)
 
         parts = []
+        batches = []
         for i in range(5):
             p = _make_part(id=100 + i, customer_id=None)
             p.status = "PENDING"
@@ -670,8 +701,14 @@ class TestListApprovedForSend:
             p.is_urgent = False
             p.planned_delivery_date = date(2026, 7, 20)
             parts.append(p)
+            # 2026-07-29 批次化：mock list_outsource_sendable 返回元组
+            b = _make_batch(id=900 + i, part_id=100 + i, status="PENDING",
+                            location="OFFICE", next_process_id=20, quantity=10)
+            batches.append(b)
         svc.parts.count_outsource_sendable = AsyncMock(return_value=len(parts))
-        svc.parts.list_outsource_sendable = AsyncMock(return_value=parts)
+        svc.parts.list_outsource_sendable = AsyncMock(
+            return_value=list(zip(batches, parts)),
+        )
         svc.processes.list_by_ids = AsyncMock(return_value=[_make_process()])
         svc.companies.list_by_ids = AsyncMock(return_value=[_make_company()])
 

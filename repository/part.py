@@ -4,7 +4,7 @@ from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
-from model import TPart, TPartEvent
+from model import TPart, TPartBatch, TPartEvent
 from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
 
 
@@ -603,7 +603,7 @@ class PartRepository:
         return stmt
 
     # ============================================================
-    # 外协列表专用（2026-07-16 新增）
+    # 外协列表专用（2026-07-16 新增；2026-07-29 批次化）
     # ============================================================
     def _build_outsource_sendable_stmt(
         self,
@@ -616,12 +616,14 @@ class PartRepository:
     ):
         """外协发送一览的共享 statement builder（list / count 复用，避免谓词漂移）。
 
-        资格条件（2026-07-28 PR-H 重构：统一走外协工序货架）：
-        - status='IN_PROCESS'
-        - AND location='PRODUCTION_SHELF'
-        - AND current_holder_id IN (绑定了 OUTSOURCE 工序的货架 id 集合)
+        资格条件（2026-07-29 批次化 PR-fix-0.2.0）：
+        - TPartBatch.status='IN_PROCESS' AND TPartBatch.location='PRODUCTION_SHELF'
+        - AND TPartBatch.current_holder_id IN (绑定了 OUTSOURCE 工序的货架 id 集合)
+        - TPartBatch.deleted_at IS NULL
 
-        旧版允许 PENDING 状态直接外协（持有『起始外协』）；现在 PENDING 必须先上架。
+        旧版用 TPart.* 过滤，但 TPart.status/location/current_holder_id 是 rollup 派生自
+        「最落后」活跃批次；多批次工单里可外发批次会被 rollup 过滤掉。本方法改成走批次，
+        每个可外发批次独立成行。
 
         `part_ids_in` 用于把候选收敛到「有 APPROVED 报价」的零件集合（外协发送页专用）。
         空列表由调用方短路，不进这里。
@@ -637,13 +639,14 @@ class PartRepository:
             .where(_TSP.deleted_at.is_(None))
             .where(_TProc.category == _PC.OUTSOURCE.value)
         )
-        stmt = select(TPart)
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id)
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         stmt = stmt.where(
-            TPart.status == "IN_PROCESS",
-            TPart.location == "PRODUCTION_SHELF",
-            TPart.current_holder_id.in_(outsource_shelf_ids_subq),
+            TPartBatch.status == "IN_PROCESS",
+            TPartBatch.location == "PRODUCTION_SHELF",
+            TPartBatch.current_holder_id.in_(outsource_shelf_ids_subq),
         )
         if part_ids_in is not None:
             stmt = stmt.where(TPart.id.in_(part_ids_in))
@@ -671,11 +674,14 @@ class PartRepository:
         limit: int = 50,
         offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[TPart]:
-        """外协发送一览：可发送外协的零件（一页）。
+    ) -> list[tuple[TPartBatch, TPart]]:
+        """外协发送一览：可发送外协的零件（一页）。行=批次（2026-07-29 批次化）。
 
-        排序：is_urgent DESC, planned_delivery_date ASC, id DESC。
+        排序：is_urgent DESC, planned_delivery_date ASC, id DESC（工单级排序，批次次序稳定）。
         `part_ids_in == []` 由调用方短路（此处不特判，空列表 IN() 会返回 0 行）。
+
+        返回 (TPartBatch, TPart) 元组列表；service 层用批次字段（status/location/holder/
+        version/quantity/next_process_id）拼 OutsourceSendableItem。
         """
         stmt = self._build_outsource_sendable_stmt(
             part_ids_in=part_ids_in,
@@ -690,7 +696,8 @@ class PartRepository:
             TPart.id.desc(),
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        # TPart → TPartBatch 同时 select，需要 unique() 去重 TPart
+        return [(b, p) for p, b in result.unique().all()]
 
     async def count_outsource_sendable(
         self,
@@ -701,14 +708,14 @@ class PartRepository:
         is_urgent: bool | None = None,
         include_deleted: bool = False,
     ) -> int:
-        """外协发送一览的总数（与 list_outsource_sendable 同谓词）。"""
+        """外协发送一览的总数（与 list_outsource_sendable 同谓词，按批次计）。"""
         stmt = self._build_outsource_sendable_stmt(
             part_ids_in=part_ids_in,
             customer_ids_in=customer_ids_in,
             keyword=keyword,
             is_urgent=is_urgent,
             include_deleted=include_deleted,
-        ).with_only_columns(func.count(TPart.id))
+        ).with_only_columns(func.count(TPartBatch.id))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
@@ -725,24 +732,25 @@ class PartRepository:
         limit: int = 50,
         offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[TPart]:
-        """直接发送外协候选（next_process.requires_approval=false 且位于 C2 货架）。
+    ) -> list[tuple[TPartBatch, TPart]]:
+        """直接发送外协候选（next_process.requires_approval=false 且位于 C2 货架）。行=批次。
 
-        谓词（与 list_outsource_sendable 区别）：
-        - status='IN_PROCESS' + location='PRODUCTION_SHELF'（不含 PENDING，与 C2 前置矛盾）
-        - current_holder_id = c2_shelf_id（必须在 C2 货架上）
-        - next_process_id IN process_ids（上游 service 已筛选 requires_approval=false 的 OUTSOURCE 工序）
+        谓词（2026-07-29 批次化；与 list_outsource_sendable 区别）：
+        - TPartBatch.status='IN_PROCESS' + TPartBatch.location='PRODUCTION_SHELF'
+        - TPartBatch.current_holder_id = c2_shelf_id（必须在 C2 货架上）
+        - TPartBatch.next_process_id IN process_ids（上游 service 已筛选 requires_approval=false 的 OUTSOURCE 工序）
 
         排序：is_urgent DESC, planned_delivery_date ASC, id DESC
         """
-        stmt = select(TPart).where(
-            TPart.status == "IN_PROCESS",
-            TPart.location == "PRODUCTION_SHELF",
-            TPart.current_holder_id == c2_shelf_id,
-            TPart.next_process_id.in_(process_ids),
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
+            TPartBatch.status == "IN_PROCESS",
+            TPartBatch.location == "PRODUCTION_SHELF",
+            TPartBatch.current_holder_id == c2_shelf_id,
+            TPartBatch.next_process_id.in_(process_ids),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if keyword:
@@ -751,7 +759,7 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
@@ -759,7 +767,7 @@ class PartRepository:
             TPart.id.desc(),
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return [(b, p) for p, b in result.unique().all()]
 
     async def count_direct_outsource_candidates(
         self,
@@ -770,15 +778,16 @@ class PartRepository:
         keyword: str | None = None,
         include_deleted: bool = False,
     ) -> int:
-        """直接发送外协候选总数（与 list_direct_outsource_candidates 同谓词）。"""
-        stmt = select(TPart).where(
-            TPart.status == "IN_PROCESS",
-            TPart.location == "PRODUCTION_SHELF",
-            TPart.current_holder_id == c2_shelf_id,
-            TPart.next_process_id.in_(process_ids),
+        """直接发送外协候选总数（按批次计；与 list_direct_outsource_candidates 同谓词）。"""
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
+            TPartBatch.status == "IN_PROCESS",
+            TPartBatch.location == "PRODUCTION_SHELF",
+            TPartBatch.current_holder_id == c2_shelf_id,
+            TPartBatch.next_process_id.in_(process_ids),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if keyword:
@@ -787,9 +796,9 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
-        stmt = stmt.with_only_columns(func.count(TPart.id))
+        stmt = stmt.with_only_columns(func.count(TPartBatch.id))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
@@ -806,29 +815,30 @@ class PartRepository:
         limit: int = 50,
         offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[TPart]:
-        """直接发送外协候选（无需审批工序的两种来源状态合并）。
+    ) -> list[tuple[TPartBatch, TPart]]:
+        """直接发送外协候选（无需审批工序的两种来源状态合并）。行=批次（2026-07-29 批次化）。
 
-        谓词（2026-07-28 修订：不再要求 c2_shelf_id；起始 / 中间外协都进列表）：
+        谓词（2026-07-29 批次化；不再要求 c2_shelf_id；起始 / 中间外协都进列表）：
         - deleted_at IS NULL
-        - next_process_id IN process_ids
-        - status = PENDING（起始外协，OFFICE）
-        - OR (status = IN_PROCESS + location = PRODUCTION_SHELF)（中间外协）
+        - TPartBatch.next_process_id IN process_ids
+        - TPartBatch.status = PENDING（起始外协，OFFICE）
+        - OR (TPartBatch.status = IN_PROCESS + TPartBatch.location = PRODUCTION_SHELF)（中间外协）
 
         C2 货架前置**只**保留在 send_to_outsource 服务层校验（中间外协路径）。
         """
-        stmt = select(TPart).where(
-            TPart.next_process_id.in_(process_ids),
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
+            TPartBatch.next_process_id.in_(process_ids),
             or_(
-                TPart.status == "PENDING",
+                TPartBatch.status == "PENDING",
                 and_(
-                    TPart.status == "IN_PROCESS",
-                    TPart.location == "PRODUCTION_SHELF",
+                    TPartBatch.status == "IN_PROCESS",
+                    TPartBatch.location == "PRODUCTION_SHELF",
                 ),
             ),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if keyword:
@@ -837,7 +847,7 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
@@ -845,7 +855,7 @@ class PartRepository:
             TPart.id.desc(),
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return [(b, p) for p, b in result.unique().all()]
 
     async def count_direct_outsource_sendable(
         self,
@@ -855,19 +865,20 @@ class PartRepository:
         keyword: str | None = None,
         include_deleted: bool = False,
     ) -> int:
-        """直接发送候选总数（与 list_direct_outsource_sendable 同谓词）。"""
-        stmt = select(TPart).where(
-            TPart.next_process_id.in_(process_ids),
+        """直接发送候选总数（按批次计；与 list_direct_outsource_sendable 同谓词）。"""
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
+            TPartBatch.next_process_id.in_(process_ids),
             or_(
-                TPart.status == "PENDING",
+                TPartBatch.status == "PENDING",
                 and_(
-                    TPart.status == "IN_PROCESS",
-                    TPart.location == "PRODUCTION_SHELF",
+                    TPartBatch.status == "IN_PROCESS",
+                    TPartBatch.location == "PRODUCTION_SHELF",
                 ),
             ),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if keyword:
@@ -876,9 +887,9 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
-        stmt = stmt.with_only_columns(func.count(TPart.id))
+        stmt = stmt.with_only_columns(func.count(TPartBatch.id))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
@@ -892,31 +903,32 @@ class PartRepository:
         limit: int = 50,
         offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[TPart]:
-        """审批后外协可发送候选（需审批工序 + 有 APPROVED 报价 + 起始 / 中间外协来源）。
+    ) -> list[tuple[TPartBatch, TPart]]:
+        """审批后外协可发送候选（需审批工序 + 有 APPROVED 报价 + 起始 / 中间外协来源）。行=批次。
 
-        谓词：
+        谓词（2026-07-29 批次化）：
         - deleted_at IS NULL
-        - id IN part_ids（service 预筛：至少有 1 条 APPROVED 报价的 part_id）
-        - next_process_id IN process_ids（service 预筛：这些工序需要审批）
-        - status = PENDING（起始外协审批）
-        - OR (status = IN_PROCESS + location = PRODUCTION_SHELF)（中间外协审批）
+        - TPart.id IN part_ids（service 预筛：至少有 1 条 APPROVED 报价的 part_id）
+        - TPartBatch.next_process_id IN process_ids（service 预筛：这些工序需要审批）
+        - TPartBatch.status = PENDING（起始外协审批）
+        - OR (TPartBatch.status = IN_PROCESS + TPartBatch.location = PRODUCTION_SHELF)（中间外协审批）
         """
         if not part_ids or not process_ids:
             return []
-        stmt = select(TPart).where(
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
             TPart.id.in_(part_ids),
-            TPart.next_process_id.in_(process_ids),
+            TPartBatch.next_process_id.in_(process_ids),
             or_(
-                TPart.status == "PENDING",
+                TPartBatch.status == "PENDING",
                 and_(
-                    TPart.status == "IN_PROCESS",
-                    TPart.location == "PRODUCTION_SHELF",
+                    TPartBatch.status == "IN_PROCESS",
+                    TPartBatch.location == "PRODUCTION_SHELF",
                 ),
             ),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if keyword:
@@ -925,7 +937,7 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
@@ -933,7 +945,7 @@ class PartRepository:
             TPart.id.desc(),
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return [(b, p) for p, b in result.unique().all()]
 
     async def count_approved_outsource_sendable(
         self,
@@ -944,22 +956,23 @@ class PartRepository:
         keyword: str | None = None,
         include_deleted: bool = False,
     ) -> int:
-        """审批后候选总数（与 list_approved_outsource_sendable 同谓词）。"""
+        """审批后候选总数（按批次计；与 list_approved_outsource_sendable 同谓词）。"""
         if not part_ids or not process_ids:
             return 0
-        stmt = select(TPart).where(
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
             TPart.id.in_(part_ids),
-            TPart.next_process_id.in_(process_ids),
+            TPartBatch.next_process_id.in_(process_ids),
             or_(
-                TPart.status == "PENDING",
+                TPartBatch.status == "PENDING",
                 and_(
-                    TPart.status == "IN_PROCESS",
-                    TPart.location == "PRODUCTION_SHELF",
+                    TPartBatch.status == "IN_PROCESS",
+                    TPartBatch.location == "PRODUCTION_SHELF",
                 ),
             ),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if customer_ids_in:
             stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
         if keyword:
@@ -968,9 +981,9 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
-        stmt = stmt.with_only_columns(func.count(TPart.id))
+        stmt = stmt.with_only_columns(func.count(TPartBatch.id))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
@@ -1026,44 +1039,44 @@ class PartRepository:
         limit: int = 500,
         offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[TPart]:
-        """新建外协报价对话框零件 picker 默认数据源。
+    ) -> list[tuple[TPartBatch, TPart]]:
+        """新建外协报价对话框零件 picker 默认数据源。行=批次（2026-07-29 批次化）。
 
         谓词：
-          - status='IN_PROCESS' AND location='PRODUCTION_SHELF'
-          - AND current_holder_id IN shelf_ids_in（已在外协工序货架上）
+          - TPartBatch.status='IN_PROCESS' AND TPartBatch.location='PRODUCTION_SHELF'
+          - AND TPartBatch.current_holder_id IN shelf_ids_in（已在外协工序货架上）
           - 可选 keyword 模糊（drawing_no / name / serial_no）
 
-        排序：created_at DESC, id DESC（最新在工先）。
+        排序：TPartBatch.created_at DESC, TPartBatch.id DESC（最新在工先）。
         `shelf_ids_in` 由 service 从 shelf_process.list_shelf_ids_with_process_category
         传入；本方法不交叉工序类别判定，避免重复 join。
 
-        返回 TPart 行，由 service 调 _to_list_out 组装 PartListItem 响应
-        （含 next_process_id / next_process_name，用于前端 picker 自动填工序）。
+        返回 (TPartBatch, TPart) 元组列表，service 层用批次字段拼 PartListItem。
         """
         if not shelf_ids_in:
             return []
-        stmt = select(TPart).where(
-            TPart.status == "IN_PROCESS",
-            TPart.location == "PRODUCTION_SHELF",
-            TPart.current_holder_id.in_(shelf_ids_in),
+        stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
+            TPartBatch.status == "IN_PROCESS",
+            TPartBatch.location == "PRODUCTION_SHELF",
+            TPartBatch.current_holder_id.in_(shelf_ids_in),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
+            stmt = stmt.where(TPartBatch.deleted_at.is_(None))
         if keyword:
             kw = keyword.strip()
             if kw:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
-                    | TPart.name.ilike(f"%{kw}%")
-                    | TPart.serial_no.ilike(f"%{kw}%")
+                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"{kw}%")
                 )
         stmt = stmt.order_by(
-            TPart.created_at.desc(),
-            TPart.id.desc(),
+            TPartBatch.created_at.desc(),
+            TPartBatch.id.desc(),
         ).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return [(b, p) for p, b in result.unique().all()]
 
 
 def _and_chained(*clauses):

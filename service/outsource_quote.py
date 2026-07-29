@@ -162,12 +162,16 @@ class OutsourceQuoteService:
         )
         if not shelf_ids:
             return []
+        # 2026-07-29：rows 现在是 list[tuple[TPartBatch, TPart]]（批次化 picker 调用），
+        # _to_part_list_items 同步接受并填充 batch 字段。
         rows = await self.parts.list_quotable_for_outsource_quote(
             keyword=keyword, shelf_ids_in=shelf_ids, limit=limit,
         )
         return await self._to_part_list_items(rows)
 
-    async def _to_part_list_items(self, rows: list[TPart]) -> list[PartListItem]:
+    async def _to_part_list_items(
+        self, rows: list | list[TPart] | list[tuple],
+    ) -> list[PartListItem]:
         """复用 PartService._to_list_out 的字段组装逻辑；输出 PartListItem。
 
         简化版：只填 Picker 关心的字段（不依赖 shelves/workers/shelf_processes），
@@ -219,8 +223,18 @@ class OutsourceQuoteService:
             proc_rows = await self.processes.list_by_ids(next_process_ids)
             process_map = {pr.id: pr.name for pr in proc_rows}
 
+        # 2026-07-29 PR-fix-0.2.0：批次化 picker 把 rows 解析为 (batch, part) 元组
+        # 时填充 batch_id / batch_no / batch_quantity；list[TPart] 旧调用 batch=None。
+        normalized: list[tuple[TPart, object]] = []
+        for row in rows:
+            if isinstance(row, tuple) and len(row) == 2:
+                batch_, p = row
+                normalized.append((p, batch_))
+            else:
+                normalized.append((row, None))
+
         out: list[PartListItem] = []
-        for p in rows:
+        for p, batch in normalized:
             cust = cust_map.get(p.customer_id)
             parent = (
                 parent_map.get(cust.parent_id)
@@ -283,6 +297,10 @@ class OutsourceQuoteService:
                         process_map.get(int(p.next_process_id))
                         if p.next_process_id else None
                     ),
+                    # 2026-07-29 PR-fix-0.2.0：批次化字段（仅批次化 picker 调用填）
+                    batch_id=batch.id if batch else None,
+                    batch_no=batch.batch_no if batch else None,
+                    batch_quantity=batch.quantity if batch else None,
                 )
             )
         return out
@@ -725,18 +743,20 @@ class OutsourceQuoteService:
             return ApprovedForSendListOut(
                 items=[], total=0, limit=limit, offset=offset,
             )
-        page_parts = await self.parts.list_outsource_sendable(
+        # 2026-07-29 批次化：行=批次（list_outsource_sendable 返回 list[tuple[TPartBatch, TPart]]）
+        page_rows = await self.parts.list_outsource_sendable(
             part_ids_in=approved_part_ids,
             customer_ids_in=customer_ids_in,
             keyword=kw,
             limit=limit, offset=offset,
         )
 
-        # 4. 批查 process（零件 next_process + 报价 process）/ company / customer
+        # 4. 批查 process（批次 next_process + 报价 process）/ company / customer
+        # 2026-07-29：page_rows 是 list[tuple[TPartBatch, TPart]]
         need_proc_ids: set[int] = set()
-        for p in page_parts:
-            if p.next_process_id is not None:
-                need_proc_ids.add(p.next_process_id)
+        for batch, p in page_rows:
+            if batch.next_process_id is not None:
+                need_proc_ids.add(batch.next_process_id)
             q = quotes_by_part.get(p.id)
             if q is not None:
                 need_proc_ids.add(q.process_id)
@@ -749,7 +769,7 @@ class OutsourceQuoteService:
         }
         company_ids = {
             quotes_by_part[p.id].outsource_company_id
-            for p in page_parts if p.id in quotes_by_part
+            for _, p in page_rows if p.id in quotes_by_part
         }
         company_map = {
             c.id: c
@@ -759,30 +779,30 @@ class OutsourceQuoteService:
             )
         }
         cust_cache = await preload_customer_cache(self.customers,
-            [p.customer_id for p in page_parts if p.customer_id is not None]
+            [p.customer_id for _, p in page_rows if p.customer_id is not None]
         )
 
-        # 4b. 批查货架 code（PR-H 2026-07-28：外协发送一览显示源货架）
+        # 4b. 批查货架 code（PR-H 2026-07-28：外协发送一览显示源货架；2026-07-29 改用批次 holder）
         shelf_holder_ids = [
-            int(p.current_holder_id)
-            for p in page_parts
-            if p.current_holder_id is not None
-            and p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
+            int(batch.current_holder_id)
+            for batch, _ in page_rows
+            if batch.current_holder_id is not None
+            and batch.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
         ]
         shelf_code_map: dict[int, str] = {}
         if shelf_holder_ids:
             shelf_rows = await self.shelves.list_by_ids(list(set(shelf_holder_ids)))
             shelf_code_map = {s.id: s.code for s in shelf_rows}
 
-        # 5. 同步拼装 ApprovedQuoteForSendItem（无 await 在循环里）
+        # 5. 同步拼装 ApprovedQuoteForSendItem（无 await 在循环里；2026-07-29 批次化）
         items: list[ApprovedQuoteForSendItem] = []
-        for p in page_parts:
+        for batch, p in page_rows:
             q = quotes_by_part.get(p.id)
             if q is None:
                 continue
             next_proc = (
-                proc_map.get(p.next_process_id)
-                if p.next_process_id is not None else None
+                proc_map.get(batch.next_process_id)
+                if batch.next_process_id is not None else None
             )
             company = company_map.get(q.outsource_company_id)
             process = proc_map.get(q.process_id)
@@ -792,24 +812,27 @@ class OutsourceQuoteService:
                     cust_cache[p.customer_id], cust_cache,
                 )
             items.append(ApprovedQuoteForSendItem(
-                version=p.version,  # OCC：前端发送时回传（2026-07-28 新增）
+                version=batch.version,  # 2026-07-29：OCC 在批次上
                 part_id=p.id,
                 part_serial_no=p.serial_no,
                 part_drawing_no=p.drawing_no,
                 part_name=p.name,
-                quantity=p.quantity,
+                quantity=batch.quantity,
+                batch_id=batch.id,
+                batch_no=batch.batch_no,
+                batch_quantity=batch.quantity,
                 planned_delivery_date=(
                     p.planned_delivery_date.isoformat()
                     if p.planned_delivery_date else None
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=p.next_process_id,
+                next_process_id=batch.next_process_id,
                 next_process_name=next_proc.name if next_proc else None,
                 # PR-H 2026-07-28：源货架 code（绑了外协工序的货架）
                 shelf_code=(
-                    shelf_code_map.get(int(p.current_holder_id))
-                    if p.current_holder_id else None
+                    shelf_code_map.get(int(batch.current_holder_id))
+                    if batch.current_holder_id else None
                 ),
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
