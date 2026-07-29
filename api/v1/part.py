@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from api.deps import (
     get_applicant_service,
+    get_outsource_quote_service,
     get_part_file_service,
     get_part_file_repository,
     get_part_repository,
@@ -23,6 +24,7 @@ from core.permission import (
 from model.enums import PartEventType, UserRole
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
+from schema.outsource_quote import OutsourceInFlightItem
 from schema.part import (
     BatchSplitRequest,
     InspectionBatchListOut,
@@ -47,7 +49,7 @@ from schema.part import (
     ReceiveToInspectionRequest,
     SendToOutsourceRequest,
 )
-from service import PartService
+from service import PartService, OutsourceQuoteService
 from service._id_parse import parse_snowflake_id
 from service.applicant import ApplicantService
 from service.part_file import PartFileService
@@ -320,6 +322,23 @@ async def list_pending_programming_parts(
             offset=offset,
         )
     )
+
+
+@router.get(
+    "/outsource-in-flight",
+    response_model=list[OutsourceInFlightItem],
+    summary="外协中批次列表（2026-07-30 新增；MANAGER / CLERK）",
+)
+async def list_outsource_in_flight(
+    keyword: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    svc: OutsourceQuoteService = Depends(get_outsource_quote_service),
+) -> list[OutsourceInFlightItem]:
+    items, _ = await svc.list_in_flight(
+        keyword=keyword, limit=limit, offset=offset,
+    )
+    return items
 
 
 @router.get(

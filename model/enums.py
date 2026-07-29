@@ -318,12 +318,19 @@ class OutsourceSentPartSortKey(str, enum.Enum):
     """外协对账页（一览）支持的排序字段（2026-07-29 新增）。
 
     对应 `GET /outsource-companies/{id}/sent-parts?sort_by=...`。
-    排序直接作用于 `t_outsource_quote` 列：
-    - PRICE        → t_outsource_quote.price
-    - SENT_AT      → t_outsource_quote.sent_at
-    - RECEIVED_AT  → t_outsource_quote.received_at
+    排序直接作用于 `t_outsource_shipment` 列：
+    - PRICE        → t_outsource_shipment.unit_price
+    - SENT_AT      → t_outsource_shipment.sent_at
+    - RECEIVED_AT  → t_outsource_shipment.received_at
     """
 
     PRICE = "PRICE"
     SENT_AT = "SENT_AT"
     RECEIVED_AT = "RECEIVED_AT"
+
+
+class OutsourceShipmentStatus(str, enum.Enum):
+    """外协发货记录状态（2026-07-30 新增）。"""
+    OUTSOURCING = "OUTSOURCING"
+    RECEIVED = "RECEIVED"
+    CANCELLED = "CANCELLED"

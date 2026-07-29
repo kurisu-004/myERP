@@ -35,6 +35,7 @@ from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
+from repository.outsource_shipment import OutsourceShipmentRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from repository.part_batch import PartBatchRepository
@@ -201,6 +202,7 @@ class PartService:
         outsource_company_process: OutsourceCompanyProcessRepository | None = None,
         outsource_quotes: OutsourceQuoteRepository | None = None,
         quote_events: OutsourceQuoteEventRepository | None = None,
+        outsource_shipments: "OutsourceShipmentRepository | None" = None,  # 2026-07-30：外协发货记录
         part_batches: PartBatchRepository | None = None,  # 2026-07-29：批次化
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
@@ -224,8 +226,9 @@ class PartService:
         self.delivery_notes_repo = delivery_notes_repo  # 2026-07-22：PR-G，可选：详情页显示所属送货单
         self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
         self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
-        self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御 + mark_used）
-        self.quote_events = quote_events  # 2026-07-16：外协报价事件（mark_used 写 USED 事件）
+        self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御）
+        self.quote_events = quote_events  # 2026-07-16：外协报价事件
+        self.outsource_shipments = outsource_shipments  # 2026-07-30：外协发货记录
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
         self._current_user = current_user
@@ -1616,41 +1619,48 @@ class PartService:
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        # 6. PR-H 2026-07-29：报价处理（合并 APPROVAL + DIRECT 两条路径）
-        if self.outsource_quotes is None:
+        # 6. 2026-07-30：报价处理（回归纯审批对象）
+        if self.outsource_quotes is None or self.outsource_shipments is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
-                message="server missing outsource quote repository",
+                message="server missing outsource repository",
                 http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if process.requires_approval:
-            # 6a. APPROVAL：找现有 APPROVED 报价
-            target_quote = await self.outsource_quotes.get_one_approved(
+            # 6a. APPROVAL：按 (part_id, process_id) 查 is_direct=false 的 APPROVED 报价
+            target_quote = await self.outsource_quotes.get_approved_for_part_process(
                 part_id=part.id,
-                outsource_company_id=company_id_int,
-                process_id=process_id_int,
+                process_id=process.id,
+                is_direct=False,
             )
             if target_quote is None:
                 raise BizError(
                     code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
                     message=(
-                        f"未找到「{company.name} / {process.code}」的已批准报价，"
+                        f"未找到工序「{process.code}」的已批准报价，"
                         "请先在「报价一览」中提交并由 MANAGER 审核通过"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
+            # 报价公司必须与请求公司一致（公司由报价锁定）
+            if target_quote.outsource_company_id != company_id_int:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"报价锁定外协公司与此处不一致："
+                        f"报价公司={target_quote.outsource_company_id}，"
+                        f"请求公司={company_id_int}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
         else:
-            # 6b. DIRECT：自动创建一条 price=0 status=APPROVED 报价
-            # 重复检测：先查 (part, company, process) 是否已存在 OUTSOURCING/RECEIVED
-            existing = await self.outsource_quotes.get_one_active_for_tuple(
+            # 6b. DIRECT：按 (part_id, process_id) 有任一 APPROVED 报价（含占位）则用之
+            target_quote = await self.outsource_quotes.get_approved_for_part_process(
                 part_id=part.id,
-                outsource_company_id=company_id_int,
-                process_id=process_id_int,
+                process_id=process.id,
+                is_direct=None,
             )
-            if existing is not None:
-                # 复用现有报价（避免对账时出现多行）
-                target_quote = existing
-            else:
+            if target_quote is None:
                 from model.outsource_quote import TOutsourceQuote
                 from model.outsource_quote_event import TOutsourceQuoteEvent
                 from model.enums import OutsourceQuoteEventType
@@ -1658,16 +1668,16 @@ class PartService:
                     id=new_id(),
                     part_id=part.id,
                     outsource_company_id=company_id_int,
-                    process_id=process_id_int,
-                    price=Decimal("0"),  # DIRECT 默认 0，对账页后填
+                    process_id=process.id,
+                    price=Decimal("0"),
                     status=OutsourceQuoteStatus.APPROVED.value,
+                    is_direct=True,
                     review_note="系统自动创建（DIRECT 直接发送）",
                     reviewed_at=now_naive(),
                     created_by=self._user_id,
                     updated_by=self._user_id,
                 )
                 await self.outsource_quotes.create(new_quote)
-                # 写 CREATED event
                 await self.quote_events.create(TOutsourceQuoteEvent(
                     id=new_id(),
                     quote_id=new_quote.id,
@@ -1679,21 +1689,7 @@ class PartService:
                 ))
                 target_quote = new_quote
 
-        # 7. 报价状态机：APPROVED → OUTSOURCING + 写 sent_at + quantity
-        await refresh_for_state_machine(
-            self.outsource_quotes.session, target_quote, attrs=("status", "version"),
-        )
-        target_quote.sm.mark_outsourcing(
-            event_repo=self.quote_events,
-            created_by=self._user_id,
-        )
-        target_quote.sent_at = now_naive()
-        # 2026-07-29 批次化：报价 quantity 跟实际发送的批次走（sender 可能是拆出的子批）
-        target_quote.quantity = batch.quantity
-        target_quote.updated_by = self._user_id
-        await self.outsource_quotes.update(target_quote)
-
-        # 8. 批次状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
+        # 7. 批次状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
         # 2026-07-29 批次化：部分量先拆再发，状态机作用在拆出的子批上
         target = await self._maybe_split(
             part, batch, getattr(data, "quantity", None),
@@ -1705,6 +1701,24 @@ class PartService:
         )
         target.updated_by = self._user_id
         await self._batches().update(target)
+
+        # 8. 创建 shipment 记录（2026-07-30：报价不再改状态）
+        from model.outsource_shipment import TOutsourceShipment
+        shipment = TOutsourceShipment(
+            id=new_id(),
+            quote_id=target_quote.id,
+            part_id=part.id,
+            batch_id=target.id,
+            outsource_company_id=target_quote.outsource_company_id,
+            process_id=process.id,
+            quantity=target.quantity,
+            unit_price=target_quote.price,
+            status="OUTSOURCING",
+            sent_at=now_naive(),
+            created_by=self._user_id,
+            updated_by=self._user_id,
+        )
+        await self.outsource_shipments.create(shipment)
 
         await self._after_batch_transition(part)
         items = await self._to_out([part])
@@ -1767,19 +1781,6 @@ class PartService:
                 )
             outsource_company_id_int = parsed
 
-        # 5b. PR-H 2026-07-29：找 OUTSOURCING 状态的报价 → mark_received + 写 received_at
-        # 注意：data.next_process_id 是接收后的下一道 INHOUSE 工序，**不是**报价的
-        # OUTSOURCE 工序。part 在 OUTSOURCE 状态下 next_process_id 即外协工序
-        # （statemachine on_enter_OUTSOURCE 保证），用它做报价查找键。
-        current_outsource_proc_id = (
-            int(part.next_process_id) if part.next_process_id else None
-        )
-        await self._mark_quote_received_for_part(
-            part_id=part.id,
-            company_id=outsource_company_id_int,
-            process_id=current_outsource_proc_id,
-        )
-
         # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
         target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
         target.sm.receive_from_outsource(
@@ -1789,6 +1790,19 @@ class PartService:
         )
         target.updated_by = self._user_id
         await self._batches().update(target)
+
+        # 2026-07-30：关闭/拆分 shipment
+        current_outsource_proc_id = (
+            int(part.next_process_id) if part.next_process_id else None
+        )
+        await self._mark_shipment_received(
+            part_id=part.id,
+            source_batch=batch,
+            target_batch=target,
+            company_id=outsource_company_id_int,
+            process_id=current_outsource_proc_id,
+        )
+
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
@@ -1841,17 +1855,6 @@ class PartService:
                 )
             outsource_company_id_int = parsed
 
-        # 5b. PR-H 2026-07-29：找 OUTSOURCING 报价 → mark_received + 写 received_at
-        # 送检路径不指定 next_process_id，process_id 用 part 当前的 next_process_id
-        current_next_proc_id_int = (
-            int(part.next_process_id) if part.next_process_id else None
-        )
-        await self._mark_quote_received_for_part(
-            part_id=part.id,
-            company_id=outsource_company_id_int,
-            process_id=current_next_proc_id_int,
-        )
-
         # 第一次转换：OUTSOURCE → INSPECTION
         target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
         target.sm.inspect_from_outsource(
@@ -1861,6 +1864,19 @@ class PartService:
         )
         target.updated_by = self._user_id
         await self._batches().update(target)
+
+        # 2026-07-30：关闭/拆分 shipment
+        current_next_proc_id_int = (
+            int(part.next_process_id) if part.next_process_id else None
+        )
+        await self._mark_shipment_received(
+            part_id=part.id,
+            source_batch=batch,
+            target_batch=target,
+            company_id=outsource_company_id_int,
+            process_id=current_next_proc_id_int,
+        )
+
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
@@ -2081,22 +2097,27 @@ class PartService:
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-    async def _mark_quote_received_for_part(
+    async def _mark_shipment_received(
         self,
         *,
         part_id: int,
+        source_batch: TPartBatch,
+        target_batch: TPartBatch,
         company_id: int | None,
         process_id: int | None,
     ) -> None:
-        """PR-H 2026-07-29：外协接收时反查 (part, company, process) 的 OUTSOURCING 报价
-        → mark_received + 写 received_at（外协统一事实表生命周期）。
+        """2026-07-30：外协接收时关闭/拆分 shipment。
 
-        调用方：receive_from_outsource / receive_from_outsource_to_inspection。
-
-        找不到匹配报价时静默跳过（兼容历史 USED 状态行 + 老流程；不阻塞接收主流程）。
+        - 优先按 source_batch_id 查 OUTSOURCING shipment。
+        - 查不到再兜底 (part, company, process) 最新一条 OUTSOURCING。
+        - 全量收（target == source）：shipment → RECEIVED。
+        - 部分收（target != source 或 quantity 不同）：源 shipment 减量保持 OUTSOURCING
+          （剩 0 则 RECEIVED），另插新 shipment（batch_id=target.id, status=RECEIVED）。
+        - 找不到时静默跳过（兼容历史流程）。
         """
-        if self.outsource_quotes is None or self.quote_events is None:
+        if self.outsource_shipments is None:
             return
+
         # 兜底：company_id / process_id 缺省时取 part 最近的 SENT 事件
         if company_id is None or process_id is None:
             latest_sent = await self.events.latest_sent_to_outsource_for_part(part_id)
@@ -2109,24 +2130,49 @@ class PartService:
         if company_id is None or process_id is None:
             return
 
-        quote = await self.outsource_quotes.find_active_for_part_company_process(
-            part_id=part_id,
-            company_id=company_id,
-            process_id=process_id,
-            statuses=[OutsourceQuoteStatus.OUTSOURCING.value],
-        )
-        if quote is None:
+        shipment = await self.outsource_shipments.get_open_by_batch_id(source_batch.id)
+        if shipment is None:
+            shipment = await self.outsource_shipments.find_open_by_part_company_process(
+                part_id=part_id,
+                company_id=company_id,
+                process_id=process_id,
+            )
+        if shipment is None:
             return
-        await refresh_for_state_machine(
-            self.outsource_quotes.session, quote, attrs=("status", "version"),
-        )
-        quote.sm.mark_received(
-            event_repo=self.quote_events,
-            created_by=self._user_id,
-        )
-        quote.received_at = now_naive()
-        quote.updated_by = self._user_id
-        await self.outsource_quotes.update(quote)
+
+        received_qty = target_batch.quantity
+        if target_batch.id == source_batch.id:
+            # 全量收
+            shipment.status = "RECEIVED"
+            shipment.received_at = now_naive()
+            shipment.updated_by = self._user_id
+            await self.outsource_shipments.update(shipment)
+        else:
+            # 部分收：镜像拆分
+            shipment.quantity -= received_qty
+            if shipment.quantity <= 0:
+                shipment.status = "RECEIVED"
+                shipment.received_at = now_naive()
+            shipment.updated_by = self._user_id
+            await self.outsource_shipments.update(shipment)
+
+            from model.outsource_shipment import TOutsourceShipment
+            new_shipment = TOutsourceShipment(
+                id=new_id(),
+                quote_id=shipment.quote_id,
+                part_id=shipment.part_id,
+                batch_id=target_batch.id,
+                outsource_company_id=shipment.outsource_company_id,
+                process_id=shipment.process_id,
+                quantity=received_qty,
+                unit_price=shipment.unit_price,
+                status="RECEIVED",
+                sent_at=shipment.sent_at,
+                received_at=now_naive(),
+                created_by=self._user_id,
+                updated_by=self._user_id,
+            )
+            await self.outsource_shipments.create(new_shipment)
 
     async def _get_process(self, process_id: int) -> TProcess:
         """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""
@@ -3165,11 +3211,19 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         for target in targets:
+            # 2026-07-30：先记录原状态，再 cancel（cancel 后状态变为 CANCELLED）
+            was_outsource = target.status == PartStatus.OUTSOURCE.value
             target.sm.cancel(
                 event_repo=self.events, created_by=self._user_id,
             )
             target.updated_by = self._user_id
             await self._batches().update(target)
+            if was_outsource and self.outsource_shipments is not None:
+                shipment = await self.outsource_shipments.get_open_by_batch_id(target.id)
+                if shipment is not None:
+                    shipment.status = "CANCELLED"
+                    shipment.updated_by = self._user_id
+                    await self.outsource_shipments.update(shipment)
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]

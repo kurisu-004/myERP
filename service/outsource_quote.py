@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
+from core.time import now_naive
 from model import TOutsourceQuote, TPart, TPartBatch
 from model.customer import TCustomer
 from model.enums import (
@@ -35,6 +36,7 @@ from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
+from repository.outsource_shipment import OutsourceShipmentRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
@@ -50,6 +52,9 @@ from schema.outsource_quote import (
     OutsourceQuoteOut,
     OutsourceQuoteRejectRequest,
     OutsourceQuoteUpdateRequest,
+    OutsourceShipmentOut,
+    OutsourceShipmentReconcileUpdateRequest,
+    OutsourceInFlightItem,
 )
 from schema.part import PartListItem
 from service._id_parse import parse_snowflake_id
@@ -63,7 +68,7 @@ from utils.id_gen import new_id
 
 
 class OutsourceQuoteService:
-    """外协报价单业务逻辑层。"""
+    """外协报价单业务逻辑层（2026-07-30 扩展：兼管 shipment 对账 + in-flight）。"""
 
     def __init__(
         self,
@@ -77,6 +82,7 @@ class OutsourceQuoteService:
         workers: WorkerRepository,
         *,
         part_events: PartEventRepository,
+        shipments: OutsourceShipmentRepository | None = None,
         current_user: CurrentUser | None = None,
     ) -> None:
         self.quotes = quotes
@@ -89,6 +95,7 @@ class OutsourceQuoteService:
         self.shelves = shelves
         self.workers = workers
         self.part_events = part_events
+        self.shipments = shipments
         self._user_id: int | None = current_user.id if current_user else None
 
     # ============================================================
@@ -506,7 +513,11 @@ class OutsourceQuoteService:
     async def approve_quote(
         self, quote_id: str, data: OutsourceQuoteApproveRequest,
     ) -> OutsourceQuoteOut:
-        """SUBMITTED → APPROVED（MANAGER-only，端点层 enforce）。"""
+        """SUBMITTED → APPROVED（MANAGER-only，端点层 enforce）。
+
+        2026-07-30：批准前先把同 (part_id, process_id) 的其他 SUBMITTED/APPROVED
+        报价（含 DIRECT 占位）全部置 REJECTED，保证同工序只有一条生效报价。
+        """
         qid = parse_snowflake_id(quote_id, field_name="quote_id")
         if qid is None:
             raise self._not_found(quote_id)
@@ -528,6 +539,28 @@ class OutsourceQuoteService:
                 message="报价版本不一致，请刷新后重试",
                 http_status=http_status.HTTP_409_CONFLICT,
             )
+
+        # 2026-07-30：自动拒绝同 (part, process) 的其他活跃报价
+        competitors = await self.quotes.list_active_by_part_process(
+            part_id=quote.part_id,
+            process_id=quote.process_id,
+            exclude_id=quote.id,
+        )
+        for competitor in competitors:
+            competitor.status = OutsourceQuoteStatus.REJECTED.value
+            competitor.reviewed_at = now_naive()
+            competitor.review_note = "被新批准报价取代"
+            competitor.updated_by = self._user_id
+            await self.quotes.update(competitor)
+            await self.quote_events.create(TOutsourceQuoteEvent(
+                id=new_id(),
+                quote_id=competitor.id,
+                event_type=OutsourceQuoteEventType.REJECTED.value,
+                from_status=competitor.status,
+                to_status=OutsourceQuoteStatus.REJECTED.value,
+                note="被新批准报价取代",
+                created_by=self._user_id,
+            ))
 
         quote.sm.approve(
             review_note=data.review_note,
@@ -626,88 +659,139 @@ class OutsourceQuoteService:
         await self.quotes.soft_delete(quote)
 
     # ============================================================
-    # 对账页更新（PR-H 2026-07-29）：OUTSOURCING / RECEIVED 状态可改 unit_price / quantity / is_billed
+    # 对账页更新（2026-07-30）：迁移到 t_outsource_shipment
     # ============================================================
-    async def reconcile_update_quote(
-        self, quote_id: str, data,  # OutsourceReconciliationUpdateRequest
-    ) -> OutsourceQuoteOut:
-        """对账页双击编辑：单价 / 数量 / 对账标记。允许状态 OUTSOURCING / RECEIVED。
+    async def reconcile_update_shipment(
+        self, shipment_id: str, data: OutsourceShipmentReconcileUpdateRequest,
+    ) -> OutsourceShipmentOut:
+        """对账页双击编辑 shipment：单价 / 数量 / 对账标记。
 
-        - 勾 is_billed=True 且当前 RECEIVED → mark_billed（RECEIVED → BILLED）
-        - 勾 is_billed=False 且当前 BILLED → 直接 ORM 写 status=RECEIVED（library
-          不允许 final 状态有出向转换）+ 写 REOPENED_BILLED event
-        - 其他状态不接受修改
+        允许状态 OUTSOURCING / RECEIVED。
+        is_billed 为纯标志位，不驱动状态机。
         """
-        qid = parse_snowflake_id(quote_id, field_name="quote_id")
-        if qid is None:
-            raise self._not_found(quote_id)
-        quote = await self.quotes.get_by_id(qid)
-        if quote is None:
-            raise self._not_found(quote_id)
+        if self.shipments is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing shipment repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        sid = parse_snowflake_id(shipment_id, field_name="shipment_id")
+        if sid is None:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_SHIPMENT_NOT_FOUND,
+                message=f"shipment {shipment_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        shipment = await self.shipments.get_by_id(sid)
+        if shipment is None:
+            raise BizError(
+                code=ErrCode.BIZ_OUTSOURCE_SHIPMENT_NOT_FOUND,
+                message=f"shipment {shipment_id!r} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
         await refresh_for_state_machine(
-            self.quotes.session, quote, attrs=("status", "version"),
+            self.shipments.session, shipment, attrs=("status", "version"),
         )
-        if quote.version != data.version:
+        if shipment.version != data.version:
             raise BizError(
                 code=ErrCode.BIZ_VERSION_CONFLICT,
-                message="该报价已被其他用户修改，请刷新后重试",
+                message="该发货记录已被其他用户修改，请刷新后重试",
                 http_status=http_status.HTTP_409_CONFLICT,
             )
-        if quote.status not in (
-            OutsourceQuoteStatus.OUTSOURCING.value,
-            OutsourceQuoteStatus.RECEIVED.value,
-            OutsourceQuoteStatus.BILLED.value,
-        ):
+        if shipment.status not in ("OUTSOURCING", "RECEIVED"):
             raise BizError(
                 code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
                 message=(
-                    f"对账编辑仅允许 OUTSOURCING / RECEIVED / BILLED 状态；"
-                    f"当前 {quote.status}"
+                    f"对账编辑仅允许 OUTSOURCING / RECEIVED 状态；"
+                    f"当前 {shipment.status}"
                 ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 应用 patch
         if data.unit_price is not None:
-            quote.price = data.unit_price
+            shipment.unit_price = data.unit_price
         if data.quantity is not None:
-            quote.quantity = data.quantity
+            shipment.quantity = data.quantity
         if data.is_billed is not None:
-            new_billed = bool(data.is_billed)
-            cur_billed = bool(quote.is_billed)
-            if new_billed and not cur_billed:
-                # RECEIVED → BILLED（mark_billed 状态机）
-                if quote.status != OutsourceQuoteStatus.RECEIVED.value:
-                    raise BizError(
-                        code=ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION,
-                        message="只有 RECEIVED 状态可以标记为已对账（BILLED）",
-                        http_status=http_status.HTTP_400_BAD_REQUEST,
-                    )
-                quote.sm.mark_billed(
-                    event_repo=self.quote_events,
-                    created_by=self._user_id,
-                )
-            elif not new_billed and cur_billed:
-                # BILLED → RECEIVED（library 不允许 final 状态有出向转换；直接 ORM）
-                quote.status = OutsourceQuoteStatus.RECEIVED.value
-                # 写 REOPENED_BILLED event（不通过 sm 转换）
-                from model.outsource_quote_event import TOutsourceQuoteEvent
-                self.quote_events.add(TOutsourceQuoteEvent(
-                    id=new_id(),
-                    quote_id=quote.id,
-                    event_type=OutsourceQuoteEventType.REOPENED_BILLED.value,
-                    from_status=OutsourceQuoteStatus.BILLED.value,
-                    to_status=OutsourceQuoteStatus.RECEIVED.value,
-                    note="对账撤销（误勾 is_billed）",
-                    created_by=self._user_id,
-                ))
+            shipment.is_billed = bool(data.is_billed)
 
-        quote.updated_by = self._user_id
-        await self.quotes.update(quote)
+        shipment.updated_by = self._user_id
+        await self.shipments.update(shipment)
         await refresh_for_state_machine(
-            self.quotes.session, quote, attrs=("updated_at",),
+            self.shipments.session, shipment, attrs=("updated_at",),
         )
-        return await self._to_out(quote)
+        return await self._to_shipment_out(shipment)
+
+    # ============================================================
+    # in-flight 外协中批次列表（2026-07-30 新增）
+    # ============================================================
+    async def list_in_flight(
+        self,
+        *,
+        keyword: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[OutsourceInFlightItem], int]:
+        """返回外协中批次列表（行=批次 + 左联开口 shipment）。"""
+        if self.shipments is None:
+            return [], 0
+        total = await self.shipments.count_in_flight(keyword=keyword)
+        if total == 0:
+            return [], 0
+        rows = await self.shipments.list_in_flight(
+            keyword=keyword, limit=limit, offset=offset,
+        )
+
+        # 批查：公司名、工序名、客户路径
+        company_ids = [
+            int(s.outsource_company_id)
+            for s, _, _ in rows if s is not None and s.outsource_company_id
+        ]
+        company_map: dict[int, str] = {}
+        if company_ids:
+            company_rows = await self.companies.list_by_ids(list(set(company_ids)))
+            company_map = {c.id: c.name for c in company_rows}
+
+        process_ids = [
+            int(b.next_process_id)
+            for _, _, b in rows if b is not None and b.next_process_id
+        ]
+        process_map: dict[int, str] = {}
+        if process_ids:
+            proc_rows = await self.processes.list_by_ids(list(set(process_ids)))
+            process_map = {p.id: p.name for p in proc_rows}
+
+        part_ids = [p.id for _, p, _ in rows]
+        cust_cache = await preload_customer_cache(
+            self.customers,
+            [p.customer_id for _, p, _ in rows if p.customer_id],
+        ) if self.customers else {}
+
+        items: list[OutsourceInFlightItem] = []
+        for shipment, part, batch in rows:
+            customer_path: str | None = None
+            if part.customer_id and part.customer_id in cust_cache:
+                customer_path = make_customer_path_cached(
+                    cust_cache[part.customer_id], cust_cache,
+                )
+            next_process_id = batch.next_process_id if batch else None
+            items.append(OutsourceInFlightItem(
+                part_id=part.id,
+                batch_id=batch.id if batch else None,
+                batch_no=batch.batch_no if batch else None,
+                quantity=batch.quantity if batch else None,
+                serial_no=part.serial_no,
+                drawing_no=part.drawing_no,
+                name=part.name,
+                customer_path=customer_path,
+                next_process_id=next_process_id,
+                next_process_name=process_map.get(int(next_process_id)) if next_process_id else None,
+                outsource_company_id=shipment.outsource_company_id if shipment else None,
+                outsource_company_name=company_map.get(int(shipment.outsource_company_id)) if shipment and shipment.outsource_company_id else None,
+                sent_at=shipment.sent_at if shipment else None,
+                version=batch.version if batch else 0,
+            ))
+        return items, total
 
     # ============================================================
     # 「外协发送」列表：至少有一条 APPROVED 报价 + 状态可发送的零件
@@ -995,6 +1079,7 @@ class OutsourceQuoteService:
                 received_at=q.received_at,
                 quantity=q.quantity,
                 is_billed=bool(getattr(q, "is_billed", False)),
+                is_direct=bool(getattr(q, "is_direct", False)),
                 created_at=q.created_at,
                 updated_at=q.updated_at,
                 part_serial_no=part.serial_no if part else None,
@@ -1006,3 +1091,49 @@ class OutsourceQuoteService:
                 customer_path=customer_path,
             ))
         return out
+
+    async def _to_shipment_out(
+        self, s: "TOutsourceShipment",
+    ) -> OutsourceShipmentOut:
+        """单条 shipment 序列化。"""
+        part = await self.parts.get_by_id(s.part_id)
+        company = await self.companies.get_by_id(s.outsource_company_id)
+        process = await self.processes.get_by_id(s.process_id)
+        customer_path: str | None = None
+        if part and part.customer_id:
+            cust_cache = await preload_customer_cache(
+                self.customers, [part.customer_id],
+            )
+            if part.customer_id in cust_cache:
+                customer_path = make_customer_path_cached(
+                    cust_cache[part.customer_id], cust_cache,
+                )
+        batch_no: int | None = None
+        if s.batch_id is not None and self.parts.session is not None:
+            from model import TPartBatch
+            batch = await self.parts.session.get(TPartBatch, s.batch_id)
+            if batch is not None:
+                batch_no = batch.batch_no
+        return OutsourceShipmentOut(
+            id=s.id,
+            version=s.version,
+            quote_id=s.quote_id,
+            part_id=s.part_id,
+            batch_id=s.batch_id,
+            batch_no=batch_no,
+            outsource_company_id=s.outsource_company_id,
+            process_id=s.process_id,
+            quantity=s.quantity,
+            unit_price=s.unit_price,
+            status=s.status,
+            sent_at=s.sent_at,
+            received_at=s.received_at,
+            is_billed=bool(getattr(s, "is_billed", False)),
+            created_at=s.created_at,
+            updated_at=s.updated_at,
+            part_drawing_no=part.drawing_no if part else None,
+            part_name=part.name if part else None,
+            outsource_company_name=company.name if company else None,
+            process_name=process.name if process else None,
+            customer_path=customer_path,
+        )

@@ -282,10 +282,23 @@ def mock_outsource_quotes():
     repo = OutsourceQuoteRepository.__new__(OutsourceQuoteRepository)
     repo.session = MagicMock()  # PR-H 2026-07-29：refresh_for_state_machine 需要 session
     repo.get_one_approved = AsyncMock(return_value=None)
+    repo.get_approved_for_part_process = AsyncMock(return_value=None)
     repo.get_one_active_for_tuple = AsyncMock(return_value=None)
     repo.find_active_for_part_company_process = AsyncMock(return_value=None)
     repo.create = AsyncMock(side_effect=lambda q: q)
     repo.update = AsyncMock(side_effect=lambda q: q)
+    return repo
+
+
+@pytest.fixture
+def mock_outsource_shipments():
+    from repository.outsource_shipment import OutsourceShipmentRepository
+    repo = OutsourceShipmentRepository.__new__(OutsourceShipmentRepository)
+    repo.session = MagicMock()
+    repo.create = AsyncMock(side_effect=lambda s: s)
+    repo.update = AsyncMock(side_effect=lambda s: s)
+    repo.get_by_id = AsyncMock(return_value=None)
+    repo.get_open_by_batch_id = AsyncMock(return_value=None)
     return repo
 
 
@@ -314,6 +327,7 @@ def service(
     mock_outsource_company_process,
     mock_outsource_quotes,
     mock_quote_events,
+    mock_outsource_shipments,
 ) -> PartService:
     """PartService wired to mock repositories.
 
@@ -342,6 +356,7 @@ def service(
         outsource_company_process=mock_outsource_company_process,
         outsource_quotes=mock_outsource_quotes,
         quote_events=mock_quote_events,
+        outsource_shipments=mock_outsource_shipments,
         broadcaster=None,
         event_broadcaster=None,
     )
@@ -1981,6 +1996,7 @@ class TestSendToOutsource:
     async def test_inprocess_to_outsource_happy(
         self, service, mock_parts, mock_outsource_companies, mock_outsource_company_process,
         mock_processes, mock_outsource_quotes, mock_quote_events, mock_shelf_process_repo,
+        mock_outsource_shipments,
     ) -> None:
         # PR-H 2026-07-28：发送外协统一从「绑定了 OUTSOURCE 工序的货架」上发出。
         # PENDING 已不再支持，必须 IN_PROCESS + PRODUCTION_SHELF + holder 在 OUTSOURCE 集合中。
@@ -2015,11 +2031,12 @@ class TestSendToOutsource:
             return_value=[99],
         )
 
-        # 2026-07-16：必须有一份 APPROVED 报价（防御闸）
+        # 2026-07-30：按 (part_id, process_id) 查 APPROVED 报价
         approved_quote = MagicMock()
         approved_quote.id = 800
-        approved_quote.sm = MagicMock()  # state machine 用 mark_used
-        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=approved_quote)
+        approved_quote.price = Decimal("88.00")
+        approved_quote.outsource_company_id = 500
+        mock_outsource_quotes.get_approved_for_part_process = AsyncMock(return_value=approved_quote)
 
         mock_out = _make_part_out()
         service._to_out = AsyncMock(return_value=[mock_out])
@@ -2032,9 +2049,8 @@ class TestSendToOutsource:
         )
         assert result == mock_out
         part.sm.send_to_outsource.assert_called_once()
-        # 2026-07-16：发送成功会 mark_used 该报价
-        approved_quote.sm.mark_outsourcing.assert_called_once()
-        mock_outsource_quotes.update.assert_awaited_with(approved_quote)
+        # 2026-07-30：报价不再改状态；创建 shipment
+        mock_outsource_shipments.create.assert_awaited_once()
 
     async def test_company_not_found(
         self, service, mock_parts, mock_outsource_companies, mock_processes,
@@ -2273,7 +2289,7 @@ class TestSendToOutsourceDefenseGate:
             return_value=[99],
         )
         # 没有 APPROVED 报价
-        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=None)
+        mock_outsource_quotes.get_approved_for_part_process = AsyncMock(return_value=None)
 
         from schema.part import SendToOutsourceRequest
         with pytest.raises(BizError) as exc:
@@ -2365,8 +2381,9 @@ class TestSendToOutsourceDefenseGate:
         )
         approved_quote = MagicMock()
         approved_quote.id = 800
-        approved_quote.sm = MagicMock()
-        mock_outsource_quotes.get_one_approved = AsyncMock(return_value=approved_quote)
+        approved_quote.price = Decimal("88.00")
+        approved_quote.outsource_company_id = 500
+        mock_outsource_quotes.get_approved_for_part_process = AsyncMock(return_value=approved_quote)
         mock_out = _make_part_out()
         service._to_out = AsyncMock(return_value=[mock_out])
 
@@ -2378,7 +2395,7 @@ class TestSendToOutsourceDefenseGate:
         )
         assert result == mock_out
         part.sm.send_to_outsource.assert_called_once()
-        approved_quote.sm.mark_outsourcing.assert_called_once()
+        # 2026-07-30：报价不再改状态
 
 
 # ===================================================================
@@ -2391,9 +2408,39 @@ class TestSendToOutsourceOCCAndDirect:
 
     async def test_occ_mismatch_raises_409(
         self, service, mock_parts, mock_outsource_companies, mock_processes,
+        mock_outsource_company_process, mock_shelf_process_repo,
     ) -> None:
-        """data.version 与 part.version 不一致 → BIZ_VERSION_CONFLICT 409。"""
-        part = _make_part()
+        """data.version 与目标批次 batch.version 不一致 → BIZ_VERSION_CONFLICT 409。
+
+        2026-07-30 批次化后 OCC 校验在批次上。
+        """
+        from model.process import TProcess
+        proc = TProcess(
+            id=99, code="测试外协", name="测试外协",
+            category=ProcessCategory.OUTSOURCE.value,
+            sort_order=0, requires_approval=True,
+        )
+        proc.created_at = datetime(2025, 1, 1)
+        proc.updated_at = datetime(2025, 1, 1)
+        proc.description = None
+        proc.deleted_at = None
+        mock_processes.get_by_id = AsyncMock(return_value=proc)
+
+        company = MagicMock(id=500, name="A 外协", is_active=True)
+        mock_outsource_companies.get_by_id = AsyncMock(return_value=company)
+        mock_outsource_company_process.list_process_ids_by_outsource_company = AsyncMock(
+            return_value=[99],
+        )
+        mock_shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[1],
+        )
+
+        part = _make_part(
+            status=PartStatus.IN_PROCESS.value,
+            location=PartLocation.PRODUCTION_SHELF.value,
+            current_holder_id=1,
+            next_process_id=99,
+        )
         part.version = 5
         mock_parts.get_by_id = AsyncMock(return_value=part)
         from schema.part import SendToOutsourceRequest
@@ -2401,7 +2448,7 @@ class TestSendToOutsourceOCCAndDirect:
             await service.send_to_outsource(
                 1001, SendToOutsourceRequest(
                     outsource_company_id="500", next_process_id="99",
-                    version=3,  # 不匹配
+                    version=3,  # 不匹配（批次 version=0）
                 ),
             )
         assert exc.value.code == ErrCode.BIZ_VERSION_CONFLICT
@@ -2410,15 +2457,13 @@ class TestSendToOutsourceOCCAndDirect:
     async def test_direct_send_on_c2_success(
         self, service, mock_parts, mock_shelves, mock_outsource_companies,
         mock_outsource_company_process, mock_processes, mock_outsource_quotes,
-        mock_shelf_process_repo, mock_quote_events,
+        mock_shelf_process_repo, mock_quote_events, mock_outsource_shipments,
     ) -> None:
         """process.requires_approval=False + part 在 OUTSOURCE-bound 货架 → 直接发送成功。
 
         PR-H 2026-07-28：闸门升级为「绑了 OUTSOURCE 工序的货架」（C2 是其中一个）。
-        关键不变性：
-        - 不调 self.outsource_quotes.get_one_approved
-        - 不调 approved_quote.sm.mark_used
-        - 状态机 transition 正常推进；direct_send=True 透传给 statemachine
+        2026-07-30：报价回归纯审批对象，DIRECT 自动创建 is_direct=true APPROVED 报价，
+        发送状态由 t_outsource_shipment 记录。
         """
         # 旧 C2 fixture 留作示意；新闸门走 list_shelf_ids_with_process_category
         c2 = MagicMock(spec=TShelf)
@@ -2461,7 +2506,7 @@ class TestSendToOutsourceOCCAndDirect:
 
         # 即使有 quote repo mock，直接发送分支不应被调用
         mock_outsource_quotes.get_one_approved = AsyncMock(
-            side_effect=AssertionError("直接发送不应查报价"),
+            side_effect=AssertionError("直接发送不应查旧报价"),
         )
 
         mock_out = _make_part_out()
@@ -2479,20 +2524,22 @@ class TestSendToOutsourceOCCAndDirect:
         call_kwargs = part.sm.send_to_outsource.call_args.kwargs
         assert call_kwargs.get("direct_send") is True
 
-        # PR-H 2026-07-29：DIRECT 自动创建 price=0 APPROVED 报价并立即 OUTSOURCING
-        # （外协统一事实表；对账页单价为 0 由文员/经理后填）
+        # 2026-07-30：DIRECT 自动创建 price=0 APPROVED 占位报价，报价本身不变状态
         from model.enums import OutsourceQuoteStatus as _OQS
         created_quote = mock_outsource_quotes.create.await_args.args[0]
         assert created_quote.price == Decimal("0")
         assert created_quote.review_note == "系统自动创建（DIRECT 直接发送）"
-        # 真实状态机 on_enter_OUTSOURCING 已同步 status
-        assert created_quote.status == _OQS.OUTSOURCING.value
-        assert created_quote.sent_at is not None
-        assert created_quote.quantity == part.quantity
-        mock_outsource_quotes.update.assert_awaited_with(created_quote)
-        # 报价事件：CREATED（DIRECT 自动）+ MARKED_OUTSOURCING 两条
+        assert created_quote.status == _OQS.APPROVED.value
+        assert created_quote.is_direct is True
+        # 报价不再写 sent_at/quantity；由 shipment 承载发货记录
+        assert created_quote.sent_at is None
+        assert created_quote.quantity is None
+        # 不 update 报价（状态未变）
+        mock_outsource_quotes.update.assert_not_awaited()
+        # 报价事件：CREATED（DIRECT 自动）一条
         assert mock_quote_events.create.await_count == 1
-        assert mock_quote_events.add.call_count >= 1
+        # shipment 记录创建
+        assert mock_outsource_shipments.create.await_count == 1
 
     async def test_direct_send_part_not_on_c2_raises_422(
         self, service, mock_parts, mock_shelves, mock_outsource_companies,

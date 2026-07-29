@@ -40,6 +40,7 @@ from repository.worker import WorkerRepository
 from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
 from repository.shelf_process import ShelfProcessRepository
+from repository.outsource_shipment import OutsourceShipmentRepository
 from repository.worker import WorkerRepository
 from schema.outsource_quote import (
     OutsourceQuoteApproveRequest,
@@ -157,6 +158,7 @@ def _make_quote_service(session) -> OutsourceQuoteService:
         shelves=ShelfRepository(session),
         workers=WorkerRepository(session),
         part_events=PartEventRepository(session),
+        shipments=OutsourceShipmentRepository(session),
     )
 
 
@@ -174,6 +176,7 @@ def _make_part_service(session, *, event_broadcaster=None) -> PartService:
         outsource_company_process=OutsourceCompanyProcessRepository(session),
         outsource_quotes=OutsourceQuoteRepository(session),
         quote_events=OutsourceQuoteEventRepository(session),
+        outsource_shipments=OutsourceShipmentRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
         event_broadcaster=event_broadcaster,
     )
@@ -221,8 +224,6 @@ def _send_request(world) -> SendToOutsourceRequest:
 
 async def test_send_to_outsource_marks_quote_used_then_receive_to_production(clean_db):
     world = await _seed_world(clean_db, suffix="FLOW")
-    # PR-H 2026-07-28：把 part 放到绑了 OUTSOURCE 工序的货架上（默认已是 IN_PROCESS 但
-    # holder 未设；下面设到 production_shelf 上）
     await _place_on_shelf(clean_db, world)
     approved = await _approve_quote(clean_db, world)
     service = _make_part_service(clean_db)
@@ -237,14 +238,15 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
     assert sent.next_process_id == world["outsource_process"].id
     assert sent.version > original_version
 
-    # PR-H 2026-07-29：发送后报价为 OUTSOURCING（不再是 USED）
+    # 2026-07-30：发送后报价仍为 APPROVED（不复用为发货记录）；shipment 为 OUTSOURCING
     sent_quote = await service.outsource_quotes.get_by_id(int(approved.id))
     assert sent_quote is not None
-    assert sent_quote.status == OutsourceQuoteStatus.OUTSOURCING.value
-    assert sent_quote.sent_at is not None
-    assert sent_quote.quantity == world["part"].quantity
-    quote_events = await service.quote_events.list_by_quote(sent_quote.id)
-    assert quote_events[-1].event_type == OutsourceQuoteEventType.MARKED_OUTSOURCING.value
+    assert sent_quote.status == OutsourceQuoteStatus.APPROVED.value
+    shipment = await service.outsource_shipments.get_open_by_batch_id(world["root_batch"].id)
+    assert shipment is not None
+    assert shipment.status == "OUTSOURCING"
+    assert shipment.sent_at is not None
+    assert shipment.quantity == world["part"].quantity
 
     received = await service.receive_from_outsource(
         world["part"].id,
@@ -258,11 +260,11 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
     assert received.current_holder_id == world["production_shelf"].id
     assert received.next_process_id == world["inhouse_process"].id
 
-    # PR-H 2026-07-29：接收后报价为 RECEIVED + received_at 已写
-    received_quote = await service.outsource_quotes.get_by_id(int(approved.id))
-    assert received_quote is not None
-    assert received_quote.status == OutsourceQuoteStatus.RECEIVED.value
-    assert received_quote.received_at is not None
+    # 2026-07-30：接收后 shipment 为 RECEIVED
+    received_shipment = await service.outsource_shipments.get_by_id(shipment.id)
+    assert received_shipment is not None
+    assert received_shipment.status == "RECEIVED"
+    assert received_shipment.received_at is not None
 
     part_events = await service.events.list_by_part(world["part"].id)
     assert [event.event_type for event in part_events] == [
@@ -286,21 +288,24 @@ async def test_direct_send_persists_zero_price_outsourcing_quote(clean_db):
 
     assert sent.status == PartStatus.OUTSOURCE
     assert sent.location == PartLocation.OUTSOURCE_COMPANY.value
-    quote = await service.outsource_quotes.get_one_active_for_tuple(
+    # 2026-07-30：DIRECT 路径自动创建 is_direct=true 的 APPROVED 占位报价
+    quote = await service.outsource_quotes.get_approved_for_part_process(
         part_id=world["part"].id,
-        outsource_company_id=world["company"].id,
         process_id=world["outsource_process"].id,
     )
     assert quote is not None
     assert quote.price == Decimal("0")
-    assert quote.status == OutsourceQuoteStatus.OUTSOURCING.value
-    assert quote.quantity == world["root_batch"].quantity
-    assert quote.review_note == "系统自动创建（DIRECT 直接发送）"
+    assert quote.status == OutsourceQuoteStatus.APPROVED.value
+    assert quote.is_direct is True
+    # shipment 记录实际发送
+    shipment = await service.outsource_shipments.get_open_by_batch_id(world["root_batch"].id)
+    assert shipment is not None
+    assert shipment.status == "OUTSOURCING"
+    assert shipment.quantity == world["root_batch"].quantity
 
 
 async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db):
     no_quote_world = await _seed_world(clean_db, suffix="NOQUOTE")
-    # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
     await _place_on_shelf(clean_db, no_quote_world)
     service = _make_part_service(clean_db)
 
@@ -309,7 +314,6 @@ async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db)
             no_quote_world["part"].id, _send_request(no_quote_world),
         )
     assert no_quote_exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED
-    # PR-H 2026-07-28：默认 part 已在 OUTSOURCE-bound 货架上（IN_PROCESS+PRODUCTION_SHELF）
     assert no_quote_world["part"].status == PartStatus.IN_PROCESS.value
     assert no_quote_world["part"].location == PartLocation.PRODUCTION_SHELF.value
 
@@ -325,17 +329,14 @@ async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db)
         await service.send_to_outsource(
             wrong_state_world["part"].id, _send_request(wrong_state_world),
         )
-    # PR-H 2026-07-28：统一走 OUTSOURCE-bound 货架闸门；READY_TO_SHIP + OFFICE 抛
-    # BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF 422
     assert state_exc.value.code == ErrCode.BIZ_OUTSOURCE_DIRECT_REQUIRES_C2_SHELF
     assert wrong_state_world["part"].status == PartStatus.READY_TO_SHIP.value
 
 
 async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db):
     world = await _seed_world(clean_db, suffix="AUTOPASS")
-    # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
     await _place_on_shelf(clean_db, world)
-    approved = await _approve_quote(clean_db, world)
+    await _approve_quote(clean_db, world)
 
     async def expire_state_after_first_transition(event_type: str, _payload: dict):
         if event_type == "RECEIVED_FROM_OUTSOURCE_INSPECTED":
@@ -359,11 +360,27 @@ async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db)
     assert received.status == PartStatus.READY_TO_SHIP
     assert received.location is None
 
-    # PR-H 2026-07-29：接收后报价为 RECEIVED（不再是 USED）
-    received_quote = await service.outsource_quotes.get_by_id(int(approved.id))
-    assert received_quote is not None
-    assert received_quote.status == OutsourceQuoteStatus.RECEIVED.value
-    assert received_quote.received_at is not None
+    # 2026-07-30：接收后 shipment 为 RECEIVED
+    shipment = await service.outsource_shipments.get_open_by_batch_id(world["root_batch"].id)
+    if shipment is None:
+        # 全量接收后原 shipment 已关闭，查最新 shipment
+        shipment = await service.outsource_shipments.find_open_by_part_company_process(
+            part_id=world["part"].id,
+            company_id=world["company"].id,
+            process_id=world["outsource_process"].id,
+        )
+    # 由于已接收，开口查应为空；直接用 list 兜底
+    from sqlalchemy import select
+    from model import TOutsourceShipment
+    stmt = select(TOutsourceShipment).where(
+        TOutsourceShipment.part_id == world["part"].id,
+        TOutsourceShipment.deleted_at.is_(None),
+    ).order_by(TOutsourceShipment.id.desc())
+    result = await clean_db.execute(stmt)
+    shipment = result.scalar_one_or_none()
+    assert shipment is not None
+    assert shipment.status == "RECEIVED"
+    assert shipment.received_at is not None
 
     part_events = await service.events.list_by_part(world["part"].id)
     assert [event.event_type for event in part_events] == [

@@ -99,7 +99,7 @@ async def _create_quote(
     ))
 
 
-async def test_quote_lifecycle_draft_to_used_without_missing_greenlet(clean_db):
+async def test_quote_lifecycle_draft_to_approved_without_missing_greenlet(clean_db):
     """回归原始故障：UPDATE 后序列化 updated_at 不得隐式 lazy-load。"""
     part, process, company = await _seed_quote_dependencies(
         clean_db, suffix="LIFE",
@@ -135,26 +135,18 @@ async def test_quote_lifecycle_draft_to_used_without_missing_greenlet(clean_db):
     await refresh_for_state_machine(
         clean_db, quote, attrs=("status", "version"),
     )
-    quote.sm.mark_used(event_repo=events, created_by=None)
-    await quotes.update(quote)
-    await refresh_for_state_machine(
-        clean_db, quote, attrs=("status", "updated_at"),
-    )
-
-    assert quote.status == OutsourceQuoteStatus.USED.value
-    assert quote.sm.is_terminal is True
+    # 2026-07-30：报价回归纯审批对象，终态为 APPROVED/REJECTED
+    assert quote.status == OutsourceQuoteStatus.APPROVED.value
     rows = await events.list_by_quote(quote.id)
     assert [row.event_type for row in rows] == [
         OutsourceQuoteEventType.CREATED.value,
         OutsourceQuoteEventType.SUBMITTED.value,
         OutsourceQuoteEventType.APPROVED.value,
-        OutsourceQuoteEventType.USED.value,
     ]
     assert [(row.from_status, row.to_status) for row in rows] == [
         (None, OutsourceQuoteStatus.DRAFT.value),
         (OutsourceQuoteStatus.DRAFT.value, OutsourceQuoteStatus.SUBMITTED.value),
         (OutsourceQuoteStatus.SUBMITTED.value, OutsourceQuoteStatus.APPROVED.value),
-        (OutsourceQuoteStatus.APPROVED.value, OutsourceQuoteStatus.USED.value),
     ]
 
 
@@ -173,6 +165,8 @@ async def test_duplicate_active_tuple_hits_service_guard_and_db_integrity(clean_
         )
     assert exc_info.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_DUPLICATE
 
+    # 2026-07-30：DB 部分唯一索引改为 (part_id, process_id) WHERE APPROVED AND is_direct=false。
+    # DRAFT 重复不再撞 DB 索引，只由 service 层拦截。
     duplicate = TOutsourceQuote(
         id=new_id(),
         part_id=part.id,
@@ -181,10 +175,8 @@ async def test_duplicate_active_tuple_hits_service_guard_and_db_integrity(clean_
         price=Decimal("99.00"),
         status=OutsourceQuoteStatus.DRAFT.value,
     )
-    with pytest.raises(IntegrityError):
-        async with clean_db.begin_nested():
-            clean_db.add(duplicate)
-            await clean_db.flush()
+    clean_db.add(duplicate)
+    await clean_db.flush()  # 不应抛 IntegrityError
 
     persisted = await service.quotes.get_by_id(int(created.id))
     assert persisted is not None

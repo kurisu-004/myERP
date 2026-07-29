@@ -28,6 +28,7 @@ from .enums import (
 from .menu import TMenu, TRoleMenu
 from .outsource_company import TOutsourceCompany
 from .outsource_company_process import TOutsourceCompanyProcess
+from .outsource_shipment import TOutsourceShipment
 from .outsource_quote import TOutsourceQuote
 from .outsource_quote_event import TOutsourceQuoteEvent
 from .part import TPart
@@ -59,6 +60,7 @@ __all__ = [
     "TOutsourceCompanyProcess",
     "TOutsourceQuote",
     "TOutsourceQuoteEvent",
+    "TOutsourceShipment",
     "TPart",
     "TPartBatch",
     "TPartEvent",
@@ -80,6 +82,7 @@ __all__ = [
     "OutsourceQuoteEventType",
     "OutsourceQuoteSortKey",
     "OutsourceQuoteStatus",
+    "OutsourceShipmentStatus",
     "PartEventType",
     "PartFileKind",
     "PartLocation",

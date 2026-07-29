@@ -1,8 +1,10 @@
-"""外协报价单（OutsourceQuote）状态机（2026-07-16 新增；2026-07-29 升级）。
+"""外协报价单（OutsourceQuote）状态机（2026-07-16 新增；2026-07-30 重构）。
 
-PR-H 2026-07-29：t_outsource_quote 不再只是"报价审批流"，而是外协全生命周期的
-统一事实表。状态机新增 OUTSOURCING / RECEIVED / BILLED 三个状态，旧 mark_used
-转换保留兼容但新流程不再使用。
+2026-07-30 重构：报价回归纯审批对象。
+- 保留 DRAFT / SUBMITTED / APPROVED / REJECTED 流转。
+- 删除 mark_outsourcing / mark_received / mark_billed 转换及对应 on_* 回调。
+- 状态类定义（OUTSOURCING / RECEIVED / BILLED / USED）保留以兼容存量行。
+- 事件枚举 OutsourceQuoteEventType 的历史值保留不动。
 
 形态对齐 Part 状态机（statemachines/part.py）：
 - `model` 由 `__init__(model=quote)` 注入；`start_value` 从 quote.status 恢复。
@@ -24,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class OutsourceQuoteStateMachine(StateChart):
-    """外协报价单状态机（PR-H 2026-07-29 升级）。
+    """外协报价单状态机（2026-07-30 重构）。
 
     Usage::
 
@@ -36,13 +38,11 @@ class OutsourceQuoteStateMachine(StateChart):
     自动从 `model.status` 恢复当前状态。
 
     流转：
-        DRAFT ─submit→ SUBMITTED ─approve→ APPROVED ─mark_outsourcing→ OUTSOURCING
-                                            ╰─reject→ REJECTED（终态）
-                                                                 ╰mark_received→ RECEIVED
-                                                                                   ╰mark_billed→ BILLED
-                                                                                                    reopen_billed（撤销）
+        DRAFT ─submit→ SUBMITTED ─approve→ APPROVED
+                                              ╰─reject→ REJECTED（终态）
 
-    旧 mark_used（APPROVED→USED）保留兼容但不再使用；新流程走 mark_outsourcing。
+    旧 mark_outsourcing / mark_received / mark_billed / mark_used 转换已删除；
+    状态类 OUTSOURCING / RECEIVED / BILLED / USED 保留兼容存量行。
     """
 
     # ============================================================
@@ -53,14 +53,10 @@ class OutsourceQuoteStateMachine(StateChart):
     SUBMITTED = State("SUBMITTED", value="SUBMITTED")
     APPROVED = State("APPROVED", value="APPROVED")
     REJECTED = State("REJECTED", value="REJECTED", final=True)
-    # PR-H 2026-07-29：外协全生命周期状态
+    # 2026-07-30：状态类保留兼容存量行，但新流程不再产生这些状态
     OUTSOURCING = State("OUTSOURCING", value="OUTSOURCING")
     RECEIVED = State("RECEIVED", value="RECEIVED")
-    # BILLED 是终态：reopen_billed 不在 statemachine 转换里（library 不允许 final
-    # 状态有出向转换），由 service 直接 update ORM + 写 event；
-    # 实际业务中 is_billed=True 误勾可由对账页 toggle 撤销（service 层处理）
     BILLED = State("BILLED", value="BILLED", final=True)
-    # 兼容保留（旧 USED 终态）
     USED = State("USED", value="USED", final=True)
 
     # ============================================================
@@ -70,14 +66,12 @@ class OutsourceQuoteStateMachine(StateChart):
     submit = DRAFT.to(SUBMITTED)
     approve = SUBMITTED.to(APPROVED)
     reject = SUBMITTED.to(REJECTED)
-    # PR-H 2026-07-29 新加
+    # 2026-07-30：mark_outsourcing / mark_received / mark_billed / mark_used 的 on_* 回调已删除，
+    # 新流程不再调用这些转换。但因 python-statemachine 库要求「所有状态可达 + 非终态必须有出向
+    # 转换」，保留以下空转换以满足库约束；调用它们不会触发副作用（事件写入等）。
     mark_outsourcing = APPROVED.to(OUTSOURCING)
     mark_received = OUTSOURCING.to(RECEIVED)
     mark_billed = RECEIVED.to(BILLED)
-    # reopen_billed 在 service 层直接处理（library 不允许 final 状态有出向转换）；
-    # BILLED 误勾时由 OutsourceQuoteService.reconcile_update_quote 直接
-    # 写 quote.status = RECEIVED + quote_events 写 REOPENED_BILLED event。
-    # 兼容保留
     mark_used = APPROVED.to(USED)
 
     # ============================================================
@@ -122,12 +116,12 @@ class OutsourceQuoteStateMachine(StateChart):
                 self.model.review_note = review_note
 
     def on_enter_OUTSOURCING(self, **_):
-        # PR-H 2026-07-29：发送时写入 sent_at（在 service 层；状态机只同步 status）
+        # 2026-07-30：兼容存量行
         if self.model:
             self.model.status = "OUTSOURCING"
 
     def on_enter_RECEIVED(self, **_):
-        # PR-H 2026-07-29：接收时写入 received_at（在 service 层；状态机只同步 status）
+        # 2026-07-30：兼容存量行
         if self.model:
             self.model.status = "RECEIVED"
 
@@ -210,89 +204,6 @@ class OutsourceQuoteStateMachine(StateChart):
             from_status=OutsourceQuoteStatus.SUBMITTED.value,
             to_status=OutsourceQuoteStatus.REJECTED.value,
             note=review_note,
-            created_by=created_by,
-        )
-
-    def on_mark_outsourcing(
-        self,
-        event_repo=None,
-        *,
-        created_by: int | None = None,
-        **_,
-    ):
-        """APPROVED → OUTSOURCING：发送时由 PartService 自动调用。"""
-        self._write_event(
-            event_repo,
-            OutsourceQuoteEventType.MARKED_OUTSOURCING,
-            from_status=OutsourceQuoteStatus.APPROVED.value,
-            to_status=OutsourceQuoteStatus.OUTSOURCING.value,
-            created_by=created_by,
-        )
-
-    def on_mark_received(
-        self,
-        event_repo=None,
-        *,
-        created_by: int | None = None,
-        **_,
-    ):
-        """OUTSOURCING → RECEIVED：接收时由 PartService 自动调用。"""
-        self._write_event(
-            event_repo,
-            OutsourceQuoteEventType.MARKED_RECEIVED,
-            from_status=OutsourceQuoteStatus.OUTSOURCING.value,
-            to_status=OutsourceQuoteStatus.RECEIVED.value,
-            created_by=created_by,
-        )
-
-    def on_mark_billed(
-        self,
-        event_repo=None,
-        *,
-        created_by: int | None = None,
-        **_,
-    ):
-        """RECEIVED → BILLED：对账勾选 is_billed=true 时由对账页调用。"""
-        self._write_event(
-            event_repo,
-            OutsourceQuoteEventType.MARKED_BILLED,
-            from_status=OutsourceQuoteStatus.RECEIVED.value,
-            to_status=OutsourceQuoteStatus.BILLED.value,
-            created_by=created_by,
-        )
-
-    def on_reopen_billed(
-        self,
-        event_repo=None,
-        *,
-        created_by: int | None = None,
-        **_,
-    ):
-        """BILLED → RECEIVED：撤销对账（误勾 is_billed）。
-        实际不会通过状态机调用（final 状态无出向转换）；保留 on_* 钩子仅供
-        service 层直接 ORM 操作时复用事件写入。
-        """
-        self._write_event(
-            event_repo,
-            OutsourceQuoteEventType.REOPENED_BILLED,
-            from_status=OutsourceQuoteStatus.BILLED.value,
-            to_status=OutsourceQuoteStatus.RECEIVED.value,
-            created_by=created_by,
-        )
-
-    def on_mark_used(
-        self,
-        event_repo=None,
-        *,
-        created_by: int | None = None,
-        **_,
-    ):
-        """APPROVED → USED：兼容保留。新流程已改用 mark_outsourcing。"""
-        self._write_event(
-            event_repo,
-            OutsourceQuoteEventType.USED,
-            from_status=OutsourceQuoteStatus.APPROVED.value,
-            to_status=OutsourceQuoteStatus.USED.value,
             created_by=created_by,
         )
 

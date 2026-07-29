@@ -134,35 +134,36 @@ class OutsourceCompanyListQuery(BaseModel):
 
 
 class OutsourceSentPartItem(BaseModel):
-    """外协对账端点返回项：一条 t_outsource_quote（OUTSOURCING / RECEIVED / BILLED）。
+    """外协对账端点返回项：一条 t_outsource_shipment（OUTSOURCING / RECEIVED）。
 
-    PR-H 2026-07-29：数据源从 t_part_event 改为 t_outsource_quote ——
-    该表已包含 part_id / company_id / process_id / price / quantity /
-    sent_at / received_at / status / is_billed 等一切对账所需字段。
+    2026-07-30 重构：数据源从 t_outsource_quote 改为 t_outsource_shipment。
 
     字段说明：
-    - quote_id：t_outsource_quote.id（行编辑端点入参）
-    - version：OCC 乐观锁
-    - unit_price：来自 quote.price；DIRECT 直发自动创建的报价为 0
-    - total_price：quote.price × quote.quantity（NULL 单价时 NULL）
+    - shipment_id：t_outsource_shipment.id（行编辑端点入参）
+    - quote_id：关联的报价 id
+    - version：OCC 乐观锁（shipment.version）
+    - batch_no：批次号（历史 NULL 批次显示 null）
+    - unit_price：发送时快照单价
+    - total_price：unit_price × quantity
     - received_at 为 NULL 表示未回收（status=OUTSOURCING）
-    - 无 part_serial_no：送外协后序列号被回收，无业务意义（PR-H 2026-07-29 移除）
     """
 
-    quote_id: IdStrNonNull
+    shipment_id: IdStrNonNull
     version: int = Field(description="乐观锁版本号；行编辑 OCC")
+    quote_id: IdStrNonNull
     part_id: IdStrNonNull
     part_drawing_no: str | None = None
     part_name: str | None = None
     customer_path: str | None = None
+    batch_no: int | None = None
     process_id: IdStrNonNull
     process_name: str | None = None
-    quantity: int | None = None
-    unit_price: Decimal | None = None
-    total_price: Decimal | None = None
-    sent_at: datetime | None = None
+    quantity: int
+    unit_price: Decimal
+    total_price: Decimal
+    sent_at: datetime
     received_at: datetime | None = None
-    status: str = Field(description="OUTSOURCING / RECEIVED / BILLED")
+    status: str = Field(description="OUTSOURCING / RECEIVED")
     is_billed: bool = False
 
 

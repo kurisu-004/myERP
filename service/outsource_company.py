@@ -21,7 +21,7 @@ from model.enums import PartEventType, PartLocation, PartStatus, ProcessCategory
 from repository.customer import CustomerRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
-from repository.outsource_quote import OutsourceQuoteRepository
+from repository.outsource_shipment import OutsourceShipmentRepository
 from repository.part import PartRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
@@ -50,7 +50,7 @@ class OutsourceCompanyService:
         processes: ProcessRepository,
         part_repo: PartRepository | None = None,
         part_events: PartEventRepository | None = None,
-        outsource_quotes: OutsourceQuoteRepository | None = None,
+        outsource_shipments: OutsourceShipmentRepository | None = None,
         customers: CustomerRepository | None = None,
         *,
         current_user: CurrentUser | None = None,
@@ -60,8 +60,8 @@ class OutsourceCompanyService:
         self.processes = processes
         self.part_repo = part_repo
         self.part_events = part_events
-        # PR-H 2026-07-29：对账页改为基于 t_outsource_quote
-        self.outsource_quotes = outsource_quotes
+        # 2026-07-30：对账页改为基于 t_outsource_shipment
+        self.outsource_shipments = outsource_shipments
         self.customers = customers
         self._user_id: int | None = current_user.id if current_user else None
 
@@ -125,13 +125,7 @@ class OutsourceCompanyService:
     ) -> OutsourceSentPartListOut:
         """外协对账：列出发送给该外协公司所有零件一览（与对账单核对）。
 
-        PR-H 2026-07-29：数据源从 t_part_event 改为 t_outsource_quote ——
-        该表已包含 part_id / company_id / process_id / price / quantity /
-        sent_at / received_at / status / is_billed 等一切对账所需字段。
-
-        过滤：keyword（图号/名称，经 part_repo 预解析为 part_ids_in）、
-        sent_from / sent_to / received_from / received_to（时间区间）、
-        sort_by（PRICE / SENT_AT / RECEIVED_AT）+ sort_dir。
+        2026-07-30 重构：数据源从 t_outsource_quote 改为 t_outsource_shipment。
         """
         cid = parse_snowflake_id(company_id, field_name="company_id")
         if cid is None:
@@ -140,7 +134,7 @@ class OutsourceCompanyService:
         if company is None:
             raise self._not_found(company_id)
 
-        if self.outsource_quotes is None or self.part_repo is None:
+        if self.outsource_shipments is None or self.part_repo is None:
             return OutsourceSentPartListOut(
                 items=[], total=0, limit=query.limit, offset=query.offset,
             )
@@ -156,8 +150,8 @@ class OutsourceCompanyService:
                     items=[], total=0, limit=query.limit, offset=query.offset,
                 )
 
-        # 2. 查 t_outsource_quote（已发送状态：OUTSOURCING / RECEIVED / BILLED）
-        total = await self.outsource_quotes.count_reconciliation_for_company(
+        # 2. 查 t_outsource_shipment（已发送状态：OUTSOURCING / RECEIVED）
+        total = await self.outsource_shipments.count_reconciliation_for_company(
             company_id=cid,
             part_ids_in=part_ids_in,
             sent_from=query.sent_from, sent_to=query.sent_to,
@@ -167,7 +161,7 @@ class OutsourceCompanyService:
             return OutsourceSentPartListOut(
                 items=[], total=0, limit=query.limit, offset=query.offset,
             )
-        quotes = await self.outsource_quotes.list_reconciliation_for_company(
+        shipments = await self.outsource_shipments.list_reconciliation_for_company(
             company_id=cid,
             part_ids_in=part_ids_in,
             sent_from=query.sent_from, sent_to=query.sent_to,
@@ -176,16 +170,27 @@ class OutsourceCompanyService:
             limit=query.limit, offset=query.offset,
         )
 
-        # 3. 批查 part / process / customer（输出拼装用）
-        part_ids = list({q.part_id for q in quotes})
+        # 3. 批查 part / process / customer / batch_no（输出拼装用）
+        part_ids = list({s.part_id for s in shipments})
         parts = await self.part_repo.list_by_ids(part_ids) if part_ids else []
         part_map = {p.id: p for p in parts}
 
-        process_ids = list({q.process_id for q in quotes})
+        process_ids = list({s.process_id for s in shipments})
         proc_map = {}
         if process_ids:
             procs = await self.processes.list_by_ids(process_ids)
             proc_map = {p.id: p for p in procs}
+
+        # batch_no 批查
+        batch_ids = [s.batch_id for s in shipments if s.batch_id is not None]
+        batch_map: dict[int, int] = {}
+        if batch_ids:
+            from model import TPartBatch
+            from sqlalchemy import select
+            stmt = select(TPartBatch).where(TPartBatch.id.in_(batch_ids))
+            result = await self.part_repo.session.execute(stmt)
+            for b in result.scalars().all():
+                batch_map[b.id] = b.batch_no
 
         # customer_path（一级 / 二级）：复用 customer 批查 helper
         from service._customer_helpers import make_customer_path_cached, preload_customer_cache
@@ -196,33 +201,33 @@ class OutsourceCompanyService:
 
         # 4. 拼装
         items: list[OutsourceSentPartItem] = []
-        for q in quotes:
-            p = part_map.get(q.part_id)
-            proc = proc_map.get(q.process_id)
+        for s in shipments:
+            p = part_map.get(s.part_id)
+            proc = proc_map.get(s.process_id)
             customer_path: str | None = None
             if p and p.customer_id and p.customer_id in cust_cache:
                 customer_path = make_customer_path_cached(
                     cust_cache[p.customer_id], cust_cache,
                 )
-            total_price = None
-            if q.price is not None and q.quantity is not None:
-                total_price = q.price * q.quantity
+            total_price = s.unit_price * s.quantity
             items.append(OutsourceSentPartItem(
-                quote_id=q.id,
-                version=q.version,
-                part_id=q.part_id,
+                shipment_id=s.id,
+                version=s.version,
+                quote_id=s.quote_id,
+                part_id=s.part_id,
                 part_drawing_no=p.drawing_no if p else None,
                 part_name=p.name if p else None,
                 customer_path=customer_path,
-                process_id=q.process_id,
+                batch_no=batch_map.get(s.batch_id) if s.batch_id else None,
+                process_id=s.process_id,
                 process_name=proc.name if proc else None,
-                quantity=q.quantity,
-                unit_price=q.price,
+                quantity=s.quantity,
+                unit_price=s.unit_price,
                 total_price=total_price,
-                sent_at=q.sent_at,
-                received_at=q.received_at,
-                status=q.status,
-                is_billed=bool(getattr(q, "is_billed", False)),
+                sent_at=s.sent_at,
+                received_at=s.received_at,
+                status=s.status,
+                is_billed=bool(getattr(s, "is_billed", False)),
             ))
         return OutsourceSentPartListOut(
             items=items, total=total,
