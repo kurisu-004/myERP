@@ -76,16 +76,7 @@
             </el-tag>
             · {{ selectedPart.name }}
             · 当前所在 {{ selectedPart.shelf_code || '?' }}
-            · 数量
-            <el-input-number
-              v-model="selectedQty"
-              :min="1"
-              :max="selectedPart.quantity"
-              :precision="0"
-              size="small"
-              class="qty-input"
-            />
-            / {{ selectedPart.quantity }}
+            · 数量 {{ selectedPart.quantity }}
             · 请扫描该零件的序列号条码确认
           </span>
           <el-button size="small" @click="cancelSelect">取消选择</el-button>
@@ -179,6 +170,18 @@
 
     <ScrollFabPair :target="contentRef" />
 
+    <!-- 数量选择弹窗 -->
+    <QuantityDialog
+      v-if="showQtyDialog"
+      v-model="showQtyDialog"
+      :max="selectedPart?.quantity ?? 1"
+      :serial-no="selectedPart?.serial_no || selectedPart?.drawing_no || null"
+      :part-name="selectedPart?.name || null"
+      action-label="领取"
+      @confirm="onQtyConfirm"
+      @cancel="showQtyDialog = false"
+    />
+
     <!-- 图纸 / 图片 全屏预览 -->
     <el-dialog
       v-model="showPreview"
@@ -264,6 +267,7 @@ import { useActiveShelfSelection } from '@/composables/useActiveShelfSelection'
 import { useScanBus } from '@/composables/useScanBus'
 import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
+import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
 import { listPartsByWorkTypeAllShelves, pickUpPart, type PartItem } from '@/api/parts'
 
 const router = useRouter()
@@ -282,6 +286,7 @@ const contentRef = ref<HTMLElement | null>(null)
 const loadingList = ref(false)
 const selectedPart = ref<PartItem | null>(null)
 const submitting = ref(false)
+const showQtyDialog = ref(false)
 
 // --- 预览状态 ---
 const showPreview = ref(false)
@@ -457,7 +462,7 @@ async function onScanCode(rawCode: string): Promise<void> {
     // 没选中件时,扫码直接忽略（避免误扫）
     return
   }
-  if (submitting.value) return
+  if (submitting.value || showQtyDialog.value) return
   if (code !== (selectedPart.value.serial_no || selectedPart.value.drawing_no)) {
     ElMessage.error(`扫码与选中件不匹配 (期望 ${selectedPart.value.serial_no}, 扫到 ${code})`)
     return
@@ -471,6 +476,19 @@ async function onScanCode(rawCode: string): Promise<void> {
     ElMessage.error('未找到零件所在货架信息')
     return
   }
+  showQtyDialog.value = true
+}
+
+async function onQtyConfirm(qty: number): Promise<void> {
+  showQtyDialog.value = false
+  if (!selectedPart.value || !worker.value) return
+  const code = selectedPart.value.serial_no || selectedPart.value.drawing_no || ''
+  const useShelfId = selectedPart.value.current_holder_id || shelfId.value
+  if (!useShelfId) {
+    ElMessage.error('未找到零件所在货架信息')
+    return
+  }
+  selectedQty.value = qty
   submitting.value = true
   try {
     await pickUpPart({
@@ -478,9 +496,9 @@ async function onScanCode(rawCode: string): Promise<void> {
       shelf_id: useShelfId,
       badge_code: worker.value.badge_code,
       batch_id: selectedPart.value.batch_id ?? null,
-      quantity: selectedQty.value ?? null,
+      quantity: qty,
     })
-    ElMessage.success(`已领取: ${code} × ${selectedQty.value ?? selectedPart.value.quantity}`)
+    ElMessage.success(`已领取: ${code} × ${qty}`)
     selectedPart.value = null
     await refresh()
     emitHeldChanged()
@@ -716,11 +734,5 @@ function backToBadge(): void {
 }
 .non-pdf-hint {
   margin: 0; color: #606266; font-size: 14px;
-}
-
-.qty-input {
-  width: 110px;
-  vertical-align: middle;
-  margin: 0 2px;
 }
 </style>

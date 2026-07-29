@@ -88,16 +88,7 @@
               批次{{ selectedPart.batch_no }}
             </el-tag>
             · {{ selectedPart.name }}
-            · 送检数量
-            <el-input-number
-              v-model="selectedQty"
-              :min="1"
-              :max="selectedPart.quantity"
-              :precision="0"
-              size="small"
-              class="qty-input"
-            />
-            / {{ selectedPart.quantity }}
+            · 送检数量 {{ selectedPart.quantity }}
             · 请<strong>扫描该零件条码</strong>确认送检
           </span>
           <el-button size="small" @click="cancelSelect">取消选择</el-button>
@@ -190,6 +181,18 @@
       @empty-action="onShelfEmpty"
     />
 
+    <!-- 数量选择弹窗 -->
+    <QuantityDialog
+      v-if="showQtyDialog"
+      v-model="showQtyDialog"
+      :max="selectedPart?.quantity ?? 1"
+      :serial-no="selectedPart?.serial_no || selectedPart?.drawing_no || null"
+      :part-name="selectedPart?.name || null"
+      action-label="送检"
+      @confirm="onQtyConfirm"
+      @cancel="cancelSelect"
+    />
+
     <!-- 图纸 / 图片 全屏预览 -->
     <el-dialog
       v-model="showPreview"
@@ -274,6 +277,7 @@ import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useScanBus } from '@/composables/useScanBus'
 import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
+import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 
@@ -312,6 +316,8 @@ function isHeic(t: string): boolean { return t.toUpperCase() === 'HEIC' }
 
 // 货架选择
 const showShelfPicker = ref(false)
+const showQtyDialog = ref(false)
+const pendingShelfId = ref<string>('')
 
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
@@ -371,7 +377,7 @@ function onSelect(p: PartItem): void {
 function onScanCode(rawCode: string): void {
   const code = rawCode.trim()
   if (!code) return
-  if (submitting.value || showShelfPicker.value) return
+  if (submitting.value || showShelfPicker.value || showQtyDialog.value) return
   if (!selectedPart.value || !awaitingScan.value) return
   const expect = selectedPart.value.serial_no || selectedPart.value.drawing_no
   if (code !== expect) {
@@ -445,18 +451,27 @@ async function onShelfConfirm(shelfId: string): Promise<void> {
     ElMessage.warning('选择已重置，请重新选择零件')
     return
   }
+  pendingShelfId.value = shelfId
+  showQtyDialog.value = true
+}
+
+async function onQtyConfirm(qty: number): Promise<void> {
+  showQtyDialog.value = false
+  if (!selectedPart.value || !worker.value) {
+    ElMessage.warning('选择已重置，请重新选择零件')
+    return
+  }
+  selectedQty.value = qty
   submitting.value = true
   try {
     await scanPart({
       serial_no: selectedPart.value.serial_no ?? '',
       event_type: 'INSPECTED',
-      // shelf_id（权限校验：操作所在架）与 target_inspection_shelf_id（送检目标架）
-      // 都填选中的品检架：picker 只列本 SHELF_ACCOUNT scope 内的品检架，两处校验都能过。
-      shelf_id: shelfId,
+      shelf_id: pendingShelfId.value,
       badge_code: worker.value.badge_code ?? '',
-      target_inspection_shelf_id: shelfId,
+      target_inspection_shelf_id: pendingShelfId.value,
       batch_id: selectedPart.value.batch_id ?? null,
-      quantity: selectedQty.value ?? null,
+      quantity: qty,
     })
     ElMessage.success(`已送检：${selectedPart.value.serial_no}`)
     cancelSelect()
@@ -484,6 +499,7 @@ function cancelSelect(): void {
   selectedPart.value = null
   selectedQty.value = undefined
   awaitingScan.value = false
+  pendingShelfId.value = ''
 }
 
 function backToAction(): void {
@@ -685,11 +701,5 @@ function deliveryUrgencyClass(s: string | null | undefined): string {
 }
 .non-pdf-hint {
   margin: 0; color: #606266; font-size: 14px;
-}
-
-.qty-input {
-  width: 110px;
-  vertical-align: middle;
-  margin: 0 2px;
 }
 </style>
