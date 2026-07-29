@@ -50,7 +50,7 @@ class TOutsourceQuote(Base, AuditMixin):
         part_id (BigInteger): 逻辑外键 → t_part.id
         outsource_company_id (BigInteger): 逻辑外键 → t_outsource_company.id
         process_id (BigInteger): 逻辑外键 → t_process.id（必须 category=OUTSOURCE）
-        price (Numeric(12,2)): 单件单价（CNY）；> 0
+        price (Numeric(12,2)): 单件单价（CNY）；>= 0（DIRECT 自动创建时以 0 占位，待对账补价）
         note (String(500) NULL): CLERK 录入备注
         status (String(16)):
             DRAFT / SUBMITTED / APPROVED / REJECTED
@@ -81,7 +81,8 @@ class TOutsourceQuote(Base, AuditMixin):
         BigInteger, nullable=False, index=True, comment="工序 id（必须 OUTSOURCE，逻辑 FK）",
     )
     price: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), nullable=False, comment="单件单价（CNY）",
+        Numeric(12, 2), nullable=False,
+        comment="单件单价（CNY）；DIRECT 自动创建时允许 0 占位，待对账补价",
     )
     note: Mapped[str | None] = mapped_column(
         String(500), nullable=True, comment="备注",
@@ -115,7 +116,7 @@ class TOutsourceQuote(Base, AuditMixin):
     )
 
     __table_args__ = (
-        CheckConstraint("price > 0", name="ck_t_outsource_quote_price_positive"),
+        CheckConstraint("price >= 0", name="ck_t_outsource_quote_price_positive"),
         CheckConstraint(
             "status IN ('DRAFT','SUBMITTED','APPROVED','REJECTED',"
             "'OUTSOURCING','RECEIVED','BILLED','USED')",
