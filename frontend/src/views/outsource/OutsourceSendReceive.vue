@@ -179,7 +179,7 @@ async function onConfirmSend(): Promise<void> {
     : (target.outsource_company_name ?? '')
   try {
     await ElMessageBox.confirm(
-      `确认把「${target.part_drawing_no}」发送到「${companyName}」？`,
+      `确认把「${target.part_drawing_no}」（批次 ${target.batch_no}，${target.batch_quantity} 件）发送到「${companyName}」？`,
       '发送外协',
       { type: 'warning', confirmButtonText: '确认发送', cancelButtonText: '取消' },
     )
@@ -192,6 +192,9 @@ async function onConfirmSend(): Promise<void> {
       outsource_company_id: companyId,
       next_process_id: target.next_process_id,
       version: target.version,
+      // 2026-07-29 PR-fix-0.2.0 批次化：显式携带 batch_id，
+      // 多批次工单下避免 _resolve_target_batch fallback 选错批次。
+      batch_id: target.batch_id,
     }
     await sendPartToOutsource(target.part_id, payload)
     ElMessage.success('已发送至外协')
@@ -238,8 +241,10 @@ interface SendQueueItem {
   process_name: string
   /** 直接发送时为 null；APPROVAL 时为单件报价 */
   price: number | null
-  /** OCC：发送时必传 */
+  /** OCC：发送时必传（批次 TPartBatch.version） */
   version: number
+  /** 2026-07-29 PR-fix-0.2.0 批次化：可发送批次 id（雪花 ID 字符串） */
+  batch_id: string
   // 入队后做标记，给 UI 看
   _failed?: boolean
   _failMsg?: string
@@ -300,6 +305,8 @@ async function handleScannedSerialForSend(code: string): Promise<void> {
     process_name: match.next_process_name ?? '',
     price: match.send_mode === 'DIRECT' ? null : Number(match.price),
     version: match.version,
+    // 2026-07-29 PR-fix-0.2.0 批次化：携带 batch_id 供发送时回传
+    batch_id: match.batch_id,
   })
   ElMessage.success(`已加入发送队列：${part.serial_no ?? trimmed}`)
 }
@@ -344,6 +351,8 @@ async function onConfirmBatchSend(): Promise<void> {
         outsource_company_id: item.outsource_company_id,
         next_process_id: item.process_id,
         version: item.version,
+        // 2026-07-29 PR-fix-0.2.0 批次化：显式携带 batch_id。
+        batch_id: item.batch_id,
       }
       await sendPartToOutsource(item.part.id, payload)
       okCount++
@@ -693,7 +702,21 @@ watch(activeTab, async (t) => {
             size="small"
           >
             <el-table-column prop="part_serial_no" label="序列号" min-width="100" align="center"/>
-            <el-table-column prop="part_drawing_no" label="图号" min-width="120" align="center"/>
+            <el-table-column prop="part_drawing_no" label="图号" min-width="120" align="center">
+              <template #default="{ row }">
+                <!-- 2026-07-29 PR-fix-0.2.0 批次化：行=批次，图号旁显示批次号提示 -->
+                <span>{{ (row as SendableItem).part_drawing_no }}</span>
+                <el-tag
+                  v-if="(row as SendableItem).batch_no"
+                  size="small"
+                  type="info"
+                  effect="plain"
+                  style="margin-left: 4px"
+                >
+                  批次 {{ (row as SendableItem).batch_no }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="part_name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
             <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
             <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>

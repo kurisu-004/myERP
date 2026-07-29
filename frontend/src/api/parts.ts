@@ -626,8 +626,15 @@ export interface SendToOutsourcePayload {
    * 乐观锁版本号；与后端 PartOut.version 必须一致，否则返 BIZ_VERSION_CONFLICT 409。
    * 前端从 PartItem.version / PartOut.version 取值后传入。
    * 2026-07-28 新增。
+   * 2026-07-29 PR-fix-0.2.0 批次化：从 TPartBatch.version 取值（v 是 OutsourceSendableItem.batch_id 对应批次的 version）。
    */
   version: number
+  /**
+   * 2026-07-29 PR-fix-0.2.0 批次化：可发送批次 id（雪花 ID 字符串）。
+   * 选填 —— 缺省时后端用 _resolve_target_batch 在该 part 的活跃批次里自动选唯一者；
+   * 多批次元单建议显式传入，避免歧义。Picker 选中行时建议把 row.batch_id 一起回传。
+   */
+  batch_id?: string
 }
 
 /**

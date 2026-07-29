@@ -197,7 +197,8 @@ export interface OutsourceCompanyOption {
 
 /** 外协可发送一览的统一返回项 */
 export interface OutsourceSendableItem {
-  /** 乐观锁版本号（OCC；前端发送时回传） */
+  /** 乐观锁版本号（OCC；前端发送时回传）。
+   *  2026-07-29 PR-fix-0.2.0：批次化后改为 TPartBatch.version（批次级 OCC） */
   version: number
   send_mode: OutsourceSendMode
   source_status: OutsourceSourceStatus
@@ -205,7 +206,14 @@ export interface OutsourceSendableItem {
   part_serial_no: string | null
   part_drawing_no: string | null
   part_name: string | null
+  /** 可发送数量（行=批次：等于 batch_quantity） */
   quantity: number | null
+  /** 2026-07-29 PR-fix-0.2.0 批次化字段：可发送批次 id */
+  batch_id: string
+  /** 2026-07-29 PR-fix-0.2.0 批次化字段：批次号（per-part 递增） */
+  batch_no: number
+  /** 2026-07-29 PR-fix-0.2.0 批次化字段：批次数量 */
+  batch_quantity: number
   planned_delivery_date: string | null
   is_urgent: boolean
   customer_path: string | null

@@ -109,6 +109,12 @@ export interface PartListItem {
   next_process_id: string | null
   /** PR-H 2026-07-28：下一工序名 */
   next_process_name: string | null
+  /** 2026-07-29 PR-fix-0.2.0 批次化字段：仅 /outsource-quotes/quotable-parts 走批次时填充 */
+  batch_id?: string | null
+  /** 2026-07-29 PR-fix-0.2.0 批次化字段：批次号（per-part 递增） */
+  batch_no?: number | null
+  /** 2026-07-29 PR-fix-0.2.0 批次化字段：批次数量（picker 选中后可挂在报价上） */
+  batch_quantity?: number | null
 }
 
 /** 后端 PartEventType 枚举 */
