@@ -80,7 +80,13 @@
         </template>
       </el-table-column>
 
-      <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
+      <el-table-column label="批次" min-width="100" align="center">
+        <template #default="{ row }">
+          <span class="batch-label">{{ (row as RowState).batch_label || '—' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="quantity" label="批次量" min-width="80" align="right" />
 
       <el-table-column
         prop="planned_delivery_date"
@@ -109,13 +115,13 @@
             type="success"
             size="small"
             :loading="row._passing"
-            @click="onPass(row as PartListItem)"
+            @click="onPass(row as RowState)"
           >品检通过</el-button>
           <el-button
             link
             type="warning"
             size="small"
-            @click="openFailDialog(row as PartListItem)"
+            @click="openFailDialog(row as RowState)"
           >品检打回</el-button>
           <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
         </template>
@@ -133,7 +139,11 @@
         </div>
         <div class="rl-kv">
           <div class="rl-kv__item">
-            <span class="rl-kv__key">数量</span>
+            <span class="rl-kv__key">批次</span>
+            <span class="rl-kv__val">{{ (row as RowState).batch_label || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">批次量</span>
             <span class="rl-kv__val">{{ row.quantity }}</span>
           </div>
           <div class="rl-kv__item">
@@ -159,13 +169,13 @@
             type="success"
             size="small"
             :loading="row._passing"
-            @click="onPass(row as PartListItem)"
+            @click="onPass(row as RowState)"
           >品检通过</el-button>
           <el-button
             link
             type="warning"
             size="small"
-            @click="openFailDialog(row as PartListItem)"
+            @click="openFailDialog(row as RowState)"
           >品检打回</el-button>
           <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
         </div>
@@ -187,6 +197,52 @@
       />
     </div>
 
+    <!-- 品检通过对话框（2026-07-29：带数量；部分通过后端先拆再过） -->
+    <el-dialog
+      v-model="passDialogVisible"
+      title="品检通过"
+      :width="passDlg.width.value"
+      :fullscreen="passDlg.fullscreen.value"
+      :close-on-click-modal="false"
+      @closed="onPassDialogClosed"
+    >
+      <div v-if="passTarget" class="fail-summary">
+        <div><strong>流水号：</strong>{{ passTarget.serial_no || '—' }}</div>
+        <div><strong>批次：</strong>{{ passTarget.batch_label || '—' }}</div>
+        <div><strong>名称：</strong>{{ passTarget.name }}</div>
+      </div>
+      <el-form label-width="96px" style="margin-top: 12px">
+        <el-form-item label="通过数量" required>
+          <el-input-number
+            v-model="passQty"
+            :min="1"
+            :max="passTarget?.quantity"
+            :precision="0"
+            style="width: 160px"
+          />
+          <span v-if="passTarget" class="muted" style="margin-left: 8px">
+            / {{ passTarget.quantity }}
+          </span>
+        </el-form-item>
+        <el-alert
+          v-if="passTarget && passQty && passQty < passTarget.quantity"
+          type="info"
+          :closable="false"
+          :title="`部分通过：剩余 ${passTarget.quantity - passQty} 件将留在品检状态`"
+          show-icon
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="passDialogVisible = false">取消</el-button>
+        <el-button
+          type="success"
+          :loading="!!passTarget?._passing"
+          :disabled="!passQty"
+          @click="onPassConfirm"
+        >确认通过</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 品检打回对话框：先选下一道工序，再选目标生产货架（按 shelf↔process 映射过滤） -->
     <el-dialog
       v-model="failDialogVisible"
@@ -199,11 +255,25 @@
     >
       <div v-if="failTarget" class="fail-summary">
         <div><strong>流水号：</strong>{{ failTarget.serial_no || '—' }}</div>
+        <div><strong>批次：</strong>{{ failTarget.batch_label || '—' }}</div>
         <div><strong>图号：</strong>{{ failTarget.drawing_no }}</div>
         <div><strong>名称：</strong>{{ failTarget.name }}</div>
       </div>
 
       <el-form label-width="96px" style="margin-top: 12px">
+        <el-form-item label="打回数量" required>
+          <el-input-number
+            v-model="failQty"
+            :min="1"
+            :max="failTarget?.quantity"
+            :precision="0"
+            style="width: 160px"
+          />
+          <span v-if="failTarget" class="muted" style="margin-left: 8px">
+            / {{ failTarget.quantity }}
+          </span>
+        </el-form-item>
+
         <el-form-item label="下一道工序" required>
           <el-select
             v-model="failProcessId"
@@ -296,17 +366,20 @@ import { RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
-import { failInspection, listParts, passInspection } from '@/api/parts'
-import type { ListPartsParams } from '@/api/parts'
+import {
+  failInspection,
+  listInspectionBatches,
+  passInspection,
+  type PartItem,
+} from '@/api/parts'
 import { listShelves } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
 import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
-import type { PartListItem } from '@/types/parts'
 import type { Shelf } from '@/types/shelf'
 import type { Process } from '@/types/process'
 
 // ============ 状态 ============
-interface RowState extends PartListItem {
+interface RowState extends PartItem {
   _passing?: boolean
 }
 const items = ref<RowState[]>([])
@@ -326,26 +399,20 @@ const paginationLayout = computed(() =>
   isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
 )
 
-function rowClassName({ row }: { row: PartListItem }): string {
+function rowClassName({ row }: { row: RowState }): string {
   return row.is_urgent ? 'row-urgent' : ''
-}
-
-function buildParams(): ListPartsParams {
-  return {
-    statuses: ['INSPECTION'],
-    keyword: search.keyword.trim() || undefined,
-    sort_by: 'PLANNED_DELIVERY_DATE',
-    sort_dir: 'ASC',
-    limit: pageSize.value,
-    offset: (page.value - 1) * pageSize.value,
-  }
 }
 
 async function fetchList(): Promise<void> {
   loading.value = true
   errorMsg.value = null
   try {
-    const resp = await listParts(buildParams())
+    // 2026-07-29 批次级：行=批次（quantity 为批次量，操作回传 batch_id）
+    const resp = await listInspectionBatches({
+      keyword: search.keyword.trim() || undefined,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
     items.value = resp.items
     total.value = resp.total
   } catch (e) {
@@ -389,21 +456,36 @@ onBeforeUnmount(() => {
   }
 })
 
-// ============ 品检通过 ============
-async function onPass(row: RowState): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      `确认零件「${row.name}」(${row.serial_no || row.drawing_no})品检合格，进入待送货状态？`,
-      '品检通过',
-      { type: 'success', confirmButtonText: '确认通过', cancelButtonText: '取消' },
-    )
-  } catch {
-    return  // 用户取消
-  }
+// ============ 品检通过（2026-07-29：带数量，部分通过先拆再过）============
+const passDlg = useDialogSize({ desktopWidth: 420 })
+const passDialogVisible = ref(false)
+const passTarget = ref<RowState | null>(null)
+const passQty = ref<number | undefined>(undefined)
+
+function onPass(row: RowState): void {
+  passTarget.value = row
+  passQty.value = row.quantity
+  passDialogVisible.value = true
+}
+
+function onPassDialogClosed(): void {
+  passTarget.value = null
+  passQty.value = undefined
+}
+
+async function onPassConfirm(): Promise<void> {
+  const row = passTarget.value
+  if (!row || !passQty.value) return
   row._passing = true
   try {
-    await passInspection(row.id)
-    ElMessage.success(`零件 ${row.serial_no || row.drawing_no} 品检通过`)
+    await passInspection(row.id, {
+      batch_id: row.batch_id ?? null,
+      quantity: passQty.value,
+    })
+    ElMessage.success(
+      `零件 ${row.serial_no || row.drawing_no} 品检通过 × ${passQty.value}`,
+    )
+    passDialogVisible.value = false
     await fetchList()
   } catch (e) {
     ElMessage.error(`品检通过失败：${(e as Error).message}`)
@@ -417,10 +499,11 @@ async function onPass(row: RowState): Promise<void> {
 // 同时支持可选「品检备注」，写入 t_part_event.note，事件历史与工人领取卡片均可见。
 const failDlg = useDialogSize({ desktopWidth: 520 })
 const failDialogVisible = ref(false)
-const failTarget = ref<PartListItem | null>(null)
+const failTarget = ref<RowState | null>(null)
 const failProcessId = ref<string>('')
 const failShelfId = ref<string>('')
 const failNote = ref<string>('')
+const failQty = ref<number | undefined>(undefined)
 const failSubmitting = ref(false)
 const productionShelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
@@ -468,6 +551,7 @@ async function openFailDialog(row: RowState): Promise<void> {
   failProcessId.value = ''
   failShelfId.value = ''
   failNote.value = ''
+  failQty.value = row.quantity
   failDialogVisible.value = true
   await Promise.all([
     productionShelves.value.length === 0 ? loadProductionShelves() : Promise.resolve(),
@@ -482,6 +566,7 @@ function onFailDialogClosed(): void {
   failProcessId.value = ''
   failShelfId.value = ''
   failNote.value = ''
+  failQty.value = undefined
 }
 
 async function onFailConfirm(): Promise<void> {
@@ -506,6 +591,8 @@ async function onFailConfirm(): Promise<void> {
       shelf_id: failShelfId.value,
       next_process_id: failProcessId.value,
       note: failNote.value.trim() || null,
+      batch_id: row.batch_id ?? null,
+      quantity: failQty.value ?? null,
     })
     ElMessage.success(
       `零件 ${row.serial_no || row.drawing_no} 已打回生产货架 ${shelfCode}`,
@@ -582,5 +669,10 @@ onMounted(() => {
 }
 .opt-tag {
   margin-left: 6px;
+}
+
+.batch-label {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-weight: 600;
 }
 </style>

@@ -38,6 +38,7 @@ from model.enums import (
     PartStatus,
 )
 from model.part import TPart
+from model.part_batch import TPartBatch
 from repository.customer import CustomerRepository
 from repository.delivery_note import (
     DeliveryNoteCounterRepository,
@@ -45,6 +46,7 @@ from repository.delivery_note import (
     DeliveryNoteRepository,
 )
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.worker import WorkerRepository
 from repository.work_type import WorkTypeRepository
@@ -84,6 +86,7 @@ class DeliveryNoteService:
         part_events: PartEventRepository,
         current_user,
         work_types: WorkTypeRepository | None = None,
+        part_batches: PartBatchRepository | None = None,
         broadcaster=None,
         event_broadcaster=None,
     ) -> None:
@@ -92,6 +95,7 @@ class DeliveryNoteService:
         self.note_events = note_events
         self.counter = counter
         self.parts = parts
+        self.part_batches = part_batches
         self.customers = customers
         self.workers = workers
         self.work_types = work_types
@@ -102,6 +106,19 @@ class DeliveryNoteService:
         )
         self._broadcaster = broadcaster
         self._event_broadcaster = event_broadcaster
+
+    def _batches(self) -> PartBatchRepository:
+        if self.part_batches is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing part batch repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return self.part_batches
+
+    async def _note_batches(self, note_id: int) -> list[tuple[TPartBatch, TPart]]:
+        """本单的全部行（批次, 工单）。"""
+        return await self._batches().list_by_delivery_note(note_id)
 
     # ============================================================
     # 一览 (clerk/manager)
@@ -163,7 +180,7 @@ class DeliveryNoteService:
         customer_id: str,
         note: str | None = None,
         delivery_date: date | None = None,
-        initial_part_ids: list[str] | None = None,
+        initial_items: "list | None" = None,
     ):
         cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
         cust = await self.customers.get_by_id(cid_int)
@@ -213,10 +230,10 @@ class DeliveryNoteService:
         # 失败抛 BizError 向上；同一事务整体回滚（_flush 已写过一行 CREATED 事件，
         # 但 t_delivery_note / event / counter 的写都在 session 内，调用方 BizError 后
         # 由 FastAPI 异常路径 rollback 时一并撤销）。
-        if initial_part_ids:
+        if initial_items:
             await self.add_parts(
                 note_id=str(obj.id),
-                part_ids=list(initial_part_ids),
+                items=list(initial_items),
                 version=obj.version,
             )
 
@@ -232,11 +249,12 @@ class DeliveryNoteService:
                 message=f"delivery note {note_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
-        parts = await self.notes.list_parts(nid_int)
+        # 2026-07-29 批次级：行=批次
+        note_batches = await self._note_batches(nid_int)
         # 2026-07-23 改：后端不再维护扫码状态；传空 set 让前端从本地 Set 驱动显示。
         scanned: set[str] = set()
         from schema.delivery_note import DeliveryNoteDetailOut
-        return await self._to_detail(obj, parts, scanned)
+        return await self._to_detail(obj, note_batches, scanned)
 
     async def soft_delete(
         self, note_id: str, version: int,
@@ -264,12 +282,11 @@ class DeliveryNoteService:
                 message="only DRAFT delivery notes can be soft-deleted",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        # 关联 part 同步：delivery_note_id 清 NULL（让 note 唯一性规则自然让位）
-        parts = await self.notes.list_parts(nid_int)
-        for p in parts:
-            p.delivery_note_id = None
-            p.updated_by = self._user_id
-            await self.parts.update(p)
+        # 关联批次同步：delivery_note_id 清 NULL（2026-07-29 批次级）
+        for b, _p in await self._note_batches(nid_int):
+            b.delivery_note_id = None
+            b.updated_by = self._user_id
+            await self._batches().update(b)
         obj.updated_by = self._user_id
         await self.notes.soft_delete(obj)
 
@@ -280,9 +297,19 @@ class DeliveryNoteService:
     async def add_parts(
         self,
         note_id: str,
-        part_ids: list[str],
+        items: "list",
         version: int,
     ):
+        """入单（2026-07-29 批次级）：items = [{batch_id, quantity?}]。
+
+        - 批次状态必须 ∈ {INSPECTION, READY_TO_SHIP}；
+        - 批次所属工单 L1 root 必须等于 note.customer_id；
+        - quantity < 批次量 → 先拆分（新批次继承状态但不继承送货单），
+          再把**新批次**挂上本单；缺省 / 等于批次量 → 整批挂上；
+        - 批次已挂另一张 active 单（DRAFT/SUBMITTED）→ 拒。
+        """
+        from service._batch_ops import split_batch as _split
+
         nid_int = parse_snowflake_id(note_id, field_name="id")
         obj = await self.notes.get_by_id(nid_int)
         if obj is None:
@@ -301,9 +328,6 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_409_CONFLICT,
             )
         # 2026-07-23 Bug 5：SUBMITTED 后冻结零件清单。想改动必须先 recall → DRAFT。
-        # submit 前可以任意 add/remove；submit 后任何 add 一律拒绝，避免「提交
-        # 后追加 INSPECTION 件产生冲突」之类的 bug。PICKED_UP / ARCHIVED 状态
-        # 机自身拒绝（DRAFT-only 也涵盖）。
         if obj.status != DeliveryNoteStatus.DRAFT.value:
             raise BizError(
                 code=ErrCode.BIZ_DELIVERY_NOTE_PARTS_LOCKED,
@@ -314,65 +338,69 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_409_CONFLICT,
             )
 
-        ids = [
-            parse_snowflake_id(s, field_name="part_ids")
-            for s in part_ids
-        ]
-        # 批查 parts
-        if not ids:
+        # 解析批次 + 批查工单
+        parsed: list[tuple[int, int | None]] = []
+        for it in items:
+            bid = parse_snowflake_id(it.batch_id, field_name="batch_id")
+            if bid is None:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+                    message=f"batch_id 不是合法的雪花 ID：{it.batch_id!r}",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            parsed.append((bid, it.quantity))
+        if not parsed:
             return await self.get_with_parts(note_id)
-        existing_list = await self.parts.list_by_ids(
-            ids, include_deleted=False,
-        )
-        found_ids = {p.id for p in existing_list}
-        missing = [pid for pid in ids if pid not in found_ids]
-        if missing:
-            raise BizError(
-                code=ErrCode.BIZ_PART_NOT_FOUND,
-                message=f"part 不存在或已删除：{missing}",
-                http_status=http_status.HTTP_404_NOT_FOUND,
-            )
 
-        # 2026-07-23 修复：批查 part 各自 customer（找 L1 root）。
-        # note.customer_id 必为 L1 root（已在 create_draft 校验），所以 part L1 root
-        # 等于 note.customer_id 即合法；其它都抛 BIZ_DELIVERY_NOTE_PARTS_MULTIPLE_CUSTOMERS。
-        part_customer_ids = {p.customer_id for p in existing_list}
+        batches_by_id: dict[int, TPartBatch] = {}
+        for bid, _qty in parsed:
+            b = await self._batches().get_by_id(bid)
+            if b is None:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_BATCH_NOT_FOUND,
+                    message=f"batch {bid} 不存在或已删除",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            batches_by_id[bid] = b
+        part_ids = {b.part_id for b in batches_by_id.values()}
+        part_list = await self.parts.list_by_ids(list(part_ids), include_deleted=False)
+        part_map: dict[int, TPart] = {p.id: p for p in part_list}
+
+        # 批查 part 各自 customer（找 L1 root）
+        part_customer_ids = {p.customer_id for p in part_list}
         part_customer_list = await self.customers.list_by_ids(
             list(part_customer_ids | {obj.customer_id})
         )
         cust_map: dict[int, Any] = {c.id: c for c in part_customer_list}
 
-        # 校验：每个 part 状态 ∈ {INSPECTION, READY_TO_SHIP}（2026-07-23 放宽）；
-        # part L1 root 必须等于 note.customer_id；若 part.delivery_note_id
-        # 指向**另一张 active 单** (DRAFT/SUBMITTED) → 拒；PICKED_UP/ARCHIVED 的
-        # 孤儿关联放过（pickup 时按设计不再清 id）。
-        # 注：status=DELIVERED/REPAIRING/COMPLETED 等仍被状态校验挡掉，
-        # 不会出现在 READY_TO_SHIP/INSPECTION 候选里，所以「不会真的把出厂件重分配」。
         serials_added: list[str] = []
-        for p in existing_list:
-            if p.status not in (
+        for bid, qty in parsed:
+            batch = batches_by_id[bid]
+            part = part_map.get(batch.part_id)
+            if part is None:
+                raise BizError(
+                    code=ErrCode.BIZ_PART_NOT_FOUND,
+                    message=f"batch {bid} 所属工单 {batch.part_id} 不存在",
+                    http_status=http_status.HTTP_404_NOT_FOUND,
+                )
+            if batch.status not in (
                 PartStatus.INSPECTION.value,
                 PartStatus.READY_TO_SHIP.value,
             ):
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_NOTE_PART_NOT_READY,
                     message=(
-                        f"part {p.id} status={p.status}, "
+                        f"part {part.id} 批次 {batch.batch_no} status={batch.status}, "
                         "only INSPECTION / READY_TO_SHIP is allowed at draft entry"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            # 2026-07-23 修复：L1 root 比较（note.customer_id 是 L1 root）。
-            # - part.customer_id == obj.customer_id：等价是同一 L1 root
-            # - part 自己的 customer 的 parent_id == obj.customer_id：part 是
-            #   note L1 下的 L2 子节点（合法）
-            # - 其它：跨 L1 客户的件被拒
-            part_cust = cust_map.get(p.customer_id)
+            part_cust = cust_map.get(part.customer_id)
             if part_cust is None:
                 raise BizError(
                     code=ErrCode.BIZ_CUSTOMER_NOT_FOUND,
                     message=(
-                        f"part {p.id} 所属客户 {p.customer_id} not found"
+                        f"part {part.id} 所属客户 {part.customer_id} not found"
                     ),
                     http_status=http_status.HTTP_404_NOT_FOUND,
                 )
@@ -384,14 +412,14 @@ class DeliveryNoteService:
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_NOTE_PARTS_MULTIPLE_CUSTOMERS,
                     message=(
-                        f"part {p.id} 一级客户 {part_l1_id} != "
+                        f"part {part.id} 一级客户 {part_l1_id} != "
                         f"note 一级客户 {obj.customer_id}"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            if p.delivery_note_id is not None and p.delivery_note_id != obj.id:
+            if batch.delivery_note_id is not None and batch.delivery_note_id != obj.id:
                 # 仅当「另一张 active 单」时挡；归档过的单允许重新挂回
-                other = await self.notes.get_by_id(p.delivery_note_id)
+                other = await self.notes.get_by_id(batch.delivery_note_id)
                 if other is not None and other.status in (
                     DeliveryNoteStatus.DRAFT.value,
                     DeliveryNoteStatus.SUBMITTED.value,
@@ -399,16 +427,33 @@ class DeliveryNoteService:
                     raise BizError(
                         code=ErrCode.BIZ_DELIVERY_NOTE_PART_ALREADY_ASSIGNED,
                         message=(
-                            f"part {p.id} already on active delivery note "
-                            f"{p.delivery_note_id}"
+                            f"part {part.id} 批次 {batch.batch_no} already on "
+                            f"active delivery note {batch.delivery_note_id}"
                         ),
                         http_status=http_status.HTTP_400_BAD_REQUEST,
                     )
-            if p.delivery_note_id != obj.id:
-                p.delivery_note_id = obj.id
-                p.updated_by = self._user_id
-                await self.parts.update(p)
-                serials_added.append(p.serial_no or p.drawing_no or str(p.id))
+            # 部分量 → 拆；拆出的新批次才是入单目标
+            target = batch
+            if qty is not None:
+                if qty <= 0 or qty > batch.quantity:
+                    raise BizError(
+                        code=ErrCode.BIZ_PART_BATCH_INVALID_QUANTITY,
+                        message=(
+                            f"入单数量必须 ∈ [1, {batch.quantity}]"
+                            f"（批次 {batch.batch_no} 当前 {batch.quantity} 件），got {qty}"
+                        ),
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                if qty < batch.quantity:
+                    target = await _split(
+                        batches=self._batches(), events=self.part_events,
+                        part=part, batch=batch, qty=qty, user_id=self._user_id,
+                    )
+            if target.delivery_note_id != obj.id:
+                target.delivery_note_id = obj.id
+                target.updated_by = self._user_id
+                await self._batches().update(target)
+                serials_added.append(part.serial_no or part.drawing_no or str(part.id))
 
         # 2026-07-23 移除 write_item_added 事件写：非状态机迁移噪音事件按用户
         # 要求不再记录；add_parts 的成功/失败由 service 自身返回值 + 响应体承担。
@@ -422,10 +467,10 @@ class DeliveryNoteService:
     async def remove_parts(
         self,
         note_id: str,
-        part_ids: list[str],
+        batch_ids: list[str],
         version: int,
     ):
-        """DRAFT 允许移除（2026-07-23 Bug 5：SUBMITTED 后冻结）。"""
+        """DRAFT 允许移除（2026-07-23 Bug 5：SUBMITTED 后冻结；2026-07-29 批次级）。"""
         nid_int = parse_snowflake_id(note_id, field_name="id")
         obj = await self.notes.get_by_id(nid_int)
         if obj is None:
@@ -455,24 +500,22 @@ class DeliveryNoteService:
             )
 
         ids = [
-            parse_snowflake_id(s, field_name="part_ids")
-            for s in part_ids
+            parse_snowflake_id(s, field_name="batch_ids")
+            for s in batch_ids
         ]
         if not ids:
             return await self.get_with_parts(note_id)
-        existing_list = await self.parts.list_by_ids(
-            ids, include_deleted=False,
-        )
 
-        serials_removed: list[str] = []
-        for p in existing_list:
-            if p.delivery_note_id != obj.id:
+        for bid in ids:
+            if bid is None:
+                continue
+            b = await self._batches().get_by_id(bid)
+            if b is None or b.delivery_note_id != obj.id:
                 # 部分缺失：只清空确实属于本单的
                 continue
-            p.delivery_note_id = None
-            p.updated_by = self._user_id
-            await self.parts.update(p)
-            serials_removed.append(p.serial_no or p.drawing_no or str(p.id))
+            b.delivery_note_id = None
+            b.updated_by = self._user_id
+            await self._batches().update(b)
 
         # 2026-07-23 移除 write_item_removed 事件写：非状态机迁移噪音事件按用户
         # 要求不再记录。
@@ -514,20 +557,20 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 提交校验：所有 part 仍是 READY_TO_SHIP（不能被别人改过）
-        parts = await self.notes.list_parts(nid_int)
-        if not parts:
+        # 提交校验：所有批次仍是 READY_TO_SHIP（不能被别人改过；2026-07-29 批次级）
+        note_batches = await self._note_batches(nid_int)
+        if not note_batches:
             raise BizError(
                 code=ErrCode.BIZ_DELIVERY_NOTE_INVALID_VALUE,
                 message="empty delivery note; add parts before submit",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        for p in parts:
-            if p.status != PartStatus.READY_TO_SHIP.value:
+        for b, p in note_batches:
+            if b.status != PartStatus.READY_TO_SHIP.value:
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_NOTE_PART_NOT_READY,
                     message=(
-                        f"part {p.id} status={p.status} "
+                        f"part {p.id} 批次 {b.batch_no} status={b.status} "
                         "(must be READY_TO_SHIP at submit)"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
@@ -631,9 +674,13 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 校验 part_serial 属于本单（硬校验：防越权 / 防错扫）
+        # 校验 part_serial 属于本单（2026-07-29 批次级：该工单有批次挂在本单即合法；
+        # 司机扫一次 serial 即覆盖本单上该工单的全部批次行——v1 实物只有工单标签）
         part = await self.parts.get_by_serial(part_serial)
-        if part is None or part.delivery_note_id != nid_int:
+        note_batches = await self._note_batches(nid_int)
+        if part is None or not any(
+            b.part_id == part.id for b, _p in note_batches
+        ):
             raise BizError(
                 code=ErrCode.BIZ_DELIVERY_NOTE_SCAN_MISMATCH,
                 message=(
@@ -642,9 +689,8 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 列出本单零件总数，让前端能据此判断 ready
-        parts = await self.notes.list_parts(nid_int)
-        expected_count = len(parts)
+        # 列出本单行项目总数（批次行），让前端能据此判断 ready
+        expected_count = len(note_batches)
         from schema.delivery_note import DeliveryNotePickupScanOut
         return DeliveryNotePickupScanOut(
             delivery_note_id=str(obj.id),
@@ -728,8 +774,9 @@ class DeliveryNoteService:
         # 司机扫码进度由前端本地 Set 跟踪；前端在 confirmDelivery() 里校验 ready
         # 再调 pickup。后端这里只校验「非空 + 状态机 SUBMITTED」，
         # 「缺漏件」的强制保证由前端负责。
-        parts = await self.notes.list_parts(nid_int)
-        expected_count = len(parts)
+        # 2026-07-29 批次级：行=批次。
+        note_batches = await self._note_batches(nid_int)
+        expected_count = len(note_batches)
         if expected_count == 0:
             raise BizError(
                 code=ErrCode.BIZ_DELIVERY_NOTE_INVALID_VALUE,
@@ -737,39 +784,60 @@ class DeliveryNoteService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        today = date.today()
-        # —— 同事务内全员 part.deliver + 单据 pickup / archive ——
-        for p in parts:
-            if p.status != PartStatus.READY_TO_SHIP.value:
+        from service._batch_ops import rollup_part_status as _rollup
+
+        # —— 同事务内全员 batch.deliver + 单据 pickup / archive ——
+        for b, p in note_batches:
+            if b.status != PartStatus.READY_TO_SHIP.value:
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_NOTE_PART_NOT_READY,
                     message=(
-                        f"part {p.id} status={p.status}, "
+                        f"part {p.id} 批次 {b.batch_no} status={b.status}, "
                         "must be READY_TO_SHIP at pickup"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
             await refresh_for_state_machine(
-                self.session, p,
+                self.session, b,
                 attrs=("status", "location", "next_process_id",
                        "version", "updated_at"),
             )
             # PartStateMachine.on_deliver 会写一行 TPartEvent（STATUS_CHANGED
-            # from READY_TO_SHIP to DELIVERED）
-            p.sm.deliver(
+            # from READY_TO_SHIP to DELIVERED，带 batch_id + quantity）
+            b._part_serial = p.serial_no  # transient：SM 事件 drawing_code 用
+            b.sm.deliver(
                 worker=driver,
                 event_repo=self.part_events,
                 created_by=self._user_id,
             )
-            p.actual_delivery_date = today
             # 清多态 holder / location（顺手修老 bug：state machine 不动 current_holder_id）
-            p.current_holder_id = None
-            p.location = None
-            # 2026-07-23 决策：保留 p.delivery_note_id 以便 PICKED_UP/ARCHIVED 后
+            b.current_holder_id = None
+            b.location = None
+            # 2026-07-23 决策：保留 b.delivery_note_id 以便 PICKED_UP/ARCHIVED 后
             # 仍可走 /print 端点打印归档原件；add_parts 的「已在别单」校验只挡 active
             # 单（DRAFT/SUBMITTED），DELIVERED 件本身被 status 校验挡掉，不会误用。
-            p.updated_by = self._user_id
-            await self.parts.update(p)
+            b.updated_by = self._user_id
+            await self._batches().update(b)
+
+        # 批次送货后按工单 rollup（actual_delivery_date 由 rollup 在全部活跃
+        # 批次 DELIVERED 时写入；2026-07-29）
+        for part_id in {b.part_id for b, _p in note_batches}:
+            part = await self.parts.get_by_id(part_id)
+            if part is None:
+                continue
+            await refresh_for_state_machine(
+                self.session, part,
+                attrs=(
+                    "status", "location", "current_holder_id",
+                    "next_process_id", "serial_no", "actual_delivery_date",
+                ),
+            )
+            await _rollup(
+                batches=self._batches(), events=self.part_events,
+                part=part, user_id=self._user_id,
+            )
+            part.updated_by = self._user_id
+            await self.parts.update(part)
 
         # 单据 SUBMITTED → PICKED_UP（2026-07-23 决策：停在 PICKED_UP，不自动
         # archive；PICKED_UP 展示为「已送货」。ARCHIVED 状态暂不使用，保留定义。）
@@ -893,12 +961,12 @@ class DeliveryNoteService:
         return await self._to_out(obj)
 
     async def list_candidate_parts(self, customer_id: str) -> list:
-        """L1 根下 status ∈ {INSPECTION, READY_TO_SHIP} 的候选入单零件。
+        """L1 根下 status ∈ {INSPECTION, READY_TO_SHIP} 的候选入单批次。
 
+        2026-07-29 批次级：行=批次（quantity=批次量，可改小后入单自动拆）。
         - 必须传 L1 root id；L2 直接拒；
-        - 不在 active 单（DRAFT/SUBMITTED）上的件才出现；
-        - 同 L1 根下所有 active 子客户 (含自身) 跨子厂一起列出；
-        - service 层做 active 单去重（一次性 batch 查 notes，避免每行一个 SQL）。
+        - 不在 active 单（DRAFT/SUBMITTED）上的批次才出现；
+        - 同 L1 根下所有 active 子客户 (含自身) 跨子厂一起列出。
         """
         cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
         cust = await self.customers.get_by_id(cid_int)
@@ -922,22 +990,18 @@ class DeliveryNoteService:
         children = await self.customers.list_children(cid_int, include_deleted=False)
         customer_ids = [c.id for c in children] + [cid_int]
 
-        rows = await self.parts.list_with_filters(
+        rows = await self._batches().list_batches_with_part(
+            statuses=[PartStatus.INSPECTION.value, PartStatus.READY_TO_SHIP.value],
             customer_ids_in=customer_ids,
-            statuses=[PartStatus.INSPECTION, PartStatus.READY_TO_SHIP],
-            keyword=None,
-            sort_by=DeliveryNoteSortKey.CREATED_AT,
-            sort_dir=None,
-            limit=2000, offset=0, include_deleted=False,
+            limit=2000,
         )
 
-        # 过滤：不在 active 单上（即 delivery_note_id IS NULL 或仅指向 PICKED_UP/ARCHIVED）。
-        # 一次 SQL：把候选行里出现的非空 delivery_note_id 集合拉一次 notes.list_by_ids，
-        # 在 Python 里就 set 判断。
+        # 过滤：不在 active 单上（即 batch.delivery_note_id IS NULL 或仅指向
+        # PICKED_UP/ARCHIVED）。
         active_note_ids: set[int] = set()
         linked_note_ids = {
-            p.delivery_note_id for p in rows
-            if p.delivery_note_id is not None
+            b.delivery_note_id for b, _p in rows
+            if b.delivery_note_id is not None
         }
         if linked_note_ids:
             linked_notes = await self.notes.list_by_ids(list(linked_note_ids))
@@ -949,25 +1013,25 @@ class DeliveryNoteService:
                 )
             }
 
-        # 把每个 part 的 L2 叶子客户名一次性拉出（避免 N+1）
-        leaf_ids = list({p.customer_id for p in rows})
-        leaf_list = await self.customers.list_by_ids(leaf_ids) if leaf_ids else []
-        leaf_map: dict[int, "Any"] = {c.id: c for c in leaf_list}
-
         from schema.delivery_note import DeliveryNoteCandidatePart
         result: list[DeliveryNoteCandidatePart] = []
-        for p in rows:
-            if p.delivery_note_id is not None and p.delivery_note_id in active_note_ids:
+        for b, p in rows:
+            if b.delivery_note_id is not None and b.delivery_note_id in active_note_ids:
                 continue  # 在 active 单上，跳过
-            leaf = leaf_map.get(p.customer_id)
             result.append(DeliveryNoteCandidatePart(
                 id=str(p.id),
+                batch_id=str(b.id),
+                batch_no=b.batch_no,
+                batch_label=(
+                    f"{p.serial_no}B{b.batch_no:02d}"
+                    if p.serial_no else f"批次{b.batch_no}"
+                ),
                 serial_no=p.serial_no or "",
                 drawing_no=p.drawing_no or "",
                 name=p.name or "",
-                quantity=p.quantity,
+                quantity=b.quantity,
                 applicant_name=p.applicant_name,
-                status=p.status,
+                status=b.status,
                 planned_delivery_date=p.planned_delivery_date,
             ))
         return result
@@ -992,6 +1056,7 @@ class DeliveryNoteService:
             notes=self.notes,
             parts=self.parts,
             customers=self.customers,
+            part_batches=self._batches(),
         )
         return await printer.render(obj)
 
@@ -1029,7 +1094,8 @@ class DeliveryNoteService:
 
     async def _to_out(self, obj: TDeliveryNote):
         from schema.delivery_note import DeliveryNoteOut
-        part_count = await self.notes.count_parts(obj.id)
+        # 2026-07-29 批次级：行数=批次数
+        part_count = len(await self._note_batches(obj.id))
         cust = await self.customers.get_by_id(obj.customer_id)
         customer_name = cust.name if cust else None
         parent_name = None
@@ -1075,7 +1141,7 @@ class DeliveryNoteService:
     async def _to_detail(
         self,
         obj: TDeliveryNote,
-        parts: list[TPart],
+        note_batches: list[tuple[TPartBatch, TPart]],
         scanned_serials: set[str],
     ):
         from schema.delivery_note import (
@@ -1086,6 +1152,7 @@ class DeliveryNoteService:
 
         # 2026-07-23 R2-C：一次性批查所有 part 的 L2 叶子客户 + L1 父客户，
         # 避免 N+1（沿用 delivery_note_print.py::render 同款模式）
+        parts = [p for _b, p in note_batches]
         if parts:
             leaf_ids = list({p.customer_id for p in parts})
             leaf_list = await self.customers.list_by_ids(leaf_ids)
@@ -1101,7 +1168,7 @@ class DeliveryNoteService:
             parent_map = {}
 
         items: list[DeliveryNoteLineItem] = []
-        for p in parts:
+        for b, p in note_batches:
             line_serial = p.serial_no or str(p.id)
             leaf = leaf_map.get(p.customer_id)
             parent = (
@@ -1119,13 +1186,19 @@ class DeliveryNoteService:
                 else leaf_name
             )
             items.append(DeliveryNoteLineItem(
-                id=str(p.id),
+                id=str(b.id),
+                part_id=str(p.id),
+                batch_no=b.batch_no,
+                batch_label=(
+                    f"{p.serial_no}B{b.batch_no:02d}"
+                    if p.serial_no else f"批次{b.batch_no}"
+                ),
                 serial_no=p.serial_no or "",
                 drawing_no=p.drawing_no,
                 name=p.name,
-                quantity=p.quantity,
+                quantity=b.quantity,
                 is_urgent=p.is_urgent,
-                status=p.status,
+                status=b.status,
                 applicant_name=p.applicant_name,
                 request_date=p.request_date,
                 planned_delivery_date=p.planned_delivery_date,

@@ -163,6 +163,70 @@ class PartOut(BaseModel):
             "2026-07-21 新增）"
         ),
     )
+    # —— 批次字段（2026-07-29 批次化；仅「行=批次」的列表场景填充）——
+    batch_id: IdStr = Field(
+        default=None,
+        description="批次 id（扫码台/品检等待批次级列表填充；请求回传定位批次用）",
+    )
+    batch_no: int | None = Field(
+        default=None, description="批次序号（工单内 1 起）",
+    )
+    batch_label: str | None = Field(
+        default=None,
+        description="批次展示码（serial||'B'||batch_no，如 F1234B01；serial 释放后回退 批次N）",
+    )
+
+
+class PartBatchOut(BaseModel):
+    """批次监控出参（2026-07-29 批次化；详情页批次卡片）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号")
+    part_id: IdStrNonNull
+    batch_no: int = Field(description="批次序号（工单内 1 起）")
+    batch_label: str = Field(description="批次展示码（serial||'B'||batch_no）")
+    quantity: int = Field(description="本批次数量")
+    status: str = Field(description="批次状态（取值同 PartStatus）")
+    location: str | None = Field(default=None, description="批次物理位置")
+    current_holder_id: IdStr = Field(default=None, description="当前持有者 id")
+    current_holder_display: str | None = Field(
+        default=None, description="所在位置的人类可读描述（同 PartOut）",
+    )
+    next_process_id: IdStr = Field(default=None, description="下一道工序 id")
+    next_process_name: str | None = Field(default=None, description="下一道工序名称")
+    placed_at: datetime | None = Field(default=None, description="进入 ON_SHELF 时间")
+    delivery_note_id: IdStr = Field(default=None, description="所属送货单 id")
+    delivery_note_no: str | None = Field(default=None, description="所属送货单单号")
+    parent_batch_id: IdStr = Field(default=None, description="拆分谱系：源批次 id")
+    created_at: datetime
+    updated_at: datetime
+
+
+class BatchSplitRequest(BaseModel):
+    """手动拆分批次请求（详情页操作）。"""
+
+    batch_id: IdStrNonNull = Field(description="源批次 id")
+    quantity: int = Field(gt=0, description="拆出数量（必须 < 源批次量）")
+
+
+class PartBatchActionRequest(BaseModel):
+    """无 body 流转端点的可选批次参数（pass/deliver/complete/repair/cancel 等）。"""
+
+    batch_id: IdStr = Field(default=None, description="目标批次 id；缺省按状态唯一批次解析")
+    quantity: int | None = Field(
+        default=None, gt=0, description="部分数量；缺省 = 批次全量",
+    )
+
+
+class InspectionBatchListOut(BaseModel):
+    """品检待办（批次级）分页出参。"""
+
+    items: list[PartOut]
+    total: int
+    limit: int
+    offset: int
 
 
 class PartListItem(BaseModel):
@@ -477,6 +541,13 @@ class PlaceOnShelfRequest(BaseModel):
             "可选；空时 TPartEvent.outsource_company_id 为 NULL"
         ),
     )
+    # —— 批次参数（2026-07-29 批次化，可选）——
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id；缺省按状态唯一批次解析",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="部分数量；缺省 = 批次全量",
+    )
 
     @field_validator("shelf_id", "next_process_id")
     @classmethod
@@ -496,11 +567,18 @@ class FailInspectionRequest(BaseModel):
       行为与 `place_on_shelf` / `release_from_programming` 对齐。
     - `note` 可选，品检员填不合格原因等；写入 `t_part_event.note`
       （前缀 `"打回到货架：<code> 下一工序：<code> | 备注：<note>"`）。
+    - 2026-07-29：`batch_id` / `quantity` 可选（部分打回先拆再转）。
     """
 
     shelf_id: IdStrNonNull
     next_process_id: IdStrNonNull
     note: str | None = Field(default=None, max_length=500, description="品检备注（不合格原因等）")
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id；缺省取唯一 INSPECTION 批次",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="部分数量；缺省 = 批次全量",
+    )
 
 
 class PartUpdateRequest(BaseModel):
@@ -534,6 +612,13 @@ class PartPickUpRequest(BaseModel):
     serial_no: str = Field(min_length=1, max_length=8)
     shelf_id: int = Field(description="操作所在货架 id")
     badge_code: str = Field(min_length=1, max_length=50)
+    # —— 批次参数（2026-07-29 批次化，可选）——
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id（扫码台卡片回传）；缺省取该货架唯一可领批次",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="领取数量；缺省 = 批次全量",
+    )
 
     @field_validator("serial_no", "badge_code")
     @classmethod
@@ -565,6 +650,13 @@ class PartScanRequest(BaseModel):
     next_process_id: int | None = Field(
         default=None,
         description="仅 RETURNED 需要；工人指定的下一道工序 id",
+    )
+    # —— 批次参数（2026-07-29 批次化，可选）——
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id（扫码台卡片回传）；缺省取工人唯一持有批次",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="归还/送检数量；缺省 = 批次全量",
     )
 
     @field_validator("serial_no", "badge_code")
@@ -609,6 +701,13 @@ class SendToOutsourceRequest(BaseModel):
             "乐观锁版本号；必须与 part.version 一致，否则返回 BIZ_VERSION_CONFLICT 409。"
             "前端从 PartOut.version 取值后传入；AuditMixin 自动给 UPDATE 加 WHERE version=? 保证并发安全。"
         ),
+    )
+    # —— 批次参数（2026-07-29 批次化，可选）——
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id；缺省取唯一「在产货架」批次",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="部分发送数量；缺省 = 批次全量",
     )
 
     @field_validator("next_process_id")
@@ -727,6 +826,13 @@ class ReceiveToInspectionRequest(BaseModel):
             "外协公司雪花 ID 字符串（对账审计）；可选；空时 TPartEvent.outsource_company_id 为 NULL"
         ),
     )
+    # —— 批次参数（2026-07-29 批次化，可选）——
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id；缺省取唯一 OUTSOURCE 批次",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="部分数量；缺省 = 批次全量",
+    )
 
 
 class PartEventOut(BaseModel):
@@ -736,6 +842,15 @@ class PartEventOut(BaseModel):
 
     id: IdStrNonNull
     part_id: IdStrNonNull
+    batch_id: IdStr = Field(
+        default=None, description="事件归属批次 id（2026-07-29；NULL = 工单级事件）",
+    )
+    batch_no: int | None = Field(
+        default=None, description="事件归属批次序号（展示「批次N」用）",
+    )
+    quantity: int | None = Field(
+        default=None, description="本次事件涉及的数量；NULL = 历史数据 / 不适用",
+    )
     worker_id: IdStr = None
     worker_name: str | None = None
     event_type: str = Field(description="PartEventType 值")

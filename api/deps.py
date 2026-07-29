@@ -18,6 +18,7 @@ from repository import (
     OutsourceCompanyRepository,
     OutsourceQuoteEventRepository,
     OutsourceQuoteRepository,
+    PartBatchRepository,
     PartEventRepository,
     PartFileRepository,
     PartRepository,
@@ -297,6 +298,7 @@ def get_part_service(
 
     return PartService(
         parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),  # 2026-07-29：批次化
         customers=CustomerRepository(session),
         workers=WorkerRepository(session),
         events=PartEventRepository(session),
@@ -555,6 +557,7 @@ def get_delivery_note_service(
         note_events=DeliveryNoteEventRepository(session),
         counter=DeliveryNoteCounterRepository(session),
         parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),  # 2026-07-29：批次化
         customers=CustomerRepository(session),
         workers=WorkerRepository(session),
         work_types=WorkTypeRepository(session),

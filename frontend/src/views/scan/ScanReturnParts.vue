@@ -81,8 +81,20 @@
           <el-icon :size="20" color="#67c23a"><CircleCheckFilled /></el-icon>
           <span class="confirm-text">
             已选 <strong>{{ selectedPart.serial_no || selectedPart.drawing_no }}</strong>
+            <el-tag v-if="selectedPart.batch_no" type="info" size="small" effect="plain">
+              批次{{ selectedPart.batch_no }}
+            </el-tag>
             · {{ selectedPart.name }}
-            · 当前所在 {{ selectedPart.shelf_code || '?' }}
+            · 归还数量
+            <el-input-number
+              v-model="selectedQty"
+              :min="1"
+              :max="selectedPart.quantity"
+              :precision="0"
+              size="small"
+              class="qty-input"
+            />
+            / {{ selectedPart.quantity }}
             · 下一工序：{{ selectedNextProcessName || '未选' }}
             · 待选货架
           </span>
@@ -92,11 +104,11 @@
         <div class="parts-list">
           <el-card
             v-for="p in parts"
-            :key="p.id"
+            :key="p.batch_id || p.id"
             shadow="hover"
             class="part-row"
             :class="{
-              'is-selected': selectedPart?.id === p.id,
+              'is-selected': sameBatch(selectedPart, p),
               'is-urgent': p.is_urgent,
             }"
             @click="onSelect(p)"
@@ -118,6 +130,12 @@
               <!-- 1) 序列号 + 交期 高优行 -->
               <div class="part-line-top">
                 <span class="serial-no">{{ p.serial_no || p.drawing_no }}</span>
+                <el-tag
+                  v-if="p.batch_no"
+                  type="info"
+                  size="small"
+                  effect="plain"
+                >批次{{ p.batch_no }}</el-tag>
                 <el-tag
                   v-if="p.is_urgent"
                   type="danger"
@@ -375,14 +393,24 @@ async function refresh(): Promise<void> {
 }
 
 // --- 选件 → 工序 → 货架 → 提交 ---
+const selectedQty = ref<number | undefined>(undefined)
+
+/** 2026-07-29 批次化：行=批次，选中比较按 batch_id */
+function sameBatch(a: PartItem | null, b: PartItem): boolean {
+  if (!a) return false
+  if (a.batch_id && b.batch_id) return a.batch_id === b.batch_id
+  return a.id === b.id
+}
+
 function onSelect(p: PartItem): void {
   if (submitting.value) return
   // 取消选中（已选同一件 → 反选）
-  if (selectedPart.value?.id === p.id) {
+  if (sameBatch(selectedPart.value, p)) {
     cancelSelect()
     return
   }
   selectedPart.value = p
+  selectedQty.value = p.quantity
   selectedNextProcessId.value = p.next_process_id ?? ''
   showProcessDialog.value = true
 }
@@ -482,6 +510,8 @@ async function onShelfConfirm(shelfId: string): Promise<void> {
       shelf_id: shelfId,
       badge_code: worker.value.badge_code ?? '',
       next_process_id: selectedNextProcessId.value,
+      batch_id: selectedPart.value.batch_id ?? null,
+      quantity: selectedQty.value ?? null,
     })
     ElMessage.success(
       `已放回：${selectedPart.value.serial_no} → ${
@@ -505,6 +535,7 @@ function onShelfCancel(): void {
 
 function cancelSelect(): void {
   selectedPart.value = null
+  selectedQty.value = undefined
   selectedNextProcessId.value = ''
 }
 
@@ -728,5 +759,10 @@ function deliveryUrgencyTag(s: string | null | undefined): 'danger' | 'warning' 
 }
 .scroll-fab .el-button {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.qty-input {
+  width: 110px;
+  vertical-align: middle;
+  margin: 0 2px;
 }
 </style>

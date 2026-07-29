@@ -17,6 +17,7 @@ from core.database import SessionLocal
 from core.time import now_naive
 from repository.customer import CustomerRepository
 from repository.part import PartRepository
+from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.serial_counter import SerialCounterRepository
 from repository.shelf import ShelfRepository
@@ -55,14 +56,19 @@ async def _run_once() -> None:
 
     async with SessionLocal() as session:
         parts_repo = PartRepository(session)
-        threshold_parts = await parts_repo.find_delivered_older_than(threshold=threshold)
-        if not threshold_parts:
-            logger.info("auto_complete: no parts to complete")
+        batches_repo = PartBatchRepository(session)
+        # 2026-07-29 批次化：扫描 DELIVERED 批次（事件按 batch_id 匹配）。
+        threshold_batches = await batches_repo.find_delivered_older_than(
+            threshold=threshold,
+        )
+        if not threshold_batches:
+            logger.info("auto_complete: no batches to complete")
             return
 
         # 在事务里构造 PartService 并逐个完成
         part_svc = PartService(
             parts=parts_repo,
+            part_batches=batches_repo,
             customers=CustomerRepository(session),
             workers=WorkerRepository(session),
             events=PartEventRepository(session),
@@ -77,18 +83,18 @@ async def _run_once() -> None:
         )
 
         completed_count = 0
-        for part in threshold_parts:
+        for batch in threshold_batches:
             try:
-                await part_svc.complete(part.id)
+                await part_svc.complete(batch.part_id, batch_id=batch.id)
                 completed_count += 1
                 logger.info(
-                    "auto_complete: completed part id=%s serial=%s",
-                    part.id, part.serial_no,
+                    "auto_complete: completed part id=%s batch=%s (no.%s)",
+                    batch.part_id, batch.id, batch.batch_no,
                 )
             except Exception as e:  # noqa: BLE001 — 单个失败不影响其他
                 logger.exception(
-                    "auto_complete: failed to complete part id=%s: %s",
-                    part.id, e,
+                    "auto_complete: failed to complete batch id=%s: %s",
+                    batch.id, e,
                 )
         await session.commit()
-        logger.info("auto_complete: %d part(s) completed this round", completed_count)
+        logger.info("auto_complete: %d batch(es) completed this round", completed_count)

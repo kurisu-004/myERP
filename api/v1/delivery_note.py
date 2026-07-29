@@ -29,17 +29,18 @@ from model.enums import (
     UserRole,
 )
 from schema.delivery_note import (
+    DeliveryNoteAddPartsRequest,
     DeliveryNoteCandidatePartsOut,
     DeliveryNoteCreateRequest,
     DeliveryNoteDetailOut,
     DeliveryNoteEventOut,
     DeliveryNoteListOut,
     DeliveryNoteOut,
-    DeliveryNotePartIdsRequest,
     DeliveryNotePickupListOut,
     DeliveryNotePickupRequest,
     DeliveryNotePickupScanOut,
     DeliveryNotePickupScanRequest,
+    DeliveryNoteRemovePartsRequest,
     DeliveryNoteUpdateRequest,
     DeliveryNoteVersionedRequest,
 )
@@ -135,7 +136,7 @@ async def create_delivery_note(
         customer_id=payload.customer_id,
         note=payload.note,
         delivery_date=payload.delivery_date,
-        initial_part_ids=payload.part_ids or None,
+        initial_items=payload.items or None,
     )
 
 
@@ -197,11 +198,11 @@ async def update_delivery_note(
 )
 async def add_delivery_note_parts(
     note_id: str,
-    payload: DeliveryNotePartIdsRequest,
+    payload: DeliveryNoteAddPartsRequest,
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
 ) -> DeliveryNoteDetailOut:
     return await svc.add_parts(
-        note_id=note_id, part_ids=payload.part_ids, version=payload.version,
+        note_id=note_id, items=payload.items, version=payload.version,
     )
 
 
@@ -213,11 +214,11 @@ async def add_delivery_note_parts(
 )
 async def remove_delivery_note_parts(
     note_id: str,
-    payload: DeliveryNotePartIdsRequest,
+    payload: DeliveryNoteRemovePartsRequest,
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
 ) -> DeliveryNoteDetailOut:
     return await svc.remove_parts(
-        note_id=note_id, part_ids=payload.part_ids, version=payload.version,
+        note_id=note_id, batch_ids=payload.batch_ids, version=payload.version,
     )
 
 

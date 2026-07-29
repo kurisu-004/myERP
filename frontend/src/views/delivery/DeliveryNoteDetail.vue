@@ -20,6 +20,7 @@ import {
   softDeleteNote,
   submitNote,
   updateNote,
+  type AddPartsItem,
 } from '@/api/deliveryNote'
 import {
   DELIVERY_NOTE_STATUS_LABEL,
@@ -208,15 +209,15 @@ function openAdd() {
   addDialogOpen.value = true
 }
 
-async function onPickerSubmit(partIds: string[]) {
+async function onPickerSubmit(items: AddPartsItem[]) {
   if (!note.value) return
-  if (!partIds.length) return
+  if (!items.length) return
   addBusy.value = true
   try {
     await addParts(note.value.id, {
-      part_ids: partIds, version: note.value.version,
+      items, version: note.value.version,
     })
-    ElMessage.success(`已添加 ${partIds.length} 件`)
+    ElMessage.success(`已添加 ${items.length} 批`)
     addDialogOpen.value = false
     await fetchDetail()
   } catch (e) {
@@ -226,8 +227,8 @@ async function onPickerSubmit(partIds: string[]) {
   }
 }
 
-/** 当前单上已有 part id 列表（用于 PartPickerDialog 高亮禁用） */
-const existingPartIdsForPicker = computed(() => {
+/** 当前单上已有批次 id 列表（2026-07-29：line_items.id = 批次 id；用于 PartPickerDialog 高亮禁用） */
+const existingBatchIdsForPicker = computed(() => {
   if (!note.value) return []
   return note.value.line_items.map((it) => it.id)
 })
@@ -260,7 +261,7 @@ async function onRemoveSelected() {
   } catch { return }
   try {
     await removeParts(note.value.id, {
-      part_ids: selectedItemIds.value,
+      batch_ids: selectedItemIds.value,
       version: note.value.version,
     })
     ElMessage.success('已移除')
@@ -367,6 +368,7 @@ const canEdit = computed(() => canAdd.value)
             :selectable="() => true"
           />
           <el-table-column type="index" label="#" width="50" />
+          <el-table-column prop="batch_label" label="批次" min-width="100" align="center"/>
           <el-table-column prop="serial_no" label="序列号" min-width="120" align="center"/>
           <el-table-column prop="drawing_no" label="图号" min-width="140" align="center"/>
           <el-table-column prop="name" label="名称" min-width="180" align="center"/>
@@ -468,7 +470,7 @@ const canEdit = computed(() => canAdd.value)
     <PartPickerDialog
       v-model="addDialogOpen"
       :customer-id="String(note?.customer_id ?? '')"
-      :existing-part-ids="existingPartIdsForPicker"
+      :existing-batch-ids="existingBatchIdsForPicker"
       title="选择零件添加到本单"
       @submit="onPickerSubmit"
     />

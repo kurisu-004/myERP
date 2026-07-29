@@ -79,15 +79,22 @@ class TestFindDeliveredOlderThan:
 
 @pytest.mark.asyncio
 class TestAutoCompleteRunOnce:
-    """集成测试：跑一次 auto_complete_loop._run_once，确认：
-    - 找到的零件逐个走 PartService.complete
+    """集成测试：跑一次 auto_complete_loop._run_once，确认（2026-07-29 批次级）：
+    - 找到的 DELIVERED 批次逐个走 PartService.complete(part_id, batch_id=...)
     - 没找到时静默返回
     - 单个失败不影响其他
     """
 
+    @staticmethod
+    def _make_batch(batch_id: int, part_id: int) -> MagicMock:
+        b = MagicMock()
+        b.id = batch_id
+        b.part_id = part_id
+        b.batch_no = 1
+        return b
+
     async def test_no_parts_no_op(self) -> None:
         from service.auto_complete import _run_once
-        # patch SessionLocal & PartRepository.find_delivered_older_than -> []
         from unittest.mock import AsyncMock, patch
 
         mock_session = AsyncMock()
@@ -95,9 +102,9 @@ class TestAutoCompleteRunOnce:
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
         with patch("service.auto_complete.SessionLocal") as session_local, \
-             patch("service.auto_complete.PartRepository") as pr_cls:
+             patch("service.auto_complete.PartBatchRepository") as pb_cls:
             session_local.return_value = mock_session
-            mock_repo = pr_cls.return_value
+            mock_repo = pb_cls.return_value
             mock_repo.find_delivered_older_than = AsyncMock(return_value=[])
 
             await _run_once()
@@ -107,52 +114,52 @@ class TestAutoCompleteRunOnce:
 
     async def test_completes_eligible_parts(self) -> None:
         from service.auto_complete import _run_once
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
-        p1 = _make_part(part_id=1001)
-        p2 = _make_part(part_id=1002)
+        b1 = self._make_batch(batch_id=501, part_id=1001)
+        b2 = self._make_batch(batch_id=502, part_id=1002)
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
         with patch("service.auto_complete.SessionLocal") as session_local, \
-             patch("service.auto_complete.PartRepository") as pr_cls, \
+             patch("service.auto_complete.PartBatchRepository") as pb_cls, \
              patch("service.auto_complete.PartService") as svc_cls:
             session_local.return_value = mock_session
-            mock_repo = pr_cls.return_value
-            mock_repo.find_delivered_older_than = AsyncMock(return_value=[p1, p2])
+            mock_repo = pb_cls.return_value
+            mock_repo.find_delivered_older_than = AsyncMock(return_value=[b1, b2])
 
             mock_svc = svc_cls.return_value
             mock_svc.complete = AsyncMock()
 
             await _run_once()
 
-            # 两个零件都调了 complete
+            # 两个批次都按 (part_id, batch_id) 调了 complete
             assert mock_svc.complete.await_count == 2
-            mock_svc.complete.assert_any_await(p1.id)
-            mock_svc.complete.assert_any_await(p2.id)
+            mock_svc.complete.assert_any_await(b1.part_id, batch_id=b1.id)
+            mock_svc.complete.assert_any_await(b2.part_id, batch_id=b2.id)
             mock_session.commit.assert_awaited_once()
 
     async def test_one_failure_does_not_block_others(self) -> None:
         from service.auto_complete import _run_once
         from unittest.mock import AsyncMock, patch
 
-        p1 = _make_part(part_id=2001)
-        p2 = _make_part(part_id=2002)
+        b1 = self._make_batch(batch_id=601, part_id=2001)
+        b2 = self._make_batch(batch_id=602, part_id=2002)
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
         with patch("service.auto_complete.SessionLocal") as session_local, \
-             patch("service.auto_complete.PartRepository") as pr_cls, \
+             patch("service.auto_complete.PartBatchRepository") as pb_cls, \
              patch("service.auto_complete.PartService") as svc_cls:
             session_local.return_value = mock_session
-            mock_repo = pr_cls.return_value
-            mock_repo.find_delivered_older_than = AsyncMock(return_value=[p1, p2])
+            mock_repo = pb_cls.return_value
+            mock_repo.find_delivered_older_than = AsyncMock(return_value=[b1, b2])
 
             mock_svc = svc_cls.return_value
 
-            async def _complete_one(pid: int):
+            async def _complete_one(pid: int, *, batch_id=None):
                 if pid == 2001:
                     raise RuntimeError("simulated")
                 return None

@@ -47,12 +47,18 @@ export interface DeliveryNoteListResponse {
   offset: number
 }
 
+/** 入单条目（2026-07-29 批次化）：批次 + 可选部分数量（小于批次量时后端自动拆分） */
+export interface AddPartsItem {
+  batch_id: string
+  quantity?: number | null
+}
+
 export interface CreateNotePayload {
   customer_id: string
   /** YYYY-MM-DD；不传时服务端 fallback 到创建当天 */
   delivery_date?: string | null
-  /** 原子带入首批零件（雪花 ID 字符串）；后端 add_parts 内部跑一次 */
-  part_ids?: string[]
+  /** 原子带入首批零件（批次条目）；后端 add_parts 内部跑一次 */
+  items?: AddPartsItem[]
   note?: string | null
 }
 
@@ -63,8 +69,13 @@ export interface UpdateNotePayload {
   note?: string | null
 }
 
-export interface PartIdsPayload {
-  part_ids: string[]
+export interface AddPartsPayload {
+  items: AddPartsItem[]
+  version: number
+}
+
+export interface RemovePartsPayload {
+  batch_ids: string[]
   version: number
 }
 
@@ -139,7 +150,7 @@ export async function listNoteEvents(
 // 6) add-parts
 export async function addParts(
   noteId: string,
-  payload: PartIdsPayload,
+  payload: AddPartsPayload,
 ): Promise<DeliveryNoteDetailOut> {
   const resp = await api.post<DeliveryNoteDetailOut>(
     `/delivery-notes/${noteId}/add-parts`,
@@ -151,7 +162,7 @@ export async function addParts(
 // 7) remove-parts
 export async function removeParts(
   noteId: string,
-  payload: PartIdsPayload,
+  payload: RemovePartsPayload,
 ): Promise<DeliveryNoteDetailOut> {
   const resp = await api.post<DeliveryNoteDetailOut>(
     `/delivery-notes/${noteId}/remove-parts`,

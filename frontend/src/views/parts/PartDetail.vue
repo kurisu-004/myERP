@@ -471,6 +471,146 @@
       <el-empty v-else description="暂无外协报价" />
     </el-card>
 
+    <!-- 批次监控（2026-07-29 批次化） -->
+    <el-card shadow="never" class="batch-card" v-loading="batchesLoading">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">批次监控</span>
+          <span class="event-count">
+            共 {{ batches.length }} 批 / {{ batchTotalQty }} 件
+          </span>
+        </div>
+      </template>
+      <el-table
+        v-if="batches.length > 0"
+        :data="batches"
+        size="small"
+        border
+        stripe
+      >
+        <el-table-column label="批次" min-width="110" align="center">
+          <template #default="{ row }">
+            <span class="batch-label">{{ (row as PartBatch).batch_label }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="80" align="right">
+          <template #default="{ row }">{{ (row as PartBatch).quantity }}</template>
+        </el-table-column>
+        <el-table-column label="状态" min-width="110" align="center">
+          <template #default="{ row }">
+            <el-tag
+              :type="statusTagType((row as PartBatch).status as OrderStatus)"
+              size="small"
+              effect="plain"
+            >
+              {{ statusLabelOf((row as PartBatch).status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column
+          label="所在位置"
+          min-width="130"
+          align="center"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            {{ (row as PartBatch).current_holder_display || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column
+          label="下一工序"
+          min-width="100"
+          align="center"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            {{ (row as PartBatch).next_process_name || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column
+          label="送货单"
+          min-width="150"
+          align="center"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            {{ (row as PartBatch).delivery_note_no || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" min-width="150" align="center">
+          <template #default="{ row }">
+            <span class="muted">{{ formatDateTime((row as PartBatch).created_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          v-if="canManageBatches"
+          label="操作"
+          width="130"
+          align="center"
+          fixed="right"
+        >
+          <template #default="{ row }">
+            <el-button
+              v-if="!isTerminalBatch(row as PartBatch) && (row as PartBatch).quantity > 1"
+              link
+              type="primary"
+              size="small"
+              @click="openSplitDialog(row as PartBatch)"
+            >拆分</el-button>
+            <el-button
+              v-if="!isTerminalBatch(row as PartBatch)"
+              link
+              type="danger"
+              size="small"
+              @click="onCancelBatch(row as PartBatch)"
+            >取消</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="暂无批次" />
+    </el-card>
+
+    <!-- 拆分批次对话框 -->
+    <el-dialog
+      v-model="splitDialogVisible"
+      title="拆分批次"
+      :width="confirmDlg.width.value"
+      :fullscreen="confirmDlg.fullscreen.value"
+      @closed="onSplitDialogClosed"
+    >
+      <div v-if="splitSource" class="split-dialog-body">
+        <p>
+          源批次 <b>{{ splitSource.batch_label }}</b>
+          （当前 {{ splitSource.quantity }} 件，
+          {{ statusLabelOf(splitSource.status) }}）
+        </p>
+        <el-form label-width="90px">
+          <el-form-item label="拆出数量" required>
+            <el-input-number
+              v-model="splitQuantity"
+              :min="1"
+              :max="splitSource.quantity - 1"
+              :precision="0"
+              style="width: 160px"
+            />
+          </el-form-item>
+        </el-form>
+        <p class="muted">
+          拆出后：源批次剩 {{ splitSource.quantity - (splitQuantity ?? 0) }} 件，
+          新批次 {{ splitQuantity ?? 0 }} 件（继承当前状态/位置）。
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="splitDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="splitSubmitting"
+          :disabled="!splitQuantity || !splitSource || splitQuantity >= splitSource.quantity"
+          @click="onSplitConfirm"
+        >确认拆分</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 历史记录 -->
     <el-card shadow="never" class="history-card" v-loading="eventsLoading">
       <template #header>
@@ -495,6 +635,10 @@
                 <el-tag :type="eventTagType(evt.event_type)" effect="dark" size="small">
                   {{ eventLabel(evt.event_type) }}
                 </el-tag>
+                <el-tag v-if="evt.batch_no" size="small" effect="plain" type="info">
+                  批次{{ evt.batch_no }}
+                </el-tag>
+                <span v-if="evt.quantity != null" class="muted">× {{ evt.quantity }}</span>
                 <span v-if="evt.worker_name" class="worker-name">
                   <el-icon><User /></el-icon>
                   {{ evt.worker_name }}
@@ -893,14 +1037,18 @@ import FileListCard from '@/components/FileListCard.vue'
 import Barcode from '@/components/Barcode.vue'
 import {
   cancelPart,
+  cancelPartBatch,
   failInspection,
   getPart,
+  listPartBatches,
   listPartEvents,
   passInspection,
   receiveFromOutsource,
   releaseFromProgramming,
   softDeletePart,
+  splitPartBatch,
   updatePart,
+  type PartBatch,
   type PartItem,
   type PartEvent,
   type PartUpdatePayload,
@@ -974,6 +1122,16 @@ const quoteCreateDlg = useDialogSize({ desktopWidth: 640, fullscreenOnMobile: tr
 // ============ 数据 ============
 const part = ref<PartItem | null>(null)
 const events = ref<PartEvent[] | null>(null)
+// 批次监控（2026-07-29 批次化）
+const batches = ref<PartBatch[]>([])
+const batchesLoading = ref(false)
+const batchTotalQty = computed(() =>
+  batches.value.reduce((acc, b) => acc + b.quantity, 0),
+)
+const splitDialogVisible = ref(false)
+const splitSource = ref<PartBatch | null>(null)
+const splitQuantity = ref<number | undefined>(undefined)
+const splitSubmitting = ref(false)
 const drawings = ref<PartFileItem[]>([])
 const models3d = ref<PartFileItem[]>([])
 const cadFiles = ref<PartFileItem[]>([])
@@ -1166,6 +1324,7 @@ async function onConfirmAction(): Promise<void> {
       confirmVisible.value = false
       await fetchPart()
       void fetchEvents()
+    void fetchBatches()
     } else {
       await softDeletePart(partId.value)
       ElMessage.success('已删除')
@@ -1225,6 +1384,78 @@ async function fetchEvents(): Promise<void> {
     ElMessage.error((e as Error).message ?? '加载历史记录失败')
   } finally {
     eventsLoading.value = false
+  }
+}
+
+// ============ 批次监控（2026-07-29 批次化）============
+const canManageBatches = computed(() => isManager.value || isClerk.value)
+
+function isTerminalBatch(b: PartBatch): boolean {
+  return b.status === 'COMPLETED' || b.status === 'CANCELLED'
+}
+
+async function fetchBatches(): Promise<void> {
+  batchesLoading.value = true
+  try {
+    batches.value = await listPartBatches(partId.value)
+  } catch (e) {
+    batches.value = []
+    ElMessage.error((e as Error).message ?? '加载批次失败')
+  } finally {
+    batchesLoading.value = false
+  }
+}
+
+function openSplitDialog(b: PartBatch): void {
+  splitSource.value = b
+  splitQuantity.value = undefined
+  splitDialogVisible.value = true
+}
+
+function onSplitDialogClosed(): void {
+  splitSource.value = null
+  splitQuantity.value = undefined
+}
+
+async function onSplitConfirm(): Promise<void> {
+  if (!splitSource.value || !splitQuantity.value) return
+  splitSubmitting.value = true
+  try {
+    batches.value = await splitPartBatch(partId.value, {
+      batch_id: splitSource.value.id,
+      quantity: splitQuantity.value,
+    })
+    ElMessage.success('拆分成功')
+    splitDialogVisible.value = false
+    await fetchPart()
+    void fetchEvents()
+    void fetchBatches()
+  } catch (e) {
+    ElMessage.error(`拆分失败：${(e as Error).message}`)
+  } finally {
+    splitSubmitting.value = false
+  }
+}
+
+async function onCancelBatch(b: PartBatch): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认取消批次 ${b.batch_label}（${b.quantity} 件，${statusLabelOf(b.status)}）？`
+      + '该批次数量将从在制中移除，不可恢复。',
+      '取消批次',
+      { confirmButtonText: '确认取消', cancelButtonText: '返回', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    batches.value = await cancelPartBatch(partId.value, b.id)
+    ElMessage.success('批次已取消')
+    await fetchPart()
+    void fetchEvents()
+    void fetchBatches()
+  } catch (e) {
+    ElMessage.error(`取消批次失败：${(e as Error).message}`)
   }
 }
 
@@ -1323,6 +1554,7 @@ watch(
     quotes.value = []
     await fetchPart()
     void fetchEvents()
+    void fetchBatches()
     void fetchQuotes()
     void fetchDrawings()
     void fetch3DModels()
@@ -1504,6 +1736,7 @@ async function onReleaseConfirm(): Promise<void> {
     releaseVisible.value = false
     await fetchPart()
     void fetchEvents()
+    void fetchBatches()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '下发失败')
   } finally {
@@ -1531,6 +1764,7 @@ async function onPassInspection(): Promise<void> {
     ElMessage.success('品检通过')
     await fetchPart()
     void fetchEvents()
+    void fetchBatches()
   } catch (e) {
     ElMessage.error(`品检通过失败：${(e as Error).message}`)
   } finally {
@@ -1609,6 +1843,7 @@ async function onFailInspectionConfirm(): Promise<void> {
     failInspDialogVisible.value = false
     await fetchPart()
     void fetchEvents()
+    void fetchBatches()
   } catch (e) {
     ElMessage.error(`品检打回失败：${(e as Error).message}`)
   } finally {
@@ -1683,6 +1918,7 @@ async function onReceiveConfirm(): Promise<void> {
     receiveOutsourceDialogVisible.value = false
     await fetchPart()
     void fetchEvents()
+    void fetchBatches()
   } catch (e) {
     ElMessage.error(`外协回收失败：${(e as Error).message}`)
   } finally {
@@ -1693,6 +1929,7 @@ async function onReceiveConfirm(): Promise<void> {
 onMounted(() => {
   void fetchPart()
   void fetchEvents()
+  void fetchBatches()
   void fetchQuotes()
   void fetchDrawings()
   void fetch3DModels()
@@ -1763,6 +2000,7 @@ async function onQuoteCreateConfirm(): Promise<void> {
     await fetchQuotes()
     // 同步刷新历史时间线（创建事件 QUOTE_CREATED）
     void fetchEvents()
+    void fetchBatches()
   } catch (e) {
     ElMessage.error((e as Error).message ?? '创建失败')
   } finally {
@@ -2026,5 +2264,15 @@ function onViewQuoteDetail(_q: OutsourceQuote): void {
     display: flex;
     gap: 8px;
   }
+}
+
+/* 批次监控（2026-07-29） */
+.batch-label {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-weight: 600;
+}
+.split-dialog-body p {
+  margin: 6px 0;
+  line-height: 1.6;
 }
 </style>

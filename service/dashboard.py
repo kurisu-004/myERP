@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_shanghai_iso
-from model import TPart, TPartEvent, TProcess, TShelf, TWorker
+from model import TPart, TPartBatch, TPartEvent, TProcess, TShelf, TWorker
 from model.enums import (
     PartEventType,
     PartStatus,
@@ -72,29 +72,36 @@ async def build_snapshot(
     all_prod_shelves = list((await session.execute(all_prod_stmt)).scalars().all())
     active_prod_ids = [s.id for s in all_prod_shelves]
 
-    # 2) 查所有 active 生产区货架上的 IN_PROCESS 零件（先一次性取全，Python 端按货架分组后每架取前 10）
-    on_prod_parts: list[TPart] = []
+    # 2) 查所有 active 生产区货架上的 IN_PROCESS 批次（2026-07-29 批次级；
+    #    先一次性取全，Python 端按货架分组后每架取前 10）
+    on_prod_rows: list[tuple[TPartBatch, TPart]] = []
     if active_prod_ids:
         stmt = (
-            select(TPart)
+            select(TPartBatch, TPart)
+            .join(TPart, TPart.id == TPartBatch.part_id)
             .where(
-                TPart.status == PartStatus.IN_PROCESS.value,
+                TPartBatch.status == PartStatus.IN_PROCESS.value,
+                TPartBatch.deleted_at.is_(None),
                 TPart.deleted_at.is_(None),
-                TPart.current_holder_id.in_(active_prod_ids),
+                TPartBatch.current_holder_id.in_(active_prod_ids),
             )
             .order_by(
-                TPart.current_holder_id.asc(),
+                TPartBatch.current_holder_id.asc(),
                 TPart.is_urgent.desc(),
                 TPart.planned_delivery_date.asc(),
-                TPart.id.asc(),
+                TPartBatch.id.asc(),
             )
         )
-        on_prod_parts = list((await session.execute(stmt)).scalars().all())
+        on_prod_rows = [(r[0], r[1]) for r in (await session.execute(stmt)).all()]
 
-    on_insp_parts = await _fetch_on_zone_shelves(
+    on_insp_rows = await _fetch_on_zone_shelves(
         session, zone=ShelfZone.INSPECTION.value, top_n=top_n
     )
-    worker_parts = await _fetch_in_process_worker(session, top_n)
+    worker_rows = await _fetch_in_process_worker(session, top_n)
+
+    on_prod_parts = [p for _, p in on_prod_rows]
+    on_insp_parts = [p for _, p in on_insp_rows]
+    worker_parts = [p for _, p in worker_rows]
 
     # 批量取客户路径
     cust_ids = list(
@@ -102,44 +109,44 @@ async def build_snapshot(
     )
     cust_map = await _fetch_customer_path(session, cust_ids)
 
-    # 批量取工人名字（仅 in_process 部分）
+    # 批量取工人名字（仅 in_process 部分；holder 在批次上）
     worker_ids = [
-        p.current_holder_id for p in worker_parts if p.current_holder_id
+        b.current_holder_id for b, _ in worker_rows if b.current_holder_id
     ]
     worker_name_map = await _fetch_worker_names(session, worker_ids)
 
-    # 批量取工序名（适用三个区段的所有零件；Dashboard 大屏显示「下一工序」）
+    # 批量取工序名（适用三个区段的所有批次；Dashboard 大屏显示「下一工序」）
     process_ids = list({
-        p.next_process_id
-        for p in on_prod_parts + on_insp_parts + worker_parts
-        if p.next_process_id is not None
+        b.next_process_id
+        for b, _ in on_prod_rows + on_insp_rows + worker_rows
+        if b.next_process_id is not None
     })
     process_name_map = await _fetch_process_names(session, process_ids)
 
     # 品检区维持原状：只查有 holder 指向的货架
     insp_shelf_ids = {
-        p.current_holder_id
-        for p in on_insp_parts
-        if p.current_holder_id
+        b.current_holder_id
+        for b, _ in on_insp_rows
+        if b.current_holder_id
     }
     insp_shelf_map = await _fetch_shelves_by_ids(session, list(insp_shelf_ids))
 
-    # 批量取最近一次 PICKED_UP 时间
+    # 批量取最近一次 PICKED_UP 时间（2026-07-29：按批次匹配）
     picked_at_map = await _picked_up_at_map(
-        session, [p.id for p in worker_parts]
+        session, [b.id for b, _ in worker_rows]
     )
 
     # 3) 拼装：按 current_holder_id 分桶，每架取前 10 件；所有 active 货架都出现
-    parts_by_shelf: dict[int, list[TPart]] = {}
-    for p in on_prod_parts:
-        sid = p.current_holder_id
+    rows_by_shelf: dict[int, list[tuple[TPartBatch, TPart]]] = {}
+    for b, p in on_prod_rows:
+        sid = b.current_holder_id
         if sid is None:
             continue
-        parts_by_shelf.setdefault(sid, []).append(p)
+        rows_by_shelf.setdefault(sid, []).append((b, p))
 
     on_prod_groups: list[dict[str, Any]] = []
     for s in all_prod_shelves:
-        items = parts_by_shelf.get(s.id, [])[:10]
+        items = rows_by_shelf.get(s.id, [])[:10]
         on_prod_groups.append({
             "shelf_id": str(s.id),
             "shelf_code": s.code,
@@ -147,38 +154,39 @@ async def build_snapshot(
             "items": [
                 _to_dict(
                     p,
+                    batch=b,
                     cust_map=cust_map,
                     holder_kind="shelf",
                     shelf_code=s.code,
-                    placed_at=getattr(p, "placed_at", None),
                     process_map=process_name_map,
                 )
-                for p in items
+                for b, p in items
             ],
         })
 
     on_insp_items = [
         _to_dict(
             p,
+            batch=b,
             cust_map=cust_map,
             holder_kind="shelf",
-            shelf_code=(insp_shelf_map[p.current_holder_id].code
-                        if p.current_holder_id in insp_shelf_map else None),
-            placed_at=getattr(p, "placed_at", None),
+            shelf_code=(insp_shelf_map[b.current_holder_id].code
+                        if b.current_holder_id in insp_shelf_map else None),
             process_map=process_name_map,
         )
-        for p in on_insp_parts
+        for b, p in on_insp_rows
     ]
     in_process_items = [
         _to_dict(
             p,
+            batch=b,
             cust_map=cust_map,
             holder_kind="worker",
-            worker_name=worker_name_map.get(p.current_holder_id),
-            picked_up_at=picked_at_map.get(p.id),
+            worker_name=worker_name_map.get(b.current_holder_id),
+            picked_up_at=picked_at_map.get(b.id),
             process_map=process_name_map,
         )
-        for p in worker_parts
+        for b, p in worker_rows
     ]
 
     upcoming_delivery = await _fetch_upcoming_delivery(session, days=7)
@@ -198,8 +206,8 @@ async def build_snapshot(
 # ============================================================
 async def _fetch_on_zone_shelves(
     session: AsyncSession, *, zone: str, top_n: int
-) -> list[TPart]:
-    """status ∈ {IN_PROCESS, INSPECTION} ∩ holder ∈ t_shelf(z=zone)。"""
+) -> list[tuple[TPartBatch, TPart]]:
+    """status ∈ {IN_PROCESS, INSPECTION} ∩ holder ∈ t_shelf(z=zone)（批次级）。"""
     subq = select(TShelf.id).where(
         TShelf.zone == zone,
         TShelf.deleted_at.is_(None),
@@ -211,40 +219,45 @@ async def _fetch_on_zone_shelves(
         else PartStatus.INSPECTION.value
     )
     stmt = (
-        select(TPart)
-        .where(TPart.status == status_value)
+        select(TPartBatch, TPart)
+        .join(TPart, TPart.id == TPartBatch.part_id)
+        .where(TPartBatch.status == status_value)
+        .where(TPartBatch.deleted_at.is_(None))
         .where(TPart.deleted_at.is_(None))
-        .where(TPart.current_holder_id.in_(subq))
+        .where(TPartBatch.current_holder_id.in_(subq))
         .order_by(
-            TPart.current_holder_id.asc(),
+            TPartBatch.current_holder_id.asc(),
             TPart.is_urgent.desc(),
             TPart.planned_delivery_date.asc(),
-            TPart.id.asc(),
+            TPartBatch.id.asc(),
         )
         .limit(top_n)
     )
     result = await session.execute(stmt)
-    return list(result.scalars().all())
+    return [(r[0], r[1]) for r in result.all()]
 
 
 async def _fetch_in_process_worker(
     session: AsyncSession, top_n: int
-) -> list[TPart]:
-    """IN_PROCESS 且 holder 在 t_worker(is_active) 集合内。"""
+) -> list[tuple[TPartBatch, TPart]]:
+    """IN_PROCESS 且 holder 在 t_worker(is_active) 集合内（批次级）。"""
     worker_subq = select(TWorker.id).where(
         TWorker.deleted_at.is_(None),
         TWorker.is_active.is_(True),
     )
     stmt = (
-        select(TPart)
-        .where(TPart.status == PartStatus.IN_PROCESS.value)
+        select(TPartBatch, TPart)
+        .join(TPart, TPart.id == TPartBatch.part_id)
+        .where(TPartBatch.status == PartStatus.IN_PROCESS.value)
+        .where(TPartBatch.location == "WORKER")
+        .where(TPartBatch.deleted_at.is_(None))
         .where(TPart.deleted_at.is_(None))
-        .where(TPart.current_holder_id.in_(worker_subq))
-        .order_by(TPart.id.desc())
+        .where(TPartBatch.current_holder_id.in_(worker_subq))
+        .order_by(TPartBatch.id.desc())
         .limit(top_n)
     )
     result = await session.execute(stmt)
-    return list(result.scalars().all())
+    return [(r[0], r[1]) for r in result.all()]
 
 
 async def _fetch_upcoming_delivery(
@@ -319,18 +332,19 @@ async def _fetch_shelves_by_ids(
 
 
 async def _picked_up_at_map(
-    session: AsyncSession, part_ids: list[int]
+    session: AsyncSession, batch_ids: list[int]
 ) -> dict[int, Any]:
-    if not part_ids:
+    """批次 → 最近一次 PICKED_UP 事件时间（2026-07-29：按 batch_id 匹配）。"""
+    if not batch_ids:
         return {}
     stmt = (
-        select(TPartEvent.part_id, TPartEvent.created_at)
-        .where(TPartEvent.part_id.in_(part_ids))
+        select(TPartEvent.batch_id, TPartEvent.created_at)
+        .where(TPartEvent.batch_id.in_(batch_ids))
         .where(TPartEvent.event_type == PartEventType.PICKED_UP.value)
-        .order_by(TPartEvent.part_id.asc(), TPartEvent.created_at.desc())
+        .order_by(TPartEvent.batch_id.asc(), TPartEvent.created_at.desc())
     )
     rows = (await session.execute(stmt)).all()
-    return {pid: ts for pid, ts in rows}
+    return {bid: ts for bid, ts in rows}
 
 
 async def _fetch_worker_names(
@@ -421,6 +435,7 @@ def _group_by_shelf(
 def _to_dict(
     part: TPart,
     *,
+    batch: TPartBatch | None = None,
     cust_map: dict[int, dict[str, Any]],
     holder_kind: str | None,
     worker_name: str | None = None,
@@ -429,25 +444,37 @@ def _to_dict(
     placed_at: Any | None = None,
     process_map: dict[int, str] | None = None,
 ) -> dict[str, Any]:
+    """卡片 dict。2026-07-29：传 batch 时数量/位置/工序/holder 取批次值。"""
     cust_info = cust_map.get(part.customer_id, {})
-    np_id = part.next_process_id
+    np_id = batch.next_process_id if batch is not None else part.next_process_id
+    holder_id = (
+        batch.current_holder_id if batch is not None else part.current_holder_id
+    )
+    quantity = batch.quantity if batch is not None else part.quantity
+    eff_placed_at = (
+        batch.placed_at if batch is not None else getattr(part, "placed_at", None)
+    )
+    if placed_at is not None:
+        eff_placed_at = placed_at
     return {
         "id": str(part.id),
+        "batch_id": str(batch.id) if batch is not None else None,
+        "batch_no": batch.batch_no if batch is not None else None,
         "serial_no": part.serial_no,
         "name": part.name,
         "drawing_no": part.drawing_no,
-        "quantity": part.quantity,
+        "quantity": quantity,
         "is_urgent": bool(part.is_urgent),
         "planned_delivery_date": part.planned_delivery_date.isoformat()
         if part.planned_delivery_date
         else None,
         "picked_up_at": picked_up_at.isoformat() + "Z" if picked_up_at else None,
         "current_holder_id": (
-            str(part.current_holder_id) if part.current_holder_id else None
+            str(holder_id) if holder_id else None
         ),
         "current_holder_kind": holder_kind,
         "shelf_code": shelf_code,
-        "placed_at": placed_at.isoformat() + "Z" if placed_at else None,
+        "placed_at": eff_placed_at.isoformat() + "Z" if eff_placed_at else None,
         "customer_id": str(part.customer_id) if part.customer_id else None,
         "customer_name": cust_info.get("customer_name"),
         "customer_path": cust_info.get("customer_path"),

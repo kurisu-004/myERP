@@ -12,6 +12,7 @@ from .outsource_company_process import OutsourceCompanyProcessRepository
 from .outsource_quote import OutsourceQuoteRepository
 from .outsource_quote_event import OutsourceQuoteEventRepository
 from .part import PartRepository
+from .part_batch import PartBatchRepository
 from .part_event import PartEventRepository
 from .part_file import PartFileRepository
 from .process import ProcessRepository
@@ -37,6 +38,7 @@ __all__ = [
     "OutsourceQuoteRepository",
     "PartEventRepository",
     "PartFileRepository",
+    "PartBatchRepository",
     "PartRepository",
     "ProcessRepository",
     "SerialCounterRepository",

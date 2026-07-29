@@ -42,6 +42,7 @@ from schema.part import (
     PartBatchTreePartResult,
 )
 from service.part import PartService
+from tests.unit._fake_batches import FakePartBatchRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -100,6 +101,9 @@ def service(
     """构造 PartService，注入 create_parts_tree 所需的 assemblies 依赖。"""
     return PartService(
         parts=mock_parts,
+        part_batches=FakePartBatchRepository(
+            parts_provider=mock_parts.get_by_id,
+        ),
         customers=mock_customers,
         workers=mock_workers,
         events=mock_events,

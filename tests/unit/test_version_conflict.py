@@ -32,6 +32,7 @@ from repository import (
 )
 from schema.part import PartUpdateRequest
 from service.part import PartService
+from tests.unit._fake_batches import FakePartBatchRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -132,6 +133,7 @@ class TestServicePropagatesStaleDataError:
         mock_processes = AsyncMock(spec=ProcessRepository)
         svc = PartService(
             parts=mock_parts,
+            part_batches=FakePartBatchRepository(),
             customers=mock_customers,
             workers=mock_workers,
             events=mock_events,
@@ -165,6 +167,7 @@ class TestServicePropagatesStaleDataError:
         mock_shelves = AsyncMock(spec=ShelfRepository)
         svc = PartService(
             parts=mock_parts,
+            part_batches=FakePartBatchRepository(),
             customers=mock_customers,
             workers=mock_workers,
             events=mock_events,

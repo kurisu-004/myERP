@@ -131,6 +131,7 @@ export type PartEventType =
   | 'QUOTE_APPROVED'
   | 'CANCELLED'
   | 'COMPLETED'
+  | 'SPLIT'
 
 export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   CREATED: '创建',
@@ -151,6 +152,7 @@ export const PART_EVENT_LABEL: Record<PartEventType, string> = {
   QUOTE_APPROVED: '报价审核通过',
   CANCELLED: '取消',
   COMPLETED: '完成',
+  SPLIT: '批次拆分',
 }
 
 export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 'warning' | 'info' | 'danger'> = {
@@ -172,6 +174,7 @@ export const PART_EVENT_TAG_TYPE: Record<PartEventType, 'primary' | 'success' | 
   QUOTE_APPROVED: 'success',
   CANCELLED: 'danger',
   COMPLETED: 'success',
+  SPLIT: 'info',
 }
 
 /** 扫码台允许的 event_type 子集 */
