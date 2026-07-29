@@ -13,10 +13,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from PIL import Image
-from pypdf import PdfReader
+from pypdf import PageObject, PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, NameObject, RectangleObject
 
 from model import TPartFile
-from service.printing import build_part_print_pdf
+from service.printing import _fit_pdf_page_to_a4, build_part_print_pdf
 
 
 pytestmark = pytest.mark.asyncio
@@ -378,6 +379,94 @@ class TestDrawingPdfMediaboxNormalization:
         assert float(page1.mediabox.width) == pytest.approx(bc_w, abs=0.1)
         assert float(page1.mediabox.height) == pytest.approx(bc_h, abs=0.1)
         assert float(page1.cropbox.width) == pytest.approx(bc_w, abs=0.1)
+
+
+class TestDrawingPdfFitToA4:
+    @staticmethod
+    def _marked_page(
+        width: float,
+        height: float,
+        *,
+        origin_x: float = 0,
+        origin_y: float = 0,
+        rotation: int = 0,
+    ) -> PageObject:
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=width, height=height)
+        page.mediabox = RectangleObject(
+            [origin_x, origin_y, origin_x + width, origin_y + height]
+        )
+        stream = DecodedStreamObject()
+        # 在源页四周画框；经过适配后应随同内容流一起缩放和平移。
+        stream.set_data(
+            f"q 0 0 {width} {height} re S Q".encode("ascii")
+        )
+        page[NameObject("/Contents")] = stream
+        if rotation:
+            page.rotate(rotation)
+        return page
+
+    async def test_a3_landscape_content_is_scaled_into_a4(self) -> None:
+        page = self._marked_page(1190.55, 841.89)
+
+        _fit_pdf_page_to_a4(page, "landscape")
+
+        assert tuple(float(v) for v in page.mediabox) == pytest.approx(
+            (0, 0, 842, 595), abs=0.1
+        )
+        operations = page.get_contents().operations
+        matrix = next(operands for operands, operator in operations if operator == b"cm")
+        scale = min(842 / 1190.55, 595 / 841.89)
+        assert float(matrix[0]) == pytest.approx(scale, abs=1e-5)
+        assert float(matrix[3]) == pytest.approx(scale, abs=1e-5)
+        assert float(matrix[4]) == pytest.approx(
+            (842 - 1190.55 * scale) / 2, abs=1e-4
+        )
+        assert float(matrix[5]) == pytest.approx(0, abs=1e-4)
+
+    async def test_a4_page_is_not_upscaled(self) -> None:
+        page = self._marked_page(800, 500)
+
+        _fit_pdf_page_to_a4(page, "landscape")
+
+        matrix = next(
+            operands
+            for operands, operator in page.get_contents().operations
+            if operator == b"cm"
+        )
+        assert float(matrix[0]) == pytest.approx(1)
+        assert float(matrix[3]) == pytest.approx(1)
+        assert float(matrix[4]) == pytest.approx(21)
+        assert float(matrix[5]) == pytest.approx(47.5)
+
+    async def test_nonzero_origin_is_normalized(self) -> None:
+        page = self._marked_page(1190.55, 841.89, origin_x=12, origin_y=18)
+
+        _fit_pdf_page_to_a4(page, "landscape")
+
+        matrix = next(
+            operands
+            for operands, operator in page.get_contents().operations
+            if operator == b"cm"
+        )
+        scale = min(842 / 1190.55, 595 / 841.89)
+        assert float(matrix[4]) == pytest.approx(
+            -12 * scale + (842 - 1190.55 * scale) / 2, abs=1e-4
+        )
+        assert float(matrix[5]) == pytest.approx(-18 * scale, abs=1e-4)
+        assert tuple(float(v) for v in page.cropbox) == pytest.approx(
+            (0, 0, 842, 595), abs=0.1
+        )
+
+    async def test_rotated_page_uses_visual_dimensions(self) -> None:
+        page = self._marked_page(595, 842, rotation=90)
+
+        _fit_pdf_page_to_a4(page, "landscape")
+
+        assert page.rotation == 0
+        assert tuple(float(v) for v in page.mediabox) == pytest.approx(
+            (0, 0, 842, 595), abs=0.1
+        )
 
 
 class TestSmallBarcodesOnBarcodePage:

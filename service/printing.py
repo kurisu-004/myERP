@@ -22,7 +22,7 @@ import logging
 from barcode import Code128
 from barcode.writer import ImageWriter
 from PIL import Image, ImageDraw, ImageFont
-from pypdf import PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter, Transformation
 from pypdf.generic import RectangleObject
 
 from core import cos as cos_mod
@@ -318,16 +318,56 @@ def _image_to_a4_pdf_bytes(
 
 
 def _detect_pdf_orientation(pdf_bytes: bytes) -> str:
-    """读 PDF 第一页 mediabox 判断朝向：'landscape' or 'portrait'。"""
+    """读 PDF 第一页有效页面尺寸判断朝向。"""
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         if not reader.pages:
             return "landscape"
-        box = reader.pages[0].mediabox
-        return "landscape" if float(box.width) > float(box.height) else "portrait"
+        page = reader.pages[0]
+        box = page.mediabox
+        width, height = float(box.width), float(box.height)
+        if page.rotation % 180:
+            width, height = height, width
+        return "landscape" if width > height else "portrait"
     except Exception:  # noqa: BLE001
         _logger.exception("failed to detect pdf orientation, default to landscape")
         return "landscape"
+
+
+def _fit_pdf_page_to_a4(page: PageObject, orientation: str) -> None:
+    """将 PDF 页面内容等比缩放并居中到精确 A4 页面。"""
+    # 把 /Rotate 合入内容流，后续可统一按实际可视宽高计算缩放与平移。
+    if page.rotation:
+        page.transfer_rotation_to_content()
+
+    source_box = page.mediabox
+    source_width = float(source_box.width)
+    source_height = float(source_box.height)
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("source PDF page has invalid dimensions")
+
+    target_width, target_height = (
+        A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
+    )
+    scale = min(1.0, target_width / source_width, target_height / source_height)
+    fitted_width = source_width * scale
+    fitted_height = source_height * scale
+    offset_x = (target_width - fitted_width) / 2
+    offset_y = (target_height - fitted_height) / 2
+
+    transform = (
+        Transformation()
+        .translate(tx=-float(source_box.left), ty=-float(source_box.bottom))
+        .scale(sx=scale, sy=scale)
+        .translate(tx=offset_x, ty=offset_y)
+    )
+    page.add_transformation(transform)
+
+    target_box = [0, 0, target_width, target_height]
+    page.mediabox = RectangleObject(target_box)
+    page.cropbox = RectangleObject(target_box)
+    page.trimbox = RectangleObject(target_box)
+    page.bleedbox = RectangleObject(target_box)
 
 
 def _detect_image_orientation(img: Image.Image) -> str:
@@ -450,6 +490,7 @@ async def build_part_print_pdf(
             front_reader = PdfReader(io.BytesIO(front_pdf_bytes))
             for page in front_reader.pages:
                 writer.add_page(page)
+                _fit_pdf_page_to_a4(writer.pages[-1], orientation)
         except Exception:  # noqa: BLE001
             _logger.exception("failed to merge drawing pdf, fallback to info card")
             front_pdf_bytes = None
