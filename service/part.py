@@ -1494,7 +1494,7 @@ class PartService:
         - next_process_id 存在 + category=OUTSOURCE
         - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
         - part 位于绑定了 OUTSOURCE 工序的货架（status=IN_PROCESS + location=PRODUCTION_SHELF + current_holder_id ∈ OUTSOURCE-bound shelves）
-        - data.version 与 part.version 一致（OCC；2026-07-28 新增）
+        - data.version 与目标批次 batch.version 一致（OCC；2026-07-29 批次化后改为批次 version）
 
         行为分支（由 next_process.requires_approval 决定）：
         - True（默认）：必须有该 (part, company, process) 元组的 APPROVED 报价；
@@ -1509,15 +1509,6 @@ class PartService:
             )
 
         part = await self._get_part_or_404(part_id)
-
-        # 0. OCC 校验（2026-07-28 新增）：AuditMixin 已自动给 UPDATE 加 WHERE version=?，
-        # 这里显式校验是为了在拿到最新 version 后立即拦截并发冲突，给前端更明确的报错。
-        if part.version != data.version:
-            raise BizError(
-                code=ErrCode.BIZ_VERSION_CONFLICT,
-                message="该零件已被其他用户修改，请刷新后重试",
-                http_status=http_status.HTTP_409_CONFLICT,
-            )
 
         # 1. parse_snowflake_id(company_id) → int
         company_id_int = parse_snowflake_id(
@@ -1585,6 +1576,14 @@ class PartService:
             part, self._parse_batch_id(data),
             action="发送外协",
         )
+        # 0. OCC 校验（2026-07-29 批次化修正）：外协可发送列表回传的是批次 version，
+        # 显式校验在批次解析后立即拦截并发冲突；真正兜底仍是 AuditMixin 的 WHERE version=?。
+        if batch.version != data.version:
+            raise BizError(
+                code=ErrCode.BIZ_VERSION_CONFLICT,
+                message="该批次已被其他用户修改，请刷新后重试",
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
         if self.shelf_process_repo is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,

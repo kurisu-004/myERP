@@ -215,7 +215,7 @@ def _send_request(world) -> SendToOutsourceRequest:
     return SendToOutsourceRequest(
         outsource_company_id=str(world["company"].id),
         next_process_id=str(world["outsource_process"].id),
-        version=world["part"].version,
+        version=world["root_batch"].version,
     )
 
 
@@ -380,3 +380,19 @@ async def test_receive_to_inspection_auto_pass_refreshes_expired_state(clean_db)
         PartStatus.INSPECTION.value,
         PartStatus.READY_TO_SHIP.value,
     )
+
+
+async def test_send_to_outsource_stale_batch_version_raises_409(clean_db):
+    """批次化后 OCC 比对的是 batch.version；过期 version 应返回 409。"""
+    world = await _seed_world(clean_db, suffix="STALE")
+    await _place_on_shelf(clean_db, world)
+    await _approve_quote(clean_db, world)
+    service = _make_part_service(clean_db)
+
+    req = _send_request(world)
+    req.version = world["root_batch"].version + 1
+
+    with pytest.raises(BizError) as exc:
+        await service.send_to_outsource(world["part"].id, req)
+    assert exc.value.code == ErrCode.BIZ_VERSION_CONFLICT
+    assert exc.value.http_status == 409

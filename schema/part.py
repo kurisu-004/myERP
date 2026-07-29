@@ -709,8 +709,9 @@ class SendToOutsourceRequest(BaseModel):
     )
     version: int = Field(
         description=(
-            "乐观锁版本号；必须与 part.version 一致，否则返回 BIZ_VERSION_CONFLICT 409。"
-            "前端从 PartOut.version 取值后传入；AuditMixin 自动给 UPDATE 加 WHERE version=? 保证并发安全。"
+            "乐观锁版本号；必须与目标批次 TPartBatch.version 一致"
+            "（前端从外协可发送列表返回的 version 取值），否则返回 BIZ_VERSION_CONFLICT 409。"
+            "AuditMixin 自动给 UPDATE 加 WHERE version=? 保证并发安全。"
         ),
     )
     # —— 批次参数（2026-07-29 批次化，可选）——
