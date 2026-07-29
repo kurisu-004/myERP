@@ -14,13 +14,14 @@
   quantity / status / location / holder / next_process_id / placed_at /
   delivery_note_id 全部复制，审计时间沿用 part 的 created_at/updated_at；
   软删 part 的根批次同步打 deleted_at。
-- 接在 000000000018 之后，保持单 head 线性拓扑。
+- 接在 000000000019 之后（master 已占用 019 做 outsource_unify_quote），
+  保持单 head 线性拓扑。
 
-注意：若其他分支先合并了占用 000000000019 的迁移（如 admin_scan_access），
-本文件需 renumber 并把 down_revision 指向新 head。
+注意：若 admin_scan_access 后续占用 000000000020，本文件已 renumber 为 020，
+后续合并把 admin_scan_access 改为 021 并把 down_revision 指向 020。
 
-Revision ID: 000000000019
-Revises: 000000000018
+Revision ID: 000000000020
+Revises: 000000000019
 Create Date: 2026-07-29
 """
 from typing import Sequence, Union
@@ -31,8 +32,8 @@ import sqlalchemy as sa
 from utils.id_gen import new_id
 
 
-revision: str = "000000000019"
-down_revision: Union[str, None] = "000000000018"
+revision: str = "000000000020"
+down_revision: Union[str, None] = "000000000019"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
