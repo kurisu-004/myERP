@@ -704,6 +704,9 @@ class OutsourceQuoteService:
 
         quote.updated_by = self._user_id
         await self.quotes.update(quote)
+        await refresh_for_state_machine(
+            self.quotes.session, quote, attrs=("updated_at",),
+        )
         return await self._to_out(quote)
 
     # ============================================================
