@@ -273,6 +273,31 @@ async def test_send_to_outsource_marks_quote_used_then_receive_to_production(cle
     ]
 
 
+async def test_direct_send_persists_zero_price_outsourcing_quote(clean_db):
+    """DIRECT 发送允许持久化待对账补价的零价占位记录。"""
+    world = await _seed_world(clean_db, suffix="DIRECT")
+    world["outsource_process"].requires_approval = False
+    await _place_on_shelf(clean_db, world)
+    service = _make_part_service(clean_db)
+
+    sent = await service.send_to_outsource(
+        world["part"].id, _send_request(world),
+    )
+
+    assert sent.status == PartStatus.OUTSOURCE
+    assert sent.location == PartLocation.OUTSOURCE_COMPANY.value
+    quote = await service.outsource_quotes.get_one_active_for_tuple(
+        part_id=world["part"].id,
+        outsource_company_id=world["company"].id,
+        process_id=world["outsource_process"].id,
+    )
+    assert quote is not None
+    assert quote.price == Decimal("0")
+    assert quote.status == OutsourceQuoteStatus.OUTSOURCING.value
+    assert quote.quantity == world["root_batch"].quantity
+    assert quote.review_note == "系统自动创建（DIRECT 直接发送）"
+
+
 async def test_send_to_outsource_defensive_guards_leave_part_unchanged(clean_db):
     no_quote_world = await _seed_world(clean_db, suffix="NOQUOTE")
     # PR-H 2026-07-28：放到 OUTSOURCE-bound 货架上
