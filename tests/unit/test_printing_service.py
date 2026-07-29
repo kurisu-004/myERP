@@ -512,3 +512,123 @@ class TestSmallBarcodesOnBarcodePage:
         # 主条码黑色像素密度应 ≥ 5%
         bw = sum(1 for px in crop.getdata() if px < 128)
         assert bw / crop.size[0] / crop.size[1] > 0.05
+
+
+class TestBuildPartsPrintPdfBatchAssembly:
+    """2026-07-30：批量打印附带装配件总装图。"""
+
+    @pytest.fixture
+    def fake_assembly(self):
+        a = MagicMock()
+        a.id = 1001
+        a.serial_no = "L1001"
+        a.drawing_no = "DWG-ASM-001"
+        a.name = "测试装配体"
+        return a
+
+    @pytest.fixture
+    def fake_assemblies_repo(self, fake_assembly):
+        repo = MagicMock()
+        repo.get_by_id = AsyncMock(return_value=fake_assembly)
+        return repo
+
+    @pytest.fixture
+    def fake_child_part(self):
+        p = MagicMock()
+        p.id = 2001
+        p.serial_no = "L1001-01"
+        p.drawing_no = "DWG-CHILD-001"
+        p.name = "子件1"
+        p.assembly_id = 1001
+        return p
+
+    @pytest.fixture
+    def fake_child_part2(self):
+        p = MagicMock()
+        p.id = 2002
+        p.serial_no = "L1001-02"
+        p.drawing_no = "DWG-CHILD-002"
+        p.name = "子件2"
+        p.assembly_id = 1001
+        return p
+
+    async def test_master_drawing_once_before_first_child(
+        self,
+        monkeypatch,
+        fake_parts_repo,
+        fake_assemblies_repo,
+        fake_child_part,
+        fake_child_part2,
+    ):
+        """选中同装配体 2 个子件 → 总装图只出现一次且位于首个子件前。"""
+        import service.printing as printing_mod
+
+        async def fake_download(key):
+            return _make_blank_pdf(842, 595)
+        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
+
+        parts_repo = MagicMock()
+        parts_repo.list_by_ids = AsyncMock(return_value=[fake_child_part, fake_child_part2])
+        parts_repo.list_children = AsyncMock(return_value=[fake_child_part, fake_child_part2])
+        parts_repo.get_by_id = AsyncMock(side_effect=lambda pid: fake_child_part if pid == 2001 else fake_child_part2)
+
+        files_repo = MagicMock()
+        files_repo.list_by_part = AsyncMock(
+            side_effect=lambda pid, kind: [
+                _make_drawing_row("PDF", "pdf", f"drawings/{pid}/DRAWING/aaa.pdf")
+            ] if kind == "DRAWING" else [
+                _make_drawing_row("PDF", "pdf", f"drawings/{pid}/ASSEMBLY_MASTER/aaa.pdf")
+            ]
+        )
+
+        from service.printing import build_parts_print_pdf_batch
+        pdf_bytes = await build_parts_print_pdf_batch(
+            part_ids=[2001, 2002],
+            parts=parts_repo,
+            part_files=files_repo,
+            assemblies=fake_assemblies_repo,
+        )
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        # 总装图 2 页 + 子件1 2 页 + 子件2 2 页 = 6 页
+        assert len(reader.pages) == 6
+
+    async def test_assembly_ids_prints_master_and_all_children(
+        self,
+        monkeypatch,
+        fake_parts_repo,
+        fake_assemblies_repo,
+        fake_child_part,
+        fake_child_part2,
+    ):
+        """assembly_ids 直选装配件 → 含总装图 + 全部子件。"""
+        import service.printing as printing_mod
+
+        async def fake_download(key):
+            return _make_blank_pdf(842, 595)
+        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
+
+        parts_repo = MagicMock()
+        parts_repo.list_by_ids = AsyncMock(return_value=[])
+        parts_repo.list_children = AsyncMock(return_value=[fake_child_part, fake_child_part2])
+        parts_repo.get_by_id = AsyncMock(side_effect=lambda pid: fake_child_part if pid == 2001 else fake_child_part2)
+
+        files_repo = MagicMock()
+        files_repo.list_by_part = AsyncMock(
+            side_effect=lambda pid, kind: [
+                _make_drawing_row("PDF", "pdf", f"drawings/{pid}/DRAWING/aaa.pdf")
+            ] if kind == "DRAWING" else [
+                _make_drawing_row("PDF", "pdf", f"drawings/{pid}/ASSEMBLY_MASTER/aaa.pdf")
+            ]
+        )
+
+        from service.printing import build_parts_print_pdf_batch
+        pdf_bytes = await build_parts_print_pdf_batch(
+            part_ids=[],
+            assembly_ids=[1001],
+            parts=parts_repo,
+            part_files=files_repo,
+            assemblies=fake_assemblies_repo,
+        )
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        # 总装图 2 页 + 子件1 2 页 + 子件2 2 页 = 6 页
+        assert len(reader.pages) == 6

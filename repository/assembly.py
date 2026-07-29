@@ -71,6 +71,7 @@ class AssemblyRepository:
         customer_id: int | None = None,
         customer_ids_in: list[int] | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
         is_urgent: bool | None = None,
         drawing_no_like: str | None = None,
         name_like: str | None = None,
@@ -84,6 +85,7 @@ class AssemblyRepository:
             customer_id=customer_id,
             customer_ids_in=customer_ids_in,
             status=status,
+            statuses=statuses,
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
             name_like=name_like,
@@ -111,6 +113,7 @@ class AssemblyRepository:
         customer_id: int | None = None,
         customer_ids_in: list[int] | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
         is_urgent: bool | None = None,
         drawing_no_like: str | None = None,
         name_like: str | None = None,
@@ -120,6 +123,7 @@ class AssemblyRepository:
             customer_id=customer_id,
             customer_ids_in=customer_ids_in,
             status=status,
+            statuses=statuses,
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
             name_like=name_like,
@@ -145,6 +149,7 @@ class AssemblyRepository:
         customer_id: int | None,
         customer_ids_in: list[int] | None,
         status: str | None,
+        statuses: list[str] | None,
         is_urgent: bool | None,
         drawing_no_like: str | None,
         name_like: str | None,
@@ -157,7 +162,9 @@ class AssemblyRepository:
             stmt = stmt.where(TAssembly.customer_id.in_(customer_ids_in))
         elif customer_id is not None:
             stmt = stmt.where(TAssembly.customer_id == customer_id)
-        if status is not None:
+        if statuses is not None:
+            stmt = stmt.where(TAssembly.status.in_(statuses))
+        elif status is not None:
             stmt = stmt.where(TAssembly.status == status)
         if is_urgent is not None:
             stmt = stmt.where(TAssembly.is_urgent.is_(is_urgent))

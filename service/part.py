@@ -25,7 +25,7 @@ from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
 from model import TAssembly, TCustomer, TPart, TPartBatch, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import (
-    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone,
+    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, PartSortKey, ProcessCategory, ShelfZone, SortDir,
 )
 from repository.applicant import ApplicantRepository
 from repository.assembly import AssemblyRepository
@@ -260,7 +260,50 @@ class PartService:
             else:
                 # L2 叶子：单 id
                 customer_ids_in = [customer_id_int]
-        rows = await self.parts.list_with_filters(
+
+        if not query.include_assemblies:
+            # 原有行为（向后兼容）
+            rows = await self.parts.list_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+                sort_by=query.sort_by,
+                sort_dir=query.sort_dir,
+                limit=query.limit,
+                offset=query.offset,
+            )
+            total = await self.parts.count_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+            )
+            items = await self._to_list_out(rows)
+            return PartListOut(
+                items=items, total=total, limit=query.limit, offset=query.offset
+            )
+
+        # ===== 装配体并入零件一览（2026-07-30）=====
+        # 数据量工厂级（数百行），Python 内存合并分页；增长后应改 SQL UNION。
+        # 1. 独立零件（排除装配件子件）
+        part_rows = await self.parts.list_with_filters(
             customer_ids_in=customer_ids_in,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
@@ -275,10 +318,11 @@ class PartService:
             system_delivery_date_to=query.system_delivery_date_to,
             sort_by=query.sort_by,
             sort_dir=query.sort_dir,
-            limit=query.limit,
-            offset=query.offset,
+            assembly_id_is_null=True,
+            limit=query.limit + query.offset,
+            offset=0,
         )
-        total = await self.parts.count_with_filters(
+        part_total = await self.parts.count_with_filters(
             customer_ids_in=customer_ids_in,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
@@ -291,8 +335,103 @@ class PartService:
             planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
+            assembly_id_is_null=True,
         )
-        items = await self._to_list_out(rows)
+
+        # 2. 装配件（statuses 取交集）
+        asm_rows: list[TAssembly] = []
+        asm_total = 0
+        if self.assemblies is not None:
+            assembly_statuses = None
+            if query.statuses is not None:
+                valid_asm_statuses = {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}
+                assembly_statuses = [s.value for s in query.statuses if s.value in valid_asm_statuses]
+                if not assembly_statuses:
+                    # 无匹配装配件状态，装配件集为空
+                    asm_rows = []
+                    asm_total = 0
+            if query.statuses is None or assembly_statuses:
+                from repository.assembly import AssemblySortKey
+                _sort_key_map = {
+                    PartSortKey.PLANNED_DELIVERY_DATE: AssemblySortKey.PLANNED_DELIVERY_DATE,
+                    PartSortKey.REQUEST_DATE: AssemblySortKey.REQUEST_DATE,
+                    PartSortKey.CREATED_AT: AssemblySortKey.CREATED_AT,
+                    PartSortKey.SERIAL_NO: AssemblySortKey.SERIAL_NO,
+                    PartSortKey.DRAWING_NO: AssemblySortKey.DRAWING_NO,
+                    PartSortKey.NAME: AssemblySortKey.NAME,
+                }
+                asm_sort_by = _sort_key_map.get(query.sort_by, AssemblySortKey.PLANNED_DELIVERY_DATE)
+                asm_rows = await self.assemblies.list_with_filters(
+                    customer_ids_in=customer_ids_in,
+                    statuses=assembly_statuses,
+                    is_urgent=query.is_urgent,
+                    drawing_no_like=query.keyword,
+                    name_like=query.keyword,
+                    sort_by=asm_sort_by,
+                    sort_dir=query.sort_dir.value,
+                    limit=query.limit + query.offset,
+                    offset=0,
+                )
+                asm_total = await self.assemblies.count_with_filters(
+                    customer_ids_in=customer_ids_in,
+                    statuses=assembly_statuses,
+                    is_urgent=query.is_urgent,
+                    drawing_no_like=query.keyword,
+                    name_like=query.keyword,
+                )
+
+        # 3. 转换并合并
+        part_items = await self._to_list_out(part_rows)
+        for item in part_items:
+            item.row_type = "PART"
+        asm_items = await self._assemblies_to_list_items(asm_rows)
+        merged = part_items + asm_items
+
+        # 4. 统一排序（Python 内存）
+        _nulls_last_keys = {PartSortKey.SYSTEM_DELIVERY_DATE, PartSortKey.ORDER_NO}
+
+        def _sort_key(item: PartListItem, *, nulls_first: bool = False) -> tuple:
+            none_flag = 0 if nulls_first else 1
+            non_none_flag = 1 if nulls_first else 0
+            if query.sort_by == PartSortKey.PLANNED_DELIVERY_DATE:
+                val = item.planned_delivery_date
+                return (non_none_flag, val) if val is not None else (none_flag, date.min)
+            elif query.sort_by == PartSortKey.REQUEST_DATE:
+                val = item.request_date
+                return (non_none_flag, val) if val is not None else (none_flag, date.min)
+            elif query.sort_by == PartSortKey.SYSTEM_DELIVERY_DATE:
+                val = item.system_delivery_date
+                return (non_none_flag, val) if val is not None else (none_flag, date.min)
+            elif query.sort_by == PartSortKey.CREATED_AT:
+                val = item.created_at
+                return (non_none_flag, val) if val is not None else (none_flag, datetime.min)
+            elif query.sort_by == PartSortKey.SERIAL_NO:
+                val = item.serial_no
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.DRAWING_NO:
+                val = item.drawing_no
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.NAME:
+                val = item.name
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.ORDER_NO:
+                val = item.order_no
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            return (non_none_flag, "")
+
+        # 先按 id DESC 稳定排序（保证 tie-break 与 SQL 一致）
+        merged = sorted(merged, key=lambda x: x.id, reverse=True)
+        if query.sort_dir == SortDir.ASC:
+            merged = sorted(merged, key=lambda x: _sort_key(x, nulls_first=False))
+        else:
+            if query.sort_by in _nulls_last_keys:
+                merged = sorted(merged, key=lambda x: _sort_key(x, nulls_first=False), reverse=True)
+            else:
+                merged = sorted(merged, key=lambda x: _sort_key(x, nulls_first=True), reverse=True)
+
+        # 5. 内存分页
+        items = merged[query.offset:query.offset + query.limit]
+        total = part_total + asm_total
         return PartListOut(
             items=items, total=total, limit=query.limit, offset=query.offset
         )
@@ -3780,6 +3919,79 @@ class PartService:
                         process_map.get(int(p.next_process_id))
                         if p.next_process_id else None
                     ),
+                    created_at=p.created_at,
+                )
+            )
+        return out
+
+    async def _assemblies_to_list_items(self, assemblies: list[TAssembly]) -> list[PartListItem]:
+        """将装配件列表转换为 PartListItem（装配体合并展示用）。"""
+        if not assemblies:
+            return []
+        # 批查客户
+        cust_ids = list({a.customer_id for a in assemblies})
+        cust_list = await self.customers.list_by_ids(cust_ids)
+        cust_map: dict[int, TCustomer] = {c.id: c for c in cust_list}
+        parent_ids = [c.parent_id for c in cust_list if c.parent_id]
+        parents = await self.customers.list_by_ids(parent_ids) if parent_ids else []
+        parent_map: dict[int, TCustomer] = {p.id: p for p in parents}
+
+        # 批查子件数量
+        from sqlalchemy import func, select
+
+        ids = [a.id for a in assemblies]
+        stmt = (
+            select(TPart.assembly_id, func.count(TPart.id))
+            .where(
+                TPart.assembly_id.in_(ids),
+                TPart.deleted_at.is_(None),
+            )
+            .group_by(TPart.assembly_id)
+        )
+        result = await self.parts.session.execute(stmt)
+        child_counts = {row[0]: int(row[1]) for row in result.all()}
+
+        out: list[PartListItem] = []
+        for a in assemblies:
+            cust = cust_map.get(a.customer_id)
+            parent = parent_map.get(cust.parent_id) if cust and cust.parent_id else None
+            parent_name = parent.name if parent else None
+            child_name = cust.name if cust else None
+            path: str | None = None
+            if parent_name and child_name:
+                path = f"{parent_name} / {child_name}"
+            elif child_name:
+                path = child_name
+            elif parent_name:
+                path = parent_name
+
+            count = child_counts.get(a.id, 0)
+            out.append(
+                PartListItem(
+                    id=a.id,
+                    version=a.version,
+                    serial_no=a.serial_no,
+                    name=a.name,
+                    drawing_no=a.drawing_no,
+                    applicant_name=a.applicant_name,
+                    quantity=a.quantity,
+                    unit_price=a.unit_price,
+                    total_price=a.total_price,
+                    request_date=a.request_date,
+                    planned_delivery_date=a.planned_delivery_date,
+                    actual_delivery_date=a.actual_delivery_date,
+                    is_urgent=a.is_urgent,
+                    status=PartStatus(a.status),
+                    order_no=a.order_no,
+                    system_delivery_date=a.system_delivery_date,
+                    note=a.note,
+                    customer_name=child_name,
+                    parent_customer_name=parent_name,
+                    customer_path=path,
+                    created_at=a.created_at,
+                    row_type="ASSEMBLY",
+                    has_children=count > 0,
+                    child_count=count if count > 0 else None,
                 )
             )
         return out

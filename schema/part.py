@@ -50,6 +50,10 @@ class PartListQuery(BaseModel):
     sort_dir: SortDir = Field(default=SortDir.ASC, description="排序方向")
     limit: int = Field(default=50, ge=1, le=500, description="分页大小")
     offset: int = Field(default=0, ge=0, description="分页偏移")
+    # —— 2026-07-30：装配体并入零件一览 ——
+    include_assemblies: bool = Field(
+        default=False, description="True 时合并返回装配件行（子件从顶层隐藏）"
+    )
 
 
 class PartOut(BaseModel):
@@ -238,6 +242,7 @@ class PartListItem(BaseModel):
     - 不含 `placed_at`：仅放上架时间不暴露给 picker。
 
     2026-07-28 PR-H：补 `next_process_id` / `next_process_name` 给 picker 自动填工序用。
+    2026-07-30：加 `row_type` / `has_children` / `child_count` 支持装配体合并展示。
     详情 / 创建 / 编辑响应仍用 PartOut；本 schema 仅服务于 list 端点。
     """
 
@@ -312,6 +317,19 @@ class PartListItem(BaseModel):
     )
     batch_quantity: int | None = Field(
         default=None, description="批次数量（picker 选中的可报价批次量）",
+    )
+    # —— 2026-07-30：装配体合并展示字段 ——
+    created_at: datetime | None = Field(
+        default=None, description="创建时间（排序用；仅列表场景填充）"
+    )
+    row_type: Literal["PART", "ASSEMBLY"] = Field(
+        default="PART", description="行类型：PART=独立零件/子件；ASSEMBLY=装配件"
+    )
+    has_children: bool = Field(
+        default=False, description="是否为有子件的装配件行"
+    )
+    child_count: int | None = Field(
+        default=None, description="装配件子件数量（仅 row_type=ASSEMBLY 时填充）"
     )
 
 

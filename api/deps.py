@@ -461,6 +461,13 @@ def get_part_repository(
     return PartRepository(session)
 
 
+def get_assembly_repo(
+    session: AsyncSession = Depends(get_session),
+) -> AssemblyRepository:
+    """装配件 Repository 工厂。"""
+    return AssemblyRepository(session)
+
+
 def get_assembly_service(
     session: AsyncSession = Depends(get_session),
     serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),

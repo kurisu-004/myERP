@@ -88,6 +88,7 @@ class PartRepository:
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
+        assembly_id_is_null: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[TPart]:
@@ -106,6 +107,7 @@ class PartRepository:
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
+            assembly_id_is_null=assembly_id_is_null,
         )
         sort_col = {
             PartSortKey.PLANNED_DELIVERY_DATE: TPart.planned_delivery_date,
@@ -153,6 +155,7 @@ class PartRepository:
         system_delivery_date_from=None,
         system_delivery_date_to=None,
         include_deleted: bool = False,
+        assembly_id_is_null: bool | None = None,
     ) -> int:
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
@@ -169,6 +172,7 @@ class PartRepository:
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
+            assembly_id_is_null=assembly_id_is_null,
         ).with_only_columns(func.count(TPart.id))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
@@ -522,6 +526,7 @@ class PartRepository:
         system_delivery_date_from=None,
         system_delivery_date_to=None,
         include_deleted: bool,
+        assembly_id_is_null: bool | None = None,
     ):
         stmt = select(TPart)
         if not include_deleted:
@@ -600,6 +605,9 @@ class PartRepository:
                 )
                 .exists()
             )
+        # 2026-07-30：装配体并入零件一览——排除装配件子件
+        if assembly_id_is_null:
+            stmt = stmt.where(TPart.assembly_id.is_(None))
         return stmt
 
     # ============================================================
