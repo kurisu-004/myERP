@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,11 +47,17 @@ _A4_H_PX = int(_A4_H_PT * _TARGET_DPI / 72.0)  # 2339
 _A4_W_PX_LAND = _A4_H_PX                        # 2339
 _A4_H_PX_LAND = _A4_W_PX                        # 1654
 
-# 本地磁盘缓存配置
-_CACHE_DIR = Path(os.environ.get("PRINT_CACHE_DIR", "/app/.cache/print"))
-_CACHE_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
+# 本地磁盘缓存配置（来自 .env，避免在代码里硬编码规格参数）
+_CACHE_DIR = Path(settings.print_cache_dir)
+_CACHE_MAX_BYTES = settings.print_cache_max_bytes
 # COS 远端缓存 key 前缀
 _L2_KEY_PREFIX = "printcache/"
+
+# L1 可用性状态：None = 未探测；True / False = 已确定。
+# 任何 OSError 会一次性置 False 并 warning，之后静默 no-op（消除日志刷屏）。
+_l1_enabled: bool | None = None
+# 持有后台 L2 上传任务强引用，避免被 GC 提前回收。
+_bg_tasks: set[asyncio.Task] = set()
 
 # 图片输入白名单（service/part_file.py 的 ALLOWED_EXTS_BY_KIND[DRAWING] 同步子集）
 _IMAGE_EXTS = {"PNG", "JPG", "JPEG", "GIF", "BMP", "TIF", "TIFF", "WEBP"}
@@ -156,30 +161,82 @@ def _render_image_to_a4_jpeg_pdf(image_bytes: bytes) -> tuple[bytes, str]:
 # ============================================================
 # L1 本地磁盘 LRU
 # ============================================================
+def _disable_l1(reason: str) -> None:
+    """统一处理：把 L1 一次性置为不可用；已置过则静默返回（消除日志刷屏）。"""
+    global _l1_enabled
+    if _l1_enabled is False:
+        return
+    _l1_enabled = False
+    _logger.warning(
+        "L1 print cache disabled: %s not writable — L2 COS 缓存仍生效", reason,
+    )
+
+
 def _l1_path(sha: str) -> Path:
     return _CACHE_DIR / f"{sha}.pdf"
 
 
+def init_l1_cache() -> bool:
+    """启动期探测 L1 目录是否可写。
+
+    流程：mkdir → 写一个临时探测文件并 unlink；成功 = 可用。
+    幂等：探测完成后只打一条 info / warning；之后重复调用直接返回缓存结果。
+    """
+    global _l1_enabled
+    if _l1_enabled is True:
+        return True
+    if _l1_enabled is False:
+        return False
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        probe = _CACHE_DIR / ".probe"
+        probe.write_bytes(b"")
+        probe.unlink()
+    except OSError as e:
+        _l1_enabled = False
+        _logger.warning(
+            "L1 print cache disabled: %s not writable (%s) — L2 COS 缓存仍生效",
+            _CACHE_DIR, e,
+        )
+        return False
+    _l1_enabled = True
+    _logger.info("L1 print cache enabled: %s", _CACHE_DIR)
+    return True
+
+
+def _reset_l1_for_testing() -> None:
+    """测试钩子：把 _l1_enabled 重置为 None 让 init_l1_cache() 重探。"""
+    global _l1_enabled
+    _l1_enabled = None
+
+
 def _l1_get(sha: str) -> bytes | None:
+    if _l1_enabled is None:
+        init_l1_cache()
+    if not _l1_enabled:
+        return None
     p = _l1_path(sha)
     try:
         if p.exists() and p.stat().st_size > 0:
             return p.read_bytes()
     except OSError as e:
-        _logger.warning("L1 cache read failed for %s: %s", sha, e)
+        _disable_l1(f"{_CACHE_DIR} read failed: {e}")
     return None
 
 
 def _l1_put(sha: str, pdf_bytes: bytes) -> None:
-    """写本地磁盘；LRU 上限 1GB，超出按 mtime 淘汰最旧。"""
+    """写本地磁盘；LRU 上限由 _CACHE_MAX_BYTES 控制，超出按 mtime 淘汰最旧。"""
+    if _l1_enabled is None:
+        init_l1_cache()
+    if not _l1_enabled:
+        return
     try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         # 临时写再 rename，避免并发读到半成品
         tmp = _l1_path(sha).with_suffix(".pdf.tmp")
         tmp.write_bytes(pdf_bytes)
         tmp.replace(_l1_path(sha))
     except OSError as e:
-        _logger.warning("L1 cache write failed for %s: %s", sha, e)
+        _disable_l1(f"write failed: {e}")
         return
     _l1_evict_if_over()
 
@@ -189,7 +246,7 @@ def _l1_evict_if_over() -> None:
     try:
         files = [(p, p.stat().st_mtime) for p in _CACHE_DIR.glob("*.pdf")]
     except OSError as e:
-        _logger.warning("L1 cache stat failed: %s", e)
+        _disable_l1(f"stat failed: {e}")
         return
     total = sum(p.stat().st_size for p, _ in files)
     files.sort(key=lambda t: t[1])  # 最旧在前
@@ -253,7 +310,7 @@ async def get_normalized_front_pdf(
     if vector:
         if file_type.upper() == "PDF":
             size = _detect_pdf_size(original_bytes)
-            orientation = "landscape" if (size and size[0] > size[1]) else "landscape"
+            orientation = "landscape" if (size and size[0] > size[1]) else "portrait"
             return FrontCacheResult(
                 pdf_bytes=original_bytes, orientation=orientation, source="vector",
             )
@@ -301,8 +358,11 @@ async def get_normalized_front_pdf(
     # ---- 都 miss：规格化 → 写 L1 → 异步写 L2 ----
     result = await _render_and_return(original_bytes, file_type, source="render")
     _l1_put(sha, result.pdf_bytes)
-    # 异步回传 L2（fire-and-forget；4GB 内存下不阻塞当前请求）
-    asyncio.create_task(_l2_put_async(sha, result.pdf_bytes))
+    # 异步回传 L2（fire-and-forget；4GB 内存下不阻塞当前请求）。
+    # 持模块级强引用避免 create_task 出来的 task 被 GC 提前回收。
+    _l2_task = asyncio.create_task(_l2_put_async(sha, result.pdf_bytes))
+    _bg_tasks.add(_l2_task)
+    _l2_task.add_done_callback(_bg_tasks.discard)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     _logger.info(
         "front cache render: sha=%s... bytes=%d elapsed_ms=%d",
@@ -326,11 +386,7 @@ async def _render_and_return(
 
 
 # ============================================================
-# 启动期目录准备（main.py lifespan 调用）
+# 启动期 L1 探测（core/database.py::lifespan 调用）
 # ============================================================
-def ensure_cache_dir() -> None:
-    """容器启动时建好 L1 缓存目录（Dockerfile 已 mkdir，重复调用 idempotent）。"""
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        _logger.warning("ensure cache dir failed: %s", e)
+# 旧版 ensure_cache_dir() 已删除：仅 mkdir 不探测，仍会留下「mkdir 成功但
+# 实际写不进去」的盲区；改由 init_l1_cache() 写探针文件一次性判定。

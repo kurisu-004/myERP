@@ -53,6 +53,8 @@ services:
       COS_ALLOWED_TYPES: ${COS_ALLOWED_TYPES:-pdf,step,dwg,dxf}
       TZ: ${TZ:-Asia/Shanghai}
       APP_CPU_CORES: ${APP_CPU_CORES:-4}
+      # 2026-07-31：打印正面页 L1 缓存目录；不可写时降级为仅 L2 COS
+      PRINT_CACHE_DIR: ${PRINT_CACHE_DIR:-/app/.cache/print}
     volumes:
       # 2026-07-31：打印正面页 L1 缓存挂载到命名卷；跨容器重建保留
       - printcache:/app/.cache/print

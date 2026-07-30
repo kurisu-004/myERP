@@ -105,6 +105,18 @@ class Settings(BaseSettings):
         description="容器可用 CPU 核心数；打印渲染/下载并发依此派生",
     )
 
+    # ---- 打印正面页 L1 本地磁盘缓存（2026-07-31 引入）----
+    # 不可写时（如 read-only rootfs / printcache 卷未挂载）自动降级为仅 L2 COS，
+    # 不影响功能，只损失一次跨网下载延迟。
+    print_cache_dir: str = Field(
+        default="/app/.cache/print", alias="PRINT_CACHE_DIR",
+        description="打印正面页 L1 本地磁盘缓存目录；不可写时自动降级为仅 L2 COS",
+    )
+    print_cache_max_bytes: int = Field(
+        default=1024 * 1024 * 1024, alias="PRINT_CACHE_MAX_BYTES", ge=0,
+        description="L1 本地磁盘缓存上限字节数（LRU 按 mtime 淘汰）",
+    )
+
     @property
     def print_render_workers(self) -> int:
         """打印渲染线程并发上限（asyncio.to_thread 数量）。"""
