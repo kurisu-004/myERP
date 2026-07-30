@@ -196,6 +196,7 @@ import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   createOutsourceCompany,
   getOutsourceCompany,
@@ -225,6 +226,13 @@ const search = reactive<{ name_like: string; is_active: boolean | undefined; lim
   limit: 100,
   offset: 1,
 })
+
+// ============ 筛选状态持久化（2026-07-30 commit 4B）============
+// 持久化整个 search（含 limit/offset），restore 时强制把 offset 置 1（避免拉到不存在数据的页）
+const { restore: restoreOutsourceCompanyFilter } = useListStatePersist(
+  'outsource_company_list',
+  { search },
+)
 
 const outsourceProcesses = ref<Process[]>([])
 
@@ -414,6 +422,12 @@ async function onDelete(row: OutsourceCompany): Promise<void> {
 
 onMounted(() => {
   void fetchOutsourceProcesses()
+  // 从 localStorage 恢复搜索 + 分页大小；强制将当前页重置到第 1 页（避免恢复到无数据页）
+  const persisted = restoreOutsourceCompanyFilter()
+  if (persisted && persisted.search) {
+    Object.assign(search, persisted.search as Partial<typeof search>)
+    search.offset = 1
+  }
   void fetchList()
 })
 </script>

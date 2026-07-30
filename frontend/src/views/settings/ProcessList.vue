@@ -135,6 +135,7 @@ import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { usePermissions } from '@/composables/usePermissions'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   createProcess,
   listProcesses,
@@ -155,6 +156,13 @@ const search = reactive<{ code_like: string; category: ProcessCategory | undefin
   code_like: '',
   category: undefined,
 })
+
+// ============ 筛选状态持久化 ============
+const { restore: restoreProcessFilter, clear: clearProcessFilter } = useListStatePersist(
+  'process_list',
+  { search },
+)
+
 const dialogVisible = ref(false)
 const editing = ref<Process | null>(null)
 const dialogTitle = computed(() => (editing.value ? '编辑工序' : '新增工序'))
@@ -266,7 +274,14 @@ async function onDelete(row: Process): Promise<void> {
   }).catch(() => undefined)
 }
 
-onMounted(fetchList)
+onMounted(() => {
+  // 先尝试恢复 localStorage 中的搜索条件
+  const persisted = restoreProcessFilter()
+  if (persisted) {
+    Object.assign(search, persisted.search)
+  }
+  void fetchList()
+})
 </script>
 
 <style lang="scss" scoped>

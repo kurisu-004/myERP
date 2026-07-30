@@ -199,6 +199,7 @@ import {
   Search,
 } from '@element-plus/icons-vue'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   createCustomer,
   listCustomers,
@@ -220,6 +221,12 @@ const loading = ref(false)
 const saving = ref(false)
 const customers = ref<Customer[]>([])
 const search = reactive({ keyword: '' })
+
+// ============ 筛选状态持久化 ============
+const { restore: restoreCustomerFilter, clear: clearCustomerFilter } = useListStatePersist(
+  'customer_list',
+  { search },
+)
 
 // 弹窗尺寸：桌面 480px，手机 92vw + 6vh
 const customerDlg = useDialogSize({ desktopWidth: 480 })
@@ -469,7 +476,14 @@ async function onDelete(node: TreeNode): Promise<void> {
   }
 }
 
-onMounted(fetchList)
+onMounted(() => {
+  // 先尝试恢复 localStorage 中的搜索条件
+  const persisted = restoreCustomerFilter()
+  if (persisted) {
+    Object.assign(search, persisted.search)
+  }
+  void fetchList()
+})
 </script>
 
 <style lang="scss" scoped>

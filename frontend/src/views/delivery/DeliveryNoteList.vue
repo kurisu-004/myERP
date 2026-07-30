@@ -13,7 +13,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Van } from '@element-plus/icons-vue'
 
@@ -40,9 +40,11 @@ import {
 } from '@/utils/deliveryNotePermissions'
 import { listCustomers } from '@/api/customer'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
 
 const router = useRouter()
+const route = useRoute()
 const { hasRole } = useAuthSession()
 const role = computed(() => ({
   MANAGER: hasRole('MANAGER'),
@@ -61,6 +63,15 @@ const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(50)
+
+// ============ 筛选状态持久化（2026-07-30 commit 4B）============
+// 把 4 个离散 ref 包成一个对象传给 useListStatePersist；restore 后逐个 .value 写回。
+// page 排除。优先级：URL ?statuses= > restore 快照 > 角色默认
+const { restore: restoreNoteListFilter } = useListStatePersist(
+  'delivery_note_list',
+  { statuses, customerId, keyword, pageSize },
+  { exclude: new Set(['page']) },
+)
 
 const customers = ref<{ id: string; name: string; path: string; parent_id: string | null }[]>([])
 
@@ -112,6 +123,26 @@ function resetFilter() {
 
 onMounted(async () => {
   await loadCustomers()
+  // 2026-07-30 commit 4B：筛选项恢复（与 OutsourceQuoteList 同优先级）
+  //   1) URL ?statuses=  → 最高优先
+  //   2) restore() 快照里 statuses / customerId / keyword / pageSize
+  //   3) 角色默认（已在 ref initializer 注入到 statuses.value；restore 不覆盖现有值）
+  const urlStatusesRaw = route.query.statuses
+  const urlStatuses: DeliveryNoteStatus[] = typeof urlStatusesRaw === 'string'
+    ? urlStatusesRaw.split(',').filter((s): s is DeliveryNoteStatus =>
+        allStatuses.includes(s as DeliveryNoteStatus))
+    : []
+  if (urlStatuses.length > 0) {
+    statuses.value = [...urlStatuses]
+  } else {
+    const persisted = restoreNoteListFilter()
+    if (persisted) {
+      if (Array.isArray(persisted.statuses)) statuses.value = [...(persisted.statuses as DeliveryNoteStatus[])]
+      if (typeof persisted.customerId === 'string') customerId.value = persisted.customerId as string
+      if (typeof persisted.keyword === 'string') keyword.value = persisted.keyword as string
+      if (typeof persisted.pageSize === 'number') pageSize.value = persisted.pageSize as number
+    }
+  }
   await fetchList()
 })
 

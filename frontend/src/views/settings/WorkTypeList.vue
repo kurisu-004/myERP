@@ -93,6 +93,7 @@ import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   createWorkType,
   listWorkTypes,
@@ -109,6 +110,13 @@ const saving = ref(false)
 const rows = ref<WorkType[]>([])
 
 const search = reactive({ code_like: '' })
+
+// ============ 筛选状态持久化 ============
+const { restore: restoreWorkTypeFilter, clear: clearWorkTypeFilter } = useListStatePersist(
+  'work_type_list',
+  { search },
+)
+
 const dialogVisible = ref(false)
 const editing = ref<WorkType | null>(null)
 const dialogTitle = computed(() => (editing.value ? '编辑工种' : '新增工种'))
@@ -194,7 +202,14 @@ async function onDelete(row: WorkType): Promise<void> {
   }).catch(() => undefined)
 }
 
-onMounted(fetchList)
+onMounted(() => {
+  // 先尝试恢复 localStorage 中的搜索条件
+  const persisted = restoreWorkTypeFilter()
+  if (persisted) {
+    Object.assign(search, persisted.search)
+  }
+  void fetchList()
+})
 </script>
 
 <style lang="scss" scoped>

@@ -17,6 +17,7 @@ import { Promotion } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import { listApprovedForSend, listOutsourceInFlight } from '@/api/outsource'
 import { listCustomers, type Customer } from '@/api/customer'
 import { listShelves } from '@/api/shelves'
@@ -112,6 +113,13 @@ const sendableError = ref<string | null>(null)
 const sendableFilter = reactive({ keyword: '', customer_id: '' })
 const sendablePage = ref(1)
 const sendablePageSize = ref(20)
+
+// 可发送 tab 持久化（2026-07-30 commit 4B）：sendablePage 排除；activeTab 走 URL，不进快照
+const { restore: restoreSendableState } = useListStatePersist(
+  'outsource_send_receive_sendable',
+  { sendableFilter, sendablePageSize },
+  { exclude: new Set(['sendablePage']) },
+)
 
 async function refreshSendable(): Promise<void> {
   sendableLoading.value = true
@@ -425,6 +433,13 @@ const receivingFilter = reactive({ keyword: '', customer_id: '' })
 const receivingPage = ref(1)
 const receivingPageSize = ref(20)
 
+// 待接收 tab 持久化（2026-07-30 commit 4B）：receivingPage 排除；activeTab 走 URL，不进快照
+const { restore: restoreReceivingState } = useListStatePersist(
+  'outsource_send_receive_receiving',
+  { receivingFilter, receivingPageSize },
+  { exclude: new Set(['receivingPage']) },
+)
+
 async function refreshReceiving(): Promise<void> {
   receivingLoading.value = true
   receivingError.value = null
@@ -592,6 +607,20 @@ function onReceivingPageSizeChange(size: number): void {
 // ============================================================
 onMounted(async () => {
   await loadLookups()
+  // 2026-07-30 commit 4B：activeTab 走 URL，但 tab 内的 filter+pageSize 走 localStorage。
+  // 根据当前 activeTab 各自 restore 一次；另一 tab 的快照保留不动，watch 仍会持续落盘。
+  const useRestore = activeTab.value === 'receiving' ? restoreReceivingState : restoreSendableState
+  const persisted = useRestore()
+  if (persisted) {
+    // 仅按当前 tab 写回对应字段；另一 tab 的字段不动
+    if (activeTab.value === 'receiving') {
+      if (persisted.receivingFilter) Object.assign(receivingFilter, persisted.receivingFilter as Partial<typeof receivingFilter>)
+      if (typeof persisted.receivingPageSize === 'number') receivingPageSize.value = persisted.receivingPageSize as number
+    } else {
+      if (persisted.sendableFilter) Object.assign(sendableFilter, persisted.sendableFilter as Partial<typeof sendableFilter>)
+      if (typeof persisted.sendablePageSize === 'number') sendablePageSize.value = persisted.sendablePageSize as number
+    }
+  }
   // 默认拉「可发送」；其他 tab 按需 onActivated 时再拉
   await refreshSendable()
   // 预拉一次「待接收」让数字显示在 tab 标题
