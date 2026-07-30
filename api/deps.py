@@ -18,6 +18,7 @@ from repository import (
     OutsourceCompanyRepository,
     OutsourceQuoteEventRepository,
     OutsourceQuoteRepository,
+    OutsourceShipmentRepository,
     PartBatchRepository,
     PartEventRepository,
     PartFileRepository,
@@ -316,6 +317,7 @@ def get_part_service(
         outsource_company_process=OutsourceCompanyProcessRepository(session),
         outsource_quotes=OutsourceQuoteRepository(session),
         quote_events=OutsourceQuoteEventRepository(session),
+        outsource_shipments=OutsourceShipmentRepository(session),  # 2026-07-30：外协发货记录
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,
@@ -459,6 +461,13 @@ def get_part_repository(
     return PartRepository(session)
 
 
+def get_assembly_repo(
+    session: AsyncSession = Depends(get_session),
+) -> AssemblyRepository:
+    """装配件 Repository 工厂。"""
+    return AssemblyRepository(session)
+
+
 def get_assembly_service(
     session: AsyncSession = Depends(get_session),
     serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
@@ -586,6 +595,12 @@ def get_outsource_company_process_repo(
     return OutsourceCompanyProcessRepository(session)
 
 
+def get_outsource_shipment_repo(
+    session: AsyncSession = Depends(get_session),
+) -> OutsourceShipmentRepository:
+    return OutsourceShipmentRepository(session)
+
+
 def get_outsource_company_service(
     companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
     junction: OutsourceCompanyProcessRepository = Depends(
@@ -594,14 +609,15 @@ def get_outsource_company_service(
     processes: ProcessRepository = Depends(get_process_repo),
     part_repo: PartRepository = Depends(get_part_repository),
     part_events: PartEventRepository = Depends(get_part_event_repository),
+    shipments: OutsourceShipmentRepository = Depends(get_outsource_shipment_repo),
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> OutsourceCompanyService:
     return OutsourceCompanyService(
         companies=companies, junction=junction, processes=processes,
         part_repo=part_repo, part_events=part_events,
-        # PR-H 2026-07-29：对账页改为基于 t_outsource_quote
-        outsource_quotes=OutsourceQuoteRepository(session),
+        # 2026-07-30：对账页改为基于 t_outsource_shipment
+        outsource_shipments=shipments,
         customers=CustomerRepository(session),
         current_user=user,
     )
@@ -630,6 +646,7 @@ def get_outsource_quote_service(
     parts: PartRepository = Depends(get_part_repository),
     companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
     processes: ProcessRepository = Depends(get_process_repo),
+    shipments: OutsourceShipmentRepository = Depends(get_outsource_shipment_repo),
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> OutsourceQuoteService:
@@ -643,5 +660,6 @@ def get_outsource_quote_service(
         shelves=ShelfRepository(session),
         workers=WorkerRepository(session),
         part_events=PartEventRepository(session),
+        shipments=shipments,
         current_user=user,
     )

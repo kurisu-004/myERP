@@ -82,9 +82,13 @@ function initialSearch(): SearchState {
 }
 const search = reactive<SearchState>(initialSearch())
 
+/** 报价列表有效筛选状态（不含 legacy 数据状态） */
+const ACTIVE_QUOTE_STATUSES: OutsourceQuoteStatus[] = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED']
+
 const statusOptions: { value: OutsourceQuoteStatus; label: string }[] = (
   Object.entries(OUTSOURCE_QUOTE_STATUS_LABEL) as [OutsourceQuoteStatus, string][]
-).map(([value, label]) => ({ value, label }))
+).filter(([value]) => ACTIVE_QUOTE_STATUSES.includes(value))
+  .map(([value, label]) => ({ value, label }))
 
 const statusFilterActive = computed(() => search.statuses.length > 0)
 const customerFilterActive = computed(() => search.customerId !== '')
@@ -289,6 +293,32 @@ const companies = ref<{ id: string; name: string }[]>([])
 const processes = ref<Process[]>([])
 const parts = ref<PartListItem[]>([])
 
+/**
+ * 2026-07-29 PR-fix-0.2.0 dedup：折叠同一 (part_id, next_process_id) 的多批次行。
+ * 后端 /quotable-parts 行=批次（批次化 contract），但 picker 下拉框里展示「同工单
+ * 同外协工序」的多批次无意义——用户只为该 (part, process) 创建一份报价即可，发往
+ * 任意批次都走这份报价。折叠后选中的 row 仍带 batch_id 等字段（仅展示时不再用）。
+ *
+ * Key 选择：`(part_id, next_process_id)`：
+ * - 同一 part + 同一 next_process = "同一外协工序队列"，只留一行。
+ * - 同一 part + 不同 next_process（工单有多种工序排队）应保留，让用户能为不同外协
+ *   工序分别报价。
+ *
+ * 后端 contract 不变：API 仍返回每批一行（其他下游 OutsourceSendableItem 等仍按需
+ * 消费批次），本函数仅是 picker 显示层的过滤。
+ */
+function dedupeByPartProcess(rows: PartListItem[]): PartListItem[] {
+  const seen = new Set<string>()
+  const out: PartListItem[] = []
+  for (const r of rows) {
+    const key = `${r.id}::${r.next_process_id ?? 'null'}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(r)
+  }
+  return out
+}
+
 async function loadLookups(): Promise<void> {
   try {
     customers.value = await listCustomers()
@@ -297,7 +327,9 @@ async function loadLookups(): Promise<void> {
     // PR-H 2026-07-28：新建报价 picker 改为「仅显示外协工序货架上的零件」
     // 旧版用 listParts({ statuses: ['PENDING','IN_PROCESS'], limit: 500 })；
     // 新版走专用端点 GET /outsource-quotes/quotable-parts
-    parts.value = await listQuotableParts({ limit: 500 })
+    // PR-fix-0.2.0 dedup：行=批次折叠到 (part_id, next_process_id)。
+    const raw = await listQuotableParts({ limit: 500 })
+    parts.value = dedupeByPartProcess(raw)
   } catch (e) {
     ElMessage.error((e as Error).message ?? '下拉数据加载失败')
   }
@@ -986,6 +1018,13 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
       :top="reviewDlg.top.value"
     >
       <el-form label-width="100px">
+        <el-alert
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          通过后将自动拒绝该零件同工序的其他报价。
+        </el-alert>
         <el-form-item label="审批意见">
           <el-input v-model="reviewNote" type="textarea" placeholder="可留空" />
         </el-form-item>

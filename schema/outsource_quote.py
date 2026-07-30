@@ -45,6 +45,7 @@ class OutsourceQuoteOut(BaseModel):
     received_at: datetime | None = None
     quantity: int | None = None
     is_billed: bool = False
+    is_direct: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -155,17 +156,27 @@ class ApprovedQuoteForSendItem(BaseModel):
     """报价已批准且零件可发送外协时的快捷列出。
 
     直接返回 PartListItem 形态 + 预解析字段，便于外协发送列表页直接渲染。
+
+    2026-07-29 PR-fix-0.2.0 批次化：行=批次，添加 batch_id / batch_no / batch_quantity，
+    version 改为批次 version（OCC 在批次上）。
     """
 
     version: int = Field(
         default=0,
-        description="零件 TPart.version（OCC；前端发送时需回传），2026-07-28 新增",
+        description="批次 TPartBatch.version（OCC；前端发送时需回传，2026-07-29 由工单 version 改为批次 version）",
     )
     part_id: IdStrNonNull
     part_serial_no: str | None = None
     part_drawing_no: str | None = None
     part_name: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(
+        default=None,
+        description="可发送数量（2026-07-29 批次化：等于 batch_quantity）",
+    )
+    # 2026-07-29 PR-fix-0.2.0：批次级字段
+    batch_id: IdStrNonNull = Field(description="可发送批次 id")
+    batch_no: int = Field(description="批次号（per-part 递增）")
+    batch_quantity: int = Field(description="批次数量")
     planned_delivery_date: str | None = None
     is_urgent: bool = False
     customer_path: str | None = None
@@ -187,3 +198,72 @@ class ApprovedForSendListOut(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ============================================================
+# 外协发货记录 (OutsourceShipment) schema（2026-07-30 新增）
+# ============================================================
+
+
+class OutsourceShipmentOut(BaseModel):
+    """外协发货记录出参。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStrNonNull
+    version: int = Field(description="乐观锁版本号")
+    quote_id: IdStrNonNull
+    part_id: IdStrNonNull
+    batch_id: IdStr | None = None
+    batch_no: int | None = None
+    outsource_company_id: IdStrNonNull
+    process_id: IdStrNonNull
+    quantity: int
+    unit_price: Decimal
+    status: str = Field(description="OUTSOURCING / RECEIVED / CANCELLED")
+    sent_at: datetime
+    received_at: datetime | None = None
+    is_billed: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+    # 预解析字段
+    part_drawing_no: str | None = None
+    part_name: str | None = None
+    outsource_company_name: str | None = None
+    process_name: str | None = None
+    customer_path: str | None = None
+
+
+class OutsourceShipmentReconcileUpdateRequest(BaseModel):
+    """对账页双击编辑 shipment（CLERK + MANAGER）。
+
+    允许状态 OUTSOURCING / RECEIVED：
+    - unit_price / quantity：直接更新对应列
+    - is_billed 勾选/取消：纯标志位，不驱动状态机
+    - 三者均可独立传 None 表示不更新该字段
+    """
+
+    version: int = Field(description="t_outsource_shipment.version（OCC）")
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    quantity: int | None = Field(default=None, ge=1)
+    is_billed: bool | None = None
+
+
+class OutsourceInFlightItem(BaseModel):
+    """外协中批次行（GET /parts/outsource-in-flight）。"""
+
+    part_id: IdStrNonNull
+    batch_id: IdStrNonNull
+    batch_no: int
+    quantity: int
+    serial_no: str | None = None
+    drawing_no: str | None = None
+    name: str | None = None
+    customer_path: str | None = None
+    next_process_id: IdStr | None = None
+    next_process_name: str | None = None
+    outsource_company_id: IdStr | None = None
+    outsource_company_name: str | None = None
+    sent_at: datetime | None = None
+    version: int = Field(description="批次 version（OCC）")

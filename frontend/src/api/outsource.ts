@@ -9,6 +9,7 @@ import type {
   OutsourceCompanyListResult,
   OutsourceCompanyUpdatePayload,
   OutsourceCompanyWithProcesses,
+  OutsourceInFlightItem,
   OutsourceQuote,
   OutsourceQuoteApprovePayload,
   OutsourceQuoteCreatePayload,
@@ -246,15 +247,34 @@ export async function listCompanySentParts(
 }
 
 /**
- * PR-H 2026-07-29：对账页行编辑（双击单价/数量/对账标记，Enter 确认 / Esc 取消）。
- * POST /outsource-quotes/{quoteId}/reconcile-update
+ * PR-H 2026-07-30：对账页行编辑（双击单价/数量/对账标记，Enter 确认 / Esc 取消）。
+ * POST /outsource-shipments/{shipmentId}/reconcile-update
  */
-export async function reconcileUpdateQuote(
-  quoteId: string,
+export async function reconcileUpdateShipment(
+  shipmentId: string,
   payload: OutsourceReconciliationUpdatePayload,
 ): Promise<void> {
   await api.post(
-    `/outsource-quotes/${encodeURIComponent(quoteId)}/reconcile-update`,
+    `/outsource-shipments/${encodeURIComponent(shipmentId)}/reconcile-update`,
     payload,
   )
+}
+
+/**
+ * 外协中批次列表（2026-07-30 新增）：列出所有已发送但尚未回收的外协批次。
+ * GET /parts/outsource-in-flight
+ * 注意：后端返回 plain list（无 total），分页 total 取列表长度。
+ */
+export async function listOutsourceInFlight(
+  params: {
+    keyword?: string
+    limit?: number
+    offset?: number
+  } = {},
+): Promise<OutsourceInFlightItem[]> {
+  const resp = await api.get<OutsourceInFlightItem[]>(
+    '/parts/outsource-in-flight',
+    { params: cleanParams(params) },
+  )
+  return resp.data
 }

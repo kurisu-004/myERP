@@ -100,6 +100,8 @@ export interface ListPartsParams {
   sort_dir?: SortDir
   limit?: number
   offset?: number
+  /** 2026-07-30：零件一览合并装配件 */
+  include_assemblies?: boolean
 }
 
 export interface PartCreatePayload {
@@ -605,10 +607,13 @@ export async function printPartDrawing(partId: string): Promise<Blob> {
  * 后端把 N 个 part 的双面 PDF 用 pypdf.PdfWriter 顺序拼接成单文件返回。
  * 前端拿到 Blob 后用单 iframe 一次 print()，避免 N 次打印弹窗。
  */
-export async function printPartDrawingBatch(partIds: string[]): Promise<Blob> {
+export async function printPartDrawingBatch(
+  partIds: string[],
+  assemblyIds?: string[],
+): Promise<Blob> {
   const resp = await api.post<Blob>(
     '/parts/print-drawing-batch',
-    { part_ids: partIds },
+    { part_ids: partIds, assembly_ids: assemblyIds },
     { responseType: 'blob' },
   )
   return resp.data
@@ -623,11 +628,22 @@ export interface SendToOutsourcePayload {
   /** 外协工序 id（雪花 ID 字符串；JS Number 会丢精度） */
   next_process_id: string
   /**
-   * 乐观锁版本号；与后端 PartOut.version 必须一致，否则返 BIZ_VERSION_CONFLICT 409。
-   * 前端从 PartItem.version / PartOut.version 取值后传入。
+   * 乐观锁版本号；与目标批次 TPartBatch.version 必须一致，否则返 BIZ_VERSION_CONFLICT 409。
+   * 前端从 OutsourceSendableItem.version（批次级 version）取值后传入。
    * 2026-07-28 新增。
+   * 2026-07-29 PR-fix-0.2.0 批次化：改为批次 version。
    */
   version: number
+  /**
+   * 2026-07-29 PR-fix-0.2.0 批次化：可发送批次 id（雪花 ID 字符串）。
+   * 选填 —— 缺省时后端用 _resolve_target_batch 在该 part 的活跃批次里自动选唯一者；
+   * 多批次工单建议显式传入，避免歧义。Picker 选中行时建议把 row.batch_id 一起回传。
+   */
+  batch_id?: string
+  /**
+   * 2026-07-30：部分发送数量；≤ 批次量，缺省 = 批次全量。
+   */
+  quantity?: number | null
 }
 
 /**
@@ -688,12 +704,20 @@ export interface ReceiveFromOutsourcePayload {
   shelf_id: string
   /** 下一道工序 id（雪花 ID 字符串；JS Number 会丢精度） */
   next_process_id: string
+  /** 2026-07-30：目标批次 id；缺省按状态唯一批次解析 */
+  batch_id?: string | null
+  /** 2026-07-30：部分接收数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 export interface ReceiveToInspectionPayload {
   shelf_id: string
   /** True: 自动通过品检 → READY_TO_SHIP（"送货流程"快捷分支，2026-07-16 加） */
   auto_pass_inspection?: boolean
+  /** 2026-07-30：目标批次 id；缺省按状态唯一批次解析 */
+  batch_id?: string | null
+  /** 2026-07-30：部分接收数量；缺省 = 批次全量 */
+  quantity?: number | null
 }
 
 /**

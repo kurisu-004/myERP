@@ -59,6 +59,8 @@ def _make_part(
     quantity: int = 5,
     customer_id: int | None = 200,
 ):
+    from datetime import date
+    from decimal import Decimal
     p = MagicMock()
     p.id = id
     p.serial_no = serial_no
@@ -67,7 +69,46 @@ def _make_part(
     p.quantity = quantity
     p.customer_id = customer_id
     p.deleted_at = None
+    # 2026-07-29 PR-fix-0.2.0 hotfix：PartListItem 走 Pydantic 校验，
+    # 这些字段如果留 MagicMock 会触发 ValidationError。给上安全默认值。
+    p.applicant_name = "(未知)"
+    p.unit_price = Decimal("0")
+    p.total_price = Decimal("0")
+    p.request_date = date(2026, 7, 1)
+    p.planned_delivery_date = date(2026, 8, 1)
+    p.actual_delivery_date = None
+    p.is_urgent = False
+    p.order_no = None
+    p.system_delivery_date = None
+    p.note = None
+    p.delivery_note_id = None
     return p
+
+
+def _make_batch(
+    id: int = 999,
+    part_id: int = 100,
+    batch_no: int = 1,
+    quantity: int = 10,
+    status: str = "PENDING",
+    location: str | None = "OFFICE",
+    current_holder_id: int | None = None,
+    next_process_id: int | None = None,
+    version: int = 1,
+):
+    """Mock 一个 TPartBatch（2026-07-29 批次化后测试用）。"""
+    b = MagicMock()
+    b.id = id
+    b.part_id = part_id
+    b.batch_no = batch_no
+    b.quantity = quantity
+    b.status = status
+    b.location = location
+    b.current_holder_id = current_holder_id
+    b.next_process_id = next_process_id
+    b.version = version
+    b.deleted_at = None
+    return b
 
 
 def _make_company(id: int = 10, name: str = "外协A", is_active: bool = True) -> TOutsourceCompany:
@@ -123,7 +164,9 @@ def mock_quotes() -> OutsourceQuoteRepository:
     repo.soft_delete = AsyncMock(side_effect=lambda q: q)
     repo.get_by_id = AsyncMock(return_value=None)
     repo.get_one_approved = AsyncMock(return_value=None)
+    repo.get_approved_for_part_process = AsyncMock(return_value=None)
     repo.get_one_active_for_tuple = AsyncMock(return_value=None)
+    repo.list_active_by_part_process = AsyncMock(return_value=[])
     repo.list_by_part_with_status = AsyncMock(return_value=[])
     repo.list_approved_for_part_ids = AsyncMock(return_value=[])
     repo.list_with_filters = AsyncMock(return_value=[])
@@ -208,10 +251,27 @@ def mock_workers():
 
 
 @pytest.fixture
+def mock_shipments():
+    from repository.outsource_shipment import OutsourceShipmentRepository
+    repo = OutsourceShipmentRepository.__new__(OutsourceShipmentRepository)
+    repo.session = MagicMock()
+    repo.create = AsyncMock(side_effect=lambda s: s)
+    repo.update = AsyncMock(side_effect=lambda s: s)
+    repo.get_by_id = AsyncMock(return_value=None)
+    repo.get_open_by_batch_id = AsyncMock(return_value=None)
+    repo.find_open_by_part_company_process = AsyncMock(return_value=None)
+    repo.list_reconciliation_for_company = AsyncMock(return_value=[])
+    repo.count_reconciliation_for_company = AsyncMock(return_value=0)
+    repo.list_in_flight = AsyncMock(return_value=[])
+    repo.count_in_flight = AsyncMock(return_value=0)
+    return repo
+
+
+@pytest.fixture
 def svc(
     mock_quotes, mock_quote_events, mock_parts, mock_companies,
     mock_processes, mock_customers, mock_shelves, mock_workers,
-    mock_part_events,
+    mock_part_events, mock_shipments,
 ) -> OutsourceQuoteService:
     return OutsourceQuoteService(
         quotes=mock_quotes,
@@ -223,6 +283,7 @@ def svc(
         shelves=mock_shelves,
         workers=mock_workers,
         part_events=mock_part_events,
+        shipments=mock_shipments,
         current_user=None,
     )
 
@@ -444,17 +505,6 @@ class TestStateTransitions:
         ))
         assert result.status == OutsourceQuoteStatus.REJECTED.value
 
-    async def test_state_machine_mark_used(self):
-        """直接验证 OutsourceQuoteStateMachine 的 mark_used 转换。"""
-        from statemachines.outsource_quote import OutsourceQuoteStateMachine
-        q = _make_quote(status=OutsourceQuoteStatus.APPROVED.value, version=2)
-        events = []
-        sm = OutsourceQuoteStateMachine(model=q)
-        sm.mark_used(event_repo=MagicMock(add=lambda ev: events.append(ev)), created_by=42)
-        assert q.status == OutsourceQuoteStatus.USED.value
-        assert len(events) == 1
-        assert events[0].event_type == OutsourceQuoteStatus.USED.value or events[0].event_type == "USED"
-
 
 # =============================================================================
 # soft_delete
@@ -625,8 +675,12 @@ class TestListApprovedForSend:
         part.next_process_id = 20
         part.is_urgent = False
         part.planned_delivery_date = date(2026, 7, 20)
+        # 2026-07-29 PR-fix-0.2.0 批次化：list_outsource_sendable 现在返回
+        # list[tuple[TPartBatch, TPart]]；mock 也返回元组。
+        batch = _make_batch(id=999, part_id=100, status="PENDING",
+                            location="OFFICE", next_process_id=20, quantity=10)
         svc.parts.count_outsource_sendable = AsyncMock(return_value=1)
-        svc.parts.list_outsource_sendable = AsyncMock(return_value=[part])
+        svc.parts.list_outsource_sendable = AsyncMock(return_value=[(batch, part)])
 
         # 两层客户：list_by_ids 按 frontier 逐层返回
         from model.customer import TCustomer
@@ -662,6 +716,7 @@ class TestListApprovedForSend:
         mock_quotes.list_all_approved = AsyncMock(return_value=quotes)
 
         parts = []
+        batches = []
         for i in range(5):
             p = _make_part(id=100 + i, customer_id=None)
             p.status = "PENDING"
@@ -670,8 +725,14 @@ class TestListApprovedForSend:
             p.is_urgent = False
             p.planned_delivery_date = date(2026, 7, 20)
             parts.append(p)
+            # 2026-07-29 批次化：mock list_outsource_sendable 返回元组
+            b = _make_batch(id=900 + i, part_id=100 + i, status="PENDING",
+                            location="OFFICE", next_process_id=20, quantity=10)
+            batches.append(b)
         svc.parts.count_outsource_sendable = AsyncMock(return_value=len(parts))
-        svc.parts.list_outsource_sendable = AsyncMock(return_value=parts)
+        svc.parts.list_outsource_sendable = AsyncMock(
+            return_value=list(zip(batches, parts)),
+        )
         svc.processes.list_by_ids = AsyncMock(return_value=[_make_process()])
         svc.companies.list_by_ids = AsyncMock(return_value=[_make_company()])
 
@@ -684,6 +745,71 @@ class TestListApprovedForSend:
         # process/company 各只批查一次
         svc.processes.list_by_ids.assert_awaited_once()
         svc.companies.list_by_ids.assert_awaited_once()
+
+
+class TestListQuotablePartsForPicker:
+    """2026-07-29 PR-fix-0.2.0 hotfix 回归测试。
+
+    上轮 commit 把 repository 改为返回 list[tuple[TPartBatch, TPart]]，但 service
+    的 _to_part_list_items 在批查（customer / worker / shelf / process）那里
+    仍 `for p in rows: p.customer_id` 把 tuple 当 TPart 用 → 500。
+    本测试锁住 picker 的 batch-tuple 契约：rows 必须是 tuple，response 里 batch
+    字段必须被填进 PartListItem。
+    """
+
+    async def test_picker_unpacks_batch_tuples(
+        self, svc, mock_parts, mock_customers, mock_processes,
+        mock_shelves, mock_workers,
+    ):
+        """PR-fix-0.2.0 hotfix 回归：rows 是 list[tuple[TPartBatch, TPart]] 时，
+        _to_part_list_items 必须立刻解包，不能再 for p in rows: p.customer_id。
+        """
+        from repository.shelf_process import ShelfProcessRepository
+
+        # 1. 构造一个 (batch, part) 元组 —— 这就是当前 repo 的 contract
+        batch = _make_batch(
+            id=999, part_id=100, batch_no=2, quantity=20,
+            status="IN_PROCESS", location="PRODUCTION_SHELF",
+            current_holder_id=10, next_process_id=20,
+        )
+        part = _make_part(id=100, customer_id=501)
+        part.status = "IN_PROCESS"
+        part.location = "PRODUCTION_SHELF"
+        part.current_holder_id = 10
+        part.next_process_id = 20
+
+        # 关键：mock 返回 [(batch, part)] 而不是 [part]
+        mock_parts.list_quotable_for_outsource_quote = AsyncMock(
+            return_value=[(batch, part)],
+        )
+
+        # 2. 下游批查一律返回空（避免引入额外 mock 复杂度）
+        mock_customers.list_by_ids = AsyncMock(return_value=[])
+        mock_processes.list_by_ids = AsyncMock(return_value=[])
+        mock_shelves.list_by_ids = AsyncMock(return_value=[])
+        mock_workers.list_by_ids = AsyncMock(return_value=[])
+
+        # 3. shelf_processes 入参只需要 list_shelf_ids_with_process_category 一个方法
+        shelf_process_repo = ShelfProcessRepository.__new__(ShelfProcessRepository)
+        shelf_process_repo.list_shelf_ids_with_process_category = AsyncMock(
+            return_value=[10],   # 一个绑了 OUTSOURCE 工序的货架
+        )
+
+        # 4. 调用 picker —— 不应抛 AttributeError
+        items = await svc.list_quotable_parts_for_picker(
+            keyword=None, limit=500, shelf_processes=shelf_process_repo,
+        )
+
+        # 5. 验证：返回 PartListItem，batch 字段被填上
+        assert isinstance(items, list)
+        assert len(items) == 1
+        item = items[0]
+        # IdStrNonNull 在 Python 里是 int；JSON 序列化时变 str。
+        assert item.id == 100
+        # IdStr（可空外键）同理；PartListItem.batch_id 是 IdStr（可空）。
+        assert item.batch_id == 999
+        assert item.batch_no == 2
+        assert item.batch_quantity == 20
 
 
 class TestListQuotesNoN1:
@@ -744,156 +870,7 @@ class TestSearchQuotesStatusesMulti:
 
 
 # =============================================================================
-# 对账页更新 reconcile_update_quote（PR-H 2026-07-29）
+# 对账页更新已迁移至 shipment（2026-07-30）；旧 reconcile_update_quote 单元测试删除
 # =============================================================================
-
-
-class TestReconcileUpdateQuote:
-    """对账页双击编辑：OUTSOURCING / RECEIVED / BILLED 状态可改
-    unit_price / quantity / is_billed（OCC 版本校验）。
-    """
-
-    async def test_edit_price_and_quantity_on_outsourcing(
-        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
-    ):
-        """OUTSOURCING 状态：允许改单价 + 数量；状态保持不变。"""
-        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
-        from decimal import Decimal
-
-        q = _make_quote(
-            status=OutsourceQuoteStatus.OUTSOURCING.value,
-            version=3, price=Decimal("0"),
-        )
-        q.sent_at = _now()
-        mock_quotes.get_by_id = AsyncMock(return_value=q)
-        mock_parts.list_by_ids = AsyncMock(return_value=[_make_part()])
-        mock_companies.list_by_ids = AsyncMock(return_value=[_make_company()])
-        mock_processes.list_by_ids = AsyncMock(return_value=[_make_process()])
-
-        out = await svc.reconcile_update_quote(
-            str(q.id),
-            OutsourceReconciliationUpdateRequest(
-                version=3,
-                unit_price=Decimal("45.50"),
-                quantity=8,
-            ),
-        )
-        assert q.price == Decimal("45.50")
-        assert q.quantity == 8
-        assert q.status == OutsourceQuoteStatus.OUTSOURCING.value
-        assert out.version == q.version
-
-    async def test_mark_billed_from_received(
-        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
-        mock_quote_events,
-    ):
-        """RECEIVED + is_billed=True → 状态机 mark_billed → BILLED。"""
-        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
-
-        q = _make_quote(
-            status=OutsourceQuoteStatus.RECEIVED.value, version=1,
-        )
-        q.is_billed = False
-        mock_quotes.get_by_id = AsyncMock(return_value=q)
-        mock_parts.list_by_ids = AsyncMock(return_value=[_make_part()])
-        mock_companies.list_by_ids = AsyncMock(return_value=[_make_company()])
-        mock_processes.list_by_ids = AsyncMock(return_value=[_make_process()])
-
-        await svc.reconcile_update_quote(
-            str(q.id),
-            OutsourceReconciliationUpdateRequest(version=1, is_billed=True),
-        )
-        assert q.status == OutsourceQuoteStatus.BILLED.value
-        # 状态机回调写 MARKED_BILLED 事件
-        assert mock_quote_events.add.called
-
-    async def test_reopen_billed_back_to_received(
-        self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
-        mock_quote_events,
-    ):
-        """BILLED + is_billed=False → 直接 ORM 写 status=RECEIVED（library
-        不允许 final 状态出向转换）+ 写 REOPENED_BILLED 事件。"""
-        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
-
-        q = _make_quote(
-            status=OutsourceQuoteStatus.BILLED.value, version=2,
-        )
-        q.is_billed = True
-        mock_quotes.get_by_id = AsyncMock(return_value=q)
-        mock_parts.list_by_ids = AsyncMock(return_value=[_make_part()])
-        mock_companies.list_by_ids = AsyncMock(return_value=[_make_company()])
-        mock_processes.list_by_ids = AsyncMock(return_value=[_make_process()])
-
-        await svc.reconcile_update_quote(
-            str(q.id),
-            OutsourceReconciliationUpdateRequest(version=2, is_billed=False),
-        )
-        assert q.status == OutsourceQuoteStatus.RECEIVED.value
-        # REOPENED_BILLED 事件已写（不通过 sm 转换）
-        written = [c.args[0] for c in mock_quote_events.add.call_args_list]
-        assert any(
-            e.event_type == OutsourceQuoteEventType.REOPENED_BILLED.value
-            for e in written
-        )
-
-    async def test_version_conflict_409(
-        self, svc, mock_quotes,
-    ):
-        """OCC：version 不匹配 → BIZ_VERSION_CONFLICT 409。"""
-        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
-        from decimal import Decimal
-
-        q = _make_quote(
-            status=OutsourceQuoteStatus.OUTSOURCING.value, version=5,
-        )
-        mock_quotes.get_by_id = AsyncMock(return_value=q)
-
-        with pytest.raises(BizError) as exc:
-            await svc.reconcile_update_quote(
-                str(q.id),
-                OutsourceReconciliationUpdateRequest(
-                    version=3, unit_price=Decimal("10"),
-                ),
-            )
-        assert exc.value.code == ErrCode.BIZ_VERSION_CONFLICT
-        assert exc.value.http_status == 409
-
-    async def test_reject_draft_status(
-        self, svc, mock_quotes,
-    ):
-        """DRAFT 状态不允许对账编辑。"""
-        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
-        from decimal import Decimal
-
-        q = _make_quote(status=OutsourceQuoteStatus.DRAFT.value, version=1)
-        mock_quotes.get_by_id = AsyncMock(return_value=q)
-
-        with pytest.raises(BizError) as exc:
-            await svc.reconcile_update_quote(
-                str(q.id),
-                OutsourceReconciliationUpdateRequest(
-                    version=1, unit_price=Decimal("10"),
-                ),
-            )
-        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION
-
-    async def test_mark_billed_requires_received(
-        self, svc, mock_quotes,
-    ):
-        """OUTSOURCING 状态直接勾 is_billed=True → 拒绝（必须先 RECEIVED）。"""
-        from schema.outsource_quote import OutsourceReconciliationUpdateRequest
-
-        q = _make_quote(
-            status=OutsourceQuoteStatus.OUTSOURCING.value, version=1,
-        )
-        q.is_billed = False
-        mock_quotes.get_by_id = AsyncMock(return_value=q)
-
-        with pytest.raises(BizError) as exc:
-            await svc.reconcile_update_quote(
-                str(q.id),
-                OutsourceReconciliationUpdateRequest(version=1, is_billed=True),
-            )
-        assert exc.value.code == ErrCode.BIZ_OUTSOURCE_QUOTE_INVALID_TRANSITION
 
 

@@ -25,7 +25,7 @@ from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
 from model import TAssembly, TCustomer, TPart, TPartBatch, TPartEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import (
-    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, ProcessCategory, ShelfZone,
+    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, PartSortKey, ProcessCategory, ShelfZone, SortDir,
 )
 from repository.applicant import ApplicantRepository
 from repository.assembly import AssemblyRepository
@@ -35,6 +35,7 @@ from repository.outsource_company import OutsourceCompanyRepository
 from repository.outsource_company_process import OutsourceCompanyProcessRepository
 from repository.outsource_quote import OutsourceQuoteRepository
 from repository.outsource_quote_event import OutsourceQuoteEventRepository
+from repository.outsource_shipment import OutsourceShipmentRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from repository.part_batch import PartBatchRepository
@@ -201,6 +202,7 @@ class PartService:
         outsource_company_process: OutsourceCompanyProcessRepository | None = None,
         outsource_quotes: OutsourceQuoteRepository | None = None,
         quote_events: OutsourceQuoteEventRepository | None = None,
+        outsource_shipments: "OutsourceShipmentRepository | None" = None,  # 2026-07-30：外协发货记录
         part_batches: PartBatchRepository | None = None,  # 2026-07-29：批次化
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
@@ -224,8 +226,9 @@ class PartService:
         self.delivery_notes_repo = delivery_notes_repo  # 2026-07-22：PR-G，可选：详情页显示所属送货单
         self.outsource_companies = outsource_companies  # 2026-07-15：外协公司（send_to_outsource 用）
         self.outsource_company_process = outsource_company_process  # 2026-07-15：外协公司-工序映射
-        self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御 + mark_used）
-        self.quote_events = quote_events  # 2026-07-16：外协报价事件（mark_used 写 USED 事件）
+        self.outsource_quotes = outsource_quotes  # 2026-07-16：外协报价（send_to_outsource 防御）
+        self.quote_events = quote_events  # 2026-07-16：外协报价事件
+        self.outsource_shipments = outsource_shipments  # 2026-07-30：外协发货记录
         self.broadcaster = broadcaster
         self.event_broadcaster = event_broadcaster
         self._current_user = current_user
@@ -257,7 +260,50 @@ class PartService:
             else:
                 # L2 叶子：单 id
                 customer_ids_in = [customer_id_int]
-        rows = await self.parts.list_with_filters(
+
+        if not query.include_assemblies:
+            # 原有行为（向后兼容）
+            rows = await self.parts.list_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+                sort_by=query.sort_by,
+                sort_dir=query.sort_dir,
+                limit=query.limit,
+                offset=query.offset,
+            )
+            total = await self.parts.count_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+            )
+            items = await self._to_list_out(rows)
+            return PartListOut(
+                items=items, total=total, limit=query.limit, offset=query.offset
+            )
+
+        # ===== 装配体并入零件一览（2026-07-30）=====
+        # 数据量工厂级（数百行），Python 内存合并分页；增长后应改 SQL UNION。
+        # 1. 独立零件（排除装配件子件）
+        part_rows = await self.parts.list_with_filters(
             customer_ids_in=customer_ids_in,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
@@ -272,10 +318,11 @@ class PartService:
             system_delivery_date_to=query.system_delivery_date_to,
             sort_by=query.sort_by,
             sort_dir=query.sort_dir,
-            limit=query.limit,
-            offset=query.offset,
+            assembly_id_is_null=True,
+            limit=query.limit + query.offset,
+            offset=0,
         )
-        total = await self.parts.count_with_filters(
+        part_total = await self.parts.count_with_filters(
             customer_ids_in=customer_ids_in,
             statuses=query.statuses,
             is_urgent=query.is_urgent,
@@ -288,8 +335,103 @@ class PartService:
             planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
+            assembly_id_is_null=True,
         )
-        items = await self._to_list_out(rows)
+
+        # 2. 装配件（statuses 取交集）
+        asm_rows: list[TAssembly] = []
+        asm_total = 0
+        if self.assemblies is not None:
+            assembly_statuses = None
+            if query.statuses is not None:
+                valid_asm_statuses = {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}
+                assembly_statuses = [s.value for s in query.statuses if s.value in valid_asm_statuses]
+                if not assembly_statuses:
+                    # 无匹配装配件状态，装配件集为空
+                    asm_rows = []
+                    asm_total = 0
+            if query.statuses is None or assembly_statuses:
+                from repository.assembly import AssemblySortKey
+                _sort_key_map = {
+                    PartSortKey.PLANNED_DELIVERY_DATE: AssemblySortKey.PLANNED_DELIVERY_DATE,
+                    PartSortKey.REQUEST_DATE: AssemblySortKey.REQUEST_DATE,
+                    PartSortKey.CREATED_AT: AssemblySortKey.CREATED_AT,
+                    PartSortKey.SERIAL_NO: AssemblySortKey.SERIAL_NO,
+                    PartSortKey.DRAWING_NO: AssemblySortKey.DRAWING_NO,
+                    PartSortKey.NAME: AssemblySortKey.NAME,
+                }
+                asm_sort_by = _sort_key_map.get(query.sort_by, AssemblySortKey.PLANNED_DELIVERY_DATE)
+                asm_rows = await self.assemblies.list_with_filters(
+                    customer_ids_in=customer_ids_in,
+                    statuses=assembly_statuses,
+                    is_urgent=query.is_urgent,
+                    drawing_no_like=query.keyword,
+                    name_like=query.keyword,
+                    sort_by=asm_sort_by,
+                    sort_dir=query.sort_dir.value,
+                    limit=query.limit + query.offset,
+                    offset=0,
+                )
+                asm_total = await self.assemblies.count_with_filters(
+                    customer_ids_in=customer_ids_in,
+                    statuses=assembly_statuses,
+                    is_urgent=query.is_urgent,
+                    drawing_no_like=query.keyword,
+                    name_like=query.keyword,
+                )
+
+        # 3. 转换并合并
+        part_items = await self._to_list_out(part_rows)
+        for item in part_items:
+            item.row_type = "PART"
+        asm_items = await self._assemblies_to_list_items(asm_rows)
+        merged = part_items + asm_items
+
+        # 4. 统一排序（Python 内存）
+        _nulls_last_keys = {PartSortKey.SYSTEM_DELIVERY_DATE, PartSortKey.ORDER_NO}
+
+        def _sort_key(item: PartListItem, *, nulls_first: bool = False) -> tuple:
+            none_flag = 0 if nulls_first else 1
+            non_none_flag = 1 if nulls_first else 0
+            if query.sort_by == PartSortKey.PLANNED_DELIVERY_DATE:
+                val = item.planned_delivery_date
+                return (non_none_flag, val) if val is not None else (none_flag, date.min)
+            elif query.sort_by == PartSortKey.REQUEST_DATE:
+                val = item.request_date
+                return (non_none_flag, val) if val is not None else (none_flag, date.min)
+            elif query.sort_by == PartSortKey.SYSTEM_DELIVERY_DATE:
+                val = item.system_delivery_date
+                return (non_none_flag, val) if val is not None else (none_flag, date.min)
+            elif query.sort_by == PartSortKey.CREATED_AT:
+                val = item.created_at
+                return (non_none_flag, val) if val is not None else (none_flag, datetime.min)
+            elif query.sort_by == PartSortKey.SERIAL_NO:
+                val = item.serial_no
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.DRAWING_NO:
+                val = item.drawing_no
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.NAME:
+                val = item.name
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.ORDER_NO:
+                val = item.order_no
+                return (non_none_flag, val) if val is not None else (none_flag, "")
+            return (non_none_flag, "")
+
+        # 先按 id DESC 稳定排序（保证 tie-break 与 SQL 一致）
+        merged = sorted(merged, key=lambda x: x.id, reverse=True)
+        if query.sort_dir == SortDir.ASC:
+            merged = sorted(merged, key=lambda x: _sort_key(x, nulls_first=False))
+        else:
+            if query.sort_by in _nulls_last_keys:
+                merged = sorted(merged, key=lambda x: _sort_key(x, nulls_first=False), reverse=True)
+            else:
+                merged = sorted(merged, key=lambda x: _sort_key(x, nulls_first=True), reverse=True)
+
+        # 5. 内存分页
+        items = merged[query.offset:query.offset + query.limit]
+        total = part_total + asm_total
         return PartListOut(
             items=items, total=total, limit=query.limit, offset=query.offset
         )
@@ -1494,7 +1636,7 @@ class PartService:
         - next_process_id 存在 + category=OUTSOURCE
         - 公司映射了该 OUTSOURCE 工序（t_outsource_company_process）
         - part 位于绑定了 OUTSOURCE 工序的货架（status=IN_PROCESS + location=PRODUCTION_SHELF + current_holder_id ∈ OUTSOURCE-bound shelves）
-        - data.version 与 part.version 一致（OCC；2026-07-28 新增）
+        - data.version 与目标批次 batch.version 一致（OCC；2026-07-29 批次化后改为批次 version）
 
         行为分支（由 next_process.requires_approval 决定）：
         - True（默认）：必须有该 (part, company, process) 元组的 APPROVED 报价；
@@ -1509,15 +1651,6 @@ class PartService:
             )
 
         part = await self._get_part_or_404(part_id)
-
-        # 0. OCC 校验（2026-07-28 新增）：AuditMixin 已自动给 UPDATE 加 WHERE version=?，
-        # 这里显式校验是为了在拿到最新 version 后立即拦截并发冲突，给前端更明确的报错。
-        if part.version != data.version:
-            raise BizError(
-                code=ErrCode.BIZ_VERSION_CONFLICT,
-                message="该零件已被其他用户修改，请刷新后重试",
-                http_status=http_status.HTTP_409_CONFLICT,
-            )
 
         # 1. parse_snowflake_id(company_id) → int
         company_id_int = parse_snowflake_id(
@@ -1585,6 +1718,14 @@ class PartService:
             part, self._parse_batch_id(data),
             action="发送外协",
         )
+        # 0. OCC 校验（2026-07-29 批次化修正）：外协可发送列表回传的是批次 version，
+        # 显式校验在批次解析后立即拦截并发冲突；真正兜底仍是 AuditMixin 的 WHERE version=?。
+        if batch.version != data.version:
+            raise BizError(
+                code=ErrCode.BIZ_VERSION_CONFLICT,
+                message="该批次已被其他用户修改，请刷新后重试",
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
         if self.shelf_process_repo is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
@@ -1617,41 +1758,48 @@ class PartService:
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        # 6. PR-H 2026-07-29：报价处理（合并 APPROVAL + DIRECT 两条路径）
-        if self.outsource_quotes is None:
+        # 6. 2026-07-30：报价处理（回归纯审批对象）
+        if self.outsource_quotes is None or self.outsource_shipments is None:
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
-                message="server missing outsource quote repository",
+                message="server missing outsource repository",
                 http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if process.requires_approval:
-            # 6a. APPROVAL：找现有 APPROVED 报价
-            target_quote = await self.outsource_quotes.get_one_approved(
+            # 6a. APPROVAL：按 (part_id, process_id) 查 is_direct=false 的 APPROVED 报价
+            target_quote = await self.outsource_quotes.get_approved_for_part_process(
                 part_id=part.id,
-                outsource_company_id=company_id_int,
-                process_id=process_id_int,
+                process_id=process.id,
+                is_direct=False,
             )
             if target_quote is None:
                 raise BizError(
                     code=ErrCode.BIZ_OUTSOURCE_QUOTE_NOT_APPROVED,
                     message=(
-                        f"未找到「{company.name} / {process.code}」的已批准报价，"
+                        f"未找到工序「{process.code}」的已批准报价，"
                         "请先在「报价一览」中提交并由 MANAGER 审核通过"
                     ),
                     http_status=http_status.HTTP_400_BAD_REQUEST,
                 )
+            # 报价公司必须与请求公司一致（公司由报价锁定）
+            if target_quote.outsource_company_id != company_id_int:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message=(
+                        f"报价锁定外协公司与此处不一致："
+                        f"报价公司={target_quote.outsource_company_id}，"
+                        f"请求公司={company_id_int}"
+                    ),
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
         else:
-            # 6b. DIRECT：自动创建一条 price=0 status=APPROVED 报价
-            # 重复检测：先查 (part, company, process) 是否已存在 OUTSOURCING/RECEIVED
-            existing = await self.outsource_quotes.get_one_active_for_tuple(
+            # 6b. DIRECT：按 (part_id, process_id) 有任一 APPROVED 报价（含占位）则用之
+            target_quote = await self.outsource_quotes.get_approved_for_part_process(
                 part_id=part.id,
-                outsource_company_id=company_id_int,
-                process_id=process_id_int,
+                process_id=process.id,
+                is_direct=None,
             )
-            if existing is not None:
-                # 复用现有报价（避免对账时出现多行）
-                target_quote = existing
-            else:
+            if target_quote is None:
                 from model.outsource_quote import TOutsourceQuote
                 from model.outsource_quote_event import TOutsourceQuoteEvent
                 from model.enums import OutsourceQuoteEventType
@@ -1659,16 +1807,16 @@ class PartService:
                     id=new_id(),
                     part_id=part.id,
                     outsource_company_id=company_id_int,
-                    process_id=process_id_int,
-                    price=Decimal("0"),  # DIRECT 默认 0，对账页后填
+                    process_id=process.id,
+                    price=Decimal("0"),
                     status=OutsourceQuoteStatus.APPROVED.value,
+                    is_direct=True,
                     review_note="系统自动创建（DIRECT 直接发送）",
                     reviewed_at=now_naive(),
                     created_by=self._user_id,
                     updated_by=self._user_id,
                 )
                 await self.outsource_quotes.create(new_quote)
-                # 写 CREATED event
                 await self.quote_events.create(TOutsourceQuoteEvent(
                     id=new_id(),
                     quote_id=new_quote.id,
@@ -1680,21 +1828,7 @@ class PartService:
                 ))
                 target_quote = new_quote
 
-        # 7. 报价状态机：APPROVED → OUTSOURCING + 写 sent_at + quantity
-        await refresh_for_state_machine(
-            self.outsource_quotes.session, target_quote, attrs=("status", "version"),
-        )
-        target_quote.sm.mark_outsourcing(
-            event_repo=self.quote_events,
-            created_by=self._user_id,
-        )
-        target_quote.sent_at = now_naive()
-        # 2026-07-29 批次化：报价 quantity 跟实际发送的批次走（sender 可能是拆出的子批）
-        target_quote.quantity = batch.quantity
-        target_quote.updated_by = self._user_id
-        await self.outsource_quotes.update(target_quote)
-
-        # 8. 批次状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
+        # 7. 批次状态机：IN_PROCESS/PRODUCTION_SHELF → OUTSOURCE
         # 2026-07-29 批次化：部分量先拆再发，状态机作用在拆出的子批上
         target = await self._maybe_split(
             part, batch, getattr(data, "quantity", None),
@@ -1706,6 +1840,24 @@ class PartService:
         )
         target.updated_by = self._user_id
         await self._batches().update(target)
+
+        # 8. 创建 shipment 记录（2026-07-30：报价不再改状态）
+        from model.outsource_shipment import TOutsourceShipment
+        shipment = TOutsourceShipment(
+            id=new_id(),
+            quote_id=target_quote.id,
+            part_id=part.id,
+            batch_id=target.id,
+            outsource_company_id=target_quote.outsource_company_id,
+            process_id=process.id,
+            quantity=target.quantity,
+            unit_price=target_quote.price,
+            status="OUTSOURCING",
+            sent_at=now_naive(),
+            created_by=self._user_id,
+            updated_by=self._user_id,
+        )
+        await self.outsource_shipments.create(shipment)
 
         await self._after_batch_transition(part)
         items = await self._to_out([part])
@@ -1768,19 +1920,6 @@ class PartService:
                 )
             outsource_company_id_int = parsed
 
-        # 5b. PR-H 2026-07-29：找 OUTSOURCING 状态的报价 → mark_received + 写 received_at
-        # 注意：data.next_process_id 是接收后的下一道 INHOUSE 工序，**不是**报价的
-        # OUTSOURCE 工序。part 在 OUTSOURCE 状态下 next_process_id 即外协工序
-        # （statemachine on_enter_OUTSOURCE 保证），用它做报价查找键。
-        current_outsource_proc_id = (
-            int(part.next_process_id) if part.next_process_id else None
-        )
-        await self._mark_quote_received_for_part(
-            part_id=part.id,
-            company_id=outsource_company_id_int,
-            process_id=current_outsource_proc_id,
-        )
-
         # 状态机转换：落到 ON_SHELF（on_enter_ON_SHELF 设置 shelf/process/holder/placed_at）
         target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
         target.sm.receive_from_outsource(
@@ -1790,6 +1929,19 @@ class PartService:
         )
         target.updated_by = self._user_id
         await self._batches().update(target)
+
+        # 2026-07-30：关闭/拆分 shipment
+        current_outsource_proc_id = (
+            int(part.next_process_id) if part.next_process_id else None
+        )
+        await self._mark_shipment_received(
+            part_id=part.id,
+            source_batch=batch,
+            target_batch=target,
+            company_id=outsource_company_id_int,
+            process_id=current_outsource_proc_id,
+        )
+
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
@@ -1842,17 +1994,6 @@ class PartService:
                 )
             outsource_company_id_int = parsed
 
-        # 5b. PR-H 2026-07-29：找 OUTSOURCING 报价 → mark_received + 写 received_at
-        # 送检路径不指定 next_process_id，process_id 用 part 当前的 next_process_id
-        current_next_proc_id_int = (
-            int(part.next_process_id) if part.next_process_id else None
-        )
-        await self._mark_quote_received_for_part(
-            part_id=part.id,
-            company_id=outsource_company_id_int,
-            process_id=current_next_proc_id_int,
-        )
-
         # 第一次转换：OUTSOURCE → INSPECTION
         target = await self._maybe_split(part, batch, getattr(data, "quantity", None))
         target.sm.inspect_from_outsource(
@@ -1862,6 +2003,19 @@ class PartService:
         )
         target.updated_by = self._user_id
         await self._batches().update(target)
+
+        # 2026-07-30：关闭/拆分 shipment
+        current_next_proc_id_int = (
+            int(part.next_process_id) if part.next_process_id else None
+        )
+        await self._mark_shipment_received(
+            part_id=part.id,
+            source_batch=batch,
+            target_batch=target,
+            company_id=outsource_company_id_int,
+            process_id=current_next_proc_id_int,
+        )
+
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         await self._broadcast_event(
@@ -2082,22 +2236,27 @@ class PartService:
                 http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-    async def _mark_quote_received_for_part(
+    async def _mark_shipment_received(
         self,
         *,
         part_id: int,
+        source_batch: TPartBatch,
+        target_batch: TPartBatch,
         company_id: int | None,
         process_id: int | None,
     ) -> None:
-        """PR-H 2026-07-29：外协接收时反查 (part, company, process) 的 OUTSOURCING 报价
-        → mark_received + 写 received_at（外协统一事实表生命周期）。
+        """2026-07-30：外协接收时关闭/拆分 shipment。
 
-        调用方：receive_from_outsource / receive_from_outsource_to_inspection。
-
-        找不到匹配报价时静默跳过（兼容历史 USED 状态行 + 老流程；不阻塞接收主流程）。
+        - 优先按 source_batch_id 查 OUTSOURCING shipment。
+        - 查不到再兜底 (part, company, process) 最新一条 OUTSOURCING。
+        - 全量收（target == source）：shipment → RECEIVED。
+        - 部分收（target != source 或 quantity 不同）：源 shipment 减量保持 OUTSOURCING
+          （剩 0 则 RECEIVED），另插新 shipment（batch_id=target.id, status=RECEIVED）。
+        - 找不到时静默跳过（兼容历史流程）。
         """
-        if self.outsource_quotes is None or self.quote_events is None:
+        if self.outsource_shipments is None:
             return
+
         # 兜底：company_id / process_id 缺省时取 part 最近的 SENT 事件
         if company_id is None or process_id is None:
             latest_sent = await self.events.latest_sent_to_outsource_for_part(part_id)
@@ -2110,24 +2269,49 @@ class PartService:
         if company_id is None or process_id is None:
             return
 
-        quote = await self.outsource_quotes.find_active_for_part_company_process(
-            part_id=part_id,
-            company_id=company_id,
-            process_id=process_id,
-            statuses=[OutsourceQuoteStatus.OUTSOURCING.value],
-        )
-        if quote is None:
+        shipment = await self.outsource_shipments.get_open_by_batch_id(source_batch.id)
+        if shipment is None:
+            shipment = await self.outsource_shipments.find_open_by_part_company_process(
+                part_id=part_id,
+                company_id=company_id,
+                process_id=process_id,
+            )
+        if shipment is None:
             return
-        await refresh_for_state_machine(
-            self.outsource_quotes.session, quote, attrs=("status", "version"),
-        )
-        quote.sm.mark_received(
-            event_repo=self.quote_events,
-            created_by=self._user_id,
-        )
-        quote.received_at = now_naive()
-        quote.updated_by = self._user_id
-        await self.outsource_quotes.update(quote)
+
+        received_qty = target_batch.quantity
+        if target_batch.id == source_batch.id:
+            # 全量收
+            shipment.status = "RECEIVED"
+            shipment.received_at = now_naive()
+            shipment.updated_by = self._user_id
+            await self.outsource_shipments.update(shipment)
+        else:
+            # 部分收：镜像拆分
+            shipment.quantity -= received_qty
+            if shipment.quantity <= 0:
+                shipment.status = "RECEIVED"
+                shipment.received_at = now_naive()
+            shipment.updated_by = self._user_id
+            await self.outsource_shipments.update(shipment)
+
+            from model.outsource_shipment import TOutsourceShipment
+            new_shipment = TOutsourceShipment(
+                id=new_id(),
+                quote_id=shipment.quote_id,
+                part_id=shipment.part_id,
+                batch_id=target_batch.id,
+                outsource_company_id=shipment.outsource_company_id,
+                process_id=shipment.process_id,
+                quantity=received_qty,
+                unit_price=shipment.unit_price,
+                status="RECEIVED",
+                sent_at=shipment.sent_at,
+                received_at=now_naive(),
+                created_by=self._user_id,
+                updated_by=self._user_id,
+            )
+            await self.outsource_shipments.create(new_shipment)
 
     async def _get_process(self, process_id: int) -> TProcess:
         """取工序对象；不存在抛 BIZ_PROCESS_NOT_FOUND。"""
@@ -2557,11 +2741,12 @@ class PartService:
     ) -> OutsourceSendableListOut:
         """外协可发送一览（统一查询）：合并 APPROVAL（有报价）和 DIRECT（无需审批可直发）两路。
 
+        2026-07-29 PR-fix-0.2.0 批次化：行=批次（之前行=工单，因 rollup 派生字段而漏显可发批次）。
         谓词：
-        - APPROVAL：part_id ∈ part_ids_with_approved_quote ∩ next_process_id ∈ approval_proc_ids
-          ∩ (status=PENDING OR IN_PROCESS+PRODUCTION_SHELF)
-        - DIRECT：next_process_id ∈ direct_proc_ids
-          ∩ (status=PENDING OR IN_PROCESS+PRODUCTION_SHELF)
+        - APPROVAL：TPartBatch.part_id ∈ part_ids_with_approved_quote ∩ TPartBatch.next_process_id ∈ approval_proc_ids
+          ∩ (TPartBatch.status=PENDING OR TPartBatch.status=IN_PROCESS+location=PRODUCTION_SHELF)
+        - DIRECT：TPartBatch.next_process_id ∈ direct_proc_ids
+          ∩ (TPartBatch.status=PENDING OR TPartBatch.status=IN_PROCESS+location=PRODUCTION_SHELF)
 
         C2 货架**不**在此过滤；send_to_outsource 服务层在中间外协（IN_PROCESS）路径
         做 C2 前置校验。起始外协（PENDING）直发不要求 C2。
@@ -2641,11 +2826,11 @@ class PartService:
 
         kw = (keyword or "").strip() or None
 
-        # 5. 并发查直发 + 审批 + 计数（limit*2 给合并留余量）
+        # 5. 并发查直发 + 审批 + 计数（按批次行；limit*2 给合并留余量）
         big_limit = max(limit * 2, 100)
         big_offset = max(offset - limit, 0)
-        direct_parts: list = []
-        approval_parts: list = []
+        direct_rows: list[tuple[TPartBatch, TPart]] = []
+        approval_rows: list[tuple[TPartBatch, TPart]] = []
         direct_total = 0
         approval_total = 0
         if direct_proc_to_active_companies:
@@ -2655,7 +2840,7 @@ class PartService:
                 process_ids=sendable_direct_ids,
             )
             if direct_total:
-                direct_parts = await self.parts.list_direct_outsource_sendable(
+                direct_rows = await self.parts.list_direct_outsource_sendable(
                     customer_ids_in=customer_ids_in, keyword=kw,
                     process_ids=sendable_direct_ids,
                     limit=big_limit, offset=big_offset,
@@ -2666,25 +2851,25 @@ class PartService:
                 customer_ids_in=customer_ids_in, keyword=kw,
             )
             if approval_total:
-                approval_parts = await self.parts.list_approved_outsource_sendable(
+                approval_rows = await self.parts.list_approved_outsource_sendable(
                     part_ids=approval_part_ids, process_ids=list(approval_proc_ids),
                     customer_ids_in=customer_ids_in, keyword=kw,
                     limit=big_limit, offset=big_offset,
                 )
 
-        # 6. 拼装 + 合并排序
+        # 6. 拼装 + 合并排序（行=批次）
         cust_cache = await preload_customer_cache(self.customers, [
-            p.customer_id for p in direct_parts
+            p.customer_id for _, p in direct_rows
             if p.customer_id is not None
         ] + [
-            p.customer_id for p in approval_parts
+            p.customer_id for _, p in approval_rows
             if p.customer_id is not None
         ])
         items: list[OutsourceSendableItem] = []
 
-        # 6a. DIRECT items
-        for p in direct_parts:
-            cids = direct_proc_to_active_companies.get(p.next_process_id, [])
+        # 6a. DIRECT items（按批次）
+        for batch, p in direct_rows:
+            cids = direct_proc_to_active_companies.get(batch.next_process_id, [])
             company_opts = [
                 DirectOutsourceCompanyOption(
                     id=cid,
@@ -2694,28 +2879,31 @@ class PartService:
             ]
             if not company_opts:
                 continue
-            next_proc = process_map.get(p.next_process_id)
+            next_proc = process_map.get(batch.next_process_id)
             customer_path: str | None = None
             if p.customer_id is not None and p.customer_id in cust_cache:
                 customer_path = make_customer_path_cached(
                     cust_cache[p.customer_id], cust_cache,
                 )
             items.append(OutsourceSendableItem(
-                version=p.version,
+                version=batch.version,  # OCC 在批次上；前端发送时回传
                 send_mode="DIRECT",
-                source_status=p.status,
+                source_status=batch.status,  # PENDING 或 IN_PROCESS
                 part_id=p.id,
                 part_serial_no=p.serial_no,
                 part_drawing_no=p.drawing_no,
                 part_name=p.name,
-                quantity=p.quantity,
+                quantity=batch.quantity,  # 行=批次，quantity=批次量
+                batch_id=batch.id,
+                batch_no=batch.batch_no,
+                batch_quantity=batch.quantity,
                 planned_delivery_date=(
                     p.planned_delivery_date.isoformat()
                     if p.planned_delivery_date else None
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=p.next_process_id,
+                next_process_id=batch.next_process_id,
                 next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=None,
                 outsource_company_name=None,
@@ -2724,7 +2912,7 @@ class PartService:
                 status_label="sendable",
             ))
 
-        # 6b. APPROVAL items
+        # 6b. APPROVAL items（按批次）
         # 审批端需要的 company_id/name：从 APPROVED 报价拿
         approval_company_ids = {
             q.outsource_company_id for q in approved_by_part.values()
@@ -2733,7 +2921,7 @@ class PartService:
         if approval_company_ids:
             comps = await self.outsource_companies.list_by_ids(list(approval_company_ids))
             approval_company_map = {c.id: c for c in comps}
-        for p in approval_parts:
+        for batch, p in approval_rows:
             q = approved_by_part.get(p.id)
             if q is None:
                 continue
@@ -2745,21 +2933,24 @@ class PartService:
                     cust_cache[p.customer_id], cust_cache,
                 )
             items.append(OutsourceSendableItem(
-                version=p.version,
+                version=batch.version,  # OCC 在批次上
                 send_mode="APPROVAL",
-                source_status=p.status,
+                source_status=batch.status,
                 part_id=p.id,
                 part_serial_no=p.serial_no,
                 part_drawing_no=p.drawing_no,
                 part_name=p.name,
-                quantity=p.quantity,
+                quantity=batch.quantity,
+                batch_id=batch.id,
+                batch_no=batch.batch_no,
+                batch_quantity=batch.quantity,
                 planned_delivery_date=(
                     p.planned_delivery_date.isoformat()
                     if p.planned_delivery_date else None
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=p.next_process_id,
+                next_process_id=batch.next_process_id,
                 next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
@@ -3159,11 +3350,19 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         for target in targets:
+            # 2026-07-30：先记录原状态，再 cancel（cancel 后状态变为 CANCELLED）
+            was_outsource = target.status == PartStatus.OUTSOURCE.value
             target.sm.cancel(
                 event_repo=self.events, created_by=self._user_id,
             )
             target.updated_by = self._user_id
             await self._batches().update(target)
+            if was_outsource and self.outsource_shipments is not None:
+                shipment = await self.outsource_shipments.get_open_by_batch_id(target.id)
+                if shipment is not None:
+                    shipment.status = "CANCELLED"
+                    shipment.updated_by = self._user_id
+                    await self.outsource_shipments.update(shipment)
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
@@ -3720,6 +3919,79 @@ class PartService:
                         process_map.get(int(p.next_process_id))
                         if p.next_process_id else None
                     ),
+                    created_at=p.created_at,
+                )
+            )
+        return out
+
+    async def _assemblies_to_list_items(self, assemblies: list[TAssembly]) -> list[PartListItem]:
+        """将装配件列表转换为 PartListItem（装配体合并展示用）。"""
+        if not assemblies:
+            return []
+        # 批查客户
+        cust_ids = list({a.customer_id for a in assemblies})
+        cust_list = await self.customers.list_by_ids(cust_ids)
+        cust_map: dict[int, TCustomer] = {c.id: c for c in cust_list}
+        parent_ids = [c.parent_id for c in cust_list if c.parent_id]
+        parents = await self.customers.list_by_ids(parent_ids) if parent_ids else []
+        parent_map: dict[int, TCustomer] = {p.id: p for p in parents}
+
+        # 批查子件数量
+        from sqlalchemy import func, select
+
+        ids = [a.id for a in assemblies]
+        stmt = (
+            select(TPart.assembly_id, func.count(TPart.id))
+            .where(
+                TPart.assembly_id.in_(ids),
+                TPart.deleted_at.is_(None),
+            )
+            .group_by(TPart.assembly_id)
+        )
+        result = await self.parts.session.execute(stmt)
+        child_counts = {row[0]: int(row[1]) for row in result.all()}
+
+        out: list[PartListItem] = []
+        for a in assemblies:
+            cust = cust_map.get(a.customer_id)
+            parent = parent_map.get(cust.parent_id) if cust and cust.parent_id else None
+            parent_name = parent.name if parent else None
+            child_name = cust.name if cust else None
+            path: str | None = None
+            if parent_name and child_name:
+                path = f"{parent_name} / {child_name}"
+            elif child_name:
+                path = child_name
+            elif parent_name:
+                path = parent_name
+
+            count = child_counts.get(a.id, 0)
+            out.append(
+                PartListItem(
+                    id=a.id,
+                    version=a.version,
+                    serial_no=a.serial_no,
+                    name=a.name,
+                    drawing_no=a.drawing_no,
+                    applicant_name=a.applicant_name,
+                    quantity=a.quantity,
+                    unit_price=a.unit_price,
+                    total_price=a.total_price,
+                    request_date=a.request_date,
+                    planned_delivery_date=a.planned_delivery_date,
+                    actual_delivery_date=a.actual_delivery_date,
+                    is_urgent=a.is_urgent,
+                    status=PartStatus(a.status),
+                    order_no=a.order_no,
+                    system_delivery_date=a.system_delivery_date,
+                    note=a.note,
+                    customer_name=child_name,
+                    parent_customer_name=parent_name,
+                    customer_path=path,
+                    created_at=a.created_at,
+                    row_type="ASSEMBLY",
+                    has_children=count > 0,
+                    child_count=count if count > 0 else None,
                 )
             )
         return out

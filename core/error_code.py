@@ -131,6 +131,10 @@ class ErrCode(IntEnum):
     BIZ_OUTSOURCE_QUOTE_DUPLICATE = 21303           # 同 (part,company,process) 已存在活跃报价
     BIZ_OUTSOURCE_QUOTE_NOT_APPROVED = 21307        # send_to_outsource 找不到该 tuple 的 APPROVED 报价
 
+    # ---- 外协发货（t_outsource_shipment，2026-07-30 新增）----
+    # 215xx：外协发货相关
+    BIZ_OUTSOURCE_SHIPMENT_NOT_FOUND = 21501
+
     # ---- 送货单（t_delivery_note，2026-07-22 新增）----
     # 214xx：送货单相关
     BIZ_DELIVERY_NOTE_NOT_FOUND = 21401           # 404  找不到指定的送货单

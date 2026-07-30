@@ -128,7 +128,60 @@ class OutsourceQuoteRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    # ===== 对账（PR-H 2026-07-29：基于 t_outsource_quote 的统一事实表）=====
+    async def get_approved_for_part_process(
+        self,
+        *,
+        part_id: int,
+        process_id: int,
+        is_direct: bool | None = None,
+    ) -> TOutsourceQuote | None:
+        """2026-07-30：按 (part_id, process_id) 查 APPROVED 报价。
+
+        is_direct=None 时同时查真实报价和 DIRECT 占位，优先返回真实报价。
+        """
+        stmt = (
+            select(TOutsourceQuote)
+            .where(TOutsourceQuote.deleted_at.is_(None))
+            .where(TOutsourceQuote.part_id == part_id)
+            .where(TOutsourceQuote.process_id == process_id)
+            .where(TOutsourceQuote.status == OutsourceQuoteStatus.APPROVED.value)
+        )
+        if is_direct is not None:
+            stmt = stmt.where(TOutsourceQuote.is_direct == is_direct)
+        else:
+            # 优先真实报价（is_direct=false）
+            stmt = stmt.order_by(TOutsourceQuote.is_direct.asc())
+        stmt = stmt.order_by(TOutsourceQuote.created_at.desc()).limit(1)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_active_by_part_process(
+        self,
+        *,
+        part_id: int,
+        process_id: int,
+        exclude_id: int | None = None,
+    ) -> list[TOutsourceQuote]:
+        """2026-07-30：approve 时自动拒绝同 (part, process) 的其他活跃报价。"""
+        stmt = (
+            select(TOutsourceQuote)
+            .where(TOutsourceQuote.deleted_at.is_(None))
+            .where(TOutsourceQuote.part_id == part_id)
+            .where(TOutsourceQuote.process_id == process_id)
+            .where(
+                TOutsourceQuote.status.in_([
+                    OutsourceQuoteStatus.SUBMITTED.value,
+                    OutsourceQuoteStatus.APPROVED.value,
+                    OutsourceQuoteStatus.DRAFT.value,
+                ])
+            )
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(TOutsourceQuote.id != exclude_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    # ===== 对账（已迁移至 t_outsource_shipment，2026-07-30；保留方法供旧代码兼容）=====
     def _build_reconciliation_stmt(
         self,
         *,

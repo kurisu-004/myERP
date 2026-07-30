@@ -9,6 +9,7 @@ from .delivery_note import (
 from .menu import MenuRepository
 from .outsource_company import OutsourceCompanyRepository
 from .outsource_company_process import OutsourceCompanyProcessRepository
+from .outsource_shipment import OutsourceShipmentRepository
 from .outsource_quote import OutsourceQuoteRepository
 from .outsource_quote_event import OutsourceQuoteEventRepository
 from .part import PartRepository
@@ -36,6 +37,7 @@ __all__ = [
     "OutsourceCompanyRepository",
     "OutsourceQuoteEventRepository",
     "OutsourceQuoteRepository",
+    "OutsourceShipmentRepository",
     "PartEventRepository",
     "PartFileRepository",
     "PartBatchRepository",

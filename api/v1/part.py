@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 
 from api.deps import (
     get_applicant_service,
+    get_assembly_repo,
+    get_outsource_quote_service,
     get_part_file_service,
     get_part_file_repository,
     get_part_repository,
@@ -21,8 +23,10 @@ from core.permission import (
     require_shelf_account_from_body,
 )
 from model.enums import PartEventType, UserRole
+from repository.assembly import AssemblyRepository
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
+from schema.outsource_quote import OutsourceInFlightItem
 from schema.part import (
     BatchSplitRequest,
     InspectionBatchListOut,
@@ -47,7 +51,7 @@ from schema.part import (
     ReceiveToInspectionRequest,
     SendToOutsourceRequest,
 )
-from service import PartService
+from service import PartService, OutsourceQuoteService
 from service._id_parse import parse_snowflake_id
 from service.applicant import ApplicantService
 from service.part_file import PartFileService
@@ -131,6 +135,9 @@ async def list_parts(
     planned_delivery_date_to: date | None = Query(default=None, description="计划交期区间终点（含）"),
     system_delivery_date_from: date | None = Query(default=None, description="系统交期区间起点（含）"),
     system_delivery_date_to: date | None = Query(default=None, description="系统交期区间终点（含）"),
+    include_assemblies: bool = Query(
+        default=False, description="是否合并返回装配件行（子件从顶层隐藏；2026-07-30 新增）"
+    ),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -153,6 +160,7 @@ async def list_parts(
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            include_assemblies=include_assemblies,
             sort_by=PartSortKey(sort_by),
             sort_dir=SortDir(sort_dir),
             limit=limit,
@@ -320,6 +328,23 @@ async def list_pending_programming_parts(
             offset=offset,
         )
     )
+
+
+@router.get(
+    "/outsource-in-flight",
+    response_model=list[OutsourceInFlightItem],
+    summary="外协中批次列表（2026-07-30 新增；MANAGER / CLERK）",
+)
+async def list_outsource_in_flight(
+    keyword: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    svc: OutsourceQuoteService = Depends(get_outsource_quote_service),
+) -> list[OutsourceInFlightItem]:
+    items, _ = await svc.list_in_flight(
+        keyword=keyword, limit=limit, offset=offset,
+    )
+    return items
 
 
 @router.get(
@@ -941,22 +966,26 @@ async def print_part_drawing(
 
 
 # ============================================================
-# 批量打印 PDF（2026-07-17 接入：合并多 part 双面 PDF 为单 PDF）
+# 批量打印 PDF（2026-07-17 接入：合并多 part 双面 PDF 为单 PDF；2026-07-30 扩展装配件）
 # ============================================================
 class PrintBatchRequest(BaseModel):
     """批量打印请求体（雪花 ID 字符串列表，service 层 int() 转换）。"""
 
     part_ids: list[str] = Field(
-        ...,
-        min_length=1,
+        default_factory=list,
         max_length=200,
-        description="雪花 ID 字符串列表（1-200 个）",
+        description="零件雪花 ID 字符串列表（0-200 个）",
+    )
+    assembly_ids: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        description="装配件雪花 ID 字符串列表（0-50 个）；打印其总装图 + 全部子件",
     )
 
 
 @router.post(
     "/print-drawing-batch",
-    summary="批量生成零件的双面打印 PDF 并合并为一个 PDF",
+    summary="批量生成零件的双面打印 PDF 并合并为一个 PDF（支持装配件总装图）",
     response_class=Response,
     responses={
         200: {
@@ -973,6 +1002,7 @@ async def print_part_drawing_batch(
     payload: PrintBatchRequest,
     parts: PartRepository = Depends(get_part_repository),
     part_files: PartFileRepository = Depends(get_part_file_repository),
+    assemblies: AssemblyRepository = Depends(get_assembly_repo),
 ) -> Response:
     # str → int 转换；任一失败抛 BIZ_INVALID_VALUE 400（与 CLAUDE.md §3 约定一致）
     part_ids_int: list[int] = []
@@ -986,10 +1016,33 @@ async def print_part_drawing_batch(
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             ) from e
 
+    assembly_ids_int: list[int] = []
+    for s in payload.assembly_ids:
+        try:
+            assembly_ids_int.append(int(s))
+        except (TypeError, ValueError) as e:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"assembly_id 必须是数字字符串：{s!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            ) from e
+
+    if not part_ids_int and not assembly_ids_int:
+        raise BizError(
+            code=ErrCode.BIZ_INVALID_VALUE,
+            message="part_ids 与 assembly_ids 至少提供一个",
+            http_status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
     pdf_bytes = await build_parts_print_pdf_batch(
-        part_ids=part_ids_int, parts=parts, part_files=part_files,
+        part_ids=part_ids_int,
+        assembly_ids=assembly_ids_int or None,
+        parts=parts,
+        part_files=part_files,
+        assemblies=assemblies,
     )
-    fname = f"batch-{len(part_ids_int)}parts-{now_naive().strftime('%Y%m%d%H%M%S')}.pdf"
+    total_items = len(part_ids_int) + len(assembly_ids_int)
+    fname = f"batch-{total_items}items-{now_naive().strftime('%Y%m%d%H%M%S')}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

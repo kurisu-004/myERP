@@ -17,7 +17,7 @@ import { useBreakpoint } from '@/composables/useBreakpoint'
 import {
   getOutsourceCompany,
   listCompanySentParts,
-  reconcileUpdateQuote,
+  reconcileUpdateShipment,
 } from '@/api/outsource'
 import type {
   OutsourceCompany,
@@ -115,7 +115,7 @@ interface EditBuffer {
   quantity: number | null
   is_billed: boolean
 }
-const editingId = ref<string | null>(null)  // quote_id
+const editingId = ref<string | null>(null)  // shipment_id
 const savingEdit = ref(false)
 const editBuffer = reactive<EditBuffer>({
   unit_price: null,
@@ -124,7 +124,7 @@ const editBuffer = reactive<EditBuffer>({
 })
 
 function startEdit(row: OutsourceSentPartItem): void {
-  if (editingId.value && editingId.value !== row.quote_id) {
+  if (editingId.value && editingId.value !== row.shipment_id) {
     ElMessage.warning('请先保存或取消当前正在编辑的行')
     return
   }
@@ -132,7 +132,7 @@ function startEdit(row: OutsourceSentPartItem): void {
     row.unit_price !== null ? Number(row.unit_price) : null
   editBuffer.quantity = row.quantity
   editBuffer.is_billed = row.is_billed
-  editingId.value = row.quote_id
+  editingId.value = row.shipment_id
 }
 
 function onRowDblClick(row: OutsourceSentPartItem): void {
@@ -160,7 +160,7 @@ function onEditEnter(e: KeyboardEvent): void {
   const target = e.target as HTMLElement | null
   if (target && ENTER_BLACKLIST.some((sel) => target.closest(sel))) return
   e.preventDefault()
-  const row = items.value.find((r) => r.quote_id === editingId.value)
+  const row = items.value.find((r) => r.shipment_id === editingId.value)
   if (row) void saveEdit(row)
 }
 
@@ -199,7 +199,7 @@ async function saveEdit(row: OutsourceSentPartItem): Promise<void> {
       quantity: editBuffer.quantity,
       is_billed: editBuffer.is_billed,
     }
-    await reconcileUpdateQuote(row.quote_id, payload)
+    await reconcileUpdateShipment(row.shipment_id, payload)
     // 就地回填该行（避免整表刷新闪烁）；total_price 由 displayTotalPrice 实时算
     Object.assign(row, {
       unit_price:
@@ -209,12 +209,6 @@ async function saveEdit(row: OutsourceSentPartItem): Promise<void> {
       quantity: payload.quantity ?? row.quantity,
       is_billed: payload.is_billed ?? row.is_billed,
       version: row.version + 1,
-      status:
-        payload.is_billed === true && row.status === 'RECEIVED'
-          ? 'BILLED'
-          : payload.is_billed === false && row.status === 'BILLED'
-            ? 'RECEIVED'
-            : row.status,
     })
     editingId.value = null
     ElMessage.success('保存成功')
@@ -227,7 +221,7 @@ async function saveEdit(row: OutsourceSentPartItem): Promise<void> {
 
 // 总价列响应式显示（编辑态用 editBuffer 实时算，非编辑态用行数据）
 function displayTotalPrice(row: OutsourceSentPartItem): string {
-  if (editingId.value === row.quote_id) {
+  if (editingId.value === row.shipment_id) {
     const q = Number(editBuffer.quantity ?? row.quantity ?? 0)
     const p = Number(editBuffer.unit_price ?? row.unit_price ?? 0)
     return Number.isFinite(q) && Number.isFinite(p) && q > 0
@@ -244,11 +238,10 @@ function displayTotalPrice(row: OutsourceSentPartItem): string {
     : '—'
 }
 
-// 状态列：OUTSOURCING / RECEIVED / BILLED
+// 状态列：OUTSOURCING / RECEIVED
 const STATUS_LABEL: Record<string, string> = {
   OUTSOURCING: '外协中',
-  RECEIVED: '已接收',
-  BILLED: '已对账',
+  RECEIVED: '已回收',
 }
 function statusLabel(s: string): string {
   return STATUS_LABEL[s] ?? s
@@ -256,7 +249,6 @@ function statusLabel(s: string): string {
 function statusTagType(s: string): 'warning' | 'primary' | 'success' | 'info' {
   if (s === 'OUTSOURCING') return 'warning'
   if (s === 'RECEIVED') return 'primary'
-  if (s === 'BILLED') return 'success'
   return 'info'
 }
 
@@ -335,7 +327,7 @@ watch(companyId, () => {
     <ResponsiveList
       :items="items"
       :loading="loading"
-      row-key="quote_id"
+      row-key="shipment_id"
       :empty-text="error ?? '暂无对账记录'"
       stripe
       border
@@ -352,10 +344,15 @@ watch(companyId, () => {
           {{ (row as OutsourceSentPartItem).customer_path ?? '—' }}
         </template>
       </el-table-column>
+      <el-table-column label="批次号" min-width="90" align="center">
+        <template #default="{ row }">
+          {{ (row as OutsourceSentPartItem).batch_no ?? '—' }}
+        </template>
+      </el-table-column>
       <el-table-column label="数量" min-width="90" align="right">
         <template #default="{ row }">
           <el-input-number
-            v-if="editingId === (row as OutsourceSentPartItem).quote_id"
+            v-if="editingId === (row as OutsourceSentPartItem).shipment_id"
             v-model="editBuffer.quantity"
             :min="1"
             :max="999999"
@@ -370,7 +367,7 @@ watch(companyId, () => {
       <el-table-column label="单价(元)" prop="unit_price" min-width="110" align="right" sortable="custom">
         <template #default="{ row }">
           <el-input-number
-            v-if="editingId === (row as OutsourceSentPartItem).quote_id"
+            v-if="editingId === (row as OutsourceSentPartItem).shipment_id"
             v-model="editBuffer.unit_price"
             :min="0"
             :precision="2"
@@ -419,7 +416,7 @@ watch(companyId, () => {
       <el-table-column label="对账" min-width="80" align="center">
         <template #default="{ row }">
           <el-switch
-            v-if="editingId === (row as OutsourceSentPartItem).quote_id"
+            v-if="editingId === (row as OutsourceSentPartItem).shipment_id"
             v-model="editBuffer.is_billed"
             size="small"
             :disabled="savingEdit"

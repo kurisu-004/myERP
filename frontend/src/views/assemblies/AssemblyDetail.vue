@@ -22,7 +22,7 @@
             </el-tag>
           </span>
           <div class="card-actions">
-            <el-button @click="$router.push('/assemblies')">
+            <el-button @click="$router.push('/parts')">
               <el-icon><Back /></el-icon>
               <span>返回列表</span>
             </el-button>
@@ -662,7 +662,7 @@ async function onConfirmSubmit(): Promise<void> {
     } else {
       await softDeleteAssembly(a.id)
       ElMessage.success('已删除')
-      router.push('/assemblies')
+      router.push('/parts')
     }
     confirmVisible.value = false
   } catch (e) {

@@ -50,6 +50,10 @@ class PartListQuery(BaseModel):
     sort_dir: SortDir = Field(default=SortDir.ASC, description="排序方向")
     limit: int = Field(default=50, ge=1, le=500, description="分页大小")
     offset: int = Field(default=0, ge=0, description="分页偏移")
+    # —— 2026-07-30：装配体并入零件一览 ——
+    include_assemblies: bool = Field(
+        default=False, description="True 时合并返回装配件行（子件从顶层隐藏）"
+    )
 
 
 class PartOut(BaseModel):
@@ -238,6 +242,7 @@ class PartListItem(BaseModel):
     - 不含 `placed_at`：仅放上架时间不暴露给 picker。
 
     2026-07-28 PR-H：补 `next_process_id` / `next_process_name` 给 picker 自动填工序用。
+    2026-07-30：加 `row_type` / `has_children` / `child_count` 支持装配体合并展示。
     详情 / 创建 / 编辑响应仍用 PartOut；本 schema 仅服务于 list 端点。
     """
 
@@ -301,6 +306,30 @@ class PartListItem(BaseModel):
     )
     next_process_name: str | None = Field(
         default=None, description="下一工序名（NULL = 未设置）"
+    )
+    # 2026-07-29 PR-fix-0.2.0：批次化字段（仅 picker 走批次时填充；普通 /parts 列表为 NULL）
+    batch_id: IdStr = Field(
+        default=None,
+        description="批次 id（仅 /outsource-quotes/quotable-parts 走批次时填充）",
+    )
+    batch_no: int | None = Field(
+        default=None, description="批次号（per-part 递增）",
+    )
+    batch_quantity: int | None = Field(
+        default=None, description="批次数量（picker 选中的可报价批次量）",
+    )
+    # —— 2026-07-30：装配体合并展示字段 ——
+    created_at: datetime | None = Field(
+        default=None, description="创建时间（排序用；仅列表场景填充）"
+    )
+    row_type: Literal["PART", "ASSEMBLY"] = Field(
+        default="PART", description="行类型：PART=独立零件/子件；ASSEMBLY=装配件"
+    )
+    has_children: bool = Field(
+        default=False, description="是否为有子件的装配件行"
+    )
+    child_count: int | None = Field(
+        default=None, description="装配件子件数量（仅 row_type=ASSEMBLY 时填充）"
     )
 
 
@@ -698,8 +727,9 @@ class SendToOutsourceRequest(BaseModel):
     )
     version: int = Field(
         description=(
-            "乐观锁版本号；必须与 part.version 一致，否则返回 BIZ_VERSION_CONFLICT 409。"
-            "前端从 PartOut.version 取值后传入；AuditMixin 自动给 UPDATE 加 WHERE version=? 保证并发安全。"
+            "乐观锁版本号；必须与目标批次 TPartBatch.version 一致"
+            "（前端从外协可发送列表返回的 version 取值），否则返回 BIZ_VERSION_CONFLICT 409。"
+            "AuditMixin 自动给 UPDATE 加 WHERE version=? 保证并发安全。"
         ),
     )
     # —— 批次参数（2026-07-29 批次化，可选）——
@@ -741,7 +771,7 @@ class OutsourceSendableItem(BaseModel):
 
     version: int = Field(
         default=0,
-        description="零件 TPart.version（OCC；前端发送时需回传）",
+        description="批次 TPartBatch.version（OCC；前端发送时需回传，2026-07-29 由工单 version 改为批次 version）",
     )
     send_mode: Literal["APPROVAL", "DIRECT"]
     source_status: Literal["PENDING", "IN_PROCESS"]
@@ -749,7 +779,18 @@ class OutsourceSendableItem(BaseModel):
     part_serial_no: str | None = None
     part_drawing_no: str | None = None
     part_name: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(
+        default=None,
+        description="可发送数量（2026-07-29 批次化：等于批次 quantity；同 batch_quantity 字段保持兼容）",
+    )
+    # 2026-07-29 PR-fix-0.2.0：批次级字段（行=批次）
+    batch_id: IdStrNonNull = Field(
+        description="可发送批次 id（每行=一个批次；前端 picker 直接回传）",
+    )
+    batch_no: int = Field(description="批次号（per-part 递增；前端展示「批次 N」）")
+    batch_quantity: int = Field(
+        description="批次数量（等于 quantity；显式暴露避免与 part.quantity 混淆）",
+    )
     planned_delivery_date: str | None = None
     is_urgent: bool = False
     customer_path: str | None = None

@@ -28,7 +28,8 @@ from pypdf.generic import RectangleObject
 from core import cos as cos_mod
 from core.error_code import ErrCode
 from core.exception import BizError
-from model import TPartFile
+from model import TAssembly, TPartFile
+from repository.assembly import AssemblyRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from fastapi import status as http_status
@@ -379,6 +380,73 @@ async def _download_drawing_bytes(drawing: TPartFile) -> bytes:
     return await cos_mod.download_object_cached(drawing.object_key, drawing.content_sha256)
 
 
+def _build_drawing_with_barcode_pages(
+    *,
+    drawing_bytes: bytes | None,
+    serial_no: str,
+    drawing_no: str,
+    name: str,
+    orientation: str = "landscape",
+) -> PdfWriter:
+    """构建「图纸页 + 条码背面页」双面 PDF（零件/装配体通用）。
+
+    - drawing_bytes 为 None 时退化为信息卡占位。
+    - 条码页强制 landscape，与图纸朝向解耦。
+    """
+    writer = PdfWriter()
+
+    # 正面：原 PDF 直接合并；否则信息卡占位
+    if drawing_bytes is not None:
+        try:
+            front_reader = PdfReader(io.BytesIO(drawing_bytes))
+            for page in front_reader.pages:
+                writer.add_page(page)
+                _fit_pdf_page_to_a4(writer.pages[-1], orientation)
+        except Exception:  # noqa: BLE001
+            _logger.exception("failed to merge drawing pdf, fallback to info card")
+            drawing_bytes = None
+
+    if drawing_bytes is None:
+        info_card = _build_info_card_page(
+            orientation=orientation,
+            drawing_no=drawing_no,
+            name=name,
+            serial_no=serial_no,
+            customer_path=None,
+        )
+        info_pdf_bytes = _image_to_a4_pdf_bytes(info_card, orientation)
+        info_reader = PdfReader(io.BytesIO(info_pdf_bytes))
+        for page in info_reader.pages:
+            writer.add_page(page)
+
+    # 反面：条码页（强制 landscape）
+    bc_orientation = "landscape"
+    barcode_page_img = _build_barcode_page(bc_orientation, serial_no)
+    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, bc_orientation)
+    barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
+    for page in barcode_reader.pages:
+        writer.add_page(page)
+
+    # 规范化所有 page 的 boxes 为精确 A4
+    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
+    _a4_box = RectangleObject([0, 0, _w_pt, _h_pt])
+    _w_pt_bc, _h_pt_bc = A4_LANDSCAPE
+    _a4_box_bc = RectangleObject([0, 0, _w_pt_bc, _h_pt_bc])
+    if writer.pages:
+        _p_bc = writer.pages[-1]
+        _p_bc.mediabox = _a4_box_bc
+        _p_bc.cropbox = _a4_box_bc
+        _p_bc.trimbox = _a4_box_bc
+        _p_bc.bleedbox = _a4_box_bc
+        for _p in writer.pages[:-1]:
+            _p.mediabox = _a4_box
+            _p.cropbox = _a4_box
+            _p.trimbox = _a4_box
+            _p.bleedbox = _a4_box
+
+    return writer
+
+
 # ============================================================
 # 主入口
 # ============================================================
@@ -482,65 +550,17 @@ async def build_part_print_pdf(
             front_pdf_bytes = None
 
     # ---- 拼装 PDF ----
-    writer = PdfWriter()
-
-    # 正面：原 PDF 直接合并；否则信息卡占位
-    if front_pdf_bytes is not None:
-        try:
-            front_reader = PdfReader(io.BytesIO(front_pdf_bytes))
-            for page in front_reader.pages:
-                writer.add_page(page)
-                _fit_pdf_page_to_a4(writer.pages[-1], orientation)
-        except Exception:  # noqa: BLE001
-            _logger.exception("failed to merge drawing pdf, fallback to info card")
-            front_pdf_bytes = None
-
-    if front_pdf_bytes is None:
-        info_card = _build_info_card_page(
-            orientation=orientation,
-            drawing_no=part.drawing_no or "",
-            name=part.name or "",
-            serial_no=part.serial_no,
-            customer_path=None,
-        )
-        info_pdf_bytes = _image_to_a4_pdf_bytes(info_card, orientation)
-        info_reader = PdfReader(io.BytesIO(info_pdf_bytes))
-        for page in info_reader.pages:
-            writer.add_page(page)
-
-    # 反面：条码页（2026-07-24 起强制 landscape，与图纸朝向解耦，
-    # 防止 portrait 图纸导致条形码页也跟着 portrait 不利于扫码）
-    BC_ORIENTATION = "landscape"
-    barcode_page_img = _build_barcode_page(BC_ORIENTATION, serial_no)
-    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, BC_ORIENTATION)
-    barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
-    for page in barcode_reader.pages:
-        writer.add_page(page)
-
-    # ---- 规范化所有 page 的 boxes 为精确 A4 ----
-    # 2026-07-20 修复：源 PDF（如 CAD 导出的 PDF）经常带非标 CropBox/TrimBox，
-    # 浏览器原生打印预览有时按 CropBox 而非 MediaBox 渲染，导致图纸被裁切显示不全。
-    # 强制把每页的 mediabox / cropbox / trimbox / bleedbox 都对齐到精确 A4。
-    # 2026-07-24：条码页强制 landscape（与图纸朝向解耦），需分段写 mediabox。
-    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
-    _a4_box = RectangleObject([0, 0, _w_pt, _h_pt])
-    _w_pt_bc, _h_pt_bc = A4_LANDSCAPE  # 条码页固定 landscape
-    _a4_box_bc = RectangleObject([0, 0, _w_pt_bc, _h_pt_bc])
-    # 最后一页是条码页（writer.pages[-1]），其余是图纸页
-    if writer.pages:
-        _p_bc = writer.pages[-1]
-        _p_bc.mediabox = _a4_box_bc
-        _p_bc.cropbox = _a4_box_bc
-        _p_bc.trimbox = _a4_box_bc
-        _p_bc.bleedbox = _a4_box_bc
-        for _p in writer.pages[:-1]:
-            _p.mediabox = _a4_box
-            _p.cropbox = _a4_box
-            _p.trimbox = _a4_box
-            _p.bleedbox = _a4_box
+    writer = _build_drawing_with_barcode_pages(
+        drawing_bytes=front_pdf_bytes,
+        serial_no=serial_no,
+        drawing_no=part.drawing_no or "",
+        name=part.name or "",
+        orientation=orientation,
+    )
 
     # 2026-07-20 调试：输出每页最终的 mediabox 大小（pt），
     # 辅助排查「打印预览显示非 A4」类问题。
+    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
     _logger.info(
         "build_part_print_pdf: orientation=%s pages=%d A4=%sx%s pt",
         orientation,
@@ -569,22 +589,50 @@ async def build_part_print_pdf(
 async def build_parts_print_pdf_batch(
     *,
     part_ids: list[int],
+    assembly_ids: list[int] | None = None,
     parts: PartRepository,
     part_files: PartFileRepository,
+    assemblies: AssemblyRepository | None = None,
 ) -> bytes:
-    """合并多个零件的双面 PDF 为单 PDF 字节流（2026-07-17 批量打印）。
+    """合并多个零件的双面 PDF 为单 PDF 字节流（2026-07-17 批量打印；2026-07-30 扩展装配件总装图）。
 
     - 顺序：按传入 part_ids 顺序逐个拼接（每 part 2 页：图页 + 条码页）。
-    - 失败处理：单 part 失败仅 warning 日志 + 跳过该 part，不阻断整批。
-      （用户至少能拿到其余图纸；失败的 detail 在后端日志排查。）
+    - 装配体：若 part_ids 包含某装配件子件，或显式传入 assembly_ids，则在该装配件
+      首个子件前插入总装图页（kind=ASSEMBLY_MASTER）+ 条码背面页，每装配件仅一次。
+    - assembly_ids 额外打印该装配件的**全部子件**（与 part_ids 子件去重）。
+    - 失败处理：单 part / 单装配体失败仅 warning 日志 + 跳过，不阻断整批。
     - 空集合：返回有效空 PDF（PdfWriter 0 page，PDF reader 仍可解析）。
-
-    用于前端「批量打印图纸」一次弹单次打印对话框：
-        POST /parts/print-drawing-batch  body: { part_ids: ["..."] }
     """
     logger = logging.getLogger(__name__)
     writer = PdfWriter()
+
+    # 1. 拉取所有选中的零件
+    selected_parts = await parts.list_by_ids(part_ids)
+
+    # 2. 建立「需要打印总装图的装配体」→「待打印子件集合」映射
+    assembly_to_children: dict[int, dict[int, "TPart"]] = {}
+    standalone_parts: list["TPart"] = []
+
+    for p in selected_parts:
+        if p.assembly_id is not None:
+            assembly_to_children.setdefault(p.assembly_id, {})[p.id] = p
+        else:
+            standalone_parts.append(p)
+
+    # 3. assembly_ids 显式指定：追加该装配件全部子件 + 总装图
+    if assembly_ids and assemblies is not None:
+        for aid in assembly_ids:
+            children = await parts.list_children(aid)
+            child_map = assembly_to_children.setdefault(aid, {})
+            for c in children:
+                if c.id not in child_map:
+                    child_map[c.id] = c
+
+    # 4. 按零件原始传入顺序打印独立零件
+    standalone_ids = {p.id for p in standalone_parts}
     for pid in part_ids:
+        if pid not in standalone_ids:
+            continue
         try:
             pdf_bytes = await build_part_print_pdf(
                 part_id=pid, parts=parts, part_files=part_files,
@@ -593,8 +641,66 @@ async def build_parts_print_pdf_batch(
             for page in reader.pages:
                 writer.add_page(page)
         except Exception as e:
-            # 单 part 失败跳过；常见：part 不存在 / 已软删 / 文件 COS 404
             logger.warning("batch print skip part_id=%s: %s", pid, e)
+
+    # 5. 打印装配体（总装图 + 子件）
+    # 装配体顺序：按 part_ids 中首次出现的 assembly_id 顺序，再跟显式 assembly_ids
+    assembly_order: list[int] = []
+    seen_asm = set()
+    for p in selected_parts:
+        if p.assembly_id is not None and p.assembly_id not in seen_asm:
+            assembly_order.append(p.assembly_id)
+            seen_asm.add(p.assembly_id)
+    if assembly_ids:
+        for aid in assembly_ids:
+            if aid not in seen_asm:
+                assembly_order.append(aid)
+                seen_asm.add(aid)
+
+    for aid in assembly_order:
+        child_map = assembly_to_children.get(aid, {})
+        if not child_map:
+            continue
+
+        # 5a. 总装图（每装配件一次）
+        try:
+            asm = await assemblies.get_by_id(aid) if assemblies else None
+            master_files = await part_files.list_by_part(aid, kind="ASSEMBLY_MASTER")
+            master_file = master_files[0] if master_files else None
+            master_bytes = None
+            if master_file is not None:
+                try:
+                    master_bytes = await _download_drawing_bytes(master_file)
+                except Exception as e:
+                    logger.warning("batch print skip assembly master %s: %s", aid, e)
+
+            asm_serial = asm.serial_no if asm else "NO-SERIAL"
+            asm_drawing_no = asm.drawing_no if asm else ""
+            asm_name = asm.name if asm else ""
+            master_writer = _build_drawing_with_barcode_pages(
+                drawing_bytes=master_bytes,
+                serial_no=asm_serial,
+                drawing_no=asm_drawing_no,
+                name=asm_name,
+                orientation="landscape",
+            )
+            for page in master_writer.pages:
+                writer.add_page(page)
+        except Exception as e:
+            logger.warning("batch print skip assembly master page %s: %s", aid, e)
+
+        # 5b. 子件（去重后按 drawing_no 升序，保证与装配体详情页顺序一致）
+        children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
+        for c in children:
+            try:
+                pdf_bytes = await build_part_print_pdf(
+                    part_id=c.id, parts=parts, part_files=part_files,
+                )
+                reader = PdfReader(io.BytesIO(pdf_bytes))
+                for page in reader.pages:
+                    writer.add_page(page)
+            except Exception as e:
+                logger.warning("batch print skip child part_id=%s: %s", c.id, e)
 
     buf = io.BytesIO()
     writer.write(buf)
