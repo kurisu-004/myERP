@@ -142,6 +142,26 @@ class PartFileRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_by_parts(
+        self,
+        part_ids: list[int],
+        *,
+        kind: str | None = None,
+        include_deleted: bool = False,
+    ) -> dict[int, TPartFile | None]:
+        """批量取若干 part 的最新文件，按 part_id 分组返回每组最新一条。
+
+        - 底层复用 `list_for_part_ids` 查询。
+        - 返回 dict: {part_id: 最新 TPartFile or None}。
+        - 对于不在结果中的 part_id，value 为 None。
+        """
+        rows = await self.list_for_part_ids(part_ids, kind=kind, include_deleted=include_deleted)
+        result: dict[int, TPartFile | None] = {pid: None for pid in part_ids}
+        for row in rows:
+            if row.part_id in result and result[row.part_id] is None:
+                result[row.part_id] = row
+        return result
+
     # ===== 更新 / 软删 =====
     async def update(self, file: TPartFile) -> TPartFile:
         await self.session.flush()

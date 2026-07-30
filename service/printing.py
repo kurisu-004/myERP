@@ -16,8 +16,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import logging
+from dataclasses import dataclass
+from datetime import date
 
 from barcode import Code128
 from barcode.writer import ImageWriter
@@ -43,6 +46,11 @@ A4_LANDSCAPE = (842, 595)
 # 渲染像素尺寸（@ 150 dpi）
 DPI = 150
 PX_PER_PT = DPI / 72.0
+
+# 并发下载限制：8 个并发 COS 请求。
+# 选型理由：COS 服务端连接数无瓶颈，但 asyncio+线程池 并发过大易导致内存峰值暴涨；
+# 8 是「CPU 并行渲染线程池 default min(32, cpu+4)」的 2 倍左右，保证 IO 不饿死 CPU。
+_MAX_CONCURRENT_DOWNLOADS = 8
 
 def _render_small_barcode_with_serial(
     serial_no: str,
@@ -83,6 +91,11 @@ SMALL_BOTTOM_MARGIN_PT = 28                    # 距页面下边
 SMALL_TOP_MARGIN_PT = 28                       # 距页面上边
 SMALL_SERIAL_GAP_PT = 10                       # 小序列号 ↔ 小条码 间距
 
+# === 2026-07-30 新增：条码页交期/数量信息 ===
+INFO_FONT_PX = 120                             # 交期/数量字体（@150 DPI；明显大于小条码 65px）
+INFO_LEFT_MARGIN_PT = 28                       # 距页面左边（精确 1 cm）
+INFO_LINE_GAP_PT = 16                          # 两行间距
+
 
 def _a4_px(orientation: str) -> tuple[int, int]:
     """按方向返回 A4 像素尺寸 (w, h)。orientation ∈ {'portrait','landscape'}。"""
@@ -112,6 +125,7 @@ def _render_barcode_pil(data: str) -> Image.Image:
     return Image.open(buf).convert("RGB")
 
 
+@functools.lru_cache(maxsize=32)
 def _load_cn_font(size: int) -> ImageFont.ImageFont:
     """尽量加载中文字体；找不到时 fallback 到默认（标签仍可显示）。
 
@@ -139,13 +153,21 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
-    """渲染反面页（2026-07-20 迭代 v3）：
+def _build_barcode_page(
+    orientation: str,
+    serial_no: str,
+    *,
+    planned_delivery_date: date | None = None,
+    quantity: int | None = None,
+    show_info: bool = False,
+) -> Image.Image:
+    """渲染反面页（2026-07-20 迭代 v3；2026-07-30 增加交期+数量）：
     - 序列号 + 条码均旋转 90° CCW（rotate(90)），沿 A4 右边并排堆叠；
     - 序列号在条码左侧（视觉上的「左」，即 x 较小的位置）；
     - 条码水平长度 = A4 短边 50%（旋转后变成纵向长度）；
     - 序列号字号 = A4 长边 / 8（旋转后是文本纵向高度）；
     - 条码距页面右边 RIGHT_MARGIN_PT = 28 pt（精确 1 cm）。
+    - 中部偏左新增「交期 MM/DD」「数量 N」大字信息（避开右侧主条码区与左下/左上备用小条码区）。
 
     旋转方向说明：rotate(90) 是 PIL 逆时针 90°，原始 LR 文本 → 旋转后
     文本最右字符（如 "F1004" 的 "4"）出现在顶部，自上而下读为 "4001F"。
@@ -232,6 +254,32 @@ def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
     mini_canvas.paste(bc_small, (0, sr_s_h + gap_s_px))
     mini_rotated = mini_canvas.rotate(180, expand=True, resample=Image.BICUBIC)
     page.paste(mini_rotated, (left_px, top_px))
+
+    # === 2026-07-30 新增：交期 + 数量（中部偏左，醒目大字）===
+    if show_info:
+        info_lines: list[str] = []
+        if planned_delivery_date is not None:
+            info_lines.append(f"交期 {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}")
+        else:
+            info_lines.append("交期 --")
+        if quantity is not None:
+            info_lines.append(f"数量 {quantity}")
+
+        if info_lines:
+            info_font = _load_cn_font(size=INFO_FONT_PX)
+            draw = ImageDraw.Draw(page)
+            info_left_px = int(INFO_LEFT_MARGIN_PT * PX_PER_PT)
+            info_gap_px = int(INFO_LINE_GAP_PT * PX_PER_PT)
+            # 从页面垂直 35% 处开始（中部偏左，避开左下/左上小条码与右侧主条码）
+            info_y = int(page_h * 0.35)
+            for line in info_lines:
+                bbox = draw.textbbox((0, 0), line, font=info_font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                # 水平居中于左半区（避开右侧主条码区）
+                x = info_left_px + (page_w // 2 - info_left_px - tw) // 2
+                draw.text((x, info_y), line, fill="#000", font=info_font)
+                info_y += th + info_gap_px
 
     return page
 
@@ -380,6 +428,182 @@ async def _download_drawing_bytes(drawing: TPartFile) -> bytes:
     return await cos_mod.download_object_cached(drawing.object_key, drawing.content_sha256)
 
 
+# ============================================================
+# 数据准备 / 纯渲染拆分（2026-07-30 批量并行化引入）
+# ============================================================
+@dataclass
+class _PartPrintData:
+    """打印一项的纯 Python 数据容器（sync 渲染侧禁止传递 ORM 对象）。"""
+
+    part_id: int
+    serial_no: str
+    drawing_no: str
+    name: str
+    customer_path: str | None = None
+    drawing_bytes: bytes | None = None
+    drawing_ext: str | None = None
+    orientation: str = "landscape"
+    planned_delivery_date: date | None = None
+    quantity: int | None = None
+
+
+async def _prepare_part_print_data(
+    *,
+    part_id: int,
+    parts: PartRepository,
+    part_files: PartFileRepository,
+) -> _PartPrintData:
+    """async 阶段：DB 查询 + COS 下载原始字节。返回纯数据，不碰 PIL/pypdf。
+
+    朝向检测与图片→PDF 转换延迟到 sync 阶段 `_build_part_print_pdf_sync`，
+    保证批量路径的 async 侧只做 IO，不阻塞事件循环。
+    """
+    part = await parts.get_by_id(part_id)
+    if part is None:
+        raise BizError(
+            code=ErrCode.BIZ_PART_NOT_FOUND,
+            message=f"part {part_id} not found",
+            http_status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    # 取 master 图纸：kind=DRAWING 的最新一条
+    drawings_for_part = await part_files.list_by_part(part_id, kind="DRAWING")
+    master: TPartFile | None = drawings_for_part[0] if drawings_for_part else None
+
+    serial_no = part.serial_no or "NO-SERIAL"
+    drawing_bytes: bytes | None = None
+    drawing_ext: str | None = None
+
+    if master is not None:
+        ext = master.file_type.upper()
+        drawing_ext = ext
+        try:
+            if ext in {
+                "PDF", "PNG", "JPG", "JPEG", "GIF", "BMP",
+                "TIF", "TIFF", "WEBP", "HEIC",
+            }:
+                drawing_bytes = await _download_drawing_bytes(master)
+            else:
+                # STEP / DWG / DXF：纸面不可直接渲染 → info card
+                drawing_bytes = None
+        except Exception:  # noqa: BLE001
+            _logger.exception("failed to download master drawing, fallback to info card")
+            drawing_bytes = None
+
+    return _PartPrintData(
+        part_id=part_id,
+        serial_no=serial_no,
+        drawing_no=part.drawing_no or "",
+        name=part.name or "",
+        drawing_bytes=drawing_bytes,
+        drawing_ext=drawing_ext,
+        orientation="landscape",
+        planned_delivery_date=part.planned_delivery_date if isinstance(getattr(part, "planned_delivery_date", None), date) else None,
+        quantity=part.quantity if isinstance(getattr(part, "quantity", None), int) else None,
+    )
+
+
+def _build_part_print_pdf_sync(data: _PartPrintData) -> bytes:
+    """sync 阶段：纯 PIL/pypdf/条码渲染（禁止访问 ORM / session）。"""
+    front_pdf_bytes: bytes | None = data.drawing_bytes
+    orientation: str = data.orientation
+
+    # 批次路径未在 async 侧做朝向检测/图片转换，在此处补做
+    if front_pdf_bytes is not None and data.drawing_ext:
+        ext = data.drawing_ext.upper()
+        if ext == "PDF":
+            orientation = _detect_pdf_orientation(front_pdf_bytes)
+            try:
+                _r = PdfReader(io.BytesIO(front_pdf_bytes))
+                if _r.pages:
+                    _mb = _r.pages[0].mediabox
+                    _cb = _r.pages[0].cropbox
+                    if (float(_cb.width) != float(_mb.width)
+                            or float(_cb.height) != float(_mb.height)):
+                        _logger.warning(
+                            "source drawing PDF has CropBox != MediaBox: "
+                            "mb=%s cb=%s — normalizing",
+                            [float(x) for x in _mb],
+                            [float(x) for x in _cb],
+                        )
+            except Exception:  # noqa: BLE001
+                pass
+        elif ext in {
+            "PNG", "JPG", "JPEG", "GIF", "BMP",
+            "TIF", "TIFF", "WEBP",
+        }:
+            try:
+                img = Image.open(io.BytesIO(front_pdf_bytes)).convert("RGB")
+                orientation = _detect_image_orientation(img)
+                page_w_px, page_h_px = _a4_px(orientation)
+                ratio = min(page_w_px / img.width, page_h_px / img.height)
+                new_w = int(img.width * ratio)
+                new_h = int(img.height * ratio)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
+                canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
+                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
+            except Exception:  # noqa: BLE001
+                _logger.exception("failed to process image drawing, fallback to info card")
+                front_pdf_bytes = None
+        elif ext == "HEIC":
+            try:
+                from pillow_heif import register_heif_opener  # noqa: WPS433
+                register_heif_opener()
+                img = Image.open(io.BytesIO(front_pdf_bytes)).convert("RGB")
+                orientation = _detect_image_orientation(img)
+                page_w_px, page_h_px = _a4_px(orientation)
+                ratio = min(page_w_px / img.width, page_h_px / img.height)
+                new_w = int(img.width * ratio)
+                new_h = int(img.height * ratio)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
+                canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
+                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
+            except ImportError:
+                _logger.warning(
+                    "pillow-heif not installed; HEIC drawing falls back to info card"
+                )
+                front_pdf_bytes = None
+            except Exception:  # noqa: BLE001
+                _logger.exception("failed to process HEIC drawing, fallback to info card")
+                front_pdf_bytes = None
+        else:
+            front_pdf_bytes = None
+
+    writer = _build_drawing_with_barcode_pages(
+        drawing_bytes=front_pdf_bytes,
+        serial_no=data.serial_no,
+        drawing_no=data.drawing_no,
+        name=data.name,
+        orientation=orientation,
+        planned_delivery_date=data.planned_delivery_date,
+        quantity=data.quantity,
+    )
+
+    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
+    _logger.info(
+        "build_part_print_pdf: orientation=%s pages=%d A4=%sx%s pt",
+        orientation,
+        len(writer.pages),
+        _w_pt,
+        _h_pt,
+    )
+    for _i, _p in enumerate(writer.pages):
+        _logger.info(
+            "  page[%d] mediabox=%sx%s cropbox=%sx%s",
+            _i,
+            float(_p.mediabox.width),
+            float(_p.mediabox.height),
+            float(_p.cropbox.width),
+            float(_p.cropbox.height),
+        )
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def _build_drawing_with_barcode_pages(
     *,
     drawing_bytes: bytes | None,
@@ -387,6 +611,8 @@ def _build_drawing_with_barcode_pages(
     drawing_no: str,
     name: str,
     orientation: str = "landscape",
+    planned_delivery_date: date | None = None,
+    quantity: int | None = None,
 ) -> PdfWriter:
     """构建「图纸页 + 条码背面页」双面 PDF（零件/装配体通用）。
 
@@ -421,7 +647,12 @@ def _build_drawing_with_barcode_pages(
 
     # 反面：条码页（强制 landscape）
     bc_orientation = "landscape"
-    barcode_page_img = _build_barcode_page(bc_orientation, serial_no)
+    barcode_page_img = _build_barcode_page(
+        bc_orientation, serial_no,
+        planned_delivery_date=planned_delivery_date,
+        quantity=quantity,
+        show_info=True,
+    )
     barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, bc_orientation)
     barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
     for page in barcode_reader.pages:
@@ -448,7 +679,7 @@ def _build_drawing_with_barcode_pages(
 
 
 # ============================================================
-# 主入口
+# 主入口（兼容层：保持返回 bytes，内部走 _prepare + _sync）
 # ============================================================
 async def build_part_print_pdf(
     *,
@@ -463,128 +694,16 @@ async def build_part_print_pdf(
     打印翻转方向正确。
 
     2026-07-10 起：图纸存储统一到 `t_part_file` (kind=DRAWING)。
+    2026-07-30 起：内部拆分为 async 数据准备 + sync 纯渲染，供批量并行复用。
     """
-    part = await parts.get_by_id(part_id)
-    if part is None:
-        raise BizError(
-            code=ErrCode.BIZ_PART_NOT_FOUND,
-            message=f"part {part_id} not found",
-            http_status=http_status.HTTP_404_NOT_FOUND,
-        )
-
-    # 取 master 图纸：kind=DRAWING 的最新一条
-    drawings_for_part = await part_files.list_by_part(part_id, kind="DRAWING")
-    master: TPartFile | None = drawings_for_part[0] if drawings_for_part else None
-
-    serial_no = part.serial_no or "NO-SERIAL"
-
-    # ---- 准备正面（图纸）----
-    front_pdf_bytes: bytes | None = None
-    orientation: str = "landscape"  # 默认横向（图纸常用）
-    if master is not None:
-        ext = master.file_type.upper()
-        try:
-            if ext == "PDF":
-                front_pdf_bytes = await _download_drawing_bytes(master)
-                # 2026-07-20 调试：源 PDF 若 CropBox != MediaBox，浏览器按 CropBox 渲染
-                # 会裁切图纸。此处打 warning 辅助未来类似问题定位。
-                try:
-                    _r = PdfReader(io.BytesIO(front_pdf_bytes))
-                    if _r.pages:
-                        _mb = _r.pages[0].mediabox
-                        _cb = _r.pages[0].cropbox
-                        if (float(_cb.width) != float(_mb.width)
-                                or float(_cb.height) != float(_mb.height)):
-                            _logger.warning(
-                                "source drawing PDF has CropBox != MediaBox: "
-                                "mb=%s cb=%s — normalizing",
-                                [float(x) for x in _mb],
-                                [float(x) for x in _cb],
-                            )
-                except Exception:  # noqa: BLE001
-                    pass
-                orientation = _detect_pdf_orientation(front_pdf_bytes)
-            elif ext in {
-                "PNG", "JPG", "JPEG", "GIF", "BMP",
-                "TIF", "TIFF", "WEBP",
-            }:
-                # 2026-07-14：扩所有 DRAWING 接受的图片格式
-                # pillow 原生支持 PNG/JPEG/GIF/BMP/TIFF/WEBP；HEIC 走单独 try 分支
-                raw = await _download_drawing_bytes(master)
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-                orientation = _detect_image_orientation(img)
-                page_w_px, page_h_px = _a4_px(orientation)
-                ratio = min(page_w_px / img.width, page_h_px / img.height)
-                new_w = int(img.width * ratio)
-                new_h = int(img.height * ratio)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
-                canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
-                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
-            elif ext == "HEIC":
-                # HEIC 需 pillow-heif；运行时 try，缺失则降级到信息卡
-                raw = await _download_drawing_bytes(master)
-                try:
-                    from pillow_heif import register_heif_opener  # noqa: WPS433
-                    register_heif_opener()
-                    img = Image.open(io.BytesIO(raw)).convert("RGB")
-                    orientation = _detect_image_orientation(img)
-                    page_w_px, page_h_px = _a4_px(orientation)
-                    ratio = min(page_w_px / img.width, page_h_px / img.height)
-                    new_w = int(img.width * ratio)
-                    new_h = int(img.height * ratio)
-                    img = img.resize((new_w, new_h), Image.LANCZOS)
-                    canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
-                    canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
-                    front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
-                except ImportError:
-                    _logger.warning(
-                        "pillow-heif not installed; HEIC drawing falls back to info card"
-                    )
-                    front_pdf_bytes = None
-            else:
-                # STEP / DWG / DXF：纸面不可直接渲染 → 信息卡占位
-                front_pdf_bytes = None
-        except Exception:  # noqa: BLE001
-            _logger.exception("failed to load master drawing, fallback to info card")
-            front_pdf_bytes = None
-
-    # ---- 拼装 PDF ----
-    writer = _build_drawing_with_barcode_pages(
-        drawing_bytes=front_pdf_bytes,
-        serial_no=serial_no,
-        drawing_no=part.drawing_no or "",
-        name=part.name or "",
-        orientation=orientation,
+    data = await _prepare_part_print_data(
+        part_id=part_id, parts=parts, part_files=part_files,
     )
-
-    # 2026-07-20 调试：输出每页最终的 mediabox 大小（pt），
-    # 辅助排查「打印预览显示非 A4」类问题。
-    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
-    _logger.info(
-        "build_part_print_pdf: orientation=%s pages=%d A4=%sx%s pt",
-        orientation,
-        len(writer.pages),
-        _w_pt,
-        _h_pt,
-    )
-    for _i, _p in enumerate(writer.pages):
-        _logger.info(
-            "  page[%d] mediabox=%sx%s cropbox=%sx%s",
-            _i,
-            float(_p.mediabox.width),
-            float(_p.mediabox.height),
-            float(_p.cropbox.width),
-            float(_p.cropbox.height),
-        )
-
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
+    return _build_part_print_pdf_sync(data)
 
 
 # ============================================================
-# 批量入口
+# 批量入口（2026-07-30 重构：两阶段流水线 — IO 并发 + CPU 并行）
 # ============================================================
 async def build_parts_print_pdf_batch(
     *,
@@ -594,7 +713,7 @@ async def build_parts_print_pdf_batch(
     part_files: PartFileRepository,
     assemblies: AssemblyRepository | None = None,
 ) -> bytes:
-    """合并多个零件的双面 PDF 为单 PDF 字节流（2026-07-17 批量打印；2026-07-30 扩展装配件总装图）。
+    """合并多个零件的双面 PDF 为单 PDF 字节流（2026-07-17 批量打印；2026-07-30 扩展装配件）。
 
     - 顺序：按传入 part_ids 顺序逐个拼接（每 part 2 页：图页 + 条码页）。
     - 装配体：若 part_ids 包含某装配件子件，或显式传入 assembly_ids，则在该装配件
@@ -604,7 +723,6 @@ async def build_parts_print_pdf_batch(
     - 空集合：返回有效空 PDF（PdfWriter 0 page，PDF reader 仍可解析）。
     """
     logger = logging.getLogger(__name__)
-    writer = PdfWriter()
 
     # 1. 拉取所有选中的零件
     selected_parts = await parts.list_by_ids(part_ids)
@@ -628,23 +746,10 @@ async def build_parts_print_pdf_batch(
                 if c.id not in child_map:
                     child_map[c.id] = c
 
-    # 4. 按零件原始传入顺序打印独立零件
+    # 4. 构建打印顺序：先 standalone parts，再 assembly（总装图 + 子件）
     standalone_ids = {p.id for p in standalone_parts}
-    for pid in part_ids:
-        if pid not in standalone_ids:
-            continue
-        try:
-            pdf_bytes = await build_part_print_pdf(
-                part_id=pid, parts=parts, part_files=part_files,
-            )
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            for page in reader.pages:
-                writer.add_page(page)
-        except Exception as e:
-            logger.warning("batch print skip part_id=%s: %s", pid, e)
+    ordered_part_ids: list[int] = [pid for pid in part_ids if pid in standalone_ids]
 
-    # 5. 打印装配体（总装图 + 子件）
-    # 装配体顺序：按 part_ids 中首次出现的 assembly_id 顺序，再跟显式 assembly_ids
     assembly_order: list[int] = []
     seen_asm = set()
     for p in selected_parts:
@@ -657,50 +762,151 @@ async def build_parts_print_pdf_batch(
                 assembly_order.append(aid)
                 seen_asm.add(aid)
 
+    # 5. 收集所有需要查询的 part_id（standalone + children）和 assembly_id
+    child_part_ids: list[int] = []
     for aid in assembly_order:
         child_map = assembly_to_children.get(aid, {})
-        if not child_map:
-            continue
-
-        # 5a. 总装图（每装配件一次）
-        try:
-            asm = await assemblies.get_by_id(aid) if assemblies else None
-            master_files = await part_files.list_by_part(aid, kind="ASSEMBLY_MASTER")
-            master_file = master_files[0] if master_files else None
-            master_bytes = None
-            if master_file is not None:
-                try:
-                    master_bytes = await _download_drawing_bytes(master_file)
-                except Exception as e:
-                    logger.warning("batch print skip assembly master %s: %s", aid, e)
-
-            asm_serial = asm.serial_no if asm else "NO-SERIAL"
-            asm_drawing_no = asm.drawing_no if asm else ""
-            asm_name = asm.name if asm else ""
-            master_writer = _build_drawing_with_barcode_pages(
-                drawing_bytes=master_bytes,
-                serial_no=asm_serial,
-                drawing_no=asm_drawing_no,
-                name=asm_name,
-                orientation="landscape",
-            )
-            for page in master_writer.pages:
-                writer.add_page(page)
-        except Exception as e:
-            logger.warning("batch print skip assembly master page %s: %s", aid, e)
-
-        # 5b. 子件（去重后按 drawing_no 升序，保证与装配体详情页顺序一致）
         children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
         for c in children:
+            child_part_ids.append(c.id)
+
+    all_part_ids_for_db = list(set(ordered_part_ids + child_part_ids))
+    all_parts_map: dict[int, "TPart"] = {}
+    if all_part_ids_for_db:
+        all_parts = await parts.list_by_ids(all_part_ids_for_db)
+        all_parts_map = {p.id: p for p in all_parts}
+
+    # 6. 批量预取图纸元数据（N+1 → 2 次查询）
+    drawing_metadata: dict[int, "TPartFile" | None] = {}
+    if all_part_ids_for_db:
+        drawing_metadata = await part_files.list_by_parts(all_part_ids_for_db, kind="DRAWING")
+
+    assembly_master_metadata: dict[int, "TPartFile" | None] = {}
+    if assembly_order:
+        assembly_master_metadata = await part_files.list_by_parts(assembly_order, kind="ASSEMBLY_MASTER")
+
+    # 7. 并发下载全部图纸（Semaphore 限流）
+    sem = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+
+    async def _download_with_sem(file_row: "TPartFile") -> bytes | None:
+        async with sem:
             try:
-                pdf_bytes = await build_part_print_pdf(
-                    part_id=c.id, parts=parts, part_files=part_files,
+                return await _download_drawing_bytes(file_row)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("batch print download skip %s: %s", file_row.object_key, e)
+                return None
+
+    download_tasks = []
+    download_keys: list[tuple[str, int]] = []  # (type, id)
+
+    for pid in ordered_part_ids:
+        if pid in drawing_metadata and drawing_metadata[pid] is not None:
+            download_tasks.append(_download_with_sem(drawing_metadata[pid]))
+            download_keys.append(("part", pid))
+
+    for aid in assembly_order:
+        if aid in assembly_master_metadata and assembly_master_metadata[aid] is not None:
+            download_tasks.append(_download_with_sem(assembly_master_metadata[aid]))
+            download_keys.append(("asm_master", aid))
+
+    for aid in assembly_order:
+        child_map = assembly_to_children.get(aid, {})
+        children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
+        for c in children:
+            if c.id in drawing_metadata and drawing_metadata[c.id] is not None:
+                download_tasks.append(_download_with_sem(drawing_metadata[c.id]))
+                download_keys.append(("part", c.id))
+
+    download_results = await asyncio.gather(*download_tasks, return_exceptions=True)
+
+    part_drawing_bytes: dict[int, bytes | None] = {}
+    asm_master_bytes: dict[int, bytes | None] = {}
+    for idx, result in enumerate(download_results):
+        item_type, item_id = download_keys[idx]
+        if isinstance(result, Exception):
+            logger.warning("batch print download failed for %s %s: %s", item_type, item_id, result)
+            result = None
+        if item_type == "part":
+            part_drawing_bytes[item_id] = result
+        else:
+            asm_master_bytes[item_id] = result
+
+    # 8. 构建 _PartPrintData 列表（保持打印顺序）
+    items_data: list[_PartPrintData] = []
+
+    for pid in ordered_part_ids:
+        p = all_parts_map.get(pid)
+        if p is None:
+            continue
+        master = drawing_metadata.get(pid)
+        items_data.append(
+            _PartPrintData(
+                part_id=pid,
+                serial_no=p.serial_no or "NO-SERIAL",
+                drawing_no=p.drawing_no or "",
+                name=p.name or "",
+                drawing_bytes=part_drawing_bytes.get(pid),
+                drawing_ext=master.file_type.upper() if master else None,
+                orientation="landscape",
+                planned_delivery_date=p.planned_delivery_date if isinstance(getattr(p, "planned_delivery_date", None), date) else None,
+                quantity=p.quantity if isinstance(getattr(p, "quantity", None), int) else None,
+            )
+        )
+
+    for aid in assembly_order:
+        asm = await assemblies.get_by_id(aid) if assemblies else None
+        master = assembly_master_metadata.get(aid)
+        items_data.append(
+            _PartPrintData(
+                part_id=aid,
+                serial_no=asm.serial_no if asm else "NO-SERIAL",
+                drawing_no=asm.drawing_no if asm else "",
+                name=asm.name if asm else "",
+                drawing_bytes=asm_master_bytes.get(aid),
+                drawing_ext=master.file_type.upper() if master else None,
+                orientation="landscape",
+                planned_delivery_date=asm.planned_delivery_date if isinstance(getattr(asm, "planned_delivery_date", None), date) else None,
+                quantity=None,
+            )
+        )
+
+        child_map = assembly_to_children.get(aid, {})
+        children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
+        for c in children:
+            child_master = drawing_metadata.get(c.id)
+            items_data.append(
+                _PartPrintData(
+                    part_id=c.id,
+                    serial_no=c.serial_no or "NO-SERIAL",
+                    drawing_no=c.drawing_no or "",
+                    name=c.name or "",
+                    drawing_bytes=part_drawing_bytes.get(c.id),
+                    drawing_ext=child_master.file_type.upper() if child_master else None,
+                    orientation="landscape",
+                    planned_delivery_date=c.planned_delivery_date if isinstance(getattr(c, "planned_delivery_date", None), date) else None,
+                    quantity=c.quantity if isinstance(getattr(c, "quantity", None), int) else None,
                 )
-                reader = PdfReader(io.BytesIO(pdf_bytes))
-                for page in reader.pages:
-                    writer.add_page(page)
-            except Exception as e:
-                logger.warning("batch print skip child part_id=%s: %s", c.id, e)
+            )
+
+    # 9. CPU 并行渲染（丢线程池）
+    render_tasks = [
+        asyncio.to_thread(_build_part_print_pdf_sync, data)
+        for data in items_data
+    ]
+    render_results = await asyncio.gather(*render_tasks, return_exceptions=True)
+
+    # 10. 按原始顺序合并
+    writer = PdfWriter()
+    for result in render_results:
+        if isinstance(result, Exception):
+            logger.warning("batch print render skip: %s", result)
+            continue
+        try:
+            reader = PdfReader(io.BytesIO(result))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("batch print merge skip: %s", e)
 
     buf = io.BytesIO()
     writer.write(buf)
