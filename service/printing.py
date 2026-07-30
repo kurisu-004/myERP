@@ -270,15 +270,16 @@ def _build_barcode_page(
     mini_rotated = mini_canvas.rotate(180, expand=True, resample=Image.BICUBIC)
     page.paste(mini_rotated, (left_px, top_px))
 
-    # === 2026-07-30 新增：交期 + 数量（中部偏左，醒目大字）===
+    # === 2026-07-30 新增：D: 交期 + Q: 数量（中部偏左，醒目大字）===
+    # 2026-07-30 v0.2.5：标签改为 ASCII D:/Q: 避免依赖中文字体，渲染不再受 CJK 字体缺失影响。
     if show_info:
         info_lines: list[str] = []
         if planned_delivery_date is not None:
-            info_lines.append(f"交期 {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}")
+            info_lines.append(f"D: {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}")
         else:
-            info_lines.append("交期 --")
+            info_lines.append("D: --")
         if quantity is not None:
-            info_lines.append(f"数量 {quantity}")
+            info_lines.append(f"Q: {quantity}")
 
         if info_lines:
             info_font = _load_cn_font(size=INFO_FONT_PX)
@@ -505,6 +506,8 @@ async def _prepare_part_print_data(
             _logger.exception("failed to download master drawing, fallback to info card")
             drawing_bytes = None
 
+    # v0.2.5：优先用订单方 system_delivery_date，无则回退到我方 planned_delivery_date。
+    _delivery_source = getattr(part, "system_delivery_date", None) or part.planned_delivery_date
     return _PartPrintData(
         part_id=part_id,
         serial_no=serial_no,
@@ -514,7 +517,7 @@ async def _prepare_part_print_data(
         drawing_ext=drawing_ext,
         orientation="landscape",
         planned_delivery_date=_buffered_delivery_date(
-            part.planned_delivery_date if isinstance(getattr(part, "planned_delivery_date", None), date) else None
+            _delivery_source if isinstance(_delivery_source, date) else None
         ),
         quantity=part.quantity if isinstance(getattr(part, "quantity", None), int) else None,
     )
@@ -856,6 +859,8 @@ async def build_parts_print_pdf_batch(
         if p is None:
             continue
         master = drawing_metadata.get(pid)
+        # v0.2.5：system_delivery_date 优先，planned_delivery_date 兜底。
+        _p_delivery = getattr(p, "system_delivery_date", None) or p.planned_delivery_date
         items_data.append(
             _PartPrintData(
                 part_id=pid,
@@ -866,7 +871,7 @@ async def build_parts_print_pdf_batch(
                 drawing_ext=master.file_type.upper() if master else None,
                 orientation="landscape",
                 planned_delivery_date=_buffered_delivery_date(
-                    p.planned_delivery_date if isinstance(getattr(p, "planned_delivery_date", None), date) else None
+                    _p_delivery if isinstance(_p_delivery, date) else None
                 ),
                 quantity=p.quantity if isinstance(getattr(p, "quantity", None), int) else None,
             )
@@ -875,6 +880,8 @@ async def build_parts_print_pdf_batch(
     for aid in assembly_order:
         asm = await assemblies.get_by_id(aid) if assemblies else None
         master = assembly_master_metadata.get(aid)
+        # v0.2.5：system_delivery_date 优先，planned_delivery_date 兜底。
+        _asm_delivery = getattr(asm, "system_delivery_date", None) or asm.planned_delivery_date
         items_data.append(
             _PartPrintData(
                 part_id=aid,
@@ -885,7 +892,7 @@ async def build_parts_print_pdf_batch(
                 drawing_ext=master.file_type.upper() if master else None,
                 orientation="landscape",
                 planned_delivery_date=_buffered_delivery_date(
-                    asm.planned_delivery_date if isinstance(getattr(asm, "planned_delivery_date", None), date) else None
+                    _asm_delivery if isinstance(_asm_delivery, date) else None
                 ),
                 quantity=None,
             )
@@ -895,6 +902,8 @@ async def build_parts_print_pdf_batch(
         children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
         for c in children:
             child_master = drawing_metadata.get(c.id)
+            # v0.2.5：system_delivery_date 优先，planned_delivery_date 兜底。
+            _c_delivery = getattr(c, "system_delivery_date", None) or c.planned_delivery_date
             items_data.append(
                 _PartPrintData(
                     part_id=c.id,
@@ -905,7 +914,7 @@ async def build_parts_print_pdf_batch(
                     drawing_ext=child_master.file_type.upper() if child_master else None,
                     orientation="landscape",
                     planned_delivery_date=_buffered_delivery_date(
-                        c.planned_delivery_date if isinstance(getattr(c, "planned_delivery_date", None), date) else None
+                        _c_delivery if isinstance(_c_delivery, date) else None
                     ),
                     quantity=c.quantity if isinstance(getattr(c, "quantity", None), int) else None,
                 )

@@ -2,8 +2,8 @@
   InspectionPending.vue — 品检待办一览（INSPECTION 状态的零件）
 
   - 顶部：图号/名称搜索 + 手动刷新 + 自动刷新（每 5min）+ 共 N 条
-  - 每行两个动作：「品检通过」「品检打回」
-  - 品检打回 → 弹出 el-dialog 选择目标 PRODUCTION 货架（el-radio-group）
+  - 每行两个动作：「品检通过」「指定工序」
+  - 指定工序 → 弹出 el-dialog 选择目标 PRODUCTION 货架（el-radio-group）
   - 加急行整行红底 #fde2e2（与 PartsList 同款）
 -->
 <template>
@@ -122,7 +122,7 @@
             type="warning"
             size="small"
             @click="openFailDialog(row as RowState)"
-          >品检打回</el-button>
+          >指定工序</el-button>
           <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
         </template>
       </el-table-column>
@@ -176,7 +176,7 @@
             type="warning"
             size="small"
             @click="openFailDialog(row as RowState)"
-          >品检打回</el-button>
+          >指定工序</el-button>
           <el-button link type="primary" size="small" @click="$router.push(`/parts/${row.id}`)">详情</el-button>
         </div>
       </template>
@@ -243,10 +243,10 @@
       </template>
     </el-dialog>
 
-    <!-- 品检打回对话框：先选下一道工序，再选目标生产货架（按 shelf↔process 映射过滤） -->
+    <!-- 指定工序对话框：先选下一道工序，再选目标生产货架（按 shelf↔process 映射过滤） -->
     <el-dialog
       v-model="failDialogVisible"
-      title="品检打回 — 选择下一道工序 + 目标生产货架"
+      title="指定工序 — 选择下一道工序 + 目标生产货架"
       :width="failDlg.width.value"
       :top="failDlg.top.value"
       :fullscreen="failDlg.fullscreen.value"
@@ -261,7 +261,7 @@
       </div>
 
       <el-form label-width="96px" style="margin-top: 12px">
-        <el-form-item label="打回数量" required>
+        <el-form-item label="数量" required>
           <el-input-number
             v-model="failQty"
             :min="1"
@@ -341,7 +341,7 @@
         <el-alert
           type="info"
           :closable="false"
-          title="打回后零件回到「在生产货架上」状态，下一道工序与备注已写入事件历史；工人领取时可在卡片上看到备注。"
+          title="指定工序后零件回到「在生产货架上」状态，下一道工序与备注已写入事件历史；工人领取时可在卡片上看到备注。"
           show-icon
         />
       </el-form>
@@ -353,7 +353,7 @@
           :loading="failSubmitting"
           :disabled="!failProcessId || !failShelfId"
           @click="onFailConfirm"
-        >确认打回</el-button>
+        >确认指定工序</el-button>
       </template>
     </el-dialog>
   </div>
@@ -502,7 +502,7 @@ async function onPassConfirm(): Promise<void> {
   }
 }
 
-// ============ 品检打回对话框 ============
+// ============ 指定工序对话框 ============
 // 2026-07-21 改：先选下一道工序，再选目标生产货架（按 shelf↔process 映射过滤）。
 // 同时支持可选「品检备注」，写入 t_part_event.note，事件历史与工人领取卡片均可见。
 const failDlg = useDialogSize({ desktopWidth: 520 })
@@ -515,7 +515,7 @@ const failQty = ref<number | undefined>(undefined)
 const failSubmitting = ref(false)
 const productionShelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
-// 品检打回默认走 INHOUSE 工序（外协工序走 send_to_outsource 路径）；
+// 指定工序默认走 INHOUSE 工序（外协工序走 send_to_outsource 路径）；
 // 不强制过滤 category，避免业务上「品检后直接外协返修」分支被锁死。
 const {
   filteredShelves: filteredProductionShelves,
@@ -586,9 +586,9 @@ async function onFailConfirm(): Promise<void> {
     processes.value.find((p) => String(p.id) === failProcessId.value)?.code ?? ''
   try {
     await ElMessageBox.confirm(
-      `确认打回「${row.name}」（${row.serial_no || row.drawing_no}）到生产货架 ${shelfCode}，下一道工序 ${processCode}？`,
-      '品检打回',
-      { type: 'warning', confirmButtonText: '确认打回', cancelButtonText: '取消' },
+      `确认指定工序「${row.name}」（${row.serial_no || row.drawing_no}）到生产货架 ${shelfCode}，下一道工序 ${processCode}？`,
+      '指定工序',
+      { type: 'warning', confirmButtonText: '确认指定工序', cancelButtonText: '取消' },
     )
   } catch {
     return  // 用户取消
@@ -603,12 +603,12 @@ async function onFailConfirm(): Promise<void> {
       quantity: failQty.value ?? null,
     })
     ElMessage.success(
-      `零件 ${row.serial_no || row.drawing_no} 已打回生产货架 ${shelfCode}`,
+      `零件 ${row.serial_no || row.drawing_no} 已指定下一道工序 ${processCode}，放到生产货架 ${shelfCode}`,
     )
     failDialogVisible.value = false
     await fetchList()
   } catch (e) {
-    ElMessage.error(`品检打回失败：${(e as Error).message}`)
+    ElMessage.error(`指定工序失败：${(e as Error).message}`)
   } finally {
     failSubmitting.value = false
   }

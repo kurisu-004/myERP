@@ -689,7 +689,7 @@
           <el-button
             type="warning"
             @click="openFailInspectionDialog"
-          >品检打回</el-button>
+          >指定工序</el-button>
         </template>
         <!-- 外协回收：OUTSOURCE 状态可见（MANAGER + CLERK） -->
         <el-button
@@ -773,10 +773,10 @@
       </template>
     </el-dialog>
 
-    <!-- 品检打回对话框（PartDetail 用）—— 2026-07-21 改：先选下一道工序，再选目标生产货架；可选品检备注 -->
+    <!-- 指定工序对话框（PartDetail 用）—— 2026-07-21 改：先选下一道工序，再选目标生产货架；可选品检备注 -->
     <el-dialog
       v-model="failInspDialogVisible"
-      title="品检打回 — 选择下一道工序 + 目标生产货架"
+      title="指定工序 — 选择下一道工序 + 目标生产货架"
       :width="failInspDlg.width.value"
       :top="failInspDlg.top.value"
       :fullscreen="failInspDlg.fullscreen.value"
@@ -848,7 +848,7 @@
         <el-alert
           type="info"
           :closable="false"
-          title="打回后零件回到「在生产货架上」状态，下一道工序与备注已写入事件历史；工人领取时可在卡片上看到备注。"
+          title="指定工序后零件回到「在生产货架上」状态，下一道工序与备注已写入事件历史；工人领取时可在卡片上看到备注。"
           show-icon
         />
       </el-form>
@@ -859,7 +859,7 @@
           :loading="failInspSubmitting"
           :disabled="!failInspProcessId || !failInspShelfId"
           @click="onFailInspectionConfirm"
-        >确认打回</el-button>
+        >确认指定工序</el-button>
       </template>
     </el-dialog>
 
@@ -1772,7 +1772,7 @@ async function onPassInspection(): Promise<void> {
   }
 }
 
-// 2026-07-21：品检打回对话框 —— 先选下一道工序，再选目标生产货架；可选品检备注。
+// 2026-07-21：指定工序对话框 —— 先选下一道工序，再选目标生产货架；可选品检备注。
 const failInspDialogVisible = ref(false)
 const failInspProcessId = ref<string>('')
 const failInspShelfId = ref<string>('')
@@ -1839,13 +1839,13 @@ async function onFailInspectionConfirm(): Promise<void> {
       next_process_id: failInspProcessId.value,
       note: failInspNote.value.trim() || null,
     })
-    ElMessage.success('已打回生产货架')
+    ElMessage.success('已指定下一道工序')
     failInspDialogVisible.value = false
     await fetchPart()
     void fetchEvents()
     void fetchBatches()
   } catch (e) {
-    ElMessage.error(`品检打回失败：${(e as Error).message}`)
+    ElMessage.error(`指定工序失败：${(e as Error).message}`)
   } finally {
     failInspSubmitting.value = false
   }

@@ -863,7 +863,7 @@ class TestBarcodePageInfo:
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
     def test_info_text_visible_with_date_and_quantity(self, orientation: str) -> None:
-        """中部偏左区域应有交期+数量的黑色像素。"""
+        """中部偏左区域应有 D:/Q: 标签的黑色像素。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(
@@ -875,11 +875,11 @@ class TestBarcodePageInfo:
         w, h = img.size
         # 中部偏左：x ∈ [0, w*0.45]，y ∈ [h*0.30, h*0.55]
         info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
-        assert self._non_white_count(info_zone) > 100, "中部偏左应有交期/数量文字"
+        assert self._non_white_count(info_zone) > 100, "中部偏左应有 D:/Q: 文字"
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
     def test_info_text_shows_dash_when_no_date(self, orientation: str) -> None:
-        """交期为 None 时显示「交期 --」，中部偏左仍应有黑色像素。"""
+        """交期为 None 时显示「D: --」，中部偏左仍应有黑色像素。"""
         from service.printing import _build_barcode_page
 
         img = _build_barcode_page(
@@ -890,7 +890,7 @@ class TestBarcodePageInfo:
         )
         w, h = img.size
         info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
-        assert self._non_white_count(info_zone) > 100, "中部偏左应有「交期 --」文字"
+        assert self._non_white_count(info_zone) > 100, "中部偏左应有「D: --」文字"
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
     def test_assembly_no_quantity_line(self, orientation: str) -> None:
@@ -923,3 +923,59 @@ class TestBarcodePageInfo:
         w, h = img.size
         info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
         assert self._non_white_count(info_zone) == 0, "show_info=False 时不应渲染信息文字"
+
+
+class TestPreparePartPrintDataDeliveryDate:
+    """v0.2.5：_prepare_part_print_data 优先 system_delivery_date，回退 planned_delivery_date。"""
+
+    @pytest.mark.asyncio
+    async def test_system_delivery_date_preferred_over_planned(self) -> None:
+        from service.printing import _prepare_part_print_data
+        from repository.part import PartRepository
+        from repository.part_file import PartFileRepository
+
+        part = MagicMock()
+        part.id = 1234
+        part.serial_no = "L2014"
+        part.drawing_no = "DWG-001"
+        part.name = "测试"
+        part.planned_delivery_date = date(2026, 9, 1)
+        part.system_delivery_date = date(2026, 8, 20)  # 更早，按订单方
+        part.quantity = 5
+
+        parts = MagicMock(spec=PartRepository)
+        parts.get_by_id = AsyncMock(return_value=part)
+        part_files = MagicMock(spec=PartFileRepository)
+        part_files.list_by_part = AsyncMock(return_value=[])
+
+        data = await _prepare_part_print_data(
+            part_id=1234, parts=parts, part_files=part_files,
+        )
+        # system_delivery_date 8/20 -> _buffered_delivery_date(-3) = 8/17
+        assert data.planned_delivery_date == date(2026, 8, 17)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_planned_when_system_missing(self) -> None:
+        from service.printing import _prepare_part_print_data
+        from repository.part import PartRepository
+        from repository.part_file import PartFileRepository
+
+        part = MagicMock()
+        part.id = 1234
+        part.serial_no = "L2014"
+        part.drawing_no = "DWG-001"
+        part.name = "测试"
+        part.planned_delivery_date = date(2026, 9, 1)
+        part.system_delivery_date = None
+        part.quantity = 5
+
+        parts = MagicMock(spec=PartRepository)
+        parts.get_by_id = AsyncMock(return_value=part)
+        part_files = MagicMock(spec=PartFileRepository)
+        part_files.list_by_part = AsyncMock(return_value=[])
+
+        data = await _prepare_part_print_data(
+            part_id=1234, parts=parts, part_files=part_files,
+        )
+        # planned_delivery_date 9/1 -> _buffered_delivery_date(-3) = 8/29
+        assert data.planned_delivery_date == date(2026, 8, 29)
