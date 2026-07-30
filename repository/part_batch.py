@@ -294,12 +294,20 @@ class PartBatchRepository:
             .correlate(TPartBatch)
             .exists()
         )
-        stmt = select(TPartBatch).where(
-            TPartBatch.status == PartStatus.DELIVERED.value,
-            TPartBatch.deleted_at.is_(None),
-            latest_delivered.is_not(None),
-            latest_delivered <= threshold,
-            ~repair_after,
+        # 2026-07-31：JOIN t_part 排除已软删零件的孤儿批次。即便 soft_delete_assembly
+        # 已级联置 CANCELLED，此 JOIN 是防御性兜底：未来其他路径（如直接 DB 操作）
+        # 留下 DELIVERED 孤儿批次时，auto_complete 也不会反复抛 BIZ_PART_NOT_FOUND。
+        stmt = (
+            select(TPartBatch)
+            .join(TPart, TPart.id == TPartBatch.part_id)
+            .where(
+                TPartBatch.status == PartStatus.DELIVERED.value,
+                TPartBatch.deleted_at.is_(None),
+                TPart.deleted_at.is_(None),
+                latest_delivered.is_not(None),
+                latest_delivered <= threshold,
+                ~repair_after,
+            )
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

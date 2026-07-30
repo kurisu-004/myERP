@@ -31,7 +31,7 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from model import TAssembly, TPart, TPartEvent
-from model.enums import PartEventType, PartFileKind
+from model.enums import PartEventType, PartFileKind, PartStatus
 from repository import (
     ApplicantRepository,
     AssemblyRepository,
@@ -1081,6 +1081,40 @@ class AssemblyService:
         # 软删前先释放装配体流水号，让 partial unique 索引腾位置
         # （deleted_at IS NULL WHERE serial_no IS NOT NULL）
         asm.serial_no = None
+
+        # 2026-07-31：级联把子件所有非终态批次置 CANCELLED。
+        # 原因：批次 append-only（CLAUDE.md §13，不能软删），若不置 CANCELLED，
+        # 这些批次会继续被 auto_complete.find_delivered_older_than 扫到，对已软删
+        # 零件反复抛 BIZ_PART_NOT_FOUND；同样会被 list_for_work_type 等 pick 路径
+        # 列出。手动调 batch.sm.cancel 走与 PartService.cancel 相同的 SM 路径，
+        # 写一条 CANCELLED 事件（part_id 此时仍有效），outsource 状态批次同步关闭
+        # 开放 shipment 行。
+        batches_repo = self.part_service.part_batches
+        if batches_repo is not None:
+            terminal_batch_statuses = ("CANCELLED", "COMPLETED")
+            for child in children:
+                child_batches = await batches_repo.list_by_part(child.id)
+                for batch in child_batches:
+                    if batch.status in terminal_batch_statuses:
+                        continue
+                    was_outsource = batch.status == PartStatus.OUTSOURCE.value
+                    batch.sm.cancel(
+                        event_repo=self.events, created_by=self._user_id,
+                    )
+                    batch.updated_by = self._user_id
+                    await batches_repo.update(batch)
+                    # 外协开放发货单同步关闭（与 PartService.cancel 同源）
+                    if was_outsource and self.part_service.outsource_shipments is not None:
+                        shipment = (
+                            await self.part_service.outsource_shipments
+                            .get_open_by_batch_id(batch.id)
+                        )
+                        if shipment is not None:
+                            shipment.status = "CANCELLED"
+                            shipment.updated_by = self._user_id
+                            await self.part_service.outsource_shipments.update(
+                                shipment,
+                            )
 
         if all_files:
             await self.files.soft_delete_many(all_files)

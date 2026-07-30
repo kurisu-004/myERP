@@ -213,6 +213,14 @@ def mock_events():
 def mock_part_service():
     m = MagicMock(spec=PartService)
     m._to_out = AsyncMock(return_value=[])
+    # 2026-07-31：soft_delete_assembly 级联批次取消需要 part_batches + outsource_shipments；
+    # PartService 实例属性不在 MagicMock(spec=) 自动可见集合里，需显式桩。
+    m.part_batches = MagicMock()
+    m.part_batches.list_by_part = AsyncMock(return_value=[])
+    m.part_batches.update = AsyncMock()
+    m.outsource_shipments = MagicMock()
+    m.outsource_shipments.get_open_by_batch_id = AsyncMock(return_value=None)
+    m.outsource_shipments.update = AsyncMock()
     return m
 
 

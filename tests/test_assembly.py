@@ -436,3 +436,137 @@ class TestAssemblyUploadTotalPdf:
         assert detail.assembly.serial_no is not None
         assert detail.assembly.updated_at is not None
         assert len(detail.children) == 2
+
+
+class TestAssemblySoftDelete:
+    """坑 6：软删装配体时必须把子件所有非终态批次置 CANCELLED。
+
+    否则孤儿批次会继续被 auto_complete.find_delivered_older_than 扫到，反复抛
+    BIZ_PART_NOT_FOUND；同时也会被 list_for_work_type 等 pick 路径列出。
+    """
+
+    async def test_soft_delete_cascades_cancel_to_child_batches(self, clean_db):
+        from datetime import datetime, timedelta
+
+        world = await _make_world(clean_db, prefix="S")
+        asm, children = await _seed_assembly_with_children(
+            clean_db, world, child_qty=2,
+        )
+        # 把 child[0] 的批次推进到 ON_SHELF（active）、child[1] 推进到 DELIVERED
+        # （接近 auto_complete 阈值），覆盖「active in production」+「
+        # DELIVERED 即将 auto_complete」两个最容易留下孤儿批次的场景。
+        from model.enums import PartLocation
+        from core.time import now_naive
+
+        from sqlalchemy import update as _sa_update
+
+        threshold = now_naive() - timedelta(days=8)
+        b0 = await _batch_id_for(children[0].id, clean_db)
+        b1 = await _batch_id_for(children[1].id, clean_db)
+        await clean_db.execute(
+            _sa_update(TPartBatch)
+            .where(TPartBatch.id == b0)
+            .values(status="IN_PROCESS", location=PartLocation.PRODUCTION_SHELF.value,
+                    placed_at=now_naive(), current_holder_id=world["shelf"].id,
+                    next_process_id=world["process"].id)
+        )
+        await clean_db.execute(
+            _sa_update(TPartBatch)
+            .where(TPartBatch.id == b1)
+            .values(status="DELIVERED", location=PartLocation.OFFICE.value)
+        )
+        # DELIVERED 批次还得有一行 STATUS_CHANGED 事件供 find_delivered_older_than 抓取
+        evt = TPartEvent(
+            part_id=children[1].id,
+            batch_id=b1,
+            event_type=PartEventType.STATUS_CHANGED.value,
+            from_status="READY_TO_SHIP",
+            to_status="DELIVERED",
+            created_at=threshold - timedelta(days=1),
+            created_by=None,
+        )
+        clean_db.add(evt)
+        await clean_db.commit()
+
+        svc = _build_assembly_service(clean_db, user=_current_user(uid=1))
+        await svc.soft_delete_assembly(asm.id)
+
+        # 1) 装配体本身软删
+        await clean_db.refresh(asm)
+        assert asm.deleted_at is not None
+        # 2) 子件软删
+        for child in children:
+            await clean_db.refresh(child)
+            assert child.deleted_at is not None
+        # 3) 所有子件批次置 CANCELLED
+        for child in children:
+            stmt = select(TPartBatch).where(TPartBatch.part_id == child.id)
+            batches = (await clean_db.execute(stmt)).scalars().all()
+            assert len(batches) == 1
+            assert batches[0].status == "CANCELLED"
+        # 4) 写入了 CANCELLED 事件（每个批次一条，挂 batch_id）
+        cancel_events = (
+            await clean_db.execute(
+                select(TPartEvent).where(
+                    TPartEvent.event_type == PartEventType.CANCELLED.value,
+                )
+            )
+        ).scalars().all()
+        assert len(cancel_events) == 2
+        expected_batch_ids = {await _batch_id_for(c.id, clean_db) for c in children}
+        assert {e.batch_id for e in cancel_events} == expected_batch_ids
+
+    async def test_find_delivered_older_than_excludes_soft_deleted_parts(self, clean_db):
+        """防御性兜底：find_delivered_older_than 必须排除已软删零件的孤儿批次。
+
+        直接构造「DELIVERED 批次 + 软删子件」的孤儿场景，验证 repository 扫描结果
+        为空。auto_complete 调用栈从这开始 → complete() 第一步 get_by_id 抛
+        BIZ_PART_NOT_FOUND 的根因就在这里被堵上。
+        """
+        from datetime import timedelta
+
+        from core.time import now_naive
+
+        world = await _make_world(clean_db, prefix="F")
+        asm, children = await _seed_assembly_with_children(clean_db, world, child_qty=1)
+
+        threshold = now_naive() - timedelta(days=8)
+        child = children[0]
+        batch_id = await _batch_id_for(child.id, clean_db)
+        # 把批次置 DELIVERED + 写 STATUS_CHANGED 事件
+        from sqlalchemy import update as _sa_update
+
+        await clean_db.execute(
+            _sa_update(TPartBatch)
+            .where(TPartBatch.id == batch_id)
+            .values(status="DELIVERED")
+        )
+        clean_db.add(TPartEvent(
+            part_id=child.id,
+            batch_id=batch_id,
+            event_type=PartEventType.STATUS_CHANGED.value,
+            from_status="READY_TO_SHIP",
+            to_status="DELIVERED",
+            created_at=threshold - timedelta(days=1),
+            created_by=None,
+        ))
+        await clean_db.commit()
+
+        # 软删子件（直接 repository.soft_delete，绕开 service，避免触发级联批次 CANCELLED；
+        # 故意制造「孤儿 DELIVERED 批次」场景，验证 repository 防御）
+        from repository.part import PartRepository
+        await PartRepository(clean_db).soft_delete(child)
+        await clean_db.commit()
+
+        # 扫描：应返回空（不再返回孤儿批次）
+        from repository.part_batch import PartBatchRepository
+        rows = await PartBatchRepository(clean_db).find_delivered_older_than(threshold)
+        assert rows == []
+
+
+async def _batch_id_for(part_id: int, session) -> int:
+    """helper：取某 part_id 的根批次 id（async）。"""
+    from sqlalchemy import select as _sa_select
+
+    stmt = _sa_select(TPartBatch.id).where(TPartBatch.part_id == part_id)
+    return (await session.execute(stmt)).scalar_one()
