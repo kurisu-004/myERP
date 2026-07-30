@@ -66,9 +66,6 @@ const REQUIRED_HEADERS = [
   '预估交期天数',
 ]
 
-/** `紧急状态` 文本 → is_urgent=true 的硬编码集合。 */
-const URGENT_TRUE = new Set(['急件', '非常紧急'])
-
 /** `方案/设计图纸` 单元格内嵌的 JSON 数组里抽第一个 fileName。失败 → null。 */
 function extractFirstFileName(raw: string): string | null {
   if (!raw) return null
@@ -151,7 +148,6 @@ export function parseBidExcel(
     const designDrawingRaw = cleanText(raw['方案/设计图纸'])
     const drawingNo = cleanText(raw['物料编号'])
     const partName = cleanText(raw['货物(劳务)名称'])
-    const urgentText = cleanText(raw['紧急状态'])
     const quantityRaw = raw['计划数量']
     const unitPriceRaw = parseDecimalOrNull(raw['含税单价'])
     const unitPrice = unitPriceRaw == null || unitPriceRaw < 0 ? 0 : unitPriceRaw
@@ -208,14 +204,9 @@ export function parseBidExcel(
       deliveryDays = ddParsed
     }
 
-    let isUrgent = false
-    if (urgentText) {
-      if (URGENT_TRUE.has(urgentText)) {
-        isUrgent = true
-      } else if (urgentText !== '正常') {
-        rowWarnings.push(`紧急状态「${urgentText}」未识别，按正常处理`)
-      }
-    }
+    // 2026-07-30：批量 PDF 导入不再自动识别是否加急，默认全部不加急。
+    // 用户可在前端预览表的 el-switch 单独打开加急。
+    const isUrgent = false
 
     if (unitPriceRaw != null && unitPriceRaw < 0) {
       rowWarnings.push('含税单价为负数，已按 0 处理')

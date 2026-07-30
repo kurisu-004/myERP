@@ -1932,14 +1932,16 @@ async function rebuildFromUploads(): Promise<void> {
   }
 }
 
-/** 用 Excel 行覆盖表内字段（applicant / quantity / urgent / planned_delivery_date + 分厂 L2 + 单价）。 */
+/** 用 Excel 行覆盖表内字段（applicant / quantity / planned_delivery_date + 分厂 L2 + 单价）。
+ *  2026-07-30 起不再覆盖 is_urgent（批量 PDF 导入默认全部不加急，由用户手动 switch）。 */
 function applyExcelToAll(excelByDrawingNo: Map<string, BidRow>): void {
   for (const r of standaloneParts.value) {
     const matched = excelByDrawingNo.get(r.drawing_no)
     if (!matched) continue
     r.applicant_name = matched.applicantName || r.applicant_name
     r.quantity = matched.quantity || r.quantity
-    r.is_urgent = matched.isUrgent ?? r.is_urgent
+    // 2026-07-30：批量 PDF 导入不再从应标 Excel 继承 is_urgent，默认全部不加急；
+    // 用户在 el-switch 单独打开加急。
     if (matched.plannedDeliveryDate) r.planned_delivery_date = matched.plannedDeliveryDate
     // PR-H 2026-07-28：含税单价 / 总价
     if (matched.unitPrice != null) r.unit_price = matched.unitPrice
@@ -1975,7 +1977,7 @@ function applyExcelToAll(excelByDrawingNo: Map<string, BidRow>): void {
       const matched = excelByDrawingNo.get(c.drawing_no)
       if (!matched) continue
       c.quantity = matched.quantity || c.quantity
-      c.is_urgent = matched.isUrgent ?? c.is_urgent
+      // 2026-07-30：子件不再从应标 Excel 继承 is_urgent。
       if (matched.plannedDeliveryDate) c.planned_delivery_date = matched.plannedDeliveryDate
       // PR-H 2026-07-28：含税单价 / 总价
       if (matched.unitPrice != null) c.unit_price = matched.unitPrice
