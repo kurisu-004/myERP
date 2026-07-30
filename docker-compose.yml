@@ -52,6 +52,10 @@ services:
       COS_MAX_FILE_SIZE: ${COS_MAX_FILE_SIZE:-104857600}
       COS_ALLOWED_TYPES: ${COS_ALLOWED_TYPES:-pdf,step,dwg,dxf}
       TZ: ${TZ:-Asia/Shanghai}
+      APP_CPU_CORES: ${APP_CPU_CORES:-4}
+    volumes:
+      # 2026-07-31：打印正面页 L1 缓存挂载到命名卷；跨容器重建保留
+      - printcache:/app/.cache/print
     # 端口不暴露给宿主机；只通过 frontend service 网络访问
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2); sys.exit(0 if r.status==200 else 1)"]
@@ -85,3 +89,5 @@ services:
 volumes:
   pgdata:
     name: myerp-pgdata
+  printcache:
+    name: myerp-printcache

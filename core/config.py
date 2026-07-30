@@ -95,6 +95,30 @@ class Settings(BaseSettings):
         description='{"F": "template/delivery_note_fala.xlsx", "L": "template/delivery_note_luda.xlsx"}',
     )
 
+    # ---- 容器可用 CPU 核心数（2026-07-31 打印性能优化引入）----
+    # 换服务器时只改 .env 里 APP_CPU_CORES；printing.py 等核心数相关参数
+    # 通过 Settings 的 print_render_workers / print_download_concurrency 派生。
+    # uvicorn 维持单 worker（4G 内存 + asyncio 模型，多 worker 徒增内存）；
+    # 如要开多 worker 单独引入 UVICORN_WORKERS 配置。
+    app_cpu_cores: int = Field(
+        default=4, alias="APP_CPU_CORES", ge=1, le=128,
+        description="容器可用 CPU 核心数；打印渲染/下载并发依此派生",
+    )
+
+    @property
+    def print_render_workers(self) -> int:
+        """打印渲染线程并发上限（asyncio.to_thread 数量）。"""
+        return max(1, self.app_cpu_cores)
+
+    @property
+    def print_download_concurrency(self) -> int:
+        """打印路径 COS 下载并发上限。
+
+        公式与原 `_MAX_CONCURRENT_DOWNLOADS=8` 注释保持等价：
+        4 核 → 8、2 核 → 4（max 兜底）、8 核 → 16、16 核 → 32。
+        """
+        return max(4, 2 * self.app_cpu_cores)
+
     # ---- DELIVERED → COMPLETED 自动完成（PR-D 2026-07-10）----
     # 最近一次发货事件超过 N 天 且 中间无返修 → 自动 COMPLETED。
     auto_complete_threshold_days: int = Field(

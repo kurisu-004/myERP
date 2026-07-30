@@ -946,13 +946,17 @@ async def print_part_drawing(
     part_id: int,
     parts: PartRepository = Depends(get_part_repository),
     part_files: PartFileRepository = Depends(get_part_file_repository),
+    vector: bool = Query(
+        default=False,
+        description="2026-07-31：vector=1 跳过正面页规格化 + 缓存，原样 passthrough；个别图纸光栅化不清晰时使用",
+    ),
 ) -> Response:
     from service.printing import _prepare_part_print_data, _build_part_print_pdf_sync
 
     data = await _prepare_part_print_data(
         part_id=part_id, parts=parts, part_files=part_files,
     )
-    pdf_bytes = _build_part_print_pdf_sync(data)
+    pdf_bytes = _build_part_print_pdf_sync(data, vector=vector)
     serial = data.serial_no or "no-serial"
     drawing = data.drawing_no or "part"
     fname = f"{serial}-{drawing}.pdf".replace("/", "_")
@@ -1004,6 +1008,10 @@ async def print_part_drawing_batch(
     parts: PartRepository = Depends(get_part_repository),
     part_files: PartFileRepository = Depends(get_part_file_repository),
     assemblies: AssemblyRepository = Depends(get_assembly_repo),
+    vector: bool = Query(
+        default=False,
+        description="2026-07-31：vector=1 跳过正面页规格化 + 缓存，原样 passthrough",
+    ),
 ) -> Response:
     # str → int 转换；任一失败抛 BIZ_INVALID_VALUE 400（与 CLAUDE.md §3 约定一致）
     part_ids_int: list[int] = []
@@ -1041,6 +1049,7 @@ async def print_part_drawing_batch(
         parts=parts,
         part_files=part_files,
         assemblies=assemblies,
+        vector=vector,
     )
     total_items = len(part_ids_int) + len(assembly_ids_int)
     fname = f"batch-{total_items}items-{now_naive().strftime('%Y%m%d%H%M%S')}.pdf"
