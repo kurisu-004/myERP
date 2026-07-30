@@ -23,6 +23,9 @@ dependencies = [
     "bcrypt<5.0",
     "websockets>=16.0",
     "openpyxl>=3.1.5",  # 2026-07-10 起 runtime 化：送货单 Excel 模板导出
+    "pikepdf>=10.10.0",
+    "pypdfium2>=5.12.1",
+    "reportlab>=5.0.0",
 ]
 
 [tool.pytest.ini_options]

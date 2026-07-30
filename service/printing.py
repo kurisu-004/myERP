@@ -9,9 +9,22 @@
 默认横向（图纸常用横向）；最终落 A4（595×842 pt 或 842×595 pt）。
 
 依赖（**全部跨平台**，部署在 Linux Docker 无任何影响）：
-- `pillow`：图片/PDF 渲染
-- `python-barcode`：Code128 条形码生成
-- `pypdf`：合并 PDF 页面（纯 Python，无 poppler / 无 sips 等系统工具依赖）
+- `pillow`：图片/PDF 渲染（信息卡占位 + 图片输入规格化）
+- `pikepdf`：合并 PDF 页面（C++ QPDF 后端，快 10-50× 且释放 GIL）
+- `pypdfium2`：把矢量 PDF 光栅化到 JPEG（PDFium 后端，wheel 自带二进制）
+- `reportlab`：背面页矢量直出 PDF（内置 Code128 矢量条码 + TTFont）
+- `pypdf`：保留依赖（utils/pdf.py 批量导入拆页、service/assembly.py PDF
+           校验在用），打印热路径不再调用
+- `python-barcode`：保留依赖（utils/gen_* 工牌脚本），同上
+
+2026-07-31 打印性能优化引入：
+- 背面页改 ReportLab 矢量直出（`service/_print_back_page.py`），从 ~150 KB
+  光栅降到 ~30-50 KB 矢量，~0.5s/件 → ~5ms/件。
+- 正面页规格化 + 两级缓存（`service/_print_front_cache.py`），按
+  content_sha256 缓存 200 DPI 单页 JPEG PDF，L1 本地磁盘 LRU（1 GB），
+  L2 COS `printcache/`（持久）；重复打印近乎零计算。
+- pikepdf 合并替换 pypdf；并发数从 .env 的 APP_CPU_CORES 派生。
+- ?vector=1 query 参数走原 passthrough（个别图纸光栅化不清晰时用）。
 """
 from __future__ import annotations
 
@@ -19,16 +32,17 @@ import asyncio
 import functools
 import io
 import logging
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from barcode import Code128
-from barcode.writer import ImageWriter
 from PIL import Image, ImageDraw, ImageFont
-from pypdf import PageObject, PdfReader, PdfWriter, Transformation
+import pikepdf
+from pypdf import PageObject, Transformation
 from pypdf.generic import RectangleObject
 
 from core import cos as cos_mod
+from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
 from model import TAssembly, TPartFile
@@ -37,20 +51,22 @@ from repository.part_file import PartFileRepository
 from repository.part import PartRepository
 from fastapi import status as http_status
 
+# 2026-07-31 新模块（拆分后更易复用与单测）
+from service._print_back_page import _build_back_page_pdf
+from service._print_front_cache import (
+    FrontCacheResult,
+    get_normalized_front_pdf,
+)
+
 _logger = logging.getLogger(__name__)
 
 # A4 尺寸（pt）：portrait 595×842，landscape 842×595
 A4_PORTRAIT = (595, 842)
 A4_LANDSCAPE = (842, 595)
 
-# 渲染像素尺寸（@ 150 dpi）
+# 渲染像素尺寸（信息卡占位用，@ 150 dpi）
 DPI = 150
 PX_PER_PT = DPI / 72.0
-
-# 并发下载限制：8 个并发 COS 请求。
-# 选型理由：COS 服务端连接数无瓶颈，但 asyncio+线程池 并发过大易导致内存峰值暴涨；
-# 8 是「CPU 并行渲染线程池 default min(32, cpu+4)」的 2 倍左右，保证 IO 不饿死 CPU。
-_MAX_CONCURRENT_DOWNLOADS = 8
 
 # 打印交期缓冲：图纸背面 / 扫码台 / 大屏展示的「交期」比真实工单交期提前 N 天，
 # 留给物流/分厂流转余量。**仅渲染层**应用，业务查询不感知（不滚 DEP-DB 显示）。
@@ -67,50 +83,6 @@ def _buffered_delivery_date(d: date | None) -> date | None:
         return None
     return d - timedelta(days=DELIVERY_DATE_BUFFER_DAYS)
 
-def _render_small_barcode_with_serial(
-    serial_no: str,
-) -> tuple[Image.Image, Image.Image]:
-    """2026-07-24 新增：渲染一组「小条码 + 小序列号」PIL Image（未旋转）。
-
-    复用 `_render_barcode_pil` 与 `_load_cn_font`；条码水平宽度 =
-    A4 短边 × SMALL_BC_W_FRACTION，序列号字体 SMALL_SERIAL_FONT_PX。
-    返回 (barcode_pil, serial_pil)，两者都是 RGB 白底图。
-    """
-    short_side_px = int(min(A4_LANDSCAPE) * PX_PER_PT)
-    bc_img = _render_barcode_pil(serial_no)
-    target_bc_w = int(short_side_px * SMALL_BC_W_FRACTION)
-    bc_h_scaled = int(bc_img.height * target_bc_w / bc_img.width)
-    bc_pil = bc_img.resize((target_bc_w, bc_h_scaled), Image.LANCZOS)
-
-    serial_font = _load_cn_font(size=SMALL_SERIAL_FONT_PX)
-    _tmp = Image.new("RGB", (1, 1))
-    bbox = ImageDraw.Draw(_tmp).textbbox((0, 0), serial_no, font=serial_font)
-    sw, sh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    serial_canvas = Image.new("RGB", (sw, sh), "white")
-    ImageDraw.Draw(serial_canvas).text((0, -bbox[1]), serial_no, fill="#000", font=serial_font)
-    return bc_pil, serial_canvas
-
-
-# === 2026-07-20 迭代 v3：反面页序列号 + 条码 CCW 旋转 90° 沿 A4 右边并排 ===
-SERIAL_FONT_PX = int(842 * PX_PER_PT / 8)       # ≈ 219 px（旋转前的字体高度）
-BARCODE_H_PX = int(842 * PX_PER_PT / 7)         # ≈ 250 px（旋转前的条码高度；旋转后变成水平宽度）
-BARCODE_W_FRACTION = 0.5                          # 旋转前的条码水平宽度 = A4 短边 50%
-RIGHT_MARGIN_PT = 28                            # 条码距页面右边（精确 1 cm）
-SERIAL_TO_BC_GAP_PT = 22                         # 序列号 ↔ 条码 间距
-
-# === 2026-07-24 新增：备用小条码（防图纸污染无法扫码）===
-SMALL_SERIAL_FONT_PX = 65                      # 小序列号字体（@150 DPI）
-SMALL_BC_W_FRACTION = 0.18                     # 小条码水平宽度 = A4 短边 18%（主条码 50%）
-SMALL_LEFT_MARGIN_PT = 28                      # 距页面左边（精确 1 cm）
-SMALL_BOTTOM_MARGIN_PT = 28                    # 距页面下边
-SMALL_TOP_MARGIN_PT = 28                       # 距页面上边
-SMALL_SERIAL_GAP_PT = 10                       # 小序列号 ↔ 小条码 间距
-
-# === 2026-07-30 新增：条码页交期/数量信息 ===
-INFO_FONT_PX = 120                             # 交期/数量字体（@150 DPI；明显大于小条码 65px）
-INFO_LEFT_MARGIN_PT = 28                       # 距页面左边（精确 1 cm）
-INFO_LINE_GAP_PT = 16                          # 两行间距
-
 
 def _a4_px(orientation: str) -> tuple[int, int]:
     """按方向返回 A4 像素尺寸 (w, h)。orientation ∈ {'portrait','landscape'}。"""
@@ -119,46 +91,31 @@ def _a4_px(orientation: str) -> tuple[int, int]:
 
 
 # ============================================================
-# 条形码渲染
+# 字体（仅信息卡占位页 + vector=1 图片输入路径在用）
 # ============================================================
-def _render_barcode_pil(data: str) -> Image.Image:
-    """生成 Code128 条形码 PIL Image（白底黑条，不写文字标签）。"""
-    writer = ImageWriter()
-    barcode_obj = Code128(data, writer=writer)
-    opts = {
-        "module_width": 0.3,
-        "module_height": 12.0,
-        "font_size": 0,
-        "text_distance": 0,
-        "quiet_zone": 3.0,
-        "background": "white",
-        "foreground": "black",
-    }
-    buf = io.BytesIO()
-    barcode_obj.write(buf, opts)
-    buf.seek(0)
-    return Image.open(buf).convert("RGB")
-
-
 @functools.lru_cache(maxsize=32)
 def _load_cn_font(size: int) -> ImageFont.ImageFont:
     """尽量加载中文字体；找不到时 fallback 到默认（标签仍可显示）。
 
-    部署环境（alpine）默认无任何字体，必须显式 apk add wqy-microhei 装入，
-    否则 fallback 到 PIL 内置 ~10px bitmap，导致序列号变得极小。
+    部署环境（alpine）默认无任何字体；2026-07-31 Dockerfile 加装
+    font-wqy-microhei 后信息卡中文可正常渲染。候选路径覆盖 Alpine / Debian /
+    Ubuntu / macOS 常见位置。
     """
     candidates = [
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        # Alpine apk add font-dejavu 安装位置
+        # Alpine apk add font-wqy-microhei 安装位置（2026-07-31 新增）
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        # Alpine apk add font-noto-cjk 安装位置（备用）
+        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+        # Alpine apk add font-dejavu 安装位置（仅 Latin）
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         # Debian/Ubuntu apt install fonts-dejavu 路径
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        # CJK 字体（若后续需要中文渲染,装 font-noto-cjk 后命中）
-        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+        # macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
     ]
     for fp in candidates:
         try:
@@ -166,138 +123,6 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
         except OSError:
             continue
     return ImageFont.load_default()
-
-
-def _build_barcode_page(
-    orientation: str,
-    serial_no: str,
-    *,
-    planned_delivery_date: date | None = None,
-    quantity: int | None = None,
-    show_info: bool = False,
-) -> Image.Image:
-    """渲染反面页（2026-07-20 迭代 v3；2026-07-30 增加交期+数量）：
-    - 序列号 + 条码均旋转 90° CCW（rotate(90)），沿 A4 右边并排堆叠；
-    - 序列号在条码左侧（视觉上的「左」，即 x 较小的位置）；
-    - 条码水平长度 = A4 短边 50%（旋转后变成纵向长度）；
-    - 序列号字号 = A4 长边 / 8（旋转后是文本纵向高度）；
-    - 条码距页面右边 RIGHT_MARGIN_PT = 28 pt（精确 1 cm）。
-    - 中部偏左新增「交期 MM/DD」「数量 N」大字信息（避开右侧主条码区与左下/左上备用小条码区）。
-
-    旋转方向说明：rotate(90) 是 PIL 逆时针 90°，原始 LR 文本 → 旋转后
-    文本最右字符（如 "F1004" 的 "4"）出现在顶部，自上而下读为 "4001F"。
-    这是用户指定「向左旋转 90°」的字面解释；扫描方面两个方向现代扫码枪都兼容。
-    """
-    page_w, page_h = _a4_px(orientation)
-    page = Image.new("RGB", (page_w, page_h), "white")
-
-    short_side_px = min(page_w, page_h)
-
-    # === 条码：先按原朝向渲染 + 缩放，再旋转 90° CCW ===
-    bc_img = _render_barcode_pil(serial_no)
-    target_bc_w_native = int(short_side_px * BARCODE_W_FRACTION)
-    bc_native_h_scaled = int(bc_img.height * target_bc_w_native / bc_img.width)
-    bc_resized = bc_img.resize(
-        (target_bc_w_native, bc_native_h_scaled),
-        Image.LANCZOS,
-    )
-    # NEAREST 保持条码边缘锐利，确保扫码兼容性
-    bc_rotated = bc_resized.rotate(90, expand=True, resample=Image.NEAREST)
-
-    # === 序列号：渲染到刚好装下的白色画布，再旋转 90° CCW ===
-    serial_font = _load_cn_font(size=SERIAL_FONT_PX)
-    _tmp = Image.new("RGB", (1, 1))
-    _tmp_draw = ImageDraw.Draw(_tmp)
-    bbox = _tmp_draw.textbbox((0, 0), serial_no, font=serial_font)
-    serial_w_native = bbox[2] - bbox[0]
-    serial_h_native = bbox[3] - bbox[1]
-
-    serial_canvas = Image.new("RGB", (serial_w_native, serial_h_native), "white")
-    serial_draw = ImageDraw.Draw(serial_canvas)
-    # y 偏移 -bbox[1] 处理 ascender 顶部负偏移，确保字符不超出画布
-    serial_draw.text((0, -bbox[1]), serial_no, fill="#000", font=serial_font)
-    # BICUBIC 让字符边缘平滑（可读性优先）
-    serial_rotated = serial_canvas.rotate(90, expand=True, resample=Image.BICUBIC)
-
-    # === 布局：旋转后两块沿右边并排堆叠，垂直居中 ===
-    right_margin_px = int(RIGHT_MARGIN_PT * PX_PER_PT)
-    gap_px = int(SERIAL_TO_BC_GAP_PT * PX_PER_PT)
-
-    bc_w, bc_h = bc_rotated.size
-    sr_w, sr_h = serial_rotated.size
-
-    # 条码贴在右边（距右边 1 cm），序列号位于条码左侧
-    bc_right_x = page_w - right_margin_px
-    bc_x = bc_right_x - bc_w
-
-    # 序列号左侧贴条码：右缘 = bc_x - gap
-    sr_right_x = bc_x - gap_px
-    sr_x = sr_right_x - sr_w
-
-    # 垂直方向：以条码高度为基准，整体垂直居中
-    # 条码竖条更高（620px），序列号竖条更短（290px），两者按各自高度居中于同一 y_center
-    block_h = max(bc_h, sr_h)
-    y_center = page_h // 2
-    bc_y = y_center - bc_h // 2
-    sr_y = y_center - sr_h // 2
-
-    page.paste(serial_rotated, (sr_x, sr_y))
-    page.paste(bc_rotated, (bc_x, bc_y))
-
-    # === 2026-07-24 新增：2 个备用小条形码 + 序列号 ===
-    # 防图纸污染（涂污/折角）无法扫码：左下方水平放、左上方旋转 180° 放，
-    # 用户从不同角度扫描都能命中至少一组。
-    bc_small, serial_small = _render_small_barcode_with_serial(serial_no)
-    bc_s_w, bc_s_h = bc_small.size
-    sr_s_w, sr_s_h = serial_small.size
-    left_px = int(SMALL_LEFT_MARGIN_PT * PX_PER_PT)
-    bottom_px = int(SMALL_BOTTOM_MARGIN_PT * PX_PER_PT)
-    top_px = int(SMALL_TOP_MARGIN_PT * PX_PER_PT)
-    gap_s_px = int(SMALL_SERIAL_GAP_PT * PX_PER_PT)
-
-    # ---- 左下方：水平放置（不旋转），序列号在上、条码在下 ----
-    serial_y = page_h - bottom_px - bc_s_h - gap_s_px - sr_s_h
-    page.paste(serial_small, (left_px, serial_y))
-    page.paste(bc_small, (left_px, page_h - bottom_px - bc_s_h))
-
-    # ---- 左上方：旋转 180° 放置 ----
-    # 先把"水平放置"的小组合成到独立画布，再 rotate(180)，最后贴到左上角
-    mini_w = max(sr_s_w, bc_s_w)
-    mini_h = sr_s_h + gap_s_px + bc_s_h
-    mini_canvas = Image.new("RGB", (mini_w, mini_h), "white")
-    mini_canvas.paste(serial_small, (0, 0))
-    mini_canvas.paste(bc_small, (0, sr_s_h + gap_s_px))
-    mini_rotated = mini_canvas.rotate(180, expand=True, resample=Image.BICUBIC)
-    page.paste(mini_rotated, (left_px, top_px))
-
-    # === 2026-07-30 新增：D: 交期 + Q: 数量（中部偏左，醒目大字）===
-    # 2026-07-30 v0.2.5：标签改为 ASCII D:/Q: 避免依赖中文字体，渲染不再受 CJK 字体缺失影响。
-    if show_info:
-        info_lines: list[str] = []
-        if planned_delivery_date is not None:
-            info_lines.append(f"D: {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}")
-        else:
-            info_lines.append("D: --")
-        if quantity is not None:
-            info_lines.append(f"Q: {quantity}")
-
-        if info_lines:
-            info_font = _load_cn_font(size=INFO_FONT_PX)
-            draw = ImageDraw.Draw(page)
-            info_left_px = int(INFO_LEFT_MARGIN_PT * PX_PER_PT)
-            info_gap_px = int(INFO_LINE_GAP_PT * PX_PER_PT)
-            # 从页面垂直 35% 处开始（中部偏左，避开左下/左上小条码与右侧主条码）
-            info_y = int(page_h * 0.35)
-            for line in info_lines:
-                bbox = draw.textbbox((0, 0), line, font=info_font)
-                tw = bbox[2] - bbox[0]
-                th = bbox[3] - bbox[1]
-                # 水平居中于左半区（避开右侧主条码区）
-                x = info_left_px + (page_w // 2 - info_left_px - tw) // 2
-                draw.text((x, info_y), line, fill="#000", font=info_font)
-                info_y += th + info_gap_px
-
-    return page
 
 
 # ============================================================
@@ -354,53 +179,45 @@ def _build_info_card_page(
     return page
 
 
-def _image_to_a4_pdf_bytes(
+def _image_to_pdf_bytes(
     img: Image.Image, orientation: str = "landscape",
 ) -> bytes:
-    """把 pillow Image 渲染成单页 PDF（bytes）。
+    """把 PIL Image 渲染成单页 PDF（bytes）。
 
-    2026-07-20 迭代：返回前用 PdfReader 读出再用 PdfWriter 覆写
-    MediaBox/CropBox/TrimBox/BleedBox 为精确 A4，避免 Pillow 按
-    resolution 推算出的 mediabox 偏差，也避免源 PDF 的非标 CropBox
-    导致浏览器打印预览按 CropBox 裁切图纸。
+    2026-07-31 优化：去掉了原 pypdf 双重读写（PIL save PDF 后又用 PdfReader +
+    PdfWriter 修 mediabox）。`PIL.Image.save(PDF, resolution=DPI)` 的 mediabox
+    由 image.size / DPI * 72 推算；当 image 是精确 A4 像素尺寸（landscape
+    = 1754×1240 @ 150 DPI）时 mediabox = (842, 595) pt，天然精确。
     """
     buf = io.BytesIO()
     img.save(buf, "PDF", resolution=DPI)
-    reader = PdfReader(io.BytesIO(buf.getvalue()))
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-    w_pt, h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
-    box = RectangleObject([0, 0, w_pt, h_pt])
-    for page in writer.pages:
-        page.mediabox = box
-        page.cropbox = box
-        page.trimbox = box
-        page.bleedbox = box
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
+    return buf.getvalue()
 
 
 def _detect_pdf_orientation(pdf_bytes: bytes) -> str:
     """读 PDF 第一页有效页面尺寸判断朝向。"""
     try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        if not reader.pages:
-            return "landscape"
-        page = reader.pages[0]
-        box = page.mediabox
-        width, height = float(box.width), float(box.height)
-        if page.rotation % 180:
-            width, height = height, width
-        return "landscape" if width > height else "portrait"
+        with pikepdf.Pdf.open(io.BytesIO(pdf_bytes)) as pdf:
+            if len(pdf.pages) == 0:
+                return "landscape"
+            page = pdf.pages[0]
+            w_pt, h_pt = float(page.mediabox[2]), float(page.mediabox[3])
+            rotation = page.get("/Rotate", 0) or 0
+            if int(rotation) % 180:
+                w_pt, h_pt = h_pt, w_pt
+            return "landscape" if w_pt > h_pt else "portrait"
     except Exception:  # noqa: BLE001
         _logger.exception("failed to detect pdf orientation, default to landscape")
         return "landscape"
 
 
 def _fit_pdf_page_to_a4(page: PageObject, orientation: str) -> None:
-    """将 PDF 页面内容等比缩放并居中到精确 A4 页面。"""
+    """将 PDF 页面内容等比缩放并居中到精确 A4 页面。
+
+    2026-07-31 优化：仍走 pypdf（因为 vector=1 路径仍接收任意来源 PDF，包括
+    带 /Rotate 的复杂源；pikepdf 在该路径的迁移留作后续）；这部分代码仅在
+    `vector=True` 旁路触发，热路径不调用。
+    """
     # 把 /Rotate 合入内容流，后续可统一按实际可视宽高计算缩放与平移。
     if page.rotation:
         page.transfer_rotation_to_content()
@@ -458,6 +275,8 @@ class _PartPrintData:
     customer_path: str | None = None
     drawing_bytes: bytes | None = None
     drawing_ext: str | None = None
+    drawing_sha: str | None = None
+    front_pdf_bytes: bytes | None = None
     orientation: str = "landscape"
     planned_delivery_date: date | None = None
     quantity: int | None = None
@@ -468,11 +287,14 @@ async def _prepare_part_print_data(
     part_id: int,
     parts: PartRepository,
     part_files: PartFileRepository,
+    vector: bool = False,
 ) -> _PartPrintData:
-    """async 阶段：DB 查询 + COS 下载原始字节。返回纯数据，不碰 PIL/pypdf。
+    """async 阶段：DB 查询 + COS 下载原始字节 + 正面页规格化/缓存（带 L1+L2）。
 
-    朝向检测与图片→PDF 转换延迟到 sync 阶段 `_build_part_print_pdf_sync`，
-    保证批量路径的 async 侧只做 IO，不阻塞事件循环。
+    2026-07-31 优化：正面页规格化（pypdfium2 渲染 + PIL JPEG 嵌 PDF）也搬到
+    async 阶段（IO/CPU 都已在 IO 协程里）+ L1/L2 缓存查询，sync 阶段只剩
+    pikepdf 合并 + 背面页矢量直出。这样同步线程无需跨协程调度，测试也无需
+    构造 event loop。
     """
     part = await parts.get_by_id(part_id)
     if part is None:
@@ -489,16 +311,29 @@ async def _prepare_part_print_data(
     serial_no = part.serial_no or "NO-SERIAL"
     drawing_bytes: bytes | None = None
     drawing_ext: str | None = None
+    drawing_sha: str | None = None
+    front_pdf_bytes: bytes | None = None
+    front_orientation: str = "landscape"
 
     if master is not None:
         ext = master.file_type.upper()
         drawing_ext = ext
+        drawing_sha = getattr(master, "content_sha256", None)
         try:
             if ext in {
                 "PDF", "PNG", "JPG", "JPEG", "GIF", "BMP",
                 "TIF", "TIFF", "WEBP", "HEIC",
             }:
                 drawing_bytes = await _download_drawing_bytes(master)
+                # 走规格化 + 两级缓存；失败 → front_pdf_bytes 仍为 None（上层 fallback info card）
+                _front_result = await get_normalized_front_pdf(
+                    original_bytes=drawing_bytes,
+                    file_type=ext,
+                    content_sha256=drawing_sha,
+                    vector=vector,
+                )
+                front_pdf_bytes = _front_result.pdf_bytes
+                front_orientation = _front_result.orientation
             else:
                 # STEP / DWG / DXF：纸面不可直接渲染 → info card
                 drawing_bytes = None
@@ -515,113 +350,77 @@ async def _prepare_part_print_data(
         name=part.name or "",
         drawing_bytes=drawing_bytes,
         drawing_ext=drawing_ext,
-        orientation="landscape",
+        orientation=front_orientation,
         planned_delivery_date=_buffered_delivery_date(
             _delivery_source if isinstance(_delivery_source, date) else None
         ),
         quantity=part.quantity if isinstance(getattr(part, "quantity", None), int) else None,
+        drawing_sha=drawing_sha,
+        front_pdf_bytes=front_pdf_bytes,
     )
 
 
-def _build_part_print_pdf_sync(data: _PartPrintData) -> bytes:
-    """sync 阶段：纯 PIL/pypdf/条码渲染（禁止访问 ORM / session）。"""
-    front_pdf_bytes: bytes | None = data.drawing_bytes
-    orientation: str = data.orientation
+def _build_part_print_pdf_sync(
+    data: _PartPrintData, *, vector: bool = False,
+) -> bytes:
+    """sync 阶段：纯 PIL/pikepdf/ReportLab 渲染（禁止访问 ORM / session）。
 
-    # 批次路径未在 async 侧做朝向检测/图片转换，在此处补做
-    if front_pdf_bytes is not None and data.drawing_ext:
-        ext = data.drawing_ext.upper()
-        if ext == "PDF":
-            orientation = _detect_pdf_orientation(front_pdf_bytes)
-            try:
-                _r = PdfReader(io.BytesIO(front_pdf_bytes))
-                if _r.pages:
-                    _mb = _r.pages[0].mediabox
-                    _cb = _r.pages[0].cropbox
-                    if (float(_cb.width) != float(_mb.width)
-                            or float(_cb.height) != float(_mb.height)):
-                        _logger.warning(
-                            "source drawing PDF has CropBox != MediaBox: "
-                            "mb=%s cb=%s — normalizing",
-                            [float(x) for x in _mb],
-                            [float(x) for x in _cb],
-                        )
-            except Exception:  # noqa: BLE001
-                pass
-        elif ext in {
-            "PNG", "JPG", "JPEG", "GIF", "BMP",
-            "TIF", "TIFF", "WEBP",
-        }:
-            try:
-                img = Image.open(io.BytesIO(front_pdf_bytes)).convert("RGB")
-                orientation = _detect_image_orientation(img)
-                page_w_px, page_h_px = _a4_px(orientation)
-                ratio = min(page_w_px / img.width, page_h_px / img.height)
-                new_w = int(img.width * ratio)
-                new_h = int(img.height * ratio)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
-                canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
-                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
-            except Exception:  # noqa: BLE001
-                _logger.exception("failed to process image drawing, fallback to info card")
-                front_pdf_bytes = None
-        elif ext == "HEIC":
-            try:
-                from pillow_heif import register_heif_opener  # noqa: WPS433
-                register_heif_opener()
-                img = Image.open(io.BytesIO(front_pdf_bytes)).convert("RGB")
-                orientation = _detect_image_orientation(img)
-                page_w_px, page_h_px = _a4_px(orientation)
-                ratio = min(page_w_px / img.width, page_h_px / img.height)
-                new_w = int(img.width * ratio)
-                new_h = int(img.height * ratio)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                canvas = Image.new("RGB", (page_w_px, page_h_px), "white")
-                canvas.paste(img, ((page_w_px - new_w) // 2, (page_h_px - new_h) // 2))
-                front_pdf_bytes = _image_to_a4_pdf_bytes(canvas, orientation)
-            except ImportError:
-                _logger.warning(
-                    "pillow-heif not installed; HEIC drawing falls back to info card"
-                )
-                front_pdf_bytes = None
-            except Exception:  # noqa: BLE001
-                _logger.exception("failed to process HEIC drawing, fallback to info card")
-                front_pdf_bytes = None
-        else:
-            front_pdf_bytes = None
+    2026-07-31 优化：
+    - 正面页规格化 + L1/L2 缓存由 `_prepare_part_print_data`（async）完成，
+      本函数拿到的是已经处理好的 `front_pdf_bytes`；
+    - 背面页由 `service/_print_back_page.py::_build_back_page_pdf` 直接生成
+      单页矢量 PDF；
+    - 合并换 pikepdf（C++ QPDF 后端，比 pypdf 快 10-50× 且释放 GIL）；
+    - vector 参数仅影响 async 阶段的缓存策略（passthrough vs rasterize），
+      本函数对 vector 不敏感。
 
-    writer = _build_drawing_with_barcode_pages(
-        drawing_bytes=front_pdf_bytes,
-        serial_no=data.serial_no,
-        drawing_no=data.drawing_no,
-        name=data.name,
-        orientation=orientation,
+    参数：
+    - data：包含原始图纸 bytes（可选）+ 已经规格化的 front_pdf_bytes + 背面信息。
+    返回：完整双面 PDF bytes
+    """
+    t0 = time.perf_counter()
+
+    # ---------- 1) 正面页 bytes（async 阶段已规格化或 fallback）----------
+    front_pdf_bytes = data.front_pdf_bytes
+    orientation = data.orientation
+
+    # ---------- 2) 背面页 PDF bytes（矢量，~30-50 KB）----------
+    back_pdf_bytes = _build_back_page_pdf(
+        data.serial_no,
         planned_delivery_date=data.planned_delivery_date,
         quantity=data.quantity,
+        show_info=True,
     )
 
-    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
-    _logger.info(
-        "build_part_print_pdf: orientation=%s pages=%d A4=%sx%s pt",
-        orientation,
-        len(writer.pages),
-        _w_pt,
-        _h_pt,
-    )
-    for _i, _p in enumerate(writer.pages):
-        _logger.info(
-            "  page[%d] mediabox=%sx%s cropbox=%sx%s",
-            _i,
-            float(_p.mediabox.width),
-            float(_p.mediabox.height),
-            float(_p.cropbox.width),
-            float(_p.cropbox.height),
+    # ---------- 3) 用 pikepdf 合并 ----------
+    out_pdf = pikepdf.Pdf.new()
+    # 正面（若有）；否则信息卡占位
+    if front_pdf_bytes is None:
+        info_card = _build_info_card_page(
+            orientation=orientation,
+            drawing_no=data.drawing_no,
+            name=data.name,
+            serial_no=data.serial_no,
+            customer_path=None,
         )
+        info_pdf_bytes = _image_to_pdf_bytes(info_card, orientation)
+        out_pdf.pages.extend(pikepdf.Pdf.open(io.BytesIO(info_pdf_bytes)).pages)
+    else:
+        out_pdf.pages.extend(pikepdf.Pdf.open(io.BytesIO(front_pdf_bytes)).pages)
+    # 背面（永远 landscape，矢量，边缘锐利）
+    out_pdf.pages.extend(pikepdf.Pdf.open(io.BytesIO(back_pdf_bytes)).pages)
 
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
+    # ---------- 4) 计时日志 ----------
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    out_buf = io.BytesIO()
+    out_pdf.save(out_buf)
+    out_bytes = out_buf.getvalue()
+    _logger.info(
+        "print_render part_id=%d serial=%s orientation=%s bytes=%d elapsed_ms=%d",
+        data.part_id, data.serial_no, orientation,
+        len(out_bytes), elapsed_ms,
+    )
+    return out_bytes
 
 
 def _build_drawing_with_barcode_pages(
@@ -633,69 +432,30 @@ def _build_drawing_with_barcode_pages(
     orientation: str = "landscape",
     planned_delivery_date: date | None = None,
     quantity: int | None = None,
-) -> PdfWriter:
-    """构建「图纸页 + 条码背面页」双面 PDF（零件/装配体通用）。
+    content_sha256: str | None = None,
+    vector: bool = False,
+) -> bytes:
+    """组合「图纸页 + 条码背面页」双面 PDF（零件/装配体通用）；bytes 输出。
 
+    2026-07-31：保留入口签名（外部仍调用）但内部改走 `_build_part_print_pdf_sync`
+    风格的 pikepdf 合并。
     - drawing_bytes 为 None 时退化为信息卡占位。
-    - 条码页强制 landscape，与图纸朝向解耦。
+    - 条码页强制 landscape，由 `service/_print_back_page.py` 生成矢量 PDF。
     """
-    writer = PdfWriter()
-
-    # 正面：原 PDF 直接合并；否则信息卡占位
-    if drawing_bytes is not None:
-        try:
-            front_reader = PdfReader(io.BytesIO(drawing_bytes))
-            for page in front_reader.pages:
-                writer.add_page(page)
-                _fit_pdf_page_to_a4(writer.pages[-1], orientation)
-        except Exception:  # noqa: BLE001
-            _logger.exception("failed to merge drawing pdf, fallback to info card")
-            drawing_bytes = None
-
-    if drawing_bytes is None:
-        info_card = _build_info_card_page(
-            orientation=orientation,
-            drawing_no=drawing_no,
-            name=name,
-            serial_no=serial_no,
-            customer_path=None,
-        )
-        info_pdf_bytes = _image_to_a4_pdf_bytes(info_card, orientation)
-        info_reader = PdfReader(io.BytesIO(info_pdf_bytes))
-        for page in info_reader.pages:
-            writer.add_page(page)
-
-    # 反面：条码页（强制 landscape）
-    bc_orientation = "landscape"
-    barcode_page_img = _build_barcode_page(
-        bc_orientation, serial_no,
+    data = _PartPrintData(
+        part_id=0,
+        serial_no=serial_no,
+        drawing_no=drawing_no,
+        name=name,
+        customer_path=None,
+        drawing_bytes=drawing_bytes,
+        drawing_ext=None,
+        orientation=orientation,
         planned_delivery_date=planned_delivery_date,
         quantity=quantity,
-        show_info=True,
+        drawing_sha=content_sha256,
     )
-    barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, bc_orientation)
-    barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
-    for page in barcode_reader.pages:
-        writer.add_page(page)
-
-    # 规范化所有 page 的 boxes 为精确 A4
-    _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
-    _a4_box = RectangleObject([0, 0, _w_pt, _h_pt])
-    _w_pt_bc, _h_pt_bc = A4_LANDSCAPE
-    _a4_box_bc = RectangleObject([0, 0, _w_pt_bc, _h_pt_bc])
-    if writer.pages:
-        _p_bc = writer.pages[-1]
-        _p_bc.mediabox = _a4_box_bc
-        _p_bc.cropbox = _a4_box_bc
-        _p_bc.trimbox = _a4_box_bc
-        _p_bc.bleedbox = _a4_box_bc
-        for _p in writer.pages[:-1]:
-            _p.mediabox = _a4_box
-            _p.cropbox = _a4_box
-            _p.trimbox = _a4_box
-            _p.bleedbox = _a4_box
-
-    return writer
+    return _build_part_print_pdf_sync(data, vector=vector)
 
 
 # ============================================================
@@ -706,6 +466,7 @@ async def build_part_print_pdf(
     part_id: int,
     parts: PartRepository,
     part_files: PartFileRepository,
+    vector: bool = False,
 ) -> bytes:
     """为指定零件生成「图纸 + 条形码」双面打印 PDF。
 
@@ -715,9 +476,10 @@ async def build_part_print_pdf(
 
     2026-07-10 起：图纸存储统一到 `t_part_file` (kind=DRAWING)。
     2026-07-30 起：内部拆分为 async 数据准备 + sync 纯渲染，供批量并行复用。
+    2026-07-31 起：async 阶段走正面规格化 + 两级缓存；sync 阶段走背面矢量 + pikepdf 合并。
     """
     data = await _prepare_part_print_data(
-        part_id=part_id, parts=parts, part_files=part_files,
+        part_id=part_id, parts=parts, part_files=part_files, vector=vector,
     )
     return _build_part_print_pdf_sync(data)
 
@@ -732,6 +494,7 @@ async def build_parts_print_pdf_batch(
     parts: PartRepository,
     part_files: PartFileRepository,
     assemblies: AssemblyRepository | None = None,
+    vector: bool = False,
 ) -> bytes:
     """合并多个零件的双面 PDF 为单 PDF 字节流（2026-07-17 批量打印；2026-07-30 扩展装配件）。
 
@@ -805,8 +568,8 @@ async def build_parts_print_pdf_batch(
     if assembly_order:
         assembly_master_metadata = await part_files.list_by_parts(assembly_order, kind="ASSEMBLY_MASTER")
 
-    # 7. 并发下载全部图纸（Semaphore 限流）
-    sem = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+    # 7. 并发下载全部图纸（Semaphore 限流；并发数从 APP_CPU_CORES 派生）
+    sem = asyncio.Semaphore(settings.print_download_concurrency)
 
     async def _download_with_sem(file_row: "TPartFile") -> bytes | None:
         async with sem:
@@ -851,95 +614,113 @@ async def build_parts_print_pdf_batch(
         else:
             asm_master_bytes[item_id] = result
 
-    # 8. 构建 _PartPrintData 列表（保持打印顺序）
+    # 8. 构建 _PartPrintData 列表（保持打印顺序）。
+    # 2026-07-31：先并行调 get_normalized_front_pdf 拿到 front_pdf_bytes，
+    # 避免 sync 阶段再去桥接 asyncio。
     items_data: list[_PartPrintData] = []
 
-    for pid in ordered_part_ids:
-        p = all_parts_map.get(pid)
-        if p is None:
-            continue
-        master = drawing_metadata.get(pid)
-        # v0.2.5：system_delivery_date 优先，planned_delivery_date 兜底。
-        _p_delivery = getattr(p, "system_delivery_date", None) or p.planned_delivery_date
-        items_data.append(
-            _PartPrintData(
-                part_id=pid,
-                serial_no=p.serial_no or "NO-SERIAL",
-                drawing_no=p.drawing_no or "",
-                name=p.name or "",
-                drawing_bytes=part_drawing_bytes.get(pid),
-                drawing_ext=master.file_type.upper() if master else None,
-                orientation="landscape",
+    async def _prepare_one(
+        pid: int | None, aid: int | None, *, asm_obj, kind: str,
+    ) -> _PartPrintData | None:
+        if kind == "part":
+            p = all_parts_map.get(pid)
+            if p is None:
+                return None
+            master = drawing_metadata.get(pid)
+            ext = master.file_type.upper() if master else None
+            sha = getattr(master, "content_sha256", None) if master else None
+            raw_bytes = part_drawing_bytes.get(pid)
+            front_bytes = None
+            orientation = "landscape"
+            if raw_bytes is not None and ext:
+                try:
+                    _r = await get_normalized_front_pdf(
+                        original_bytes=raw_bytes, file_type=ext,
+                        content_sha256=sha, vector=vector,
+                    )
+                    front_bytes = _r.pdf_bytes
+                    orientation = _r.orientation
+                except Exception:  # noqa: BLE001
+                    _logger.exception("batch front normalize fail part=%d", pid)
+            _src = getattr(p, "system_delivery_date", None) or p.planned_delivery_date
+            return _PartPrintData(
+                part_id=pid, serial_no=p.serial_no or "NO-SERIAL",
+                drawing_no=p.drawing_no or "", name=p.name or "",
+                drawing_bytes=raw_bytes, drawing_ext=ext,
+                orientation=orientation,
                 planned_delivery_date=_buffered_delivery_date(
-                    _p_delivery if isinstance(_p_delivery, date) else None
+                    _src if isinstance(_src, date) else None
                 ),
                 quantity=p.quantity if isinstance(getattr(p, "quantity", None), int) else None,
+                drawing_sha=sha, front_pdf_bytes=front_bytes,
             )
-        )
+        else:  # "asm_master"
+            if asm_obj is None:
+                return None
+            master = assembly_master_metadata.get(aid)
+            ext = master.file_type.upper() if master else None
+            sha = getattr(master, "content_sha256", None) if master else None
+            raw_bytes = asm_master_bytes.get(aid)
+            front_bytes = None
+            orientation = "landscape"
+            if raw_bytes is not None and ext:
+                try:
+                    _r = await get_normalized_front_pdf(
+                        original_bytes=raw_bytes, file_type=ext,
+                        content_sha256=sha, vector=vector,
+                    )
+                    front_bytes = _r.pdf_bytes
+                    orientation = _r.orientation
+                except Exception:  # noqa: BLE001
+                    _logger.exception("batch front normalize fail asm=%d", aid)
+            _src = getattr(asm_obj, "system_delivery_date", None) or asm_obj.planned_delivery_date
+            return _PartPrintData(
+                part_id=aid, serial_no=asm_obj.serial_no or "NO-SERIAL",
+                drawing_no=asm_obj.drawing_no or "", name=asm_obj.name or "",
+                drawing_bytes=raw_bytes, drawing_ext=ext,
+                orientation=orientation,
+                planned_delivery_date=_buffered_delivery_date(
+                    _src if isinstance(_src, date) else None
+                ),
+                quantity=None,
+                drawing_sha=sha, front_pdf_bytes=front_bytes,
+            )
+
+    for pid in ordered_part_ids:
+        d = await _prepare_one(pid, None, asm_obj=None, kind="part")
+        if d is not None:
+            items_data.append(d)
 
     for aid in assembly_order:
         asm = await assemblies.get_by_id(aid) if assemblies else None
-        master = assembly_master_metadata.get(aid)
-        # v0.2.5：system_delivery_date 优先，planned_delivery_date 兜底。
-        _asm_delivery = getattr(asm, "system_delivery_date", None) or asm.planned_delivery_date
-        items_data.append(
-            _PartPrintData(
-                part_id=aid,
-                serial_no=asm.serial_no if asm else "NO-SERIAL",
-                drawing_no=asm.drawing_no if asm else "",
-                name=asm.name if asm else "",
-                drawing_bytes=asm_master_bytes.get(aid),
-                drawing_ext=master.file_type.upper() if master else None,
-                orientation="landscape",
-                planned_delivery_date=_buffered_delivery_date(
-                    _asm_delivery if isinstance(_asm_delivery, date) else None
-                ),
-                quantity=None,
-            )
-        )
-
+        d_asm = await _prepare_one(None, aid, asm_obj=asm, kind="asm_master")
+        if d_asm is not None:
+            items_data.append(d_asm)
         child_map = assembly_to_children.get(aid, {})
         children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
         for c in children:
-            child_master = drawing_metadata.get(c.id)
-            # v0.2.5：system_delivery_date 优先，planned_delivery_date 兜底。
-            _c_delivery = getattr(c, "system_delivery_date", None) or c.planned_delivery_date
-            items_data.append(
-                _PartPrintData(
-                    part_id=c.id,
-                    serial_no=c.serial_no or "NO-SERIAL",
-                    drawing_no=c.drawing_no or "",
-                    name=c.name or "",
-                    drawing_bytes=part_drawing_bytes.get(c.id),
-                    drawing_ext=child_master.file_type.upper() if child_master else None,
-                    orientation="landscape",
-                    planned_delivery_date=_buffered_delivery_date(
-                        _c_delivery if isinstance(_c_delivery, date) else None
-                    ),
-                    quantity=c.quantity if isinstance(getattr(c, "quantity", None), int) else None,
-                )
-            )
+            d_c = await _prepare_one(c.id, None, asm_obj=None, kind="part")
+            if d_c is not None:
+                items_data.append(d_c)
 
-    # 9. CPU 并行渲染（丢线程池）
+    # 9. CPU 并行渲染（asyncio.to_thread，并发数从 APP_CPU_CORES 派生）
     render_tasks = [
         asyncio.to_thread(_build_part_print_pdf_sync, data)
         for data in items_data
     ]
     render_results = await asyncio.gather(*render_tasks, return_exceptions=True)
 
-    # 10. 按原始顺序合并
-    writer = PdfWriter()
+    # 10. 按原始顺序合并（pikepdf，比 pypdf 快 10-50× 且释放 GIL）
+    out_pdf = pikepdf.Pdf.new()
     for result in render_results:
         if isinstance(result, Exception):
             logger.warning("batch print render skip: %s", result)
             continue
         try:
-            reader = PdfReader(io.BytesIO(result))
-            for page in reader.pages:
-                writer.add_page(page)
+            out_pdf.pages.extend(pikepdf.Pdf.open(io.BytesIO(result)).pages)
         except Exception as e:  # noqa: BLE001
             logger.warning("batch print merge skip: %s", e)
 
     buf = io.BytesIO()
-    writer.write(buf)
+    out_pdf.save(buf)
     return buf.getvalue()

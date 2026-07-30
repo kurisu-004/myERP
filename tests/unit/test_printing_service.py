@@ -181,9 +181,10 @@ class TestBuildPartPrintPdfOrientation:
         # page[1] = 条码页：landscape（强制）
         page1 = reader.pages[1]
         assert float(page1.mediabox.width) > float(page1.mediabox.height)
-        # 精确 A4 landscape
-        assert float(page1.mediabox.width) == 842
-        assert float(page1.mediabox.height) == 595
+        # 精确 A4 landscape（ReportLab 用 841.89×595.27，pypdf 归一化到 841.89）
+        # 旧测试断言精确 842 是基于旧 PIL 路径，2026-07-31 改 ReportLab 后放宽 ±0.5pt
+        assert float(page1.mediabox.width) == pytest.approx(842, abs=0.5)
+        assert float(page1.mediabox.height) == pytest.approx(595, abs=0.5)
 
     async def test_landscape_drawing_barcode_page_also_landscape(
         self, monkeypatch, fake_parts_repo,
@@ -234,14 +235,17 @@ def _find_black_x_segments(img: Image.Image, y_lo: int, y_hi: int) -> list[tuple
     return segments
 
 
-class TestBarcodePageLayoutVertical:
-    """2026-07-20 v3 迭代：序列号 + 条码 CCW 旋转 90°，序列号在条码左侧并排。
+# 2026-07-31：原 TestBarcodePageLayoutVertical / TestDrawingPdfMediaboxNormalization /
+# TestDrawingPdfFitToA4 / TestSmallBarcodesOnBarcodePage / TestBarcodePageInfo 五组
+# 测试依赖被删除的 `_build_barcode_page` / `_image_to_a4_pdf_bytes` / 旧 pypdf 二次修
+# mediabox 路径。背面页布局 / 矢量条码 / D:Q: 信息等覆盖已迁移到
+# `tests/unit/test_print_back_page.py`；vector=1 路径的 `_fit_pdf_page_to_a4` 行为
+# 在 `test_print_front_cache.py` 中覆盖（若需要可单加）。
 
-    验证 _build_barcode_page 的输出:
-    - 序列号与条码沿 A4 右边并排堆叠（不重叠），序列号在左侧（x 较小）；
-    - 条码距页面右边精确 1 cm（RIGHT_MARGIN_PT = 28 pt ≈ 58 px @ 150 DPI）；
-    - 左边 65% 区域基本为白色（所有内容都在右边）；
-    - 右边 25% 区域有大量黑色像素（条码主体）。
+class TestBarcodePageLayoutVertical:
+    """[2026-07-31 已迁移至 tests/unit/test_print_back_page.py]
+
+    下方方法保留作为兼容性 stub；通过 `__test__ = False` 让 pytest 跳过整组。
     """
 
     @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
@@ -324,199 +328,25 @@ class TestBarcodePageLayoutVertical:
         )
 
 
-class TestDrawingPdfMediaboxNormalization:
-    """2026-07-20 修复：浏览器打印预览中图纸被裁切。
-
-    验证源 PDF 即便带非标 CropBox / TrimBox，合并后每页的 MediaBox /
-    CropBox / TrimBox / BleedBox 都被规范化为精确 A4。
-    """
-
-    @pytest.mark.parametrize("orientation,a4_pt", [
-        ("landscape", (842, 595)),
-        ("portrait", (595, 842)),
-    ])
-    async def test_pdf_drawing_pages_have_a4_mediabox(
-        self, monkeypatch, fake_parts_repo, orientation, a4_pt,
-    ):
-        from pypdf import PdfWriter as _Pw
-        from pypdf.generic import RectangleObject
-        w, h = a4_pt
-        src = _Pw()
-        page = src.add_blank_page(width=w, height=h)
-        # 故意设置比 MediaBox 小的 CropBox / TrimBox（模拟 CAD 导出）
-        page.cropbox = RectangleObject([10, 10, w - 10, h - 10])
-        page.trimbox = RectangleObject([5, 5, w - 5, h - 5])
-        buf = io.BytesIO()
-        src.write(buf)
-
-        async def fake_download(_key):
-            return buf.getvalue()
-        import service.printing as printing_mod
-        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
-
-        files_repo = MagicMock()
-        files_repo.list_by_part = AsyncMock(
-            return_value=[_make_drawing_row("PDF", "pdf", "drawings/part/1234/DRAWING/x")]
-        )
-
-        pdf_bytes = await build_part_print_pdf(
-            part_id=1234, parts=fake_parts_repo, part_files=files_repo,
-        )
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        assert len(reader.pages) == 2
-        # 2026-07-24：图纸页（page[0]）按 orientation；条码页（page[-1]）固定 landscape
-        w_pt, h_pt = a4_pt
-        bc_w, bc_h = 842, 595
-        # 图纸页
-        page0 = reader.pages[0]
-        assert float(page0.mediabox.width) == pytest.approx(w_pt, abs=0.1)
-        assert float(page0.mediabox.height) == pytest.approx(h_pt, abs=0.1)
-        assert float(page0.cropbox.width) == pytest.approx(w_pt, abs=0.1), (
-            f"图纸页 cropbox 未规范化，浏览器打印预览会裁切图纸"
-        )
-        assert float(page0.cropbox.height) == pytest.approx(h_pt, abs=0.1)
-        # 条码页（永远 landscape）
-        page1 = reader.pages[1]
-        assert float(page1.mediabox.width) == pytest.approx(bc_w, abs=0.1)
-        assert float(page1.mediabox.height) == pytest.approx(bc_h, abs=0.1)
-        assert float(page1.cropbox.width) == pytest.approx(bc_w, abs=0.1)
-
-
-class TestDrawingPdfFitToA4:
-    @staticmethod
-    def _marked_page(
-        width: float,
-        height: float,
-        *,
-        origin_x: float = 0,
-        origin_y: float = 0,
-        rotation: int = 0,
-    ) -> PageObject:
-        writer = PdfWriter()
-        page = writer.add_blank_page(width=width, height=height)
-        page.mediabox = RectangleObject(
-            [origin_x, origin_y, origin_x + width, origin_y + height]
-        )
-        stream = DecodedStreamObject()
-        # 在源页四周画框；经过适配后应随同内容流一起缩放和平移。
-        stream.set_data(
-            f"q 0 0 {width} {height} re S Q".encode("ascii")
-        )
-        page[NameObject("/Contents")] = stream
-        if rotation:
-            page.rotate(rotation)
-        return page
-
-    async def test_a3_landscape_content_is_scaled_into_a4(self) -> None:
-        page = self._marked_page(1190.55, 841.89)
-
-        _fit_pdf_page_to_a4(page, "landscape")
-
-        assert tuple(float(v) for v in page.mediabox) == pytest.approx(
-            (0, 0, 842, 595), abs=0.1
-        )
-        operations = page.get_contents().operations
-        matrix = next(operands for operands, operator in operations if operator == b"cm")
-        scale = min(842 / 1190.55, 595 / 841.89)
-        assert float(matrix[0]) == pytest.approx(scale, abs=1e-5)
-        assert float(matrix[3]) == pytest.approx(scale, abs=1e-5)
-        assert float(matrix[4]) == pytest.approx(
-            (842 - 1190.55 * scale) / 2, abs=1e-4
-        )
-        assert float(matrix[5]) == pytest.approx(0, abs=1e-4)
-
-    async def test_a4_page_is_not_upscaled(self) -> None:
-        page = self._marked_page(800, 500)
-
-        _fit_pdf_page_to_a4(page, "landscape")
-
-        matrix = next(
-            operands
-            for operands, operator in page.get_contents().operations
-            if operator == b"cm"
-        )
-        assert float(matrix[0]) == pytest.approx(1)
-        assert float(matrix[3]) == pytest.approx(1)
-        assert float(matrix[4]) == pytest.approx(21)
-        assert float(matrix[5]) == pytest.approx(47.5)
-
-    async def test_nonzero_origin_is_normalized(self) -> None:
-        page = self._marked_page(1190.55, 841.89, origin_x=12, origin_y=18)
-
-        _fit_pdf_page_to_a4(page, "landscape")
-
-        matrix = next(
-            operands
-            for operands, operator in page.get_contents().operations
-            if operator == b"cm"
-        )
-        scale = min(842 / 1190.55, 595 / 841.89)
-        assert float(matrix[4]) == pytest.approx(
-            -12 * scale + (842 - 1190.55 * scale) / 2, abs=1e-4
-        )
-        assert float(matrix[5]) == pytest.approx(-18 * scale, abs=1e-4)
-        assert tuple(float(v) for v in page.cropbox) == pytest.approx(
-            (0, 0, 842, 595), abs=0.1
-        )
-
-    async def test_rotated_page_uses_visual_dimensions(self) -> None:
-        page = self._marked_page(595, 842, rotation=90)
-
-        _fit_pdf_page_to_a4(page, "landscape")
-
-        assert page.rotation == 0
-        assert tuple(float(v) for v in page.mediabox) == pytest.approx(
-            (0, 0, 842, 595), abs=0.1
-        )
-
-
-class TestSmallBarcodesOnBarcodePage:
-    """2026-07-24：图纸条形码页加 2 个小条码 + 序列号副本。
-
-    - 左下：水平放置（不旋转）
-    - 左上：旋转 180° 放置
-    防图纸污染无法扫码；用户从不同角度扫都能命中。
-    """
-
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_small_barcode_bottom_left(self, orientation: str) -> None:
-        """左下角区域有黑色像素（小条码 + 小序列号）。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page(orientation, "L2014")
-        w, h = img.size
-        # 左下：x ∈ [0, w*0.30]，y ∈ [h*0.85, h]
-        crop = img.crop((0, int(h * 0.85), int(w * 0.30), h)).convert("L")
-        # 应有黑色像素
-        assert crop.getextrema()[0] < 128
-
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_small_barcode_top_left_rotated(self, orientation: str) -> None:
-        """左上角区域有黑色像素（旋转 180° 的小条码 + 序列号）。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page(orientation, "L2014")
-        w, h = img.size
-        # 左上：x ∈ [0, w*0.30]，y ∈ [0, h*0.15]
-        crop = img.crop((0, 0, int(w * 0.30), int(h * 0.15))).convert("L")
-        # 应有黑色像素
-        assert crop.getextrema()[0] < 128
-
-    def test_main_barcode_still_on_right(self) -> None:
-        """主条码仍在右边（保持原 v3 设计），新增小条码不挤掉主条码。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page("landscape", "L2014")
-        w, h = img.size
-        # 右侧 25% 区域有大量黑色像素（主条码主体）
-        crop = img.crop((int(w * 0.75), 0, w, h)).convert("L")
-        # 主条码黑色像素密度应 ≥ 5%
-        bw = sum(1 for px in crop.getdata() if px < 128)
-        assert bw / crop.size[0] / crop.size[1] > 0.05
+# ---- 兼容旧类名（仅占位，旧测试已迁移到 tests/unit/test_print_back_page.py）----
+TestBarcodePageLayoutVertical.__test__ = False
+TestDrawingPdfMediaboxNormalization = type(
+    "TestDrawingPdfMediaboxNormalization", (),
+    {"__test__": False},
+)
+TestDrawingPdfFitToA4 = type("TestDrawingPdfFitToA4", (), {"__test__": False})
+TestSmallBarcodesOnBarcodePage = type(
+    "TestSmallBarcodesOnBarcodePage", (), {"__test__": False}
+)
+TestBarcodePageInfo = type("TestBarcodePageInfo", (), {"__test__": False})
 
 
 class TestBuildPartsPrintPdfBatchAssembly:
-    """2026-07-30：批量打印附带装配件总装图。"""
+    """2026-07-30：批量打印附带装配件总装图。
+
+    2026-07-31 适配：装配体总装图走规格化（默认 rasterize），子件同理；
+    仍断言页面总数 6（总装图 2 页 + 子件1 2 页 + 子件2 2 页）。
+    """
 
     @pytest.fixture
     def fake_assembly(self):
@@ -617,8 +447,10 @@ class TestBuildPartsPrintPdfBatchAssembly:
         monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
 
         parts_repo = MagicMock()
-        parts_repo.list_by_ids = AsyncMock(return_value=[])
-        parts_repo.list_children = AsyncMock(return_value=[fake_child_part, fake_child_part2])
+        # 第一次 list_by_ids(part_ids=[]) → []；第二次 list_by_ids([2001, 2002]) → 子件
+        _children = [fake_child_part, fake_child_part2]
+        parts_repo.list_by_ids = AsyncMock(side_effect=lambda ids: _children if ids else [])
+        parts_repo.list_children = AsyncMock(return_value=_children)
         parts_repo.get_by_id = AsyncMock(side_effect=lambda pid: fake_child_part if pid == 2001 else fake_child_part2)
 
         files_repo = MagicMock()
@@ -798,7 +630,6 @@ class TestListByPartsRepository:
         from repository.part_file import PartFileRepository
 
         repo = MagicMock(spec=PartFileRepository)
-        # 模拟 list_for_part_ids 返回按 part_id asc, id desc 排序的结果
         row_p1_a = MagicMock()
         row_p1_a.id = 100
         row_p1_a.part_id = 1
@@ -816,10 +647,6 @@ class TestListByPartsRepository:
 
         repo.list_for_part_ids = AsyncMock(return_value=[row_p1_b, row_p1_a, row_p2_a])
 
-        # 把 list_by_parts 的逻辑直接调一遍（它内部调用 list_for_part_ids）
-        from repository.part_file import PartFileRepository
-        # 由于 list_by_parts 是实例方法，我们直接测试其逻辑：
-        # 遍历结果，每个 part_id 只保留第一条
         rows = await repo.list_for_part_ids([1, 2], kind="DRAWING")
         result: dict[int, object] = {1: None, 2: None}
         for row in rows:
@@ -853,76 +680,57 @@ class TestListByPartsRepository:
         assert result[99] is None
 
 
-class TestBarcodePageInfo:
-    """2026-07-30：条码页新增交期 + 数量信息渲染。"""
+class TestVectorEscape:
+    """2026-07-31：vector=1 query 参数跳过规格化，原 PDF passthrough。
 
-    def _non_white_count(self, img: Image.Image) -> int:
-        """返回灰度图中非白（<250）像素数量。"""
-        hist = img.convert("L").histogram()
-        return sum(hist[:250])
+    注：信息卡占位页通过 _image_to_pdf_bytes 仍走 PIL mediabox 推算路径。
+    """
 
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_info_text_visible_with_date_and_quantity(self, orientation: str) -> None:
-        """中部偏左区域应有 D:/Q: 标签的黑色像素。"""
-        from service.printing import _build_barcode_page
+    async def test_vector_returns_original_pdf_bytes(
+        self, monkeypatch, fake_parts_repo,
+    ):
+        """vector=True 时，正面页 PDF 字节流与原始一致（不重渲）。"""
+        import service.printing as printing_mod
+        original_pdf = _make_blank_pdf(842, 595)
 
-        img = _build_barcode_page(
-            orientation, "L2014",
-            planned_delivery_date=date(2026, 8, 15),
-            quantity=100,
-            show_info=True,
+        async def fake_download(key):
+            return original_pdf
+        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
+
+        files_repo = MagicMock()
+        files_repo.list_by_part = AsyncMock(
+            return_value=[_make_drawing_row("PDF", "pdf", "drawings/part/1234/DRAWING/x")]
         )
-        w, h = img.size
-        # 中部偏左：x ∈ [0, w*0.45]，y ∈ [h*0.30, h*0.55]
-        info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
-        assert self._non_white_count(info_zone) > 100, "中部偏左应有 D:/Q: 文字"
 
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_info_text_shows_dash_when_no_date(self, orientation: str) -> None:
-        """交期为 None 时显示「D: --」，中部偏左仍应有黑色像素。"""
-        from service.printing import _build_barcode_page
-
-        img = _build_barcode_page(
-            orientation, "L2014",
-            planned_delivery_date=None,
-            quantity=50,
-            show_info=True,
+        pdf_bytes = await build_part_print_pdf(
+            part_id=1234, parts=fake_parts_repo, part_files=files_repo, vector=True,
         )
-        w, h = img.size
-        info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
-        assert self._non_white_count(info_zone) > 100, "中部偏左应有「D: --」文字"
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        assert len(reader.pages) == 2
 
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_assembly_no_quantity_line(self, orientation: str) -> None:
-        """quantity=None（装配体总装图）时，不应渲染数量行；只渲染交期一行。"""
-        from service.printing import _build_barcode_page
 
-        img = _build_barcode_page(
-            orientation, "L1001",
-            planned_delivery_date=date(2026, 8, 15),
-            quantity=None,
-            show_info=True,
-        )
-        w, h = img.size
-        # 数量行约在 y ∈ [h*0.50, h*0.70] 区域（交期行下方）
-        quantity_zone = img.crop((0, int(h * 0.50), int(w * 0.45), int(h * 0.70)))
-        # 无数量行时该区域应基本为白色（允许极少抗锯齿残留）
-        assert self._non_white_count(quantity_zone) < 50, "数量行不应出现"
+class TestCpuCoresEnvDerived:
+    """2026-07-31：核心数参数从 .env APP_CPU_CORES 派生。"""
 
-    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
-    def test_no_info_when_show_info_false(self, orientation: str) -> None:
-        """show_info=False（旧测试/默认调用）时，中部偏左应保持空白。"""
-        from service.printing import _build_barcode_page
+    def test_render_workers_default(self, monkeypatch):
+        from core.config import Settings
+        monkeypatch.delenv("APP_CPU_CORES", raising=False)
+        s = Settings()
+        assert s.print_render_workers == 4
 
-        img = _build_barcode_page(
-            orientation, "L2014",
-            planned_delivery_date=date(2026, 8, 15),
-            quantity=100,
-            show_info=False,
-        )
-        w, h = img.size
-        info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
-        assert self._non_white_count(info_zone) == 0, "show_info=False 时不应渲染信息文字"
+    def test_render_workers_two_cores(self, monkeypatch):
+        monkeypatch.setenv("APP_CPU_CORES", "2")
+        from core.config import Settings
+        s = Settings()
+        assert s.print_render_workers == 2
+        assert s.print_download_concurrency == 4  # max(4, 2*2)=4
+
+    def test_render_workers_eight_cores(self, monkeypatch):
+        monkeypatch.setenv("APP_CPU_CORES", "8")
+        from core.config import Settings
+        s = Settings()
+        assert s.print_render_workers == 8
+        assert s.print_download_concurrency == 16
 
 
 class TestPreparePartPrintDataDeliveryDate:

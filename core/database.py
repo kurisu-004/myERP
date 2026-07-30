@@ -35,6 +35,11 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("SELECT 1"))
         print("启动心跳")
 
+    # 启动期探测 L1 打印缓存目录是否可写（2026-07-31 引入）。
+    # 不可写时仅打一条 warning，自动降级为仅 L2 COS；不影响功能。
+    from service._print_front_cache import init_l1_cache
+    init_l1_cache()
+
     # 启动 7 天自动完成后台循环（PR-D 2026-07-10）
     from service.auto_complete import auto_complete_loop
     import asyncio

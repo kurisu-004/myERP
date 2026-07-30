@@ -33,9 +33,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # font-dejavu：service/printing.py 渲染序列号（ASCII 字符如 F1004）需要支持 size
 # 的 TTF 字体；alpine 默认无任何字体，_load_cn_font 会 fallback 到 PIL 内置
 # ~10px bitmap（完全忽略 size 参数），导致序列号在部署后变成蚂蚁大小。
-# 注：DejaVu 是 Latin-only，信息卡的中文标签（图号/名称/客户/流水号）
-#     仍无法渲染（会显示 ▯ 缺字符）；如有需要再换 font-noto-cjk。
-RUN apk add --no-cache tzdata tini font-dejavu \
+# font-wqy-microhei（2026-07-31 引入）：CJK 信息卡正文字体；DejaVu 没有中文，
+#     之前 fallback 后信息卡中文显示 ▯ 缺字符。Alpine 软件包名 font-wqy-microhei。
+#     备用：apk add font-noto-cjk（体积约 50 MB）。
+RUN apk add --no-cache tzdata tini font-dejavu font-wqy-microhei \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone
 
@@ -43,6 +44,10 @@ RUN addgroup -g 1000 -S myerp \
     && adduser -u 1000 -S -G myerp -h /app -s /bin/bash myerp
 
 WORKDIR /app
+
+# 2026-07-31：打印正面页两级缓存目录（L1 本地磁盘 LRU；docker-compose
+# 把 printcache 命名卷挂到这里，跨容器重建保留缓存）
+RUN mkdir -p /app/.cache/print && chown myerp:myerp /app/.cache/print
 
 COPY --from=builder --chown=myerp:myerp /app /app
 USER myerp

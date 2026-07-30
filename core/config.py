@@ -95,6 +95,42 @@ class Settings(BaseSettings):
         description='{"F": "template/delivery_note_fala.xlsx", "L": "template/delivery_note_luda.xlsx"}',
     )
 
+    # ---- 容器可用 CPU 核心数（2026-07-31 打印性能优化引入）----
+    # 换服务器时只改 .env 里 APP_CPU_CORES；printing.py 等核心数相关参数
+    # 通过 Settings 的 print_render_workers / print_download_concurrency 派生。
+    # uvicorn 维持单 worker（4G 内存 + asyncio 模型，多 worker 徒增内存）；
+    # 如要开多 worker 单独引入 UVICORN_WORKERS 配置。
+    app_cpu_cores: int = Field(
+        default=4, alias="APP_CPU_CORES", ge=1, le=128,
+        description="容器可用 CPU 核心数；打印渲染/下载并发依此派生",
+    )
+
+    # ---- 打印正面页 L1 本地磁盘缓存（2026-07-31 引入）----
+    # 不可写时（如 read-only rootfs / printcache 卷未挂载）自动降级为仅 L2 COS，
+    # 不影响功能，只损失一次跨网下载延迟。
+    print_cache_dir: str = Field(
+        default="/app/.cache/print", alias="PRINT_CACHE_DIR",
+        description="打印正面页 L1 本地磁盘缓存目录；不可写时自动降级为仅 L2 COS",
+    )
+    print_cache_max_bytes: int = Field(
+        default=1024 * 1024 * 1024, alias="PRINT_CACHE_MAX_BYTES", ge=0,
+        description="L1 本地磁盘缓存上限字节数（LRU 按 mtime 淘汰）",
+    )
+
+    @property
+    def print_render_workers(self) -> int:
+        """打印渲染线程并发上限（asyncio.to_thread 数量）。"""
+        return max(1, self.app_cpu_cores)
+
+    @property
+    def print_download_concurrency(self) -> int:
+        """打印路径 COS 下载并发上限。
+
+        公式与原 `_MAX_CONCURRENT_DOWNLOADS=8` 注释保持等价：
+        4 核 → 8、2 核 → 4（max 兜底）、8 核 → 16、16 核 → 32。
+        """
+        return max(4, 2 * self.app_cpu_cores)
+
     # ---- DELIVERED → COMPLETED 自动完成（PR-D 2026-07-10）----
     # 最近一次发货事件超过 N 天 且 中间无返修 → 自动 COMPLETED。
     auto_complete_threshold_days: int = Field(
