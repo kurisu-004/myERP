@@ -173,6 +173,7 @@ import { InfoFilled } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 
 const { isMobile } = useBreakpoint()
 const userDlg = useDialogSize({ desktopWidth: 420 })
@@ -186,6 +187,13 @@ const loading = ref(false)
 const total = ref(0)
 const page = ref(1)
 const size = ref(20)
+
+// ============ 筛选状态持久化（page 不持久化）============
+const { restore: restoreUserFilter, clear: clearUserFilter } = useListStatePersist(
+  'user_list',
+  { size },
+  { exclude: new Set(['page']) },
+)
 
 const showCreate = ref(false)
 const saving = ref(false)
@@ -312,7 +320,14 @@ async function doAddRole() {
 
 async function removeRole(uid: string, rid: string) { await removeUserRole(uid, rid); roleList.value = await listUserRoles(uid); ElMessage.success('已移除') }
 
-onMounted(fetchData)
+onMounted(() => {
+  // 先尝试恢复 localStorage 中的分页大小
+  const persisted = restoreUserFilter()
+  if (persisted && typeof persisted.size === 'number') {
+    size.value = persisted.size
+  }
+  void fetchData()
+})
 </script>
 
 <style lang="scss" scoped>

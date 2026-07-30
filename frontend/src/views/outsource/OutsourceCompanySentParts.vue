@@ -14,6 +14,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type SummaryMethod } from 'element-plus'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   getOutsourceCompany,
   listCompanySentParts,
@@ -46,6 +47,14 @@ const sortBy = ref<OutsourceSentPartSortKey>('SENT_AT')
 const sortDir = ref<SortDir>('DESC')
 const paginationLayout = computed(() =>
   isMobile.value ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper',
+)
+
+// ============ 筛选状态持久化（2026-07-30 commit 4B）============
+// 持久化 filter / sortBy / sortDir；该页无 page（接口固定 limit 50 offset 0）。
+// companyId 走 URL，不进快照。
+const { restore: restoreSentPartsFilter } = useListStatePersist(
+  'outsource_company_sent_parts',
+  { filter, sortBy, sortDir },
 )
 
 async function loadCompany(): Promise<void> {
@@ -277,6 +286,13 @@ function fmtDt(v: string | null): string {
 
 onMounted(() => {
   void loadCompany()
+  // 2026-07-30 commit 4B：恢复 filter / sortBy / sortDir
+  const persisted = restoreSentPartsFilter()
+  if (persisted) {
+    if (persisted.filter) Object.assign(filter, persisted.filter as Partial<typeof filter>)
+    if (typeof persisted.sortBy === 'string') sortBy.value = persisted.sortBy as OutsourceSentPartSortKey
+    if (typeof persisted.sortDir === 'string') sortDir.value = persisted.sortDir as SortDir
+  }
   void loadList()
 })
 

@@ -152,6 +152,7 @@ import { Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import { listCustomers, type Customer } from '@/api/customer'
 import {
   createApplicant,
@@ -168,6 +169,12 @@ const saving = ref(false)
 const rows = ref<Applicant[]>([])
 const customers = ref<Customer[]>([])
 const search = reactive({ customerId: '' as string | '', nameLike: '' })
+
+// ============ 筛选状态持久化 ============
+const { restore: restoreApplicantFilter, clear: clearApplicantFilter } = useListStatePersist(
+  'applicant_list',
+  { search },
+)
 
 const rootOptions = computed(() =>
   customers.value
@@ -295,6 +302,11 @@ async function onDelete(row: Applicant): Promise<void> {
 }
 
 onMounted(async () => {
+  // 先尝试恢复 localStorage 中的搜索条件
+  const persisted = restoreApplicantFilter()
+  if (persisted) {
+    Object.assign(search, persisted.search)
+  }
   await loadCustomers()
   await fetchList()
 })

@@ -134,9 +134,9 @@
                 >品检打回</el-tag>
                 <span class="delivery-date" :class="deliveryUrgencyClass(p.planned_delivery_date)">
                   <el-icon><Calendar /></el-icon>
-                  {{ formatDate(p.planned_delivery_date) }}
-                  <span v-if="daysLeftText(p.planned_delivery_date)" class="days-left">
-                    · {{ daysLeftText(p.planned_delivery_date) }}
+                  {{ formatDeliveryDate(p.planned_delivery_date) }}
+                  <span v-if="deliveryDaysLeftText(p.planned_delivery_date)" class="days-left">
+                    · {{ deliveryDaysLeftText(p.planned_delivery_date) }}
                   </span>
                 </span>
               </div>
@@ -269,6 +269,11 @@ import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
 import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
 import { listPartsByWorkTypeAllShelves, pickUpPart, type PartItem } from '@/api/parts'
+import {
+  formatDeliveryDate,
+  deliveryDaysLeftText,
+  deliveryUrgencyClass,
+} from '@/utils/deliveryDate'
 
 const router = useRouter()
 const { worker, requireWorker, reset: resetScanSession } = useScanSession()
@@ -306,40 +311,6 @@ function isPdf(t: string): boolean { return t.toUpperCase() === 'PDF' }
 const IMAGE_TYPES = new Set(['PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'TIF', 'TIFF', 'WEBP'])
 function isImage(t: string): boolean { return IMAGE_TYPES.has(t.toUpperCase()) }
 function isHeic(t: string): boolean { return t.toUpperCase() === 'HEIC' }
-
-// --- 交期辅助 ---
-function formatDate(s: string): string {
-  if (!s) return ''
-  return s.slice(5).replace(/-/g, '/')  // MM/DD
-}
-function daysLeftText(s: string): string {
-  if (!s) return ''
-  const d = new Date(s)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((d.getTime() - today.getTime()) / 86400000)
-  if (diff < 0) return `已逾期${Math.abs(diff)}天`
-  if (diff === 0) return '今天到期'
-  if (diff <= 3) return `${diff}天后到期`
-  return ''
-}
-function deliveryUrgencyClass(s: string): string {
-  if (!s) return ''
-  const d = new Date(s)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((d.getTime() - today.getTime()) / 86400000)
-  if (diff < 0) return 'overdue'
-  if (diff <= 3) return 'due-soon'
-  return ''
-}
-function deliveryUrgencyTag(s: string): 'danger' | 'warning' | 'info' {
-  if (!s) return 'info'
-  const d = new Date(s)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((d.getTime() - today.getTime()) / 86400000)
-  if (diff < 0) return 'danger'
-  if (diff <= 3) return 'warning'
-  return 'info'
-}
 
 onBeforeMount(async () => {
   if (!requireWorker(router)) return

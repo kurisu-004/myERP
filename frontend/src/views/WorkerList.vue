@@ -188,6 +188,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   createWorker,
   deactivateWorker,
@@ -216,6 +217,12 @@ const search = reactive<{ name_like: string; is_active: boolean | undefined }>({
   name_like: '',
   is_active: undefined,
 })
+
+// ============ 筛选状态持久化 ============
+const { restore: restoreWorkerFilter, clear: clearWorkerFilter } = useListStatePersist(
+  'worker_list',
+  { search },
+)
 
 const dialogVisible = ref(false)
 const editing = ref<Worker | null>(null)
@@ -332,6 +339,11 @@ async function onReactivate(row: Worker): Promise<void> {
 }
 
 onMounted(async () => {
+  // 先尝试恢复 localStorage 中的搜索条件
+  const persisted = restoreWorkerFilter()
+  if (persisted) {
+    Object.assign(search, persisted.search)
+  }
   await fetchList()
   try {
     const res = await listWorkTypes({ limit: 200 })

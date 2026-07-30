@@ -3,12 +3,14 @@
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   approveOutsourceQuote,
   createOutsourceQuote,
@@ -48,6 +50,7 @@ import {
 
 const { user, hasRole } = useAuthSession()
 const roleMap = computed(() => rolesArrayToMap(user.value?.roles ?? []))
+const route = useRoute()
 const { isMobile } = useBreakpoint()
 const createDlg = useDialogSize({ desktopWidth: 640, fullscreenOnMobile: true })
 const reviewDlg = useDialogSize({ desktopWidth: 480 })
@@ -168,6 +171,15 @@ const pageSize = ref(20)
 type SortKey = 'CREATED_AT' | 'PRICE' | 'REVIEWED_AT'
 const sortBy = ref<SortKey>('CREATED_AT')
 const sortDir = ref<'ASC' | 'DESC'>('DESC')
+
+// ============ 筛选状态持久化（2026-07-30 commit 4B）============
+// 持久化 search / sortBy / sortDir / pageSize；page 不进快照。
+// 优先级：URL ?statuses=  >  restore 快照  >  角色默认（DRAFT / SUBMITTED）
+const { restore: restoreQuoteFilter } = useListStatePersist(
+  'outsource_quote_list',
+  { search, sortBy, sortDir, pageSize },
+  { exclude: new Set(['page']) },
+)
 
 const SORT_PROP_MAP: Record<string, SortKey> = {
   part_serial_no: 'CREATED_AT',  // 默认按创建时间
@@ -404,13 +416,37 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   await loadLookups()
-  // 按角色注入默认 statuses（仅在用户尚未手动选过状态时生效）
-  if (search.statuses.length === 0) {
+  // 先从 localStorage 恢复非 statuses 字段（keyword / customerId / sortBy / sortDir / pageSize）
+  // —— 这些字段无 URL/角色默认优先级，直接 restore 即可。
+  const persisted = restoreQuoteFilter()
+  if (persisted) {
+    if (persisted.search) Object.assign(search, persisted.search as Partial<SearchState>)
+    if (typeof persisted.sortBy === 'string') sortBy.value = persisted.sortBy as SortKey
+    if (typeof persisted.sortDir === 'string') sortDir.value = persisted.sortDir as 'ASC' | 'DESC'
+    if (typeof persisted.pageSize === 'number') pageSize.value = persisted.pageSize as number
+  }
+  // 决定 statuses 的优先级（独立处理）：
+  //   1) URL ?statuses= 逗号分隔（如 ?statuses=DRAFT,SUBMITTED）—— 最高优先
+  //   2) restore() 快照中的 statuses（用户上次手动选的；上一步已 Object.assign 进 search）
+  //   3) 角色默认（MANAGER→SUBMITTED / CLERK→DRAFT）
+  const urlStatusesRaw = route.query.statuses
+  const urlStatuses = typeof urlStatusesRaw === 'string'
+    ? urlStatusesRaw.split(',').filter((s): s is OutsourceQuoteStatus =>
+        ACTIVE_QUOTE_STATUSES.includes(s as OutsourceQuoteStatus))
+    : []
+  if (urlStatuses.length > 0) {
+    search.statuses = [...urlStatuses]
+    statusDraft.value = [...urlStatuses]
+  } else if (search.statuses.length === 0) {
+    // 上述 restore 已可能写回 search.statuses；只有仍为空才走角色默认
     const defaults = defaultStatusesForRole(roleMap.value)
     if (defaults.length > 0) {
       search.statuses = [...defaults]
       statusDraft.value = [...defaults]
     }
+  } else {
+    // restore 已写回 statuses → 同步 statusDraft
+    statusDraft.value = [...search.statuses]
   }
   await refresh()
 })

@@ -35,7 +35,7 @@
                     <span class="item-process" :title="item.next_process_name || ''">
                       {{ item.next_process_name || '—' }}
                     </span>
-                    <span class="item-due">{{ formatShortDate(item.planned_delivery_date) }}</span>
+                    <span class="item-due">{{ formatDashboardDeliveryDate(item.planned_delivery_date) }}</span>
                   </div>
                 </template>
                 <div v-else class="shelf-empty">空</div>
@@ -88,17 +88,12 @@ import type {
   DashboardShelfGroup,
   DashboardSnapshot,
 } from '@/types/dashboard'
+import { formatDashboardDeliveryDate } from '@/utils/deliveryDate'
 
 const shelfGroups = ref<DashboardShelfGroup[]>([])
 const workerParts = ref<DashboardSnapshot['data']['in_process']>([])
 
 let offSnap: (() => void) | null = null
-
-/** "YYYY-MM-DD..." -> "MM-DD"；空值原样返回。 */
-function formatShortDate(s: string | null | undefined): string {
-  if (!s) return '-'
-  return s.length >= 10 ? s.slice(5) : s
-}
 
 function applySnapshot(snap: DashboardSnapshot): void {
   shelfGroups.value = snap.data.on_production_shelves

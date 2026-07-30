@@ -375,6 +375,7 @@ import {
 import { listShelves } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
 import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
+import { useListStatePersist } from '@/composables/useListFilterPersist'
 import type { Shelf } from '@/types/shelf'
 import type { Process } from '@/types/process'
 
@@ -449,6 +450,13 @@ function onAutoRefreshToggle(val: string | number | boolean): void {
     }, 300_000)
   }
 }
+
+// ============ 筛选状态持久化 ============
+const { restore: restoreInspectionFilter, clear: clearInspectionFilter } = useListStatePersist(
+  'inspection_pending',
+  { search, pageSize, autoRefresh },
+  { exclude: new Set(['page']) },
+)
 
 onBeforeUnmount(() => {
   if (autoRefreshTimer !== null) {
@@ -607,6 +615,19 @@ async function onFailConfirm(): Promise<void> {
 }
 
 onMounted(() => {
+  // 先尝试恢复 localStorage 中的搜索条件 / 分页大小 / 自动刷新
+  const persisted = restoreInspectionFilter()
+  if (persisted) {
+    if (persisted.search) Object.assign(search, persisted.search)
+    if (typeof persisted.pageSize === 'number') pageSize.value = persisted.pageSize
+    if (typeof persisted.autoRefresh === 'boolean') {
+      autoRefresh.value = persisted.autoRefresh
+      if (autoRefresh.value) {
+        // 重新挂载定时器
+        onAutoRefreshToggle(true)
+      }
+    }
+  }
   fetchList()
 })
 </script>
