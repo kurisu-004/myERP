@@ -166,7 +166,7 @@
       :default-sort="defaultSort"
       :row-class-name="rowClassName"
       :row-style="{ cursor: batchMode ? 'pointer' : 'default' }"
-      show-summary
+      :show-summary="!isInspector"
       :summary-method="totalPriceSummary"
       lazy
       :load="loadChildren"
@@ -395,7 +395,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="单价" min-width="120" align="right">
+      <el-table-column v-if="!isInspector" label="单价" min-width="120" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -413,7 +413,7 @@
 
       <!-- 2026-07-24 v2 调整：总价 = quantity × unit_price **前端实时计算**
      （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
-      <el-table-column label="总价" min-width="120" align="right">
+      <el-table-column v-if="!isInspector" label="总价" min-width="120" align="right">
         <template #default="{ row }">
           <span>{{ displayTotalPrice(row as PartListItem) }}</span>
         </template>
