@@ -5,6 +5,8 @@
 - 页面尺寸是 A4 landscape（842 × 595 pt，pikepdf 归一化后 841.89 × 595.27）
 - show_info=False 时中央偏左区域无文字（D:/Q: 信息）
 - show_info=True + quantity=None 时不渲染 Q: 行（装配体场景）
+- 几何对齐旧 PIL 光栅版：主条码 / 主序列号 / 左下 / 左上 / D:Q: 信息区位置
+  （TestBackPageGeometry，2026-07-31 修正几何后新增）
 """
 from __future__ import annotations
 
@@ -13,9 +15,33 @@ from datetime import date
 
 import pikepdf
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageOps
 
 from service._print_back_page import _build_back_page_pdf
+
+
+def _render_page_to_image(pdf_bytes: bytes) -> Image.Image:
+    """把单页 PDF 渲染成 PIL Image，便于像素断言（条码区域等）。
+
+    用 pypdfium2（PDFium 后端），与正面页规格化用同一引擎，避免引入新依赖。
+    """
+    pdf = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
+    pil = pdf[0].render(scale=1.0).to_pil().convert("RGB")
+    pdf.close()
+    return pil
+
+
+def _ink_bbox(img: Image.Image, box: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    """在给定像素框内取墨迹 bbox（灰度 + invert）。
+
+    image y 向下；ReportLab 几何在 y-up 上描述，断言需要时自行换算
+    `y_img = 595 - y_up`。
+    """
+    crop = img.crop(box).convert("L")
+    bbox = ImageOps.invert(crop).getbbox()
+    if bbox is None:
+        return None
+    return (bbox[0] + box[0], bbox[1] + box[1], bbox[2] + box[0], bbox[3] + box[1])
 
 
 def _render_page_to_image(pdf_bytes: bytes) -> Image.Image:
@@ -140,3 +166,95 @@ class TestBackPageEdgeCases:
         """纯数字序列号（不常见但 Code128 支持）。"""
         pdf = _build_back_page_pdf("12345678")
         assert isinstance(pdf, bytes)
+
+
+class TestBackPageGeometry:
+    """几何对齐旧 PIL 光栅版（serial="F1016" 实测基准，容差 ±3pt）。
+
+    所有断言：image y 向下，1px ≈ 1pt（pypdfium2 scale=1.0）。
+    条码类断言不许放宽（与字体无关）；文字类断言（font 度量受 macOS Arial /
+    alpine DejaVu 差异影响）必要时可放宽并注释说明。
+    """
+
+    def test_main_barcode_geometry(self) -> None:
+        """主条码 bbox：x[692.5, 814.0]、y_img[178.5, 416.5]。"""
+        pdf = _build_back_page_pdf("F1016")
+        img = _render_page_to_image(pdf)
+        bbox = _ink_bbox(img, (680, 0, 842, 595))
+        assert bbox is not None, "主条码窗口无墨迹"
+        x1, y1, x2, y2 = bbox
+        assert abs(x1 - 692.5) <= 3, f"左缘 x={x1}, expect 692.5 ±3"
+        assert abs(x2 - 814.0) <= 3, f"右缘 x={x2}, expect 814.0 ±3"
+        assert abs(y1 - 178.5) <= 3, f"顶 y_img={y1}, expect 178.5 ±3"
+        assert abs(y2 - 416.5) <= 3, f"底 y_img={y2}, expect 416.5 ±3"
+
+    def test_main_serial_right_edge_and_center(self) -> None:
+        """主序列号右缘 ≈ 670.5（baseline 落点），y_img 中心 ≈ 297.5。"""
+        pdf = _build_back_page_pdf("F1016")
+        img = _render_page_to_image(pdf)
+        # 宽窗口避字右延伸 + 字形下沿（左缘 ~560）
+        bbox = _ink_bbox(img, (560, 0, 685, 595))
+        assert bbox is not None, "主序列号窗口无墨迹"
+        x1, y1, x2, y2 = bbox
+        assert abs(x2 - 670.5) <= 3, f"右缘 x={x2}, expect 670.5 ±3"
+        center = (y1 + y2) / 2
+        assert abs(center - 297.5) <= 6, f"中心 y_img={center}, expect 297.5 ±6"
+
+    def test_left_bottom_barcode(self) -> None:
+        """左下组：条码左缘 ≈ 28、底 y_img ≈ 567（page 底 28pt = 595-28）。"""
+        pdf = _build_back_page_pdf("F1016")
+        img = _render_page_to_image(pdf)
+        # y_img 595 - page_h_bottom(28) = 567；条码高 43.8 → 顶 y_img 595-28-43.8 = 523.2
+        bbox = _ink_bbox(img, (0, 480, 300, 595))
+        assert bbox is not None, "左下组窗口无墨迹"
+        x1, y1, x2, y2 = bbox
+        assert abs(x1 - 28) <= 3, f"条码左缘 x={x1}, expect 28 ±3"
+        assert abs(y2 - 567) <= 3, f"条码底 y_img={y2}, expect 567 ±3"
+
+    def test_left_top_group(self) -> None:
+        """左上组 180° 旋转贴顶 margin：bbox 顶 y_img ≈ 28、左缘 ≈ 28。"""
+        pdf = _build_back_page_pdf("F1016")
+        img = _render_page_to_image(pdf)
+        bbox = _ink_bbox(img, (0, 0, 300, 120))
+        assert bbox is not None, "左上组窗口无墨迹"
+        x1, y1, x2, y2 = bbox
+        assert abs(y1 - 28) <= 3, f"顶 y_img={y1}, expect 28 ±3"
+        assert abs(x1 - 28) <= 3, f"左缘 x={x1}, expect 28 ±3"
+
+    def test_info_region_top(self) -> None:
+        """show_info=True：左半区有墨迹，D 行 ink 顶 ≈ 208.25（=0.35×595）。
+
+        文字 ink 顶距页顶比例 INFO_TOP_FRACTION=0.35；
+        page y_up = page_h - page_h*0.35 = 595 - 208.25 = 386.75；
+        image y = 595 - 386.75 = 208.25。
+        """
+        pdf = _build_back_page_pdf(
+            "F1016",
+            planned_delivery_date=date(2026, 8, 10),
+            quantity=460,
+            show_info=True,
+        )
+        img = _render_page_to_image(pdf)
+        bbox = _ink_bbox(img, (28, 150, 421, 360))
+        assert bbox is not None, "info 窗口无墨迹"
+        x1, y1, x2, y2 = bbox
+        assert abs(y1 - 208.25) <= 6, f"首行顶 y_img={y1}, expect 208.25 ±6"
+
+    def test_info_d_above_q(self) -> None:
+        """show_info=True 时 D 行必须在 Q 行上方（image y 更小）。"""
+        pdf = _build_back_page_pdf(
+            "F1016",
+            planned_delivery_date=date(2026, 8, 10),
+            quantity=460,
+            show_info=True,
+        )
+        img = _render_page_to_image(pdf)
+        # 拆成两段窄横向窗口分别取 bbox：D 在上 Q 在下；两窗口均从 150 起
+        # (D 顶 ~208)，Q 在 ~280 附近
+        d_bbox = _ink_bbox(img, (28, 200, 421, 265))
+        q_bbox = _ink_bbox(img, (28, 265, 421, 345))
+        assert d_bbox is not None, "D 行窗口无墨迹"
+        assert q_bbox is not None, "Q 行窗口无墨迹"
+        d_y1 = d_bbox[1]
+        q_y1 = q_bbox[1]
+        assert d_y1 < q_y1, f"D 行顶 y_img={d_y1} 应 < Q 行顶 y_img={q_y1}"

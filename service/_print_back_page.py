@@ -3,11 +3,18 @@
 2026-07-31 打印性能优化：替换原 PIL + python-barcode 全页光栅渲染管线，
 背面页从 ~150 KB 光栅 PDF 降到 ~5-15 KB 矢量 PDF，生成时间从 ~0.5s/件降到 ~5ms/件。
 
-布局（与原 `_build_barcode_page` 视觉一致，service/printing.py 旧代码为参考）：
-- 右侧竖排大条码（旋转 90°）+ 序列号大字（沿 A4 长边尺寸的 1/8），序列号在条码左侧（x 较小）；
-- 左下水平放置小条码 + 小序列号；
-- 左上旋转 180° 放置小条码 + 小序列号；
-- 中部偏左：D: MM/DD + Q: N 大字信息（不渲染 CJK，ASCII 标签兼容已有字体）。
+布局（A4 landscape 842 × 595 pt；以 serial="F1016" 实测对齐旧 PIL 光栅版）：
+- 主条码：右半区纵向贴右边距 28pt（旋转 90° CCW），墨迹长度 238pt × 条高 121.5pt，
+  → page x∈[692.5, 814.0]、y∈[178.5, 416.5]；
+- 主序列号：旋转 90° CCW 紧贴主条码左缘，右缘 x=670.5，纵向居中；font 105pt，
+  超长序列号自动缩字号避免溢出；
+- 左下小组：条码贴左下 (28, 28)，序列号 baseline y=81.8 在其上方；font 31.2pt；
+- 左上小组：左下几何整体 180° 旋转贴顶 margin 28 → 条码在上、倒置序号在下；
+- D:/Q: 信息：左半区居中逐行；D 在上（ink 顶距页顶 0.35×595=208.25pt）、Q 在下，
+  行距 16pt；font 57.6pt。
+
+2026-07-31 修正：按旧 PIL 光栅版实测几何 1:1 重写绘制部分（旋转映射 + y 方向 +
+INFO_FONT/INFO_LINE_GAP + 上半 180° 组 + D/Q 顺序等原有多处错误）。
 
 设计约束：
 - 单页 A4 landscape（842 × 595 pt），与正面页 orientation 解耦：背面页永远 landscape。
@@ -24,15 +31,15 @@ import os
 from datetime import date
 
 from reportlab.graphics.barcode.code128 import Code128
-from reportlab.lib.pagesizes import landscape, A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 _logger = logging.getLogger(__name__)
 
-# A4 landscape 点尺寸（与 service/printing.py 保持一致）
-A4_LANDSCAPE = landscape(A4)  # (842, 595)
+# 页尺寸（pt）。与 service.printing.A4_LANDSCAPE 同值；因 service.printing 顶层
+# 会 import 本模块，这里固化常量而不反向 import，避免循环依赖。
+A4_LANDSCAPE: tuple[int, int] = (842, 595)
 
 
 @functools.lru_cache(maxsize=1)
@@ -64,27 +71,43 @@ def _register_print_font() -> str:
 
 
 # === 主条码 + 序列号（沿 A4 右边，旋转 90°）===
-# 原打印设置：A4 长边 / 8 ≈ 105 pt 作为旋转前字号；barWidth × 模块数决定宽度。
-# 旋转 90° 后，原始 x 方向宽度变成纵向高度（页面纵长），原 y 高度变成横向宽度。
-MAIN_SERIAL_FONT_PT = 105      # 序列号字体（pt；ReportLab 用 pt，与 PIL px@150DPI 一致 105*150/72≈219）
-MAIN_BC_BAR_HEIGHT_PT = 250    # 条码条高度（pt；旋转后变成页面横向宽度）
-MAIN_BC_BAR_WIDTH_PT = 0.5     # 条码单个模块宽度（pt；与原 module_width=0.3 + DPI 缩放效果相近）
-MAIN_RIGHT_MARGIN_PT = 28      # 主条码距页面右边 1 cm
-MAIN_SERIAL_BC_GAP_PT = 22     # 序列号 ↔ 条码 间距
+MAIN_SERIAL_FONT_PT = 105.0        # 序列号字体（pt）
+MAIN_BC_INK_LEN_PT = 238.0         # 主条码墨迹长度（旋转后沿页面纵向）
+MAIN_BC_BAR_HEIGHT_PT = 121.5      # 主条码条高度（旋转后沿页面横向）
+MAIN_RIGHT_MARGIN_PT = 28          # 主条码距页面右边距（pt）
+MAIN_SERIAL_BC_GAP_PT = 22         # 序列号 ↔ 主条码 间距（旋转后横向）
 
-# === 小条码（备用，左下 + 左上）===
-SMALL_SERIAL_FONT_PT = 35      # 小序列号字体（pt）
-SMALL_BC_BAR_HEIGHT_PT = 40    # 小条码条高度
-SMALL_BC_BAR_WIDTH_PT = 0.3    # 小条码单模块宽度
-SMALL_LEFT_MARGIN_PT = 28      # 距页面左边 1 cm
-SMALL_BOTTOM_MARGIN_PT = 28    # 距页面下边 1 cm
-SMALL_TOP_MARGIN_PT = 28       # 距页面上边 1 cm
-SMALL_SERIAL_BC_GAP_PT = 6     # 小序列号 ↔ 小条码 间距
+# === 小条码（左下水平 + 左上 180°）===
+SMALL_SERIAL_FONT_PT = 31.2        # 小序列号字体（pt）
+SMALL_BC_INK_LEN_PT = 85.7         # 小条码墨迹长度
+SMALL_BC_BAR_HEIGHT_PT = 43.8      # 小条码条高度
+SMALL_LEFT_MARGIN_PT = 28          # 距页面左边距（pt）
+SMALL_BOTTOM_MARGIN_PT = 28        # 距页面下边距（pt）
+SMALL_TOP_MARGIN_PT = 28           # 距页面上边距（pt）
+SMALL_SERIAL_BC_GAP_PT = 10        # 小序列号 ↔ 小条码 间距
 
-# === 中部偏左：D:/Q: 信息 ===
-INFO_FONT_PT = 80              # 大字信息（pt）
-INFO_LEFT_MARGIN_PT = 28       # 距页面左边 1 cm
-INFO_LINE_GAP_PT = 12          # 两行间距
+# === D:/Q: 信息（中部偏左）===
+INFO_FONT_PT = 57.6                # 大字信息（pt；旧版 120px @150DPI）
+INFO_INK_H_PT = 48.5               # 旧版实测 "D: 08/10" ink 高；脱离字体度量
+INFO_LEFT_MARGIN_PT = 28           # 距页面左边距（pt）
+INFO_LINE_GAP_PT = 16              # 两行间距（pt）
+INFO_TOP_FRACTION = 0.35           # 首行 ink 顶距页顶的比例
+
+# === 条码反算 ===
+MIN_BAR_MODULE_PT = 0.7            # 长序列号防条码过细（≈0.25mm）
+
+
+def _code128(data: str, *, ink_len_pt: float, bar_height_pt: float) -> Code128:
+    """按目标墨迹长度反算 barWidth。quiet=False：留白由外部 margin 保证。"""
+    modules = Code128(data, barWidth=1.0, humanReadable=False, quiet=False).width
+    bar_w = max(MIN_BAR_MODULE_PT, ink_len_pt / modules)
+    return Code128(
+        data,
+        barHeight=bar_height_pt,
+        barWidth=bar_w,
+        humanReadable=False,
+        quiet=False,
+    )
 
 
 def _build_back_page_pdf(
@@ -96,131 +119,92 @@ def _build_back_page_pdf(
 ) -> bytes:
     """渲染单页 A4 landscape **矢量 PDF**（白底黑字黑条）作为打印背面。
 
-    - 主条码 + 序列号：沿 A4 右边，旋转 90°（CCW）。序列号在条码左侧（x 较小）。
-      旋转坐标系：原 (x, y) → 旋转后 (-y, x)；translate 到页面右边距，rotate 90，
-      以条码中心为原点画 widget，主条码的纵向高度填到 ~500pt（≈ A4 长边 × 0.6）。
-    - 小条码 ×2：左下水平、左上旋转 180°；高度 ~40pt，宽 ~80pt。
-    - D:/Q: 信息：中部偏左，INFO_FONT_PT 大字；与主条码 + 小条码区域无重叠。
+    几何以 serial="F1016" 实测对齐旧 PIL 光栅版（见模块 docstring）。
     """
     page_w, page_h = A4_LANDSCAPE  # (842, 595)
-    font_name = _register_print_font()
+    font = _register_print_font()
 
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4_LANDSCAPE)
 
-    # ---- 主条码 + 序列号（沿右边，旋转 90°）----
-    bc_main = Code128(
+    # --- 1. 主条码：旋转 90° CCW，右缘贴 margin，纵向居中 ---
+    bc = _code128(
         serial_no,
-        barHeight=MAIN_BC_BAR_HEIGHT_PT,
-        barWidth=MAIN_BC_BAR_WIDTH_PT,
-        humanReadable=False,
-        fontName=font_name,
-        fontSize=0,
-        quiet=True,
+        ink_len_pt=MAIN_BC_INK_LEN_PT,
+        bar_height_pt=MAIN_BC_BAR_HEIGHT_PT,
     )
-    # Code128 widget 在画布上的尺寸由 barHeight × 模块数 × barWidth 决定
-    # 旋转坐标系下：原始 widget 高（barHeight=250）变成横向宽度；
-    # widget 宽 = bc_main.width 变成纵向长度。
-    bc_w_native = bc_main.width
-    bc_h_native = MAIN_BC_BAR_HEIGHT_PT
-    # 主条码目标横向宽度 = 页面短边 50%（旋转后变成纵向高度）
-    target_width = page_w * 0.5
-    # 因 bc_h_native 已经由 barHeight 决定，target_width 通过 mainWidget 的总宽度控制；
-    # Code128 widget 宽度会随 barWidth 微调。为简化，直接用默认 widget 高度作纵向长。
-
-    # 序列号：先量好 bbox（用 canvas.stringWidth / font）
-    c.setFont(font_name, MAIN_SERIAL_FONT_PT)
-    serial_w_native = c.stringWidth(serial_no, font_name, MAIN_SERIAL_FONT_PT)
-
-    gap_pt = MAIN_SERIAL_BC_GAP_PT
-    right_margin_pt = MAIN_RIGHT_MARGIN_PT
-
-    # 旋转坐标系下的两个块的总纵向长度（旋转后就是页面纵向）
-    total_h_native = serial_w_native + gap_pt + bc_h_native
-    # 旋转坐标系下的两个块的总横向宽度（旋转后变成页面横向占用）
-    total_w_rotated = max(bc_w_native, MAIN_SERIAL_FONT_PT * 0.7)
-
-    # 以「旋转后」坐标系定位：右边距 = page_w - right_margin_pt - total_w_rotated
     c.saveState()
-    c.translate(page_w - right_margin_pt - total_w_rotated, (page_h - total_h_native) / 2)
+    c.translate(page_w - MAIN_RIGHT_MARGIN_PT, (page_h - bc.width) / 2)
     c.rotate(90)
-    # 现在 (x, y) = 旋转前的 (-y, x)；先画序列号（沿 x），再画条码（在 y 方向下方）
-    c.drawString(0, 0, serial_no)
-    # 条码放在序列号下方：y 方向向下 = -serial_h_native - gap
-    serial_h_native = MAIN_SERIAL_FONT_PT  # 用字号当视觉高度
-    bc_main.drawOn(c, 0, -(serial_h_native + gap_pt + bc_h_native))
+    bc.drawOn(c, 0, 0)  # → page x[692.5,814] y[178.5,416.5]
     c.restoreState()
 
-    # ---- 小条码（左下水平）----
-    bc_small = Code128(
-        serial_no,
-        barHeight=SMALL_BC_BAR_HEIGHT_PT,
-        barWidth=SMALL_BC_BAR_WIDTH_PT,
-        humanReadable=False,
-        fontName=font_name,
-        fontSize=0,
-        quiet=True,
-    )
-    bc_s_w = bc_small.width
-    bc_s_h = SMALL_BC_BAR_HEIGHT_PT
-
-    c.setFont(font_name, SMALL_SERIAL_FONT_PT)
-    sr_s_w = c.stringWidth(serial_no, font_name, SMALL_SERIAL_FONT_PT)
-    sr_s_h = SMALL_SERIAL_FONT_PT
-
-    left_pt = SMALL_LEFT_MARGIN_PT
-    bottom_pt = SMALL_BOTTOM_MARGIN_PT
-    gap_s_pt = SMALL_SERIAL_BC_GAP_PT
-
-    # 左下：序列号在上、条码在下，整体贴左下角
-    block_w = max(sr_s_w, bc_s_w)
-    block_h = sr_s_h + gap_s_pt + bc_s_h
-    # 序列号左上角 = (left, page_h - bottom - block_h + sr_s_h)
-    # 但我们用 baseline 画 drawString，所以直接给 baseline y
-    serial_y = page_h - bottom_pt - bc_s_h - gap_s_pt  # 序列号 baseline 在这块区域顶部
-    # 实际上 drawString 的 y 是 baseline，所以 sr_s_h 是字体的 ascent+descent；
-    # 为简单起见，让序列号顶部与 block 顶部对齐即可
-    block_top_y = page_h - bottom_pt - block_h  # A4 坐标 y 从下往上
-    # 序列号 baseline = block_top_y + sr_s_h * 0.85（让顶部贴齐）
-    c.drawString(left_pt, block_top_y + sr_s_h * 0.8, serial_no)
-    # 条码放在序列号下方
-    bc_small.drawOn(c, left_pt, block_top_y)
-
-    # ---- 小条码（左上旋转 180°）----
-    # 用 saveState/translate/rotate(180) 复用上面的几何
-    top_pt = SMALL_TOP_MARGIN_PT
+    # --- 2. 主序列号：旋转 90° CCW，右缘紧贴条码左缘，纵向居中 ---
+    font_pt = MAIN_SERIAL_FONT_PT
+    sw = c.stringWidth(serial_no, font, font_pt)
+    avail = page_h - 2 * MAIN_RIGHT_MARGIN_PT  # 539；超长序列号缩字号
+    if sw > avail:
+        font_pt *= avail / sw
+        sw = avail
     c.saveState()
-    c.translate(left_pt, page_h - top_pt)  # 左上角
-    c.rotate(180)
-    # 现在原点位于左上角，旋转 180° 后 (x,y) ↔ (-x,-y)
-    # 序列号画在 (0, -sr_s_h*0.8)（向上偏移使其顶部贴齐）
-    c.drawString(0, -sr_s_h * 0.8, serial_no)
-    bc_small.drawOn(c, 0, -(sr_s_h + gap_s_pt + bc_s_h))
+    c.translate(
+        page_w - MAIN_RIGHT_MARGIN_PT - MAIN_BC_BAR_HEIGHT_PT - MAIN_SERIAL_BC_GAP_PT,
+        (page_h - sw) / 2,
+    )
+    c.rotate(90)
+    c.setFont(font, font_pt)
+    c.drawString(0, 0, serial_no)  # baseline 落在 page x=670.5，字形向左长出
     c.restoreState()
 
-    # ---- D:/Q: 信息（中部偏左）----
-    if show_info:
-        info_lines: list[str] = []
-        if planned_delivery_date is not None:
-            info_lines.append(
-                f"D: {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}"
-            )
-        else:
-            info_lines.append("D: --")
-        if quantity is not None:
-            info_lines.append(f"Q: {quantity}")
+    # --- 3. 左下小组：条码贴底，序号在其上方 ---
+    bcs = _code128(
+        serial_no,
+        ink_len_pt=SMALL_BC_INK_LEN_PT,
+        bar_height_pt=SMALL_BC_BAR_HEIGHT_PT,
+    )
+    bcs.drawOn(c, SMALL_LEFT_MARGIN_PT, SMALL_BOTTOM_MARGIN_PT)
+    c.setFont(font, SMALL_SERIAL_FONT_PT)
+    c.drawString(
+        SMALL_LEFT_MARGIN_PT,
+        SMALL_BOTTOM_MARGIN_PT + SMALL_BC_BAR_HEIGHT_PT + SMALL_SERIAL_BC_GAP_PT,
+        serial_no,  # baseline y = 81.8
+    )
 
-        if info_lines:
-            c.setFont(font_name, INFO_FONT_PT)
-            # 中部偏左 = x 距页面左边 1cm；y 从 page_h * 0.65 起（避开左侧小条码 + 右侧主条码）
-            info_x = INFO_LEFT_MARGIN_PT
-            info_y_start = page_h * 0.65  # ReportLab canvas y 从下往上
-            # 单行近似高度（字符 ascent+descent）
-            line_h = INFO_FONT_PT + INFO_LINE_GAP_PT
-            # 反向绘制：第一行在最下面，向上排
-            for i, line in enumerate(info_lines):
-                y = info_y_start + i * line_h
-                c.drawString(info_x, y, line)
+    # --- 4. 左上小组：同一几何整体 180° 旋转，贴 top margin ---
+    # 锚点取「组的右上角」：rotate(180) 下 page = (tx - lx, ty - ly)，
+    # 局部按正立画（条码在下、序号在上）翻转后正好是条码在上、倒置序号在下。
+    block_w = max(bcs.width, c.stringWidth(serial_no, font, SMALL_SERIAL_FONT_PT))
+    c.saveState()
+    c.translate(
+        SMALL_LEFT_MARGIN_PT + block_w,
+        page_h - SMALL_TOP_MARGIN_PT,  # 组的右上角
+    )
+    c.rotate(180)  # page = (tx - lx, ty - ly)
+    bcs.drawOn(c, 0, 0)  # 局部底 → 页面顶：条码在上
+    c.drawString(
+        0,
+        SMALL_BC_BAR_HEIGHT_PT + SMALL_SERIAL_BC_GAP_PT,
+        serial_no,  # 倒置序号在下
+    )
+    c.restoreState()
+
+    # --- 5. D:/Q: 信息，左半区逐行居中，D 在上 Q 在下 ---
+    if show_info:
+        if planned_delivery_date is not None:
+            d_line = f"D: {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}"
+        else:
+            d_line = "D: --"
+        lines = [d_line]
+        if quantity is not None:
+            lines.append(f"Q: {quantity}")
+
+        c.setFont(font, INFO_FONT_PT)
+        line_h = INFO_INK_H_PT + INFO_LINE_GAP_PT
+        for i, line in enumerate(lines):
+            ink_top = page_h - page_h * INFO_TOP_FRACTION - i * line_h  # y-up
+            tw = c.stringWidth(line, font, INFO_FONT_PT)
+            x = INFO_LEFT_MARGIN_PT + (page_w / 2 - INFO_LEFT_MARGIN_PT - tw) / 2
+            c.drawString(x, ink_top - INFO_INK_H_PT, line)
 
     c.showPage()
     c.save()
