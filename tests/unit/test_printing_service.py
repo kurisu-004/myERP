@@ -18,6 +18,7 @@ from pypdf.generic import DecodedStreamObject, NameObject, RectangleObject
 
 from model import TPartFile
 from service.printing import _fit_pdf_page_to_a4, build_part_print_pdf
+from datetime import date
 
 
 pytestmark = pytest.mark.asyncio
@@ -850,3 +851,75 @@ class TestListByPartsRepository:
 
         assert result[1] is not None
         assert result[99] is None
+
+
+class TestBarcodePageInfo:
+    """2026-07-30：条码页新增交期 + 数量信息渲染。"""
+
+    def _non_white_count(self, img: Image.Image) -> int:
+        """返回灰度图中非白（<250）像素数量。"""
+        hist = img.convert("L").histogram()
+        return sum(hist[:250])
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_info_text_visible_with_date_and_quantity(self, orientation: str) -> None:
+        """中部偏左区域应有交期+数量的黑色像素。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(
+            orientation, "L2014",
+            planned_delivery_date=date(2026, 8, 15),
+            quantity=100,
+            show_info=True,
+        )
+        w, h = img.size
+        # 中部偏左：x ∈ [0, w*0.45]，y ∈ [h*0.30, h*0.55]
+        info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
+        assert self._non_white_count(info_zone) > 100, "中部偏左应有交期/数量文字"
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_info_text_shows_dash_when_no_date(self, orientation: str) -> None:
+        """交期为 None 时显示「交期 --」，中部偏左仍应有黑色像素。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(
+            orientation, "L2014",
+            planned_delivery_date=None,
+            quantity=50,
+            show_info=True,
+        )
+        w, h = img.size
+        info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
+        assert self._non_white_count(info_zone) > 100, "中部偏左应有「交期 --」文字"
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_assembly_no_quantity_line(self, orientation: str) -> None:
+        """quantity=None（装配体总装图）时，不应渲染数量行；只渲染交期一行。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(
+            orientation, "L1001",
+            planned_delivery_date=date(2026, 8, 15),
+            quantity=None,
+            show_info=True,
+        )
+        w, h = img.size
+        # 数量行约在 y ∈ [h*0.50, h*0.70] 区域（交期行下方）
+        quantity_zone = img.crop((0, int(h * 0.50), int(w * 0.45), int(h * 0.70)))
+        # 无数量行时该区域应基本为白色（允许极少抗锯齿残留）
+        assert self._non_white_count(quantity_zone) < 50, "数量行不应出现"
+
+    @pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+    def test_no_info_when_show_info_false(self, orientation: str) -> None:
+        """show_info=False（旧测试/默认调用）时，中部偏左应保持空白。"""
+        from service.printing import _build_barcode_page
+
+        img = _build_barcode_page(
+            orientation, "L2014",
+            planned_delivery_date=date(2026, 8, 15),
+            quantity=100,
+            show_info=False,
+        )
+        w, h = img.size
+        info_zone = img.crop((0, int(h * 0.30), int(w * 0.45), int(h * 0.55)))
+        assert self._non_white_count(info_zone) == 0, "show_info=False 时不应渲染信息文字"

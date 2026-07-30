@@ -20,6 +20,7 @@ import functools
 import io
 import logging
 from dataclasses import dataclass
+from datetime import date
 
 from barcode import Code128
 from barcode.writer import ImageWriter
@@ -90,6 +91,11 @@ SMALL_BOTTOM_MARGIN_PT = 28                    # 距页面下边
 SMALL_TOP_MARGIN_PT = 28                       # 距页面上边
 SMALL_SERIAL_GAP_PT = 10                       # 小序列号 ↔ 小条码 间距
 
+# === 2026-07-30 新增：条码页交期/数量信息 ===
+INFO_FONT_PX = 120                             # 交期/数量字体（@150 DPI；明显大于小条码 65px）
+INFO_LEFT_MARGIN_PT = 28                       # 距页面左边（精确 1 cm）
+INFO_LINE_GAP_PT = 16                          # 两行间距
+
 
 def _a4_px(orientation: str) -> tuple[int, int]:
     """按方向返回 A4 像素尺寸 (w, h)。orientation ∈ {'portrait','landscape'}。"""
@@ -147,13 +153,21 @@ def _load_cn_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
-    """渲染反面页（2026-07-20 迭代 v3）：
+def _build_barcode_page(
+    orientation: str,
+    serial_no: str,
+    *,
+    planned_delivery_date: date | None = None,
+    quantity: int | None = None,
+    show_info: bool = False,
+) -> Image.Image:
+    """渲染反面页（2026-07-20 迭代 v3；2026-07-30 增加交期+数量）：
     - 序列号 + 条码均旋转 90° CCW（rotate(90)），沿 A4 右边并排堆叠；
     - 序列号在条码左侧（视觉上的「左」，即 x 较小的位置）；
     - 条码水平长度 = A4 短边 50%（旋转后变成纵向长度）；
     - 序列号字号 = A4 长边 / 8（旋转后是文本纵向高度）；
     - 条码距页面右边 RIGHT_MARGIN_PT = 28 pt（精确 1 cm）。
+    - 中部偏左新增「交期 MM/DD」「数量 N」大字信息（避开右侧主条码区与左下/左上备用小条码区）。
 
     旋转方向说明：rotate(90) 是 PIL 逆时针 90°，原始 LR 文本 → 旋转后
     文本最右字符（如 "F1004" 的 "4"）出现在顶部，自上而下读为 "4001F"。
@@ -240,6 +254,32 @@ def _build_barcode_page(orientation: str, serial_no: str) -> Image.Image:
     mini_canvas.paste(bc_small, (0, sr_s_h + gap_s_px))
     mini_rotated = mini_canvas.rotate(180, expand=True, resample=Image.BICUBIC)
     page.paste(mini_rotated, (left_px, top_px))
+
+    # === 2026-07-30 新增：交期 + 数量（中部偏左，醒目大字）===
+    if show_info:
+        info_lines: list[str] = []
+        if planned_delivery_date is not None:
+            info_lines.append(f"交期 {planned_delivery_date.month:02d}/{planned_delivery_date.day:02d}")
+        else:
+            info_lines.append("交期 --")
+        if quantity is not None:
+            info_lines.append(f"数量 {quantity}")
+
+        if info_lines:
+            info_font = _load_cn_font(size=INFO_FONT_PX)
+            draw = ImageDraw.Draw(page)
+            info_left_px = int(INFO_LEFT_MARGIN_PT * PX_PER_PT)
+            info_gap_px = int(INFO_LINE_GAP_PT * PX_PER_PT)
+            # 从页面垂直 35% 处开始（中部偏左，避开左下/左上小条码与右侧主条码）
+            info_y = int(page_h * 0.35)
+            for line in info_lines:
+                bbox = draw.textbbox((0, 0), line, font=info_font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                # 水平居中于左半区（避开右侧主条码区）
+                x = info_left_px + (page_w // 2 - info_left_px - tw) // 2
+                draw.text((x, info_y), line, fill="#000", font=info_font)
+                info_y += th + info_gap_px
 
     return page
 
@@ -403,6 +443,8 @@ class _PartPrintData:
     drawing_bytes: bytes | None = None
     drawing_ext: str | None = None
     orientation: str = "landscape"
+    planned_delivery_date: date | None = None
+    quantity: int | None = None
 
 
 async def _prepare_part_print_data(
@@ -456,6 +498,8 @@ async def _prepare_part_print_data(
         drawing_bytes=drawing_bytes,
         drawing_ext=drawing_ext,
         orientation="landscape",
+        planned_delivery_date=part.planned_delivery_date if isinstance(getattr(part, "planned_delivery_date", None), date) else None,
+        quantity=part.quantity if isinstance(getattr(part, "quantity", None), int) else None,
     )
 
 
@@ -533,6 +577,8 @@ def _build_part_print_pdf_sync(data: _PartPrintData) -> bytes:
         drawing_no=data.drawing_no,
         name=data.name,
         orientation=orientation,
+        planned_delivery_date=data.planned_delivery_date,
+        quantity=data.quantity,
     )
 
     _w_pt, _h_pt = A4_LANDSCAPE if orientation == "landscape" else A4_PORTRAIT
@@ -565,6 +611,8 @@ def _build_drawing_with_barcode_pages(
     drawing_no: str,
     name: str,
     orientation: str = "landscape",
+    planned_delivery_date: date | None = None,
+    quantity: int | None = None,
 ) -> PdfWriter:
     """构建「图纸页 + 条码背面页」双面 PDF（零件/装配体通用）。
 
@@ -599,7 +647,12 @@ def _build_drawing_with_barcode_pages(
 
     # 反面：条码页（强制 landscape）
     bc_orientation = "landscape"
-    barcode_page_img = _build_barcode_page(bc_orientation, serial_no)
+    barcode_page_img = _build_barcode_page(
+        bc_orientation, serial_no,
+        planned_delivery_date=planned_delivery_date,
+        quantity=quantity,
+        show_info=True,
+    )
     barcode_pdf_bytes = _image_to_a4_pdf_bytes(barcode_page_img, bc_orientation)
     barcode_reader = PdfReader(io.BytesIO(barcode_pdf_bytes))
     for page in barcode_reader.pages:
@@ -747,12 +800,12 @@ async def build_parts_print_pdf_batch(
     download_keys: list[tuple[str, int]] = []  # (type, id)
 
     for pid in ordered_part_ids:
-        if pid in drawing_metadata:
+        if pid in drawing_metadata and drawing_metadata[pid] is not None:
             download_tasks.append(_download_with_sem(drawing_metadata[pid]))
             download_keys.append(("part", pid))
 
     for aid in assembly_order:
-        if aid in assembly_master_metadata:
+        if aid in assembly_master_metadata and assembly_master_metadata[aid] is not None:
             download_tasks.append(_download_with_sem(assembly_master_metadata[aid]))
             download_keys.append(("asm_master", aid))
 
@@ -760,7 +813,7 @@ async def build_parts_print_pdf_batch(
         child_map = assembly_to_children.get(aid, {})
         children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
         for c in children:
-            if c.id in drawing_metadata:
+            if c.id in drawing_metadata and drawing_metadata[c.id] is not None:
                 download_tasks.append(_download_with_sem(drawing_metadata[c.id]))
                 download_keys.append(("part", c.id))
 
@@ -795,6 +848,8 @@ async def build_parts_print_pdf_batch(
                 drawing_bytes=part_drawing_bytes.get(pid),
                 drawing_ext=master.file_type.upper() if master else None,
                 orientation="landscape",
+                planned_delivery_date=p.planned_delivery_date if isinstance(getattr(p, "planned_delivery_date", None), date) else None,
+                quantity=p.quantity if isinstance(getattr(p, "quantity", None), int) else None,
             )
         )
 
@@ -810,6 +865,8 @@ async def build_parts_print_pdf_batch(
                 drawing_bytes=asm_master_bytes.get(aid),
                 drawing_ext=master.file_type.upper() if master else None,
                 orientation="landscape",
+                planned_delivery_date=asm.planned_delivery_date if isinstance(getattr(asm, "planned_delivery_date", None), date) else None,
+                quantity=None,
             )
         )
 
@@ -826,6 +883,8 @@ async def build_parts_print_pdf_batch(
                     drawing_bytes=part_drawing_bytes.get(c.id),
                     drawing_ext=child_master.file_type.upper() if child_master else None,
                     orientation="landscape",
+                    planned_delivery_date=c.planned_delivery_date if isinstance(getattr(c, "planned_delivery_date", None), date) else None,
+                    quantity=c.quantity if isinstance(getattr(c, "quantity", None), int) else None,
                 )
             )
 
