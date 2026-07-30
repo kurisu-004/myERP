@@ -136,9 +136,9 @@
                 >加急</el-tag>
                 <span class="delivery-date" :class="deliveryUrgencyClass(p.planned_delivery_date)">
                   <el-icon><Calendar /></el-icon>
-                  {{ formatDate(p.planned_delivery_date) }}
-                  <span v-if="daysLeftText(p.planned_delivery_date)" class="days-left">
-                    · {{ daysLeftText(p.planned_delivery_date) }}
+                  {{ formatDeliveryDate(p.planned_delivery_date) }}
+                  <span v-if="deliveryDaysLeftText(p.planned_delivery_date)" class="days-left">
+                    · {{ deliveryDaysLeftText(p.planned_delivery_date) }}
                   </span>
                 </span>
               </div>
@@ -289,6 +289,7 @@ import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 import ProcessPickerDialog from '@/views/scan/components/ProcessPickerDialog.vue'
 import type { Process } from '@/types/process'
+import { formatDeliveryDate, deliveryDaysLeftText, deliveryUrgencyClass } from '@/utils/deliveryDate'
 
 const router = useRouter()
 const { worker, requireWorker, reset: resetScanSession } = useScanSession()
@@ -519,40 +520,6 @@ function backToBadge(): void {
   cancelSelect()
   resetScanSession()
   void router.replace('/scan/badge')
-}
-
-// --- 交期辅助（与 ScanPickParts 一致） ---
-function formatDate(s: string | null | undefined): string {
-  if (!s) return ''
-  return s.slice(5).replace(/-/g, '/')  // MM/DD
-}
-function daysLeftText(s: string | null | undefined): string {
-  if (!s) return ''
-  const d = new Date(s)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((d.getTime() - today.getTime()) / 86400000)
-  if (diff < 0) return `已逾期${Math.abs(diff)}天`
-  if (diff === 0) return '今天到期'
-  if (diff <= 3) return `${diff}天后到期`
-  return ''
-}
-function deliveryUrgencyClass(s: string | null | undefined): string {
-  if (!s) return ''
-  const d = new Date(s)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((d.getTime() - today.getTime()) / 86400000)
-  if (diff < 0) return 'overdue'
-  if (diff <= 3) return 'due-soon'
-  return ''
-}
-function deliveryUrgencyTag(s: string | null | undefined): 'danger' | 'warning' | 'info' {
-  if (!s) return 'info'
-  const d = new Date(s)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((d.getTime() - today.getTime()) / 86400000)
-  if (diff < 0) return 'danger'
-  if (diff <= 3) return 'warning'
-  return 'info'
 }
 </script>
 
