@@ -499,6 +499,8 @@ def get_assembly_service(
         delivery_notes_repo=DeliveryNoteRepository(session),  # 2026-07-22：PR-G
         outsource_companies=OutsourceCompanyRepository(session),
         outsource_company_process=OutsourceCompanyProcessRepository(session),
+        outsource_shipments=OutsourceShipmentRepository(session),  # 2026-07-30：cancel 级联取消子件时关闭开放发货单
+        part_batches=PartBatchRepository(session),  # 2026-07-29：批次化 — cancel / create_root_batch 必填
         current_user=user,
     )
     part_files = PartFileService(

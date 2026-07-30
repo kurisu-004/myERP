@@ -1650,9 +1650,12 @@ function startEdit(row: PartListItem): void {
 }
 
 // 2026-07-24：双击行进入编辑（仅 MANAGER/CLERK + 非批量模式）
+// 2026-07-31：装配件行不进行内编辑（字段集不同，保存走 /parts/{id}/update 会 404）；
+// 与编辑按钮守卫一致，装配件请进入 /assemblies/{id} 详情页编辑。
 function onRowDblClick(row: PartListItem): void {
   if (!canEdit) return
   if (batchMode.value) return  // 批量模式下双击由 onBatchRowClick 处理，不进编辑
+  if (row.row_type === 'ASSEMBLY') return
   startEdit(row)
 }
 

@@ -649,6 +649,13 @@ class AssemblyService:
             assembly_serial = await self.serial_counters.acquire_serial(code)
             asm.serial_no = assembly_serial
             await self.assemblies.session.flush()
+            # flush 后 updated_at（onupdate=func.now()）被标 expired；
+            # 末尾 _build_detail → _assembly_to_out_obj 同步读 asm.updated_at
+            # 会触发 MissingGreenlet（与 cancel / update 同源，见 CLAUDE.md §MissingGreenlet）。
+            await refresh_for_state_machine(
+                self.assemblies.session, asm,
+                attrs=("updated_at", "version"),
+            )
 
             # 4. 上传 master（page 1 = 单页 PDF）
             await self.part_files.upload(
@@ -840,6 +847,17 @@ class AssemblyService:
                 code=ErrCode.BIZ_ASSEMBLY_NOT_FOUND,
                 message=f"assembly {assembly_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # 终态前置校验：重复取消 / 取消已完成装配体会触发
+        # python-statemachine 的 TransitionNotAllowed（项目无全局 handler）→ 500。
+        # 与 update_assembly 保持一致（405 起）。
+        if asm.status in ("CANCELLED", "COMPLETED"):
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"assembly {assembly_id} 已处于终态 {asm.status}，不可取消"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
         # 级联取消所有非终态子件
