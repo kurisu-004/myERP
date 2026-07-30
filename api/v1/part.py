@@ -947,13 +947,14 @@ async def print_part_drawing(
     parts: PartRepository = Depends(get_part_repository),
     part_files: PartFileRepository = Depends(get_part_file_repository),
 ) -> Response:
-    pdf_bytes = await build_part_print_pdf(
+    from service.printing import _prepare_part_print_data, _build_part_print_pdf_sync
+
+    data = await _prepare_part_print_data(
         part_id=part_id, parts=parts, part_files=part_files,
     )
-    # 文件名建议：serial_no + drawing_no，便于纸面贴标查找
-    part = await parts.get_by_id(part_id)
-    serial = part.serial_no if part and part.serial_no else "no-serial"
-    drawing = part.drawing_no if part and part.drawing_no else "part"
+    pdf_bytes = _build_part_print_pdf_sync(data)
+    serial = data.serial_no or "no-serial"
+    drawing = data.drawing_no or "part"
     fname = f"{serial}-{drawing}.pdf".replace("/", "_")
     return Response(
         content=pdf_bytes,

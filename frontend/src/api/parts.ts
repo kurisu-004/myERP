@@ -614,7 +614,7 @@ export async function printPartDrawingBatch(
   const resp = await api.post<Blob>(
     '/parts/print-drawing-batch',
     { part_ids: partIds, assembly_ids: assemblyIds },
-    { responseType: 'blob' },
+    { responseType: 'blob', timeout: 10 * 60 * 1000 },
   )
   return resp.data
 }

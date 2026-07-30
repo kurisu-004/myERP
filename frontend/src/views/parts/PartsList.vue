@@ -612,11 +612,24 @@
         <el-button link size="small" @click="onSelectAllPage">全选当前页</el-button>
         <el-button link size="small" @click="onClearSelection">清空选择</el-button>
       </div>
+      <!-- 打印进度 -->
+      <div v-if="batchPrintTotal > 0" class="batch-print-progress">
+        <el-progress
+          :percentage="batchPrintProgress"
+          :stroke-width="16"
+          :text-inside="true"
+          :show-text="true"
+        />
+        <div class="batch-print-progress__text">
+          正在生成打印文件 {{ batchPrintCurrent }}/{{ batchPrintTotal }}
+        </div>
+      </div>
+
       <el-button
         v-if="batchAction === 'print'"
         type="primary"
         :loading="batchPrinting"
-        :disabled="selectedIds.size === 0"
+        :disabled="selectedIds.size === 0 || batchPrintTotal > 0"
         @click="onBatchPrint"
       >
         <el-icon><Printer /></el-icon>
@@ -874,7 +887,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { PDFDocument } from 'pdf-lib'
 import type { SummaryMethod } from 'element-plus'
 import {
   Close,
@@ -1147,6 +1161,9 @@ const selectedRows = ref<PartListItem[]>([])
  * 2026-07-22 修复：必须用 reactive 包一层，否则模板里的 .size 不响应，count 永远 0、按钮永远 disabled。 */
 const selectedIds = reactive(new Set<string>())
 const batchPrinting = ref(false)
+const batchPrintProgress = ref(0)
+const batchPrintCurrent = ref(0)
+const batchPrintTotal = ref(0)
 const batchPrintIframeRef = ref<HTMLIFrameElement | null>(null)
 let batchPrintBlobUrl = ''
 /** ResponsiveList 内 el-table ref；用于 row-click 切换 / 全选 / 清空时同步 UI */
@@ -1287,6 +1304,11 @@ function restoreTableSelection(): void {
 
 async function onBatchPrint(): Promise<void> {
   if (selectedIds.size === 0) return
+
+  const PART_BATCH_SIZE = 20
+  const ASSEMBLY_BATCH_SIZE = 2
+  const CONCURRENCY = 3
+
   batchPrinting.value = true
   try {
     const partIds: string[] = []
@@ -1299,9 +1321,74 @@ async function onBatchPrint(): Promise<void> {
     for (const id of selectedIds) {
       if (!selectedRowTypes.has(id)) partIds.push(id)
     }
-    const blob = await printPartDrawingBatch(partIds, assemblyIds.length > 0 ? assemblyIds : undefined)
+
+    // 构建批次队列：先零件后装配体
+    const batches: { partIds: string[]; assemblyIds?: string[] }[] = []
+    for (let i = 0; i < partIds.length; i += PART_BATCH_SIZE) {
+      batches.push({ partIds: partIds.slice(i, i + PART_BATCH_SIZE) })
+    }
+    for (let i = 0; i < assemblyIds.length; i += ASSEMBLY_BATCH_SIZE) {
+      batches.push({
+        partIds: [],
+        assemblyIds: assemblyIds.slice(i, i + ASSEMBLY_BATCH_SIZE),
+      })
+    }
+
+    if (batches.length === 0) return
+
+    batchPrintTotal.value = batches.length
+    batchPrintCurrent.value = 0
+    batchPrintProgress.value = 0
+
+    let doneCount = 0
+    const batchBlobs: Blob[] = new Array(batches.length)
+
+    const tasks = batches.map((b, idx) => async () => {
+      const blob = await printPartDrawingBatch(
+        b.partIds,
+        b.assemblyIds && b.assemblyIds.length > 0 ? b.assemblyIds : undefined,
+      )
+      batchBlobs[idx] = blob
+      doneCount++
+      batchPrintCurrent.value = doneCount
+      batchPrintProgress.value = Math.round((doneCount / batches.length) * 100)
+    })
+
+    // 简易并发池（最多 CONCURRENCY 个并发）
+    let nextIdx = 0
+    async function worker(): Promise<Error | null> {
+      while (nextIdx < tasks.length) {
+        const i = nextIdx++
+        try {
+          await tasks[i]()
+        } catch (err) {
+          return err as Error
+        }
+      }
+      return null
+    }
+    const errors = await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
+    const firstError = errors.find((e) => e !== null)
+    if (firstError) {
+      throw new Error(`第 ${batchPrintCurrent.value + 1} 批生成失败：${firstError.message}`)
+    }
+
+    // 浏览器端按批次顺序合并 PDF
+    const mergedPdf = await PDFDocument.create()
+    for (let i = 0; i < batchBlobs.length; i++) {
+      const buf = await batchBlobs[i].arrayBuffer()
+      const pdf = await PDFDocument.load(buf)
+      const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices())
+      for (const page of pages) {
+        mergedPdf.addPage(page)
+      }
+    }
+    const mergedBytes = await mergedPdf.save()
+    const mergedBlob = new Blob([mergedBytes.buffer as ArrayBuffer], { type: 'application/pdf' })
+
     if (batchPrintBlobUrl) URL.revokeObjectURL(batchPrintBlobUrl)
-    batchPrintBlobUrl = URL.createObjectURL(blob)
+    batchPrintBlobUrl = URL.createObjectURL(mergedBlob)
+
     const iframe = batchPrintIframeRef.value
     if (!iframe) {
       ElMessage.error('打印 iframe 未挂载，请刷新页面后重试')
@@ -1319,8 +1406,15 @@ async function onBatchPrint(): Promise<void> {
       }
     }
   } catch (e) {
-    ElMessage.error((e as Error).message ?? '批量打印失败')
+    await ElMessageBox.alert(
+      (e as Error).message ?? '批量打印失败',
+      '错误',
+      { confirmButtonText: '确定', type: 'error' },
+    )
   } finally {
+    batchPrintTotal.value = 0
+    batchPrintCurrent.value = 0
+    batchPrintProgress.value = 0
     setTimeout(() => { batchPrinting.value = false }, 800)
   }
 }
@@ -2011,6 +2105,16 @@ async function onBatchDispatchConfirm(): Promise<void> {
 .batch-bar .bar-info strong {
   color: #409eff;
   font-weight: 600;
+}
+.batch-print-progress {
+  flex: 1;
+  margin: 0 12px;
+}
+.batch-print-progress__text {
+  text-align: center;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
 }
 
 .muted {
