@@ -20,7 +20,7 @@ import functools
 import io
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from barcode import Code128
 from barcode.writer import ImageWriter
@@ -51,6 +51,21 @@ PX_PER_PT = DPI / 72.0
 # 选型理由：COS 服务端连接数无瓶颈，但 asyncio+线程池 并发过大易导致内存峰值暴涨；
 # 8 是「CPU 并行渲染线程池 default min(32, cpu+4)」的 2 倍左右，保证 IO 不饿死 CPU。
 _MAX_CONCURRENT_DOWNLOADS = 8
+
+# 打印交期缓冲：图纸背面 / 扫码台 / 大屏展示的「交期」比真实工单交期提前 N 天，
+# 留给物流/分厂流转余量。**仅渲染层**应用，业务查询不感知（不滚 DEP-DB 显示）。
+DELIVERY_DATE_BUFFER_DAYS = 3
+
+
+def _buffered_delivery_date(d: date | None) -> date | None:
+    """打印背面 / 扫码台 / 大屏展示用交期 = 真实交期 - N 天缓冲。
+
+    渲染层保持 dumb，缓冲只在这一层应用一次；后端仅打印走此函数，
+    其他业务查询不受影响。
+    """
+    if d is None:
+        return None
+    return d - timedelta(days=DELIVERY_DATE_BUFFER_DAYS)
 
 def _render_small_barcode_with_serial(
     serial_no: str,
@@ -498,7 +513,9 @@ async def _prepare_part_print_data(
         drawing_bytes=drawing_bytes,
         drawing_ext=drawing_ext,
         orientation="landscape",
-        planned_delivery_date=part.planned_delivery_date if isinstance(getattr(part, "planned_delivery_date", None), date) else None,
+        planned_delivery_date=_buffered_delivery_date(
+            part.planned_delivery_date if isinstance(getattr(part, "planned_delivery_date", None), date) else None
+        ),
         quantity=part.quantity if isinstance(getattr(part, "quantity", None), int) else None,
     )
 
@@ -848,7 +865,9 @@ async def build_parts_print_pdf_batch(
                 drawing_bytes=part_drawing_bytes.get(pid),
                 drawing_ext=master.file_type.upper() if master else None,
                 orientation="landscape",
-                planned_delivery_date=p.planned_delivery_date if isinstance(getattr(p, "planned_delivery_date", None), date) else None,
+                planned_delivery_date=_buffered_delivery_date(
+                    p.planned_delivery_date if isinstance(getattr(p, "planned_delivery_date", None), date) else None
+                ),
                 quantity=p.quantity if isinstance(getattr(p, "quantity", None), int) else None,
             )
         )
@@ -865,7 +884,9 @@ async def build_parts_print_pdf_batch(
                 drawing_bytes=asm_master_bytes.get(aid),
                 drawing_ext=master.file_type.upper() if master else None,
                 orientation="landscape",
-                planned_delivery_date=asm.planned_delivery_date if isinstance(getattr(asm, "planned_delivery_date", None), date) else None,
+                planned_delivery_date=_buffered_delivery_date(
+                    asm.planned_delivery_date if isinstance(getattr(asm, "planned_delivery_date", None), date) else None
+                ),
                 quantity=None,
             )
         )
@@ -883,7 +904,9 @@ async def build_parts_print_pdf_batch(
                     drawing_bytes=part_drawing_bytes.get(c.id),
                     drawing_ext=child_master.file_type.upper() if child_master else None,
                     orientation="landscape",
-                    planned_delivery_date=c.planned_delivery_date if isinstance(getattr(c, "planned_delivery_date", None), date) else None,
+                    planned_delivery_date=_buffered_delivery_date(
+                        c.planned_delivery_date if isinstance(getattr(c, "planned_delivery_date", None), date) else None
+                    ),
                     quantity=c.quantity if isinstance(getattr(c, "quantity", None), int) else None,
                 )
             )
