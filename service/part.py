@@ -269,6 +269,7 @@ class PartService:
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
                 order_no=query.order_no,
+                serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
                 request_date_from=query.request_date_from,
                 request_date_to=query.request_date_to,
@@ -287,6 +288,7 @@ class PartService:
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
                 order_no=query.order_no,
+                serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
                 request_date_from=query.request_date_from,
                 request_date_to=query.request_date_to,
@@ -309,6 +311,7 @@ class PartService:
             is_urgent=query.is_urgent,
             keyword=query.keyword,
             order_no=query.order_no,
+            serial_no=query.serial_no,
             has_outsource_history=query.has_outsource_history,
             request_date_from=query.request_date_from,
             request_date_to=query.request_date_to,
@@ -328,6 +331,7 @@ class PartService:
             is_urgent=query.is_urgent,
             keyword=query.keyword,
             order_no=query.order_no,
+            serial_no=query.serial_no,
             has_outsource_history=query.has_outsource_history,
             request_date_from=query.request_date_from,
             request_date_to=query.request_date_to,
@@ -339,9 +343,11 @@ class PartService:
         )
 
         # 2. 装配件（statuses 取交集）
+        # 2026-07-31：装配件本身不外协（外协走 t_part），所以 has_outsource_history
+        # 开启时直接跳过整个装配体查询块。
         asm_rows: list[TAssembly] = []
         asm_total = 0
-        if self.assemblies is not None:
+        if self.assemblies is not None and not query.has_outsource_history:
             assembly_statuses = None
             if query.statuses is not None:
                 valid_asm_statuses = {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}
@@ -367,6 +373,14 @@ class PartService:
                     is_urgent=query.is_urgent,
                     drawing_no_like=query.keyword,
                     name_like=query.keyword,
+                    order_no_like=query.order_no,
+                    serial_no_like=query.serial_no,
+                    request_date_from=query.request_date_from,
+                    request_date_to=query.request_date_to,
+                    planned_delivery_date_from=query.planned_delivery_date_from,
+                    planned_delivery_date_to=query.planned_delivery_date_to,
+                    system_delivery_date_from=query.system_delivery_date_from,
+                    system_delivery_date_to=query.system_delivery_date_to,
                     sort_by=asm_sort_by,
                     sort_dir=query.sort_dir.value,
                     limit=query.limit + query.offset,
@@ -378,6 +392,14 @@ class PartService:
                     is_urgent=query.is_urgent,
                     drawing_no_like=query.keyword,
                     name_like=query.keyword,
+                    order_no_like=query.order_no,
+                    serial_no_like=query.serial_no,
+                    request_date_from=query.request_date_from,
+                    request_date_to=query.request_date_to,
+                    planned_delivery_date_from=query.planned_delivery_date_from,
+                    planned_delivery_date_to=query.planned_delivery_date_to,
+                    system_delivery_date_from=query.system_delivery_date_from,
+                    system_delivery_date_to=query.system_delivery_date_to,
                 )
 
         # 3. 转换并合并

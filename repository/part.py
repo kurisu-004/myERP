@@ -78,6 +78,7 @@ class PartRepository:
         is_urgent: bool | None = None,
         keyword: str | None = None,
         order_no: str | None = None,
+        serial_no: str | None = None,  # 2026-07-31：序列号独立搜索（ILIKE 包含）
         has_outsource_history: bool | None = None,
         request_date_from=None,
         request_date_to=None,
@@ -99,6 +100,7 @@ class PartRepository:
             is_urgent=is_urgent,
             keyword=keyword,
             order_no=order_no,
+            serial_no=serial_no,
             has_outsource_history=has_outsource_history,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
@@ -147,6 +149,7 @@ class PartRepository:
         is_urgent: bool | None = None,
         keyword: str | None = None,
         order_no: str | None = None,
+        serial_no: str | None = None,  # 2026-07-31：序列号独立搜索（ILIKE 包含）
         has_outsource_history: bool | None = None,
         request_date_from=None,
         request_date_to=None,
@@ -164,6 +167,7 @@ class PartRepository:
             is_urgent=is_urgent,
             keyword=keyword,
             order_no=order_no,
+            serial_no=serial_no,
             has_outsource_history=has_outsource_history,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
@@ -518,6 +522,7 @@ class PartRepository:
         is_urgent: bool | None,
         keyword: str | None,
         order_no: str | None = None,
+        serial_no: str | None = None,  # 2026-07-31：序列号独立搜索（ILIKE 包含）
         has_outsource_history: bool | None,
         request_date_from=None,
         request_date_to=None,
@@ -557,6 +562,12 @@ class PartRepository:
             on = order_no.strip()
             if on:
                 stmt = stmt.where(TPart.order_no.ilike(f"%{on}%"))
+        # 2026-07-31：序列号独立搜索框（ILIKE 子串包含）。
+        # 命中子件也算命中（子件 serial_no 形如 {父装配}-{i:02d}）。
+        if serial_no:
+            sn = serial_no.strip()
+            if sn:
+                stmt = stmt.where(TPart.serial_no.ilike(f"%{sn}%"))
         # 2026-07-21：PR-F 日期区间筛选（请购日期 / 系统交期）。
         # 仅端点非 None 时加条件；端点为 None 表示半开区间。
         # 系统交期可空（PR-F 字段 NULL=未设置），区间包含 NULL 时也会命中。

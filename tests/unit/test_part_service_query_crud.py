@@ -319,6 +319,7 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             order_no=None,
+            serial_no=None,
             has_outsource_history=None,
             request_date_from=None,
             request_date_to=None,
@@ -337,6 +338,7 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             order_no=None,
+            serial_no=None,
             has_outsource_history=None,
             request_date_from=None,
             request_date_to=None,
@@ -386,6 +388,7 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             order_no=None,
+            serial_no=None,
             has_outsource_history=None,
             request_date_from=None,
             request_date_to=None,
@@ -428,6 +431,7 @@ class TestListParts:
             is_urgent=None,
             keyword=None,
             order_no=None,
+            serial_no=None,
             has_outsource_history=None,
             request_date_from=None,
             request_date_to=None,
@@ -649,6 +653,85 @@ class TestListParts:
         assert count_kwargs["keyword"] == "123"
         assert len(result.items) == 1
         assert result.total == 1
+
+    # ===== 2026-07-31：序列号独立搜索 =====
+    async def test_serial_no_forwarded_to_repository(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """serial_no= 必须透传给 list_with_filters 与 count_with_filters。
+
+        - 命中普通独立零件时（serial_no='L1067'）返回该行；
+        - 命中子件序列号（serial_no='L1067-03'）也算命中，子件从顶层隐藏是预期。
+        """
+        # 普通独立零件：serial_no='L1067' 直接命中
+        part = _make_part(id=1, customer_id=10, serial_no="L1067")
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+        mock_customers.list_by_ids.return_value = []
+
+        query = PartListQuery(serial_no="L1067")
+        result = await service.list_parts(query)
+
+        # 透传到 list
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert list_kwargs["serial_no"] == "L1067"
+        # 透传到 count
+        count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert count_kwargs["serial_no"] == "L1067"
+        assert len(result.items) == 1
+        assert result.items[0].serial_no == "L1067"
+        assert result.total == 1
+
+    async def test_serial_no_child_match_forwarded(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """搜子件序列号（如 'L1067-03'）时该子件也会被 list 命中。
+
+        子件从顶层隐藏是顶层 include_assemblies 路径过滤的行为；
+        本测只验证 serial_no 已正确下传到 repository。
+        """
+        # 子件：serial_no='L1067-03'
+        child = _make_part(id=2, customer_id=10, serial_no="L1067-03")
+        mock_parts.list_with_filters.return_value = [child]
+        mock_parts.count_with_filters.return_value = 1
+        mock_customers.list_by_ids.return_value = []
+
+        query = PartListQuery(serial_no="L1067-03")
+        result = await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert list_kwargs["serial_no"] == "L1067-03"
+        # 子件被返回（前端处理时顶层 include_assemblies=True + assembly_id_is_null=True
+        # 会过滤掉，本测走 include_assemblies=False 单查路径）
+        assert len(result.items) == 1
+        assert result.items[0].serial_no == "L1067-03"
+        assert result.total == 1
+
+    async def test_serial_no_default_none_when_not_provided(
+        self,
+        service: PartService,
+        mock_parts: AsyncMock,
+        mock_customers: AsyncMock,
+    ) -> None:
+        """PartListQuery() 不传 serial_no 时，下传 None（不影响现有查询路径）。"""
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+        mock_customers.list_by_ids.return_value = []
+
+        query = PartListQuery()
+        await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert list_kwargs["serial_no"] is None
+        assert count_kwargs["serial_no"] is None
 
 
 # ======================================================================

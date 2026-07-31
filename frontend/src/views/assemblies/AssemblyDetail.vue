@@ -26,9 +26,9 @@
               <el-icon><Back /></el-icon>
               <span>返回列表</span>
             </el-button>
-            <!-- 编辑元数据（CLERK+；PENDING 才允许编辑） -->
+            <!-- 编辑元数据（CLERK+；终态由后端拒绝） -->
             <el-button
-              v-if="canEditContent && detail?.assembly.status === 'PENDING'"
+              v-if="canEditContent"
               type="primary"
               plain
               @click="openEditDialog"
@@ -741,7 +741,7 @@ async function onAddChildSubmit(): Promise<void> {
   }
 }
 
-// ===== 编辑元数据对话框（CLERK + MANAGER；仅 PENDING） =====
+// ===== 编辑元数据对话框（CLERK + MANAGER；终态由后端 BIZ_INVALID_TRANSITION 拦截） =====
 const editVisible = ref(false)
 const editSubmitting = ref(false)
 const editFormRef = ref<FormInstance>()

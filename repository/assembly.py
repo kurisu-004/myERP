@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import enum
+from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
-from model import TAssembly
+from model import TAssembly, TPart
 
 
 class AssemblySortKey(str, enum.Enum):
@@ -75,6 +76,16 @@ class AssemblyRepository:
         is_urgent: bool | None = None,
         drawing_no_like: str | None = None,
         name_like: str | None = None,
+        # 2026-07-31：零件一览并入装配件的补充筛选（与 PartRepository 对齐）
+        order_no_like: str | None = None,
+        # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
+        serial_no_like: str | None = None,
+        request_date_from: date | None = None,
+        request_date_to: date | None = None,
+        planned_delivery_date_from: date | None = None,
+        planned_delivery_date_to: date | None = None,
+        system_delivery_date_from: date | None = None,
+        system_delivery_date_to: date | None = None,
         sort_by: AssemblySortKey = AssemblySortKey.PLANNED_DELIVERY_DATE,
         sort_dir: AssemblySortDir = "asc",
         include_deleted: bool = False,
@@ -89,6 +100,14 @@ class AssemblyRepository:
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
             name_like=name_like,
+            order_no_like=order_no_like,
+            serial_no_like=serial_no_like,
+            request_date_from=request_date_from,
+            request_date_to=request_date_to,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
+            system_delivery_date_from=system_delivery_date_from,
+            system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
         )
         sort_col = {
@@ -117,6 +136,15 @@ class AssemblyRepository:
         is_urgent: bool | None = None,
         drawing_no_like: str | None = None,
         name_like: str | None = None,
+        order_no_like: str | None = None,
+        # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
+        serial_no_like: str | None = None,
+        request_date_from: date | None = None,
+        request_date_to: date | None = None,
+        planned_delivery_date_from: date | None = None,
+        planned_delivery_date_to: date | None = None,
+        system_delivery_date_from: date | None = None,
+        system_delivery_date_to: date | None = None,
         include_deleted: bool = False,
     ) -> int:
         stmt = self._build_filter_stmt(
@@ -127,6 +155,14 @@ class AssemblyRepository:
             is_urgent=is_urgent,
             drawing_no_like=drawing_no_like,
             name_like=name_like,
+            order_no_like=order_no_like,
+            serial_no_like=serial_no_like,
+            request_date_from=request_date_from,
+            request_date_to=request_date_to,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
+            system_delivery_date_from=system_delivery_date_from,
+            system_delivery_date_to=system_delivery_date_to,
             include_deleted=include_deleted,
         ).with_only_columns(func.count(TAssembly.id))
         result = await self.session.execute(stmt)
@@ -153,6 +189,14 @@ class AssemblyRepository:
         is_urgent: bool | None,
         drawing_no_like: str | None,
         name_like: str | None,
+        order_no_like: str | None = None,
+        serial_no_like: str | None = None,  # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）
+        request_date_from: date | None = None,
+        request_date_to: date | None = None,
+        planned_delivery_date_from: date | None = None,
+        planned_delivery_date_to: date | None = None,
+        system_delivery_date_from: date | None = None,
+        system_delivery_date_to: date | None = None,
         include_deleted: bool,
     ):
         stmt = select(TAssembly)
@@ -174,4 +218,55 @@ class AssemblyRepository:
             )
         if name_like:
             stmt = stmt.where(TAssembly.name.ilike(f"%{name_like}%"))
+        # 2026-07-31：与 PartRepository 对齐——订单号 / 各类日期区间筛选
+        if order_no_like:
+            on = order_no_like.strip()
+            if on:
+                stmt = stmt.where(TAssembly.order_no.ilike(f"%{on}%"))
+        # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）。
+        # 子件 serial_no 形如 {父装配}-{i:02d}，所以搜子件序列号时，装配件
+        # 本身没有匹配的 serial_no —— 需要 EXISTS 命中子件才能带出母装配件行。
+        if serial_no_like:
+            sn = serial_no_like.strip()
+            if sn:
+                stmt = stmt.where(
+                    or_(
+                        TAssembly.serial_no.ilike(f"%{sn}%"),
+                        select(TPart.id)
+                        .where(
+                            (TPart.assembly_id == TAssembly.id)
+                            & TPart.serial_no.ilike(f"%{sn}%")
+                            & TPart.deleted_at.is_(None)
+                        )
+                        .exists(),
+                    )
+                )
+        if request_date_from is not None:
+            stmt = stmt.where(TAssembly.request_date >= request_date_from)
+        if request_date_to is not None:
+            stmt = stmt.where(TAssembly.request_date <= request_date_to)
+        if planned_delivery_date_from is not None:
+            stmt = stmt.where(
+                TAssembly.planned_delivery_date >= planned_delivery_date_from
+            )
+        if planned_delivery_date_to is not None:
+            stmt = stmt.where(
+                TAssembly.planned_delivery_date <= planned_delivery_date_to
+            )
+        # system_delivery_date 沿用 PartRepository 的 NULL 兜底：可空字段
+        # 在区间内同样命中（PR-F 字段 NULL=未设置）。
+        if system_delivery_date_from is not None:
+            stmt = stmt.where(
+                or_(
+                    TAssembly.system_delivery_date.is_(None),
+                    TAssembly.system_delivery_date >= system_delivery_date_from,
+                )
+            )
+        if system_delivery_date_to is not None:
+            stmt = stmt.where(
+                or_(
+                    TAssembly.system_delivery_date.is_(None),
+                    TAssembly.system_delivery_date <= system_delivery_date_to,
+                )
+            )
         return stmt

@@ -482,6 +482,49 @@ class TestBuildPartsPrintPdfBatchAssembly:
         # 总装图 2 页 + 子件1 2 页 + 子件2 2 页 = 6 页
         assert len(reader.pages) == 6
 
+    async def test_assembly_ids_no_master_skips_master_page_children_still_print(
+        self,
+        monkeypatch,
+        fake_parts_repo,
+        fake_assemblies_repo,
+        fake_child_part,
+        fake_child_part2,
+    ):
+        """2026-08-01：装配件无总装图时仅跳过 master 页 + 条码页，子件继续打印。"""
+        import service.printing as printing_mod
+
+        async def fake_download(key):
+            return _make_blank_pdf(842, 595)
+        monkeypatch.setattr(printing_mod.cos_mod, "download_object", fake_download)
+
+        parts_repo = MagicMock()
+        _children = [fake_child_part, fake_child_part2]
+        parts_repo.list_by_ids = AsyncMock(side_effect=lambda ids: _children if ids else [])
+        parts_repo.list_children = AsyncMock(return_value=_children)
+        parts_repo.get_by_id = AsyncMock(side_effect=lambda pid: fake_child_part if pid == 2001 else fake_child_part2)
+
+        files_repo = MagicMock()
+        # DRAWING 仍正常返回子件图纸；ASSEMBLY_MASTER 始终返回 None → 装配件无总装图
+        files_repo.list_by_parts = AsyncMock(
+            side_effect=lambda pids, kind=None, include_deleted=False: {
+                pid: (_make_drawing_row("PDF", "pdf", f"drawings/{pid}/DRAWING/aaa.pdf")
+                      if kind == "DRAWING" else None)
+                for pid in pids
+            }
+        )
+
+        from service.printing import build_parts_print_pdf_batch
+        pdf_bytes = await build_parts_print_pdf_batch(
+            part_ids=[],
+            assembly_ids=[1001],
+            parts=parts_repo,
+            part_files=files_repo,
+            assemblies=fake_assemblies_repo,
+        )
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        # 0 master 页 + 子件1 2 页 + 子件2 2 页 = 4 页（不再多打总装图+条码页）
+        assert len(reader.pages) == 4
+
 
 class TestBatchPreservesOrder:
     """2026-07-30：批量打印两阶段流水线保持入参顺序。"""

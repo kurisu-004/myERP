@@ -122,6 +122,11 @@ async def list_parts(
     order_no: str | None = Query(
         default=None, description="订单号搜索（ILIKE 包含 %kw%；2026-07-22 新增）"
     ),
+    # 2026-07-31：序列号独立搜索框（ILIKE 包含 %kw%；装配件子序列号自动带出母装配件）。
+    serial_no: str | None = Query(
+        default=None,
+        description="序列号搜索（ILIKE 包含；装配件子序列号自动带出母装配件；2026-07-31 新增）",
+    ),
     has_outsource_history: bool | None = Query(
         default=None,
         description=(
@@ -153,6 +158,7 @@ async def list_parts(
             is_urgent=is_urgent,
             keyword=keyword,
             order_no=order_no,
+            serial_no=serial_no,
             has_outsource_history=has_outsource_history,
             request_date_from=request_date_from,
             request_date_to=request_date_to,

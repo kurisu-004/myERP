@@ -82,6 +82,12 @@ export interface ListPartsParams {
   /** 2026-07-22：订单号独立搜索（ILIKE 包含 %kw%）。 */
   order_no?: string
   /**
+   * 2026-07-31：序列号独立搜索（ILIKE 包含 %kw%）。
+   * 命中子件也算命中（子件 serial_no 形如 {父装配}-{i:02d}）；
+   * 装配件行通过 EXISTS 子件命中自动带出母装配件。
+   */
+  serial_no?: string
+  /**
    * 仅返回「曾外协过」的零件（2026-07-20 新增，外协接收历史页用）。
    * 命中条件由后端 EXISTS 子查询判定（SENT_TO_OUTSOURCE / RECEIVED_FROM_OUTSOURCE
    * / INSPECTED + note ILIKE '%外协%'）。

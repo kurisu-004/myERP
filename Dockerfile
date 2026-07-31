@@ -45,10 +45,6 @@ RUN addgroup -g 1000 -S myerp \
 
 WORKDIR /app
 
-# 2026-07-31：打印正面页两级缓存目录（L1 本地磁盘 LRU；docker-compose
-# 把 printcache 命名卷挂到这里，跨容器重建保留缓存）
-RUN mkdir -p /app/.cache/print && chown myerp:myerp /app/.cache/print
-
 COPY --from=builder --chown=myerp:myerp /app /app
 USER myerp
 

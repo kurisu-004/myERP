@@ -1,139 +1,201 @@
-"""Unit tests for service/_print_front_cache.py L1 disk-cache lifecycle.
+"""Unit tests for service/_print_front_cache.py pure normalize + vector escape.
 
-2026-07-31 引入：覆盖
-- 可写目录 → init_l1_cache() 返回 True；_l1_put + _l1_get 往返一致；
-- 不可写目录 → init_l1_cache() 返回 False；后续 _l1_get 返 None、_l1_put 静默
-  no-op，且 warning 只打一次（连续 3 次写不重复刷屏）。
-- _reset_l1_for_testing() 让每个用例拿到干净的探测状态。
+2026-07-31 引入与重写：覆盖
+- PDF 输入 → A4 JPEG PDF + 朝向（landscape / portrait 各一）；
+- 图片输入（PNG）→ A4 JPEG PDF；
+- vector=True 跳过规格化直接 passthrough（PDF + 图片）；
+- 无 content_sha256 仍能正常渲染（不抛异常）；
+- source 字段值与预期匹配（render / render_no_sha / vector / vector_image）。
 
-容器路径（/app/.cache/print）只用作模块顶层默认值；这些测试用 monkeypatch
-把 _CACHE_DIR 临时改到 tmp_path 或只读路径，不碰真实根文件系统。
+无 DB / 无 COS 依赖：纯函数 + 内存 bytes IO。
 """
 from __future__ import annotations
 
-import logging
-import os
+import io
 
 import pytest
+from PIL import Image
+from pypdf import PdfReader, PdfWriter
 
 from service import _print_front_cache as fc
 
 
-@pytest.fixture(autouse=True)
-def _reset_l1_state():
-    """每个用例前后清掉 L1 探测状态 + 还原 _CACHE_DIR。"""
-    original_dir = fc._CACHE_DIR
-    yield
-    fc._reset_l1_for_testing()
-    # 还原 _CACHE_DIR（monkeypatch 在 teardown 会自动还原，但显式兜底）
-    fc._CACHE_DIR = original_dir
+# ============================================================
+# 工具：构造最小测试 PDF / PNG
+# ============================================================
+def _fake_pdf(width_pt: float = 842.0, height_pt: float = 595.0) -> bytes:
+    """构造一页指定点尺寸的空白 PDF（landscape 842×595 / portrait 595×842）。"""
+    writer = PdfWriter()
+    writer.add_blank_page(width=width_pt, height=height_pt)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
-def test_init_l1_cache_returns_true_when_writable(tmp_path, monkeypatch, caplog):
-    """可写目录：init_l1_cache() 探测成功，返回 True。"""
-    monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
-    fc._reset_l1_for_testing()
-
-    with caplog.at_level(logging.INFO, logger=fc.__name__):
-        ok = fc.init_l1_cache()
-
-    assert ok is True
-    assert fc._l1_enabled is True
-    assert any("L1 print cache enabled" in r.message for r in caplog.records)
+def _fake_png(width: int = 800, height: int = 600) -> bytes:
+    """构造一张单色 PNG（landscape 800×600）。"""
+    img = Image.new("RGB", (width, height), "white")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
 
 
-def test_l1_put_and_get_roundtrip(tmp_path, monkeypatch):
-    """可写目录：put 后 get 能拿回原 bytes。"""
-    monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
-    fc._reset_l1_for_testing()
-    fc.init_l1_cache()
-
-    sha = "a" * 64
-    payload = b"%PDF-1.4 fake front page bytes"
-    fc._l1_put(sha, payload)
-
-    assert fc._l1_get(sha) == payload
-
-
-def test_init_l1_cache_returns_false_when_unwritable(tmp_path, monkeypatch, caplog):
-    """不可写目录：init_l1_cache() 返回 False；warning 只打一次。
-
-    在 tmp_path 下建一个只读父目录（chmod 0o555），让 mkdir(parents=True) 在
-    它底下创建子路径时必然 PermissionError。
-    """
-    ro_parent = tmp_path / "ro_parent"
-    ro_parent.mkdir()
-    os.chmod(ro_parent, 0o555)
-    monkeypatch.setattr(fc, "_CACHE_DIR", ro_parent / "child")
-    fc._reset_l1_for_testing()
-
-    with caplog.at_level(logging.WARNING, logger=fc.__name__):
-        ok = fc.init_l1_cache()
-
-    # 还原权限，避免 cleanup 时 tmp_path 不能删
-    os.chmod(ro_parent, 0o755)
-
-    assert ok is False
-    assert fc._l1_enabled is False
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert "L1 print cache disabled" in warnings[0].message
+def _assert_is_valid_pdf(pdf_bytes: bytes) -> None:
+    """健全性检查：bytes 能被 pypdf 解析，至少 1 页；页面尺寸接近 A4。"""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    assert len(reader.pages) >= 1
+    page = reader.pages[0]
+    w_pt = float(page.mediabox[2] - page.mediabox[0])
+    h_pt = float(page.mediabox[3] - page.mediabox[1])
+    # 规格化目标 A4：portrait 595×842 / landscape 842×595。
+    # PIL PDF driver 会做 mm/pt 归一化，归一化后实测 ≈ 841.89 × 595.27（容差 1.0）。
+    is_landscape = abs(w_pt - 842.0) < 1.0 and abs(h_pt - 595.0) < 1.0
+    is_portrait = abs(w_pt - 595.0) < 1.0 and abs(h_pt - 842.0) < 1.0
+    assert is_landscape or is_portrait, (
+        f"mediabox=({w_pt}, {h_pt}) not within A4 tolerance"
+    )
 
 
-def test_l1_put_silently_noops_after_disabled(tmp_path, monkeypatch, caplog):
-    """init_l1_cache() 失败后：连续 _l1_put 三次都不再 warning，且不抛异常。"""
-    ro_parent = tmp_path / "ro_parent"
-    ro_parent.mkdir()
-    os.chmod(ro_parent, 0o555)
-    monkeypatch.setattr(fc, "_CACHE_DIR", ro_parent / "child")
-    fc._reset_l1_for_testing()
+# ============================================================
+# PDF 输入
+# ============================================================
+class TestPdfNormalize:
+    @pytest.mark.asyncio
+    async def test_landscape_pdf_yields_landscape_a4(self):
+        """横向 PDF（842×595 pt）→ 规格化后 orientation=landscape。"""
+        src = _fake_pdf(width_pt=842.0, height_pt=595.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256="a" * 64,
+        )
+        assert result.orientation == "landscape"
+        assert result.source == "render"
+        _assert_is_valid_pdf(result.pdf_bytes)
 
-    try:
-        assert fc.init_l1_cache() is False
-
-        with caplog.at_level(logging.WARNING, logger=fc.__name__):
-            for _ in range(3):
-                fc._l1_put("a" * 64, b"x")
-    finally:
-        os.chmod(ro_parent, 0o755)
-
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    # 关键断言：warning 只出现 1 次（init_l1_cache 那条），后续三次 put 全静默
-    assert len(warnings) == 1
-    assert fc._l1_enabled is False
-
-
-def test_l1_get_returns_none_after_disabled(tmp_path, monkeypatch):
-    """init_l1_cache() 失败后：_l1_get 静默返回 None，不抛异常。"""
-    ro_parent = tmp_path / "ro_parent"
-    ro_parent.mkdir()
-    os.chmod(ro_parent, 0o555)
-    monkeypatch.setattr(fc, "_CACHE_DIR", ro_parent / "child")
-    fc._reset_l1_for_testing()
-
-    try:
-        assert fc.init_l1_cache() is False
-        assert fc._l1_get("a" * 64) is None
-    finally:
-        os.chmod(ro_parent, 0o755)
+    @pytest.mark.asyncio
+    async def test_portrait_pdf_yields_portrait_a4(self):
+        """纵向 PDF（595×842 pt）→ 规格化后 orientation=portrait。"""
+        src = _fake_pdf(width_pt=595.0, height_pt=842.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256="b" * 64,
+        )
+        assert result.orientation == "portrait"
+        assert result.source == "render"
+        _assert_is_valid_pdf(result.pdf_bytes)
 
 
-def test_init_l1_cache_is_idempotent(tmp_path, monkeypatch):
-    """重复调用 init_l1_cache() 不重复探测，结果一致。"""
-    monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
-    fc._reset_l1_for_testing()
+# ============================================================
+# 图片输入
+# ============================================================
+class TestImageNormalize:
+    @pytest.mark.asyncio
+    async def test_png_landscape_yields_landscape_a4(self):
+        """landscape PNG（800×600）→ 规格化后 orientation=landscape。"""
+        src = _fake_png(width=800, height=600)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PNG", content_sha256="c" * 64,
+        )
+        assert result.orientation == "landscape"
+        assert result.source == "render"
+        _assert_is_valid_pdf(result.pdf_bytes)
 
-    assert fc.init_l1_cache() is True
-    # 再次调用：_l1_enabled 已是 True，直接返回（不会再走 mkdir）
-    assert fc.init_l1_cache() is True
-    assert fc._l1_enabled is True
+    @pytest.mark.asyncio
+    async def test_png_portrait_yields_portrait_a4(self):
+        """portrait PNG（600×800）→ 规格化后 orientation=portrait。"""
+        src = _fake_png(width=600, height=800)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PNG", content_sha256="d" * 64,
+        )
+        assert result.orientation == "portrait"
+        assert result.source == "render"
+        _assert_is_valid_pdf(result.pdf_bytes)
 
 
-def test_reset_l1_for_testing_clears_state(tmp_path, monkeypatch):
-    """_reset_l1_for_testing() 把 _l1_enabled 置回 None。"""
-    monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
-    fc.init_l1_cache()
-    assert fc._l1_enabled is True
+# ============================================================
+# vector 逃生门
+# ============================================================
+class TestVectorEscape:
+    @pytest.mark.asyncio
+    async def test_vector_pdf_passthrough(self):
+        """vector=True + PDF 输入：原样 passthrough，source=vector。"""
+        src = _fake_pdf(width_pt=842.0, height_pt=595.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256="e" * 64,
+            vector=True,
+        )
+        assert result.source == "vector"
+        assert result.pdf_bytes == src  # 原样 passthrough
+        assert result.orientation == "landscape"
 
-    fc._reset_l1_for_testing()
-    assert fc._l1_enabled is None
+    @pytest.mark.asyncio
+    async def test_vector_portrait_pdf_passthrough(self):
+        """vector=True + portrait PDF：原样 passthrough，orientation=portrait。"""
+        src = _fake_pdf(width_pt=595.0, height_pt=842.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256="f" * 64,
+            vector=True,
+        )
+        assert result.source == "vector"
+        assert result.pdf_bytes == src
+        assert result.orientation == "portrait"
+
+    @pytest.mark.asyncio
+    async def test_vector_image_still_normalizes(self):
+        """vector=True + 图片输入：仍走规格化（避免 pikepdf 合并报错），source=vector_image。"""
+        src = _fake_png(width=800, height=600)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PNG", content_sha256="0" * 64,
+            vector=True,
+        )
+        assert result.source == "vector_image"
+        # 与 passthrough 不同：结果应是规格化后的 A4 PDF
+        _assert_is_valid_pdf(result.pdf_bytes)
+        assert result.orientation == "landscape"
+
+
+# ============================================================
+# 无 content_sha256 兜底
+# ============================================================
+class TestNoShaFallback:
+    @pytest.mark.asyncio
+    async def test_no_sha_pdf_renders_with_render_no_sha(self):
+        """content_sha256=None：仍能正常渲染，source=render_no_sha。"""
+        src = _fake_pdf(width_pt=842.0, height_pt=595.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256=None,
+        )
+        assert result.source == "render_no_sha"
+        assert result.orientation == "landscape"
+        _assert_is_valid_pdf(result.pdf_bytes)
+
+    @pytest.mark.asyncio
+    async def test_empty_sha_string_renders_with_render_no_sha(self):
+        """content_sha256=""：视为无 sha，走 source=render_no_sha。"""
+        src = _fake_pdf(width_pt=842.0, height_pt=595.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256="",
+        )
+        assert result.source == "render_no_sha"
+
+    @pytest.mark.asyncio
+    async def test_non_string_sha_treated_as_no_sha(self):
+        """content_sha256 非字符串（如测试场景传 Mock）→ render_no_sha，不抛异常。"""
+        src = _fake_pdf(width_pt=842.0, height_pt=595.0)
+        result = await fc.get_normalized_front_pdf(
+            original_bytes=src, file_type="PDF", content_sha256=12345,
+        )
+        assert result.source == "render_no_sha"
+
+
+# ============================================================
+# FrontCacheResult 字段
+# ============================================================
+class TestFrontCacheResult:
+    def test_field_signature_preserved(self):
+        """FrontCacheResult 字段保持完全一致（service/printing.py 依赖）。"""
+        r = fc.FrontCacheResult(pdf_bytes=b"x", orientation="landscape", source="render")
+        assert hasattr(r, "pdf_bytes")
+        assert hasattr(r, "orientation")
+        assert hasattr(r, "source")
+        assert r.pdf_bytes == b"x"
+        assert r.orientation == "landscape"
+        assert r.source == "render"
