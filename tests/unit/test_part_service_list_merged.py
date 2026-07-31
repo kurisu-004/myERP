@@ -57,6 +57,10 @@ def _make_assembly(id: int, customer_id: int, **kwargs) -> TAssembly:
         status=kwargs.get("status", AssemblyStatus.PENDING.value),
         is_urgent=kwargs.get("is_urgent", False),
         created_at=kwargs.get("created_at", datetime(2025, 1, 1, 0, 0, 0)),
+        # 2026-07-31：装配件补齐字段（PR-F 与 Bug 1）
+        order_no=kwargs.get("order_no"),
+        system_delivery_date=kwargs.get("system_delivery_date"),
+        note=kwargs.get("note"),
     )
 
 
@@ -251,3 +255,223 @@ class TestListPartsIncludeAssemblies:
         result = await service.list_parts(query)
 
         assert result.total == 5
+
+    # ===== 2026-07-31：装配件补齐订单号/日期区间筛选（Bug 1）=====
+    # list_parts 并入装配件时，应把 order_no / request_date / planned_delivery_date
+    # / system_delivery_date 透传给 AssemblyRepository；has_outsource_history=True
+    # 时装配件整段被排除（装配体本身不外协，外协走 t_part）。
+
+    async def test_order_no_filter_applies_to_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """传 order_no 时，service 透传给 AssemblyRepository.list_with_filters
+        与 count_with_filters 的 order_no_like 参数。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        asm = _make_assembly(
+            id=100, customer_id=10, order_no="PO-2025-001"
+        )
+        mock_assemblies.list_with_filters.return_value = [asm]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True, order_no="PO-2025-001"
+        )
+        result = await service.list_parts(query)
+
+        # list/count 都被调用
+        mock_assemblies.list_with_filters.assert_awaited()
+        mock_assemblies.count_with_filters.assert_awaited()
+        # 透传 order_no_like
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["order_no_like"] == "PO-2025-001"
+        assert count_kwargs["order_no_like"] == "PO-2025-001"
+        # 返回的装配体行带 order_no
+        asm_item = next(i for i in result.items if i.row_type == "ASSEMBLY")
+        assert asm_item.order_no == "PO-2025-001"
+
+    async def test_request_date_range_applies_to_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """request_date_from/to 透传给装配体查询，并按区间收窄。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(
+            id=1, customer_id=10, request_date=date(2025, 3, 1)
+        )
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        # 装配体在区间内 → 应被返回
+        asm_in_range = _make_assembly(
+            id=100, customer_id=10, request_date=date(2025, 3, 15)
+        )
+        mock_assemblies.list_with_filters.return_value = [asm_in_range]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True,
+            request_date_from=date(2025, 3, 1),
+            request_date_to=date(2025, 3, 31),
+        )
+        result = await service.list_parts(query)
+
+        # 透传 request_date_from/to
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["request_date_from"] == date(2025, 3, 1)
+        assert list_kwargs["request_date_to"] == date(2025, 3, 31)
+        assert count_kwargs["request_date_from"] == date(2025, 3, 1)
+        assert count_kwargs["request_date_to"] == date(2025, 3, 31)
+        # 区间内的装配体行被返回
+        asm_items = [i for i in result.items if i.row_type == "ASSEMBLY"]
+        assert len(asm_items) == 1
+        assert asm_items[0].request_date == date(2025, 3, 15)
+
+    async def test_planned_delivery_date_range_applies_to_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """planned_delivery_date_from/to 透传给装配体查询。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        asm = _make_assembly(
+            id=100, customer_id=10,
+            planned_delivery_date=date(2025, 4, 10),
+        )
+        mock_assemblies.list_with_filters.return_value = [asm]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True,
+            planned_delivery_date_from=date(2025, 4, 1),
+            planned_delivery_date_to=date(2025, 4, 30),
+        )
+        result = await service.list_parts(query)
+
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["planned_delivery_date_from"] == date(2025, 4, 1)
+        assert list_kwargs["planned_delivery_date_to"] == date(2025, 4, 30)
+        assert count_kwargs["planned_delivery_date_from"] == date(2025, 4, 1)
+        assert count_kwargs["planned_delivery_date_to"] == date(2025, 4, 30)
+        # 区间内的装配体行被返回
+        asm_items = [i for i in result.items if i.row_type == "ASSEMBLY"]
+        assert len(asm_items) == 1
+        assert asm_items[0].planned_delivery_date == date(2025, 4, 10)
+
+    async def test_system_delivery_date_range_applies_to_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """system_delivery_date_from/to 透传给装配体查询；NULL 兜底语义
+        由 AssemblyRepository._build_filter_stmt 实现（与 PartRepository 对齐）。
+
+        本测试同时验证：
+        - 区间内的装配件被返回；
+        - 至少 1 个 NULL system_delivery_date 的装配件也应被命中（NULL 兜底）；
+        - query 字段被透传。
+        """
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        # 一条在区间内、一条 system_delivery_date=NULL（区间内也应命中）
+        asm_in_range = _make_assembly(
+            id=100, customer_id=10,
+            system_delivery_date=date(2025, 5, 10),
+        )
+        asm_null = _make_assembly(
+            id=101, customer_id=10,
+            system_delivery_date=None,
+        )
+        mock_assemblies.list_with_filters.return_value = [asm_in_range, asm_null]
+        mock_assemblies.count_with_filters.return_value = 2
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True,
+            system_delivery_date_from=date(2025, 5, 1),
+            system_delivery_date_to=date(2025, 5, 31),
+        )
+        result = await service.list_parts(query)
+
+        # 透传 system_delivery_date_from/to
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["system_delivery_date_from"] == date(2025, 5, 1)
+        assert list_kwargs["system_delivery_date_to"] == date(2025, 5, 31)
+        assert count_kwargs["system_delivery_date_from"] == date(2025, 5, 1)
+        assert count_kwargs["system_delivery_date_to"] == date(2025, 5, 31)
+        # 至少 1 个 NULL system_delivery_date 的装配件被命中
+        asm_items = [i for i in result.items if i.row_type == "ASSEMBLY"]
+        assert len(asm_items) == 2
+        null_count = sum(1 for a in asm_items if a.system_delivery_date is None)
+        assert null_count >= 1
+
+    async def test_has_outsource_history_true_excludes_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """has_outsource_history=True 时，装配件整段被排除（装配体不外协）。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        # 即便装配体 mock 有数据，也不会被调用
+        mock_assemblies.list_with_filters.return_value = [
+            _make_assembly(id=100, customer_id=10)
+        ]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True, has_outsource_history=True
+        )
+        result = await service.list_parts(query)
+
+        # 装配体仓储不应被调用
+        mock_assemblies.list_with_filters.assert_not_awaited()
+        mock_assemblies.count_with_filters.assert_not_awaited()
+        # 返回的行全部是 PART
+        assert all(i.row_type == "PART" for i in result.items)
+        # total 等于零件 count
+        assert result.total == 1
