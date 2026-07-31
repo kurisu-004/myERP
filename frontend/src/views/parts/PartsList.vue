@@ -1207,13 +1207,12 @@ const partsListRef = ref<InstanceType<typeof ResponsiveList> | null>(null)
 
 function isBatchSelectable(row: PartListItem): boolean {
   if (batchAction.value === 'print') {
-    // 2026-08-01：批量打印只允许勾选装配件（顶层行）。子件不可在批量模式单独
-    // 勾选；单零件打印走 PartDetail 详情页（FileListCard → printPartDrawing）。
-    // 行 1151 / 1169：子件 row_key 形如 CHILD_${id}，loadChildren 设了 __is_child=true。
-    return (
-      row.row_type === 'ASSEMBLY' &&
-      !(row as { __is_child?: boolean }).__is_child
-    )
+    // 2026-08-01 (revised)：批量打印允许勾选所有顶层行——
+    //   独立零件（row_type='PART' && !__is_child）+ 装配件行（row_type='ASSEMBLY'）。
+    // 顶层行在 el-table 中即为最外层可见行（items.value 顶层）；子件 row_key 是
+    // CHILD_${id}，loadChildren 设了 __is_child=true，必须禁用避免双重打印。
+    // 单个子件打印走 PartDetail 详情页（FileListCard → printPartDrawing）。
+    return !(row as { __is_child?: boolean }).__is_child
   }
   // 下发模式：仅未下发零件（PENDING）；保持原语义，装配件+子件都不能整批下发。
   return row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'
