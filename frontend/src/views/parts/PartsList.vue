@@ -50,6 +50,20 @@
             </template>
           </el-input>
 
+          <!-- 序列号独立搜索框（2026-07-31） -->
+          <el-input
+            v-model="search.serialNo"
+            placeholder="序列号"
+            clearable
+            style="width: 160px"
+            @keyup.enter="onSearch"
+            @clear="onSearch"
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+
           <el-button @click="onReset">
             <el-icon><RefreshLeft /></el-icon>
             <span>重置</span>
@@ -956,6 +970,8 @@ const { isMobile } = useBreakpoint()
 interface SearchState {
   keyword: string
   orderNo: string
+  /** 2026-07-31：序列号独立搜索（ILIKE 包含；装配件子序列号自动带出母装配件） */
+  serialNo: string
   statuses: OrderStatus[]
   isUrgent: boolean | null
   customerId: string
@@ -973,6 +989,7 @@ function initialSearch(): SearchState {
   return {
     keyword: '',
     orderNo: '',
+    serialNo: '',
     statuses: isCncProgrammer
       ? ['PROGRAMMING']
       : ['IN_PROCESS', 'REPAIRING'],
@@ -1505,6 +1522,8 @@ function buildParams(): ListPartsParams {
     is_urgent: search.isUrgent ?? undefined,
     keyword: search.keyword.trim() || undefined,
     order_no: search.orderNo.trim() || undefined,
+    // 2026-07-31：序列号独立搜索（ILIKE 包含；装配件子序列号自动带出母装配件）
+    serial_no: search.serialNo.trim() || undefined,
     request_date_from: search.requestDateFrom || undefined,
     request_date_to: search.requestDateTo || undefined,
     planned_delivery_date_from: search.plannedDeliveryDateFrom || undefined,
@@ -1581,6 +1600,7 @@ function onReset(): void {
   // popover 选择、排序、分页大小。表头排序、列过滤器不受重置影响。
   search.keyword = ''
   search.orderNo = ''
+  search.serialNo = ''
   search.requestDateFrom = ''
   search.requestDateTo = ''
   search.plannedDeliveryDateFrom = ''
@@ -1607,6 +1627,8 @@ onMounted(async () => {
     if (persisted) {
       search.keyword = persisted.search.keyword ?? search.keyword
       search.orderNo = persisted.search.orderNo ?? search.orderNo
+      // 2026-07-31：序列号独立搜索字段恢复
+      search.serialNo = persisted.search.serialNo ?? search.serialNo
       search.statuses = Array.isArray(persisted.search.statuses)
         ? persisted.search.statuses
         : search.statuses

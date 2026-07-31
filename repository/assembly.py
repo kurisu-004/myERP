@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
-from model import TAssembly
+from model import TAssembly, TPart
 
 
 class AssemblySortKey(str, enum.Enum):
@@ -78,6 +78,8 @@ class AssemblyRepository:
         name_like: str | None = None,
         # 2026-07-31：零件一览并入装配件的补充筛选（与 PartRepository 对齐）
         order_no_like: str | None = None,
+        # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
+        serial_no_like: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
@@ -99,6 +101,7 @@ class AssemblyRepository:
             drawing_no_like=drawing_no_like,
             name_like=name_like,
             order_no_like=order_no_like,
+            serial_no_like=serial_no_like,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
@@ -134,6 +137,8 @@ class AssemblyRepository:
         drawing_no_like: str | None = None,
         name_like: str | None = None,
         order_no_like: str | None = None,
+        # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
+        serial_no_like: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
@@ -151,6 +156,7 @@ class AssemblyRepository:
             drawing_no_like=drawing_no_like,
             name_like=name_like,
             order_no_like=order_no_like,
+            serial_no_like=serial_no_like,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
@@ -184,6 +190,7 @@ class AssemblyRepository:
         drawing_no_like: str | None,
         name_like: str | None,
         order_no_like: str | None = None,
+        serial_no_like: str | None = None,  # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
@@ -216,6 +223,24 @@ class AssemblyRepository:
             on = order_no_like.strip()
             if on:
                 stmt = stmt.where(TAssembly.order_no.ilike(f"%{on}%"))
+        # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）。
+        # 子件 serial_no 形如 {父装配}-{i:02d}，所以搜子件序列号时，装配件
+        # 本身没有匹配的 serial_no —— 需要 EXISTS 命中子件才能带出母装配件行。
+        if serial_no_like:
+            sn = serial_no_like.strip()
+            if sn:
+                stmt = stmt.where(
+                    or_(
+                        TAssembly.serial_no.ilike(f"%{sn}%"),
+                        select(TPart.id)
+                        .where(
+                            (TPart.assembly_id == TAssembly.id)
+                            & TPart.serial_no.ilike(f"%{sn}%")
+                            & TPart.deleted_at.is_(None)
+                        )
+                        .exists(),
+                    )
+                )
         if request_date_from is not None:
             stmt = stmt.where(TAssembly.request_date >= request_date_from)
         if request_date_to is not None:

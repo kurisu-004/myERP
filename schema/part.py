@@ -29,6 +29,13 @@ class PartListQuery(BaseModel):
     order_no: str | None = Field(
         default=None, description="订单号搜索（ILIKE 包含匹配 %kw%；2026-07-22 新增）"
     )
+    # 2026-07-31：序列号独立搜索框（ILIKE 包含匹配 %kw%）。
+    # 子件序列号是 {父装配序列号}-{i:02d} 派生，搜子件序列号时，装配件本身
+    # 不带匹配 serial_no —— 需要 EXISTS 子件命中才能带出母装配件行。
+    serial_no: str | None = Field(
+        default=None,
+        description="序列号搜索（ILIKE 包含匹配 %kw%；2026-07-31 新增；装配件子序列号自动带出母装配件）",
+    )
     has_outsource_history: bool | None = Field(
         default=None,
         description=(

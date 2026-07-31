@@ -475,3 +475,103 @@ class TestListPartsIncludeAssemblies:
         assert all(i.row_type == "PART" for i in result.items)
         # total 等于零件 count
         assert result.total == 1
+
+    # ===== 2026-07-31：序列号独立搜索（带出母装配件） =====
+
+    async def test_serial_no_filter_brings_parent_assembly_via_children(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """搜子件序列号（如 'L1067-03'）时，service 透传 serial_no 给装配件仓储，
+        让 repository 用 EXISTS 子件命中带出母装配件行。
+
+        本测锁定 service 层的 plumbing（透传参数 + list/count 都被调用）；
+        EXISTS 谓词本身由 repository 集成测试保证。
+
+        装配件整段在 has_outsource_history=False 时正常调用；
+        子件从顶层隐藏由 `assembly_id_is_null=True` 谓词在 repository 层处理
+        （mock 直接返回的子件会被 service 透传给前端，所以本测只锁定参数透传）。
+        """
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        # 独立零件查询：serial_no 命中子件（mock 直接返回子件）
+        child = _make_part(id=1, customer_id=10, serial_no="L1067-03")
+        mock_parts.list_with_filters.return_value = [child]
+        mock_parts.count_with_filters.return_value = 1
+
+        # 装配件仓储通过 EXISTS 子件命中（serial_no='L1067-03'）
+        parent_asm = _make_assembly(id=100, customer_id=10, serial_no="L1067")
+        mock_assemblies.list_with_filters.return_value = [parent_asm]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = [(100, 1)]  # child_count
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(include_assemblies=True, serial_no="L1067-03")
+        result = await service.list_parts(query)
+
+        # serial_no 透传给装配件仓储
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["serial_no_like"] == "L1067-03"
+        assert count_kwargs["serial_no_like"] == "L1067-03"
+
+        # serial_no 透传给零件仓储
+        part_list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        part_count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert part_list_kwargs["serial_no"] == "L1067-03"
+        assert part_count_kwargs["serial_no"] == "L1067-03"
+
+        # 母装配件行被返回（通过 EXISTS 子件命中 → mock 返回了 parent_asm）
+        asm_items = [i for i in result.items if i.row_type == "ASSEMBLY"]
+        assert len(asm_items) == 1
+        assert asm_items[0].serial_no == "L1067"
+
+        # 独立子件会被 service._to_list_out 处理为 PART 行（mock 直接返回的子件
+        # 即便标了 assembly_id，在 mock 层不会被过滤——SQL 层 `assembly_id IS NULL`
+        # 由 repository 集成测试保证；本测只锁定 service 透传）。
+        part_items = [i for i in result.items if i.row_type == "PART"]
+        assert len(part_items) == 1
+
+        # total = 1 零件（mock 直接返回）+ 1 装配件
+        assert result.total == 2
+
+    async def test_serial_no_filter_excludes_assemblies_with_outsource_history(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """has_outsource_history=True 仍然排除装配件段，但 serial_no 仍透传给零件仓储。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10, serial_no="L1067-03")
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        mock_assemblies.list_with_filters.return_value = [
+            _make_assembly(id=100, customer_id=10, serial_no="L1067")
+        ]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True,
+            serial_no="L1067-03",
+            has_outsource_history=True,
+        )
+        result = await service.list_parts(query)
+
+        # 装配件仓储完全跳过
+        mock_assemblies.list_with_filters.assert_not_awaited()
+        mock_assemblies.count_with_filters.assert_not_awaited()
+        # 仍把 serial_no 透传给零件仓储
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert list_kwargs["serial_no"] == "L1067-03"
+        # 行全部是 PART
+        assert all(i.row_type == "PART" for i in result.items)
+        assert result.total == 1
