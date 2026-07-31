@@ -268,8 +268,8 @@
 
       <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
         <template #header>
-          <span class="header-cell">
-            <span>客户</span>
+          <span class="header-cell" :class="{ 'is-active': customerFilterActive }">
+            <span>{{ customerFilterActive ? '客户(1)' : '客户' }}</span>
             <el-popover
               :width="280"
               placement="bottom-start"
@@ -281,7 +281,7 @@
               <template #reference>
                 <el-icon
                   class="filter-icon"
-                  :class="{ active: search.customerId !== '' }"
+                  :class="{ active: customerFilterActive }"
                 >
                   <Filter />
                 </el-icon>
@@ -338,8 +338,8 @@
         align="center"
       >
         <template #header>
-          <span class="header-cell">
-            <span>状态</span>
+          <span class="header-cell" :class="{ 'is-active': statusFilterActive }">
+            <span>{{ statusFilterActive ? `状态(${statusSelectedCount})` : '状态' }}</span>
             <el-popover
               :width="220"
               placement="bottom-start"
@@ -1013,6 +1013,9 @@ const statusFilterActive = computed(
   () => search.statuses.length > 0 || search.isUrgent === true,
 )
 const customerFilterActive = computed(() => search.customerId !== '')
+// 2026-07-31：表头「状态(N)」计数同步于已确认的搜索条件（与 statusFilterActive 共享来源）；
+// draft（statusDraft）是 popover 内未提交状态，不计入
+const statusSelectedCount = computed(() => search.statuses.length)
 
 // ============ 三个日期区间筛选（2026-07-22：内联 daterange） ============
 // daterange 的 v-model 绑定 [start, end]；清空时 el 抛 null，getter/setter 兜底。
@@ -2226,14 +2229,31 @@ async function onBatchDispatchConfirm(): Promise<void> {
   gap: 4px;
   width: 100%;
   justify-content: center;
+  // 2026-07-31：激活态列标题同步变蓝加粗（与 filter-icon.active 共享视觉信号）
+  &.is-active {
+    color: var(--primary-color);
+    font-weight: 600;
+  }
 }
 
 .filter-icon {
   font-size: 14px;
   color: var(--text-secondary);
   cursor: pointer;
+  position: relative; // 为 ::after 圆点做定位锚点
   &.active {
     color: var(--primary-color);
+  }
+  // 2026-07-31：激活态右上角加蓝圆点（与图标颜色、文字加粗三重信号）
+  &.active::after {
+    content: '';
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--primary-color);
   }
 }
 
