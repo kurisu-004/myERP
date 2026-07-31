@@ -608,7 +608,18 @@
     <!-- 批量打印 / 批量下发 — 底部 action bar（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见） -->
     <div v-if="!isInspector && batchMode" class="batch-bar">
       <div class="bar-info">
-        <span>已选 <strong>{{ selectedIds.size }}</strong> 件</span>
+        <span v-if="batchSelectedPartCount > 0">
+          零件 <strong>{{ batchSelectedPartCount }}</strong> 件
+        </span>
+        <span v-if="batchSelectedAssemblyCount > 0" class="bar-info__assembly">
+          装配件 <strong>{{ batchSelectedAssemblyCount }}</strong> 件
+          <el-tooltip placement="top" :show-after="0">
+            <template #content>
+              勾选装配件行将打印该装配件的<b>全部子件</b>图纸
+            </template>
+            <el-icon class="batch-hint"><WarningFilled /></el-icon>
+          </el-tooltip>
+        </span>
         <el-button link size="small" @click="onSelectAllPage">全选当前页</el-button>
         <el-button link size="small" @click="onClearSelection">清空选择</el-button>
       </div>
@@ -898,6 +909,7 @@ import {
   Promotion,
   RefreshLeft,
   Search,
+  WarningFilled,
 } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -1050,6 +1062,8 @@ function confirmStatusFilter(): void {
   search.statuses = [...statusDraft.value]
   search.isUrgent = statusUrgentDraft.value ? true : null
   statusPopoverVisible.value = false
+  // 2026-07-31：改筛选即清空批量选择（与「翻页保留」对应）
+  if (batchMode.value) clearAllSelection()
   onSearch()
 }
 
@@ -1071,6 +1085,8 @@ function resetCustomerDraft(): void {
 function confirmCustomerFilter(): void {
   search.customerId = customerDraft.value ?? ''
   customerPopoverVisible.value = false
+  // 2026-07-31：改筛选即清空批量选择（与「翻页保留」对应）
+  if (batchMode.value) clearAllSelection()
   onSearch()
 }
 
@@ -1177,6 +1193,24 @@ function isBatchSelectable(row: PartListItem): boolean {
 /** 2026-07-30：记录每个选中 id 的行类型，用于批量打印拆分 */
 const selectedRowTypes = reactive(new Map<string, 'PART' | 'ASSEMBLY'>())
 
+// 2026-07-31：批量栏拆分计数（零件 / 装配件）。两个 computed 双校验：
+// 只把「仍在 selectedIds 中 + 有类型记录」的 id 计进来，避免 selectedRowTypes
+// 残留 id 被算成有效计数。
+const batchSelectedPartCount = computed(() => {
+  let n = 0
+  for (const [id, t] of selectedRowTypes) {
+    if (selectedIds.has(id) && t !== 'ASSEMBLY') n++
+  }
+  return n
+})
+const batchSelectedAssemblyCount = computed(() => {
+  let n = 0
+  for (const [id, t] of selectedRowTypes) {
+    if (selectedIds.has(id) && t === 'ASSEMBLY') n++
+  }
+  return n
+})
+
 function clearAllSelection(): void {
   selectedIds.clear()
   selectedRows.value = []
@@ -1200,9 +1234,14 @@ function onExitBatchMode(): void {
 }
 function onSelectionChange(rows: PartListItem[]): void {
   // 按 ID 合并：先移除当前页所有 ID（不论是否还在 rows 中），再加入 rows 中可选行的 ID
+  // 关键：必须同步清理 selectedRowTypes，否则取消勾选会在 Map 里残留，
+  // onBatchPrint 遍历 selectedRowTypes 时会把残留 id 当成有效选择送给后端（Bug 3）。
   const currentPageIds = new Set(items.value.map((r) => r.id))
   for (const id of [...selectedIds]) {
-    if (currentPageIds.has(id)) selectedIds.delete(id)
+    if (currentPageIds.has(id)) {
+      selectedIds.delete(id)
+      selectedRowTypes.delete(id)
+    }
   }
   for (const r of rows) {
     if (isBatchSelectable(r)) {
@@ -1271,20 +1310,22 @@ function onBatchRowClick(
     selectedRows.value = selectedRows.value.filter((r) => r.id !== row.id)
   }
 }
-/** fetchList 更新 items 后用 nextTick 恢复当前页 checkbox UI（不主动清空 selectedIds）。 */
+/** fetchList 更新 items 后用 nextTick 恢复当前页 checkbox UI。
+ * 2026-07-31：保留跨页选择（不主动剔除「不在当前页」的 id）；仅清理不可选项。
+ * 必须同步清理 selectedRowTypes，否则 onBatchPrint 遍历 Map 时残留 id 会被当成
+ * 有效选择送给后端（Bug 3 路径 2）。 */
 function restoreTableSelection(): void {
   if (!batchMode.value) return
   const table = partsListRef.value?.elTableRef
   if (!table) return
-  // 清理：移除 selectedIds 中已不在当前 items 中或已变不可选的 id
-  const currentIds = new Set(items.value.map((r) => r.id))
-  for (const id of [...selectedIds]) {
-    if (!currentIds.has(id)) selectedIds.delete(id)
-  }
+  // 清理：仅剔除当前页里已变不可选的 id；翻页保留。
   for (const r of items.value) {
-    if (!isBatchSelectable(r)) selectedIds.delete(r.id)
+    if (!isBatchSelectable(r)) {
+      selectedIds.delete(r.id)
+      selectedRowTypes.delete(r.id)
+    }
   }
-  // 同步 row types（防止 items 刷新后类型变化）
+  // 同步 row types（防止 items 刷新后类型变化，如装配件状态翻转）
   for (const r of items.value) {
     if (selectedIds.has(r.id)) {
       selectedRowTypes.set(r.id, r.row_type === 'ASSEMBLY' ? 'ASSEMBLY' : 'PART')
@@ -1313,13 +1354,12 @@ async function onBatchPrint(): Promise<void> {
   try {
     const partIds: string[] = []
     const assemblyIds: string[] = []
-    for (const [id, type] of selectedRowTypes) {
-      if (type === 'ASSEMBLY') assemblyIds.push(id)
-      else partIds.push(id)
-    }
-    // 兜底：selectedRowTypes 可能缺失某些 id（如跨页后快照丢失），缺省按 PART 处理
+    // 2026-07-31：以 selectedIds 为唯一来源遍历（之前用 selectedRowTypes 当主源
+    // 会让取消勾选的残留 id 仍然送进后端，UI 计数 ≠ 实际打印集合）。
     for (const id of selectedIds) {
-      if (!selectedRowTypes.has(id)) partIds.push(id)
+      const t = selectedRowTypes.get(id)
+      if (t === 'ASSEMBLY') assemblyIds.push(id)
+      else partIds.push(id)
     }
 
     // 构建批次队列：先零件后装配体
@@ -1502,6 +1542,11 @@ async function fetchList(): Promise<void> {
 
 const onSearch = (): void => {
   page.value = 1
+  // 2026-07-31：关键词/订单号/日期区间变化即视为「改筛选」，清空批量选择。
+  // onSearch 也是 confirmStatusFilter / confirmCustomerFilter / resetStatusDraft /
+  // resetCustomerDraft / confirmMobileFilter / resetMobileFilter / onReset 的统一入口，
+  // 但各 popover 内「重置」分支已自己拼 clearAllSelection 之外的逻辑；这里再覆盖一层防御。
+  if (batchMode.value) clearAllSelection()
   void fetchList()
 }
 
@@ -1543,6 +1588,8 @@ function onReset(): void {
   search.systemDeliveryDateFrom = ''
   search.systemDeliveryDateTo = ''
   page.value = 1
+  // 2026-07-31：重置按钮清空批量选择（与「改筛选即清空」语义一致）
+  if (batchMode.value) clearAllSelection()
   // 写回 localStorage：保留 sortBy / sortDir / pageSize / statuses / isUrgent / customerId，
   // 仅清空 keyword / orderNo / 三个日期区间。下次刷新页面恢复的就是这种"半清空"状态。
   snapshotPartsFilter()
@@ -1939,8 +1986,9 @@ async function onBatchDispatchConfirm(): Promise<void> {
           )
         }
         successCount++
-        // 成功项：移出三个状态源
+        // 成功项：移出三个状态源（selectedIds / selectedRowTypes / selectedRows）
         selectedIds.delete(t.id)
+        selectedRowTypes.delete(t.id)
         const tbl = partsListRef.value?.elTableRef
         const row = items.value.find((r) => r.id === t.id)
         if (tbl && row) tbl.toggleRowSelection(row, false)
@@ -2108,6 +2156,17 @@ async function onBatchDispatchConfirm(): Promise<void> {
 .batch-bar .bar-info strong {
   color: #409eff;
   font-weight: 600;
+}
+/* 2026-07-31：装配件计数与提示图标 */
+.batch-bar .bar-info__assembly {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.batch-bar .batch-hint {
+  color: var(--el-color-warning);
+  cursor: help;
+  font-size: 14px;
 }
 .batch-print-progress {
   flex: 1;
