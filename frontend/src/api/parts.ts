@@ -823,7 +823,10 @@ export interface InspectionBatchListResult {
 
 export async function listInspectionBatches(params: {
   keyword?: string
+  serial_no?: string
   customer_id?: string
+  planned_delivery_date_from?: string
+  planned_delivery_date_to?: string
   limit?: number
   offset?: number
 } = {}): Promise<InspectionBatchListResult> {

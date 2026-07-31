@@ -34,6 +34,19 @@
           </template>
         </el-input>
 
+        <el-input
+          v-model="search.serialNo"
+          placeholder="序列号"
+          clearable
+          style="width: 180px"
+          @keyup.enter="onSearch"
+          @clear="onSearch"
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+
         <el-button @click="onSearch">
           <el-icon><RefreshLeft /></el-icon>
           <span>刷新</span>
@@ -306,7 +319,7 @@ const errorMsg = ref<string | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 
-const search = reactive({ keyword: '' })
+const search = reactive({ keyword: '', serialNo: '' })
 
 const emptyText = computed(() => errorMsg.value ?? '暂无待编程零件')
 
@@ -326,6 +339,7 @@ async function fetchList(): Promise<void> {
   try {
     const resp = await listPendingProgramming({
       keyword: search.keyword.trim() || undefined,
+      serial_no: search.serialNo.trim() || undefined,
       sort_by: 'PLANNED_DELIVERY_DATE',
       sort_dir: 'ASC',
       limit: pageSize.value,

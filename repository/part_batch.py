@@ -7,7 +7,7 @@
 - 拆分并发：`get_for_update` 锁源批次行 → 同事单的拆分串行化，
   `next_batch_no` 在锁内取 MAX+1，保证 (part_id, batch_no) 唯一。
 """
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -192,6 +192,9 @@ class PartBatchRepository:
         statuses: list[str] | None = None,
         customer_ids_in: list[int] | None = None,
         keyword: str | None = None,
+        serial_no: str | None = None,
+        planned_delivery_date_from: date | None = None,
+        planned_delivery_date_to: date | None = None,
         limit: int = 200,
         offset: int = 0,
     ) -> list[tuple[TPartBatch, TPart]]:
@@ -212,8 +215,18 @@ class PartBatchRepository:
         if keyword:
             like = f"%{keyword}%"
             stmt = stmt.where(
-                or_(TPart.drawing_no.ilike(like), TPart.name.ilike(like))
+                or_(
+                    TPart.drawing_no.ilike(like),
+                    TPart.name.ilike(like),
+                    TPart.serial_no.ilike(like),
+                )
             )
+        if serial_no:
+            stmt = stmt.where(TPart.serial_no.ilike(f"%{serial_no.strip()}%"))
+        if planned_delivery_date_from is not None:
+            stmt = stmt.where(TPart.planned_delivery_date >= planned_delivery_date_from)
+        if planned_delivery_date_to is not None:
+            stmt = stmt.where(TPart.planned_delivery_date <= planned_delivery_date_to)
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
             TPart.planned_delivery_date.asc(),
@@ -228,6 +241,9 @@ class PartBatchRepository:
         statuses: list[str] | None = None,
         customer_ids_in: list[int] | None = None,
         keyword: str | None = None,
+        serial_no: str | None = None,
+        planned_delivery_date_from: date | None = None,
+        planned_delivery_date_to: date | None = None,
     ) -> int:
         stmt = (
             select(func.count(TPartBatch.id))
@@ -241,8 +257,18 @@ class PartBatchRepository:
         if keyword:
             like = f"%{keyword}%"
             stmt = stmt.where(
-                or_(TPart.drawing_no.ilike(like), TPart.name.ilike(like))
+                or_(
+                    TPart.drawing_no.ilike(like),
+                    TPart.name.ilike(like),
+                    TPart.serial_no.ilike(like),
+                )
             )
+        if serial_no:
+            stmt = stmt.where(TPart.serial_no.ilike(f"%{serial_no.strip()}%"))
+        if planned_delivery_date_from is not None:
+            stmt = stmt.where(TPart.planned_delivery_date >= planned_delivery_date_from)
+        if planned_delivery_date_to is not None:
+            stmt = stmt.where(TPart.planned_delivery_date <= planned_delivery_date_to)
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 

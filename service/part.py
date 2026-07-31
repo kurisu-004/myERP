@@ -2722,6 +2722,9 @@ class PartService:
         *,
         keyword: str | None = None,
         customer_id: str | None = None,
+        serial_no: str | None = None,
+        planned_delivery_date_from: date | None = None,
+        planned_delivery_date_to: date | None = None,
         limit: int = 200,
         offset: int = 0,
     ) -> tuple[list[PartOut], int]:
@@ -2740,6 +2743,9 @@ class PartService:
             statuses=[PartStatus.INSPECTION.value],
             customer_ids_in=customer_ids_in,
             keyword=kw,
+            serial_no=(serial_no or "").strip() or None,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
             limit=limit,
             offset=offset,
         )
@@ -2747,6 +2753,9 @@ class PartService:
             statuses=[PartStatus.INSPECTION.value],
             customer_ids_in=customer_ids_in,
             keyword=kw,
+            serial_no=(serial_no or "").strip() or None,
+            planned_delivery_date_from=planned_delivery_date_from,
+            planned_delivery_date_to=planned_delivery_date_to,
         )
         return await self._to_batch_out(rows), total
 

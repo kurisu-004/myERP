@@ -314,6 +314,7 @@ async def list_pending_programming_parts(
         default=None,
         description="搜索关键字（图号 ILIKE 包含 %kw%；名称 ILIKE 前缀 kw%）",
     ),
+    serial_no: str | None = Query(default=None, description="序列号（ILIKE 包含匹配）"),
     sort_by: str = Query(default="PLANNED_DELIVERY_DATE", description="排序字段"),
     sort_dir: str = Query(default="ASC", description="排序方向"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -328,6 +329,7 @@ async def list_pending_programming_parts(
             statuses=[PartStatus.PROGRAMMING],
             is_urgent=None,
             keyword=keyword,
+            serial_no=serial_no,
             sort_by=PartSortKey(sort_by),
             sort_dir=SortDir(sort_dir),
             limit=limit,
@@ -389,12 +391,18 @@ async def list_outsource_sendable(
 async def list_inspection_batches(
     keyword: str | None = Query(default=None),
     customer_id: str | None = Query(default=None),
+    serial_no: str | None = Query(default=None, description="序列号（ILIKE 包含匹配）"),
+    planned_delivery_date_from: date | None = Query(default=None, description="计划交期起点"),
+    planned_delivery_date_to: date | None = Query(default=None, description="计划交期终点"),
     limit: int = Query(default=200, le=500),
     offset: int = Query(default=0, ge=0),
     svc: PartService = Depends(get_part_service),
 ) -> InspectionBatchListOut:
     items, total = await svc.list_inspection_batches(
-        keyword=keyword, customer_id=customer_id, limit=limit, offset=offset,
+        keyword=keyword, customer_id=customer_id, serial_no=serial_no,
+        planned_delivery_date_from=planned_delivery_date_from,
+        planned_delivery_date_to=planned_delivery_date_to,
+        limit=limit, offset=offset,
     )
     return InspectionBatchListOut(items=items, total=total, limit=limit, offset=offset)
 

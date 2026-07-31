@@ -23,6 +23,32 @@
           </template>
         </el-input>
 
+        <el-input
+          v-model="search.serialNo"
+          placeholder="序列号"
+          clearable
+          style="width: 180px"
+          @keyup.enter="onSearch"
+          @clear="onSearch"
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+
+        <el-date-picker
+          v-model="plannedDateRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="~"
+          start-placeholder="计划交期起点"
+          end-placeholder="计划交期终点"
+          unlink-panels
+          clearable
+          style="width: 280px"
+          @change="onSearch"
+        />
+
         <el-button @click="onSearch">
           <el-icon><RefreshLeft /></el-icon>
           <span>刷新</span>
@@ -93,6 +119,19 @@
         label="计划交期"
         min-width="120" align="center"/>
 
+      <el-table-column
+        prop="system_delivery_date"
+        label="系统交期"
+        min-width="120"
+        align="center"
+      >
+        <template #default="{ row }">
+          <span :class="{ muted: !row.system_delivery_date }">
+            {{ row.system_delivery_date || '—' }}
+          </span>
+        </template>
+      </el-table-column>
+
       <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span v-if="row.customer_path">{{ row.customer_path }}</span>
@@ -149,6 +188,10 @@
           <div class="rl-kv__item">
             <span class="rl-kv__key">计划交期</span>
             <span class="rl-kv__val">{{ row.planned_delivery_date || '—' }}</span>
+          </div>
+          <div class="rl-kv__item">
+            <span class="rl-kv__key">系统交期</span>
+            <span class="rl-kv__val">{{ row.system_delivery_date || '—' }}</span>
           </div>
           <div class="rl-kv__item rl-kv__item--full">
             <span class="rl-kv__key">客户</span>
@@ -390,7 +433,8 @@ const errorMsg = ref<string | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 
-const search = reactive({ keyword: '' })
+const search = reactive({ keyword: '', serialNo: '' })
+const plannedDateRange = ref<[string, string] | null>(null)
 
 const emptyText = computed(() => errorMsg.value ?? '暂无待品检零件')
 
@@ -411,6 +455,9 @@ async function fetchList(): Promise<void> {
     // 2026-07-29 批次级：行=批次（quantity 为批次量，操作回传 batch_id）
     const resp = await listInspectionBatches({
       keyword: search.keyword.trim() || undefined,
+      serial_no: search.serialNo.trim() || undefined,
+      planned_delivery_date_from: plannedDateRange.value?.[0],
+      planned_delivery_date_to: plannedDateRange.value?.[1],
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
     })
