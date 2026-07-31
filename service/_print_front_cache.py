@@ -1,37 +1,29 @@
-"""打印正面页：原图纸 → A4 单页 PDF 规格化 + 两级缓存。
+"""打印正面页：原图纸 → A4 单页 PDF 规格化 + vector 逃生门。
 
 2026-07-31 打印性能优化引入。3Mbps 带宽下，CAD 矢量 PDF 原样 passthrough 是
-最大的传输瓶颈（单件 2-5MB → 纯传输 6-15s）。本模块：
+最大的传输瓶颈（单件 2-5MB → 纯传输 6-15s）。本模块负责：
 
 1. 规格化：把上传的图纸一次性转成 200DPI 单页 A4 JPEG PDF（~300KB）。
    - PDF 输入：pypdfium2 渲染第一页 → PIL JPEG q85 → PIL.save(PDF, resolution=200)；
    - 图片输入：ImageOps.contain + draft() 解码降采样 → 同上。
    - PIL.save(PDF, resolution=200) 的 mediabox 天然精确 A4，无需 pypdf 二次修。
 
-2. 两级缓存（key = content_sha256，CAS 不可变，永不失效）：
-   - L1 本地磁盘 LRU：`/app/.cache/print/{sha}.pdf`，1GB 上限；
-   - L2 COS：`printcache/{sha}.pdf`，跨容器重建持久。
-   - L1 miss → 查 L2 → 命中回填 L1；都 miss → 下载原图 → 规格化 → 写 L1
-     + asyncio.create_task 回传 L2（fire-and-forget，沿用 part_file.py 模式）。
-
-3. 逃生门：`vector=True` 参数跳过规格化，走原有 passthrough 路径（保留
+2. 逃生门：`vector=True` 参数跳过规格化，走原有 passthrough 路径（保留
    原 _fit_pdf_page_to_a4 行为；个别图纸打不清晰时用）。
+
+历史备注：早期版本曾引入 L1 本地磁盘 + L2 COS 两级缓存，因图纸基本只打印
+一次（命中率低）+ COS 规格化结果相对原 PDF 体积优势有限（仍需存储/请求费用）
+于 2026-07-31 移除；本模块现在只负责规格化本体与 vector 逃生门。
 """
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
-import time
 from dataclasses import dataclass
-from pathlib import Path
 
-import pikepdf
 import pypdfium2 as pdfium
 from PIL import Image, ImageOps
 
-from core import cos as cos_mod
-from core.config import settings
 from core.exception import BizError
 
 _logger = logging.getLogger(__name__)
@@ -47,29 +39,24 @@ _A4_H_PX = int(_A4_H_PT * _TARGET_DPI / 72.0)  # 2339
 _A4_W_PX_LAND = _A4_H_PX                        # 2339
 _A4_H_PX_LAND = _A4_W_PX                        # 1654
 
-# 本地磁盘缓存配置（来自 .env，避免在代码里硬编码规格参数）
-_CACHE_DIR = Path(settings.print_cache_dir)
-_CACHE_MAX_BYTES = settings.print_cache_max_bytes
-# COS 远端缓存 key 前缀
-_L2_KEY_PREFIX = "printcache/"
-
-# L1 可用性状态：None = 未探测；True / False = 已确定。
-# 任何 OSError 会一次性置 False 并 warning，之后静默 no-op（消除日志刷屏）。
-_l1_enabled: bool | None = None
-# 持有后台 L2 上传任务强引用，避免被 GC 提前回收。
-_bg_tasks: set[asyncio.Task] = set()
-
 # 图片输入白名单（service/part_file.py 的 ALLOWED_EXTS_BY_KIND[DRAWING] 同步子集）
 _IMAGE_EXTS = {"PNG", "JPG", "JPEG", "GIF", "BMP", "TIF", "TIFF", "WEBP"}
 
 
 @dataclass
 class FrontCacheResult:
-    """正面页规格化结果：bytes + 朝向 + 源标记（用于日志）。"""
+    """正面页规格化结果：bytes + 朝向 + 源标记（用于日志）。
+
+    `source` 取值：
+    - "render"：PDF / 图片按规格化走完，命中 content_sha256；
+    - "render_no_sha"：规格化走完，但 content_sha256 不可用（不缓存）；
+    - "vector"：vector=True + PDF 输入，原样 passthrough；
+    - "vector_image"：vector=True + 图片输入，仍走规格化（避免 pikepdf 合并报错）。
+    """
 
     pdf_bytes: bytes
     orientation: str  # "landscape" | "portrait"
-    source: str       # "l1" | "l2" | "render"
+    source: str       # "render" | "render_no_sha" | "vector" | "vector_image"
 
 
 # ============================================================
@@ -159,136 +146,6 @@ def _render_image_to_a4_jpeg_pdf(image_bytes: bytes) -> tuple[bytes, str]:
 
 
 # ============================================================
-# L1 本地磁盘 LRU
-# ============================================================
-def _disable_l1(reason: str) -> None:
-    """统一处理：把 L1 一次性置为不可用；已置过则静默返回（消除日志刷屏）。"""
-    global _l1_enabled
-    if _l1_enabled is False:
-        return
-    _l1_enabled = False
-    _logger.warning(
-        "L1 print cache disabled: %s not writable — L2 COS 缓存仍生效", reason,
-    )
-
-
-def _l1_path(sha: str) -> Path:
-    return _CACHE_DIR / f"{sha}.pdf"
-
-
-def init_l1_cache() -> bool:
-    """启动期探测 L1 目录是否可写。
-
-    流程：mkdir → 写一个临时探测文件并 unlink；成功 = 可用。
-    幂等：探测完成后只打一条 info / warning；之后重复调用直接返回缓存结果。
-    """
-    global _l1_enabled
-    if _l1_enabled is True:
-        return True
-    if _l1_enabled is False:
-        return False
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        probe = _CACHE_DIR / ".probe"
-        probe.write_bytes(b"")
-        probe.unlink()
-    except OSError as e:
-        _l1_enabled = False
-        _logger.warning(
-            "L1 print cache disabled: %s not writable (%s) — L2 COS 缓存仍生效",
-            _CACHE_DIR, e,
-        )
-        return False
-    _l1_enabled = True
-    _logger.info("L1 print cache enabled: %s", _CACHE_DIR)
-    return True
-
-
-def _reset_l1_for_testing() -> None:
-    """测试钩子：把 _l1_enabled 重置为 None 让 init_l1_cache() 重探。"""
-    global _l1_enabled
-    _l1_enabled = None
-
-
-def _l1_get(sha: str) -> bytes | None:
-    if _l1_enabled is None:
-        init_l1_cache()
-    if not _l1_enabled:
-        return None
-    p = _l1_path(sha)
-    try:
-        if p.exists() and p.stat().st_size > 0:
-            return p.read_bytes()
-    except OSError as e:
-        _disable_l1(f"{_CACHE_DIR} read failed: {e}")
-    return None
-
-
-def _l1_put(sha: str, pdf_bytes: bytes) -> None:
-    """写本地磁盘；LRU 上限由 _CACHE_MAX_BYTES 控制，超出按 mtime 淘汰最旧。"""
-    if _l1_enabled is None:
-        init_l1_cache()
-    if not _l1_enabled:
-        return
-    try:
-        # 临时写再 rename，避免并发读到半成品
-        tmp = _l1_path(sha).with_suffix(".pdf.tmp")
-        tmp.write_bytes(pdf_bytes)
-        tmp.replace(_l1_path(sha))
-    except OSError as e:
-        _disable_l1(f"write failed: {e}")
-        return
-    _l1_evict_if_over()
-
-
-def _l1_evict_if_over() -> None:
-    """LRU 淘汰：按 mtime asc 删到 ≤ 上限。"""
-    try:
-        files = [(p, p.stat().st_mtime) for p in _CACHE_DIR.glob("*.pdf")]
-    except OSError as e:
-        _disable_l1(f"stat failed: {e}")
-        return
-    total = sum(p.stat().st_size for p, _ in files)
-    files.sort(key=lambda t: t[1])  # 最旧在前
-    while total > _CACHE_MAX_BYTES and files:
-        p, _ = files.pop(0)
-        try:
-            total -= p.stat().st_size
-            p.unlink()
-        except OSError:
-            pass
-
-
-# ============================================================
-# L2 COS 远端缓存
-# ============================================================
-def _l2_key(sha: str) -> str:
-    return f"{_L2_KEY_PREFIX}{sha}.pdf"
-
-
-async def _l2_get(sha: str) -> bytes | None:
-    """下载 COS 上的 printcache/{sha}.pdf；不存在返回 None。"""
-    try:
-        if await cos_mod.head_object(_l2_key(sha)) is None:
-            return None
-        return await cos_mod.download_object(_l2_key(sha))
-    except BizError as e:
-        _logger.warning("L2 cache read failed for %s: %s", sha, e)
-        return None
-    except Exception as e:  # noqa: BLE001
-        _logger.warning("L2 cache read unexpected for %s: %s", sha, e)
-        return None
-
-
-async def _l2_put_async(sha: str, pdf_bytes: bytes) -> None:
-    """异步回传 COS；失败仅 warning（fire-and-forget）。"""
-    try:
-        await cos_mod.upload_object(_l2_key(sha), pdf_bytes, "application/pdf")
-    except Exception as e:  # noqa: BLE001
-        _logger.warning("L2 cache upload failed for %s: %s", sha, e)
-
-
-# ============================================================
 # 主入口
 # ============================================================
 async def get_normalized_front_pdf(
@@ -300,12 +157,12 @@ async def get_normalized_front_pdf(
 ) -> FrontCacheResult:
     """为单件图纸返回 A4 单页 PDF bytes + 朝向。
 
-    - `vector=True`：跳过规格化 + 缓存，直接返回原 PDF bytes + 朝向
+    - `vector=True`：跳过规格化（PDF 输入原样 passthrough；图片输入仍走规格化
+      避免 pikepdf 合并报错），直接返回 front pdf bytes + 朝向
       （由 service/printing.py 走 passthrough + _fit_pdf_page_to_a4）。
-    - `vector=False`（默认）：走两级缓存；cache key = content_sha256。
+    - `vector=False`（默认）：按 file_type 走规格化（PDF 第一页 / 图片 → A4 JPEG PDF）；
+      不再缓存。
     """
-    t0 = time.perf_counter()
-
     # ---- vector=1 逃生门：原样 passthrough ----
     if vector:
         if file_type.upper() == "PDF":
@@ -321,54 +178,12 @@ async def get_normalized_front_pdf(
         )
 
     # ---- 无 sha 兜底：直接规格化（不缓存）----
-    # 仅在 sha 是合法字符串时才走两级缓存；None / MagicMock / 其他类型都视为无 sha
-    # （测试场景可能传入 Mock 对象作为占位）。
+    # 仅在 sha 是合法字符串时才标记为 "render"；None / MagicMock / 其他类型
+    # 视为无 sha，按 "render_no_sha" 走规格化（测试场景可能传入 Mock 对象占位）。
     sha = content_sha256 if isinstance(content_sha256, str) and content_sha256 else None
     if not sha:
         return await _render_and_return(original_bytes, file_type, source="render_no_sha")
-
-    # ---- L1 → L2 → render ----
-    cached = _l1_get(sha)
-    if cached is not None:
-        # 朝向：从缓存 PDF 的 mediabox 推算（landscape / portrait）。
-        try:
-            with pikepdf.Pdf.open(io.BytesIO(cached)) as _pdf:
-                _w, _h = float(_pdf.pages[0].mediabox[2]), float(_pdf.pages[0].mediabox[3])
-            cached_orientation = "landscape" if _w > _h else "portrait"
-        except Exception:  # noqa: BLE001
-            cached_orientation = "landscape"
-        return FrontCacheResult(
-            pdf_bytes=cached, orientation=cached_orientation, source="l1",
-        )
-
-    l2_bytes = await _l2_get(sha)
-    if l2_bytes is not None:
-        _l1_put(sha, l2_bytes)
-        # L2 命中同样从 mediabox 推朝向
-        try:
-            with pikepdf.Pdf.open(io.BytesIO(l2_bytes)) as _pdf:
-                _w, _h = float(_pdf.pages[0].mediabox[2]), float(_pdf.pages[0].mediabox[3])
-            cached_orientation = "landscape" if _w > _h else "portrait"
-        except Exception:  # noqa: BLE001
-            cached_orientation = "landscape"
-        return FrontCacheResult(
-            pdf_bytes=l2_bytes, orientation=cached_orientation, source="l2",
-        )
-
-    # ---- 都 miss：规格化 → 写 L1 → 异步写 L2 ----
-    result = await _render_and_return(original_bytes, file_type, source="render")
-    _l1_put(sha, result.pdf_bytes)
-    # 异步回传 L2（fire-and-forget；4GB 内存下不阻塞当前请求）。
-    # 持模块级强引用避免 create_task 出来的 task 被 GC 提前回收。
-    _l2_task = asyncio.create_task(_l2_put_async(sha, result.pdf_bytes))
-    _bg_tasks.add(_l2_task)
-    _l2_task.add_done_callback(_bg_tasks.discard)
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    _logger.info(
-        "front cache render: sha=%s... bytes=%d elapsed_ms=%d",
-        sha[:16], len(result.pdf_bytes), elapsed_ms,
-    )
-    return result
+    return await _render_and_return(original_bytes, file_type, source="render")
 
 
 async def _render_and_return(
@@ -383,10 +198,3 @@ async def _render_and_return(
         # STEP/DWG/DXF 等不可直渲染：上层会 fallback 到 info card
         raise ValueError(f"unsupported file_type for normalize: {ext}")
     return FrontCacheResult(pdf_bytes=pdf_bytes, orientation=orientation, source=source)
-
-
-# ============================================================
-# 启动期 L1 探测（core/database.py::lifespan 调用）
-# ============================================================
-# 旧版 ensure_cache_dir() 已删除：仅 mkdir 不探测，仍会留下「mkdir 成功但
-# 实际写不进去」的盲区；改由 init_l1_cache() 写探针文件一次性判定。
