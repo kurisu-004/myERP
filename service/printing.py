@@ -691,11 +691,15 @@ async def build_parts_print_pdf_batch(
         if d is not None:
             items_data.append(d)
 
+    # 2026-08-01：装配件无总装图（ASSEMBLY_MASTER 文件不存在）时，仅跳过
+    # master 页 + Code128 条码页；子件继续打印。装配件本身缺失（asm=None）
+    # 同样跳过 master（防御：soft_delete / 数据库漂移兜底）。
     for aid in assembly_order:
         asm = await assemblies.get_by_id(aid) if assemblies else None
-        d_asm = await _prepare_one(None, aid, asm_obj=asm, kind="asm_master")
-        if d_asm is not None:
-            items_data.append(d_asm)
+        if asm is not None and assembly_master_metadata.get(aid) is not None:
+            d_asm = await _prepare_one(None, aid, asm_obj=asm, kind="asm_master")
+            if d_asm is not None:
+                items_data.append(d_asm)
         child_map = assembly_to_children.get(aid, {})
         children = sorted(child_map.values(), key=lambda c: (c.drawing_no or "", c.id))
         for c in children:

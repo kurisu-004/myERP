@@ -1206,8 +1206,17 @@ let batchPrintBlobUrl = ''
 const partsListRef = ref<InstanceType<typeof ResponsiveList> | null>(null)
 
 function isBatchSelectable(row: PartListItem): boolean {
-  if (batchAction.value === 'print') return true          // 打印：所有行（含装配件）
-  return row.status === 'PENDING' && row.row_type !== 'ASSEMBLY' // 下发：仅零件且 PENDING
+  if (batchAction.value === 'print') {
+    // 2026-08-01：批量打印只允许勾选装配件（顶层行）。子件不可在批量模式单独
+    // 勾选；单零件打印走 PartDetail 详情页（FileListCard → printPartDrawing）。
+    // 行 1151 / 1169：子件 row_key 形如 CHILD_${id}，loadChildren 设了 __is_child=true。
+    return (
+      row.row_type === 'ASSEMBLY' &&
+      !(row as { __is_child?: boolean }).__is_child
+    )
+  }
+  // 下发模式：仅未下发零件（PENDING）；保持原语义，装配件+子件都不能整批下发。
+  return row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'
 }
 
 /** 2026-07-30：记录每个选中 id 的行类型，用于批量打印拆分 */
