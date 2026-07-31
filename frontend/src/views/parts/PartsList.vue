@@ -534,7 +534,7 @@
           <template v-else>
             <el-button link type="primary" size="small" @click="$router.push(row.row_type === 'ASSEMBLY' ? `/assemblies/${row.id}` : `/parts/${row.id}`)">详情</el-button>
             <el-button
-              v-if="canEdit && row.row_type !== 'ASSEMBLY'"
+              v-if="canEdit"
               link
               type="warning"
               size="small"
@@ -588,7 +588,7 @@
         <div class="rl-card-actions">
           <el-button link type="primary" size="small" @click="router.push(row.row_type === 'ASSEMBLY' ? `/assemblies/${row.id}` : `/parts/${row.id}`)">详情</el-button>
           <el-button
-            v-if="canEdit && row.row_type !== 'ASSEMBLY'"
+            v-if="canEdit"
             link
             type="warning"
             size="small"
@@ -923,7 +923,7 @@ import {
   type ListPartsParams,
   type PartUpdatePayload,
 } from '@/api/parts'
-import { getAssembly } from '@/api/assembly'
+import { getAssembly, updateAssembly } from '@/api/assembly'
 import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
@@ -1697,12 +1697,12 @@ function startEdit(row: PartListItem): void {
 }
 
 // 2026-07-24：双击行进入编辑（仅 MANAGER/CLERK + 非批量模式）
-// 2026-07-31：装配件行不进行内编辑（字段集不同，保存走 /parts/{id}/update 会 404）；
-// 与编辑按钮守卫一致，装配件请进入 /assemblies/{id} 详情页编辑。
+// 2026-07-31：装配件行同样支持行内编辑（AssemblyUpdatePayload 字段与 PartUpdatePayload
+// 一致，saveEdit 按 row.row_type 分流到 updateAssembly）。终态由后端 BIZ_INVALID_TRANSITION
+// 拦截。
 function onRowDblClick(row: PartListItem): void {
   if (!canEdit) return
   if (batchMode.value) return  // 批量模式下双击由 onBatchRowClick 处理，不进编辑
-  if (row.row_type === 'ASSEMBLY') return
   startEdit(row)
 }
 
@@ -1809,9 +1809,15 @@ async function saveEdit(row: PartListItem): Promise<void> {
       note: editBuffer.note || null,
       is_urgent: editBuffer.is_urgent,
     }
-    await updatePart(row.id, payload)
+    // 2026-07-31：装配件字段名相同，按 row.row_type 复用同一 buffer 路由。
+    if (row.row_type === 'ASSEMBLY') {
+      await updateAssembly(row.id, payload)
+    } else {
+      await updatePart(row.id, payload)
+    }
     // updatePart 返回 PartOut（不含 applicant_name/request_date/unit_price），
-    // 用已知的 buffer 值就地回填该行，避免整表刷新的闪烁。
+    // updateAssembly 返回 AssemblyDetail（顶层 + 子件）。就地回填该行用 buffer 值，
+    // 避免整表刷新的闪烁。
     Object.assign(row, {
       name,
       drawing_no: drawingNo,
@@ -1828,9 +1834,10 @@ async function saveEdit(row: PartListItem): Promise<void> {
     editingId.value = null
     ElMessage.success('保存成功')
   } catch (e) {
-    // 40901 = BIZ_VERSION_CONFLICT（乐观锁冲突）
+    // 40901 = BIZ_VERSION_CONFLICT（乐观锁冲突）；装配件 update 不发 409，
+    // 但保留分支以兼容未来 OCC 接入。
     if ((e as { code?: number }).code === 40901) {
-      ElMessage.warning('该零件已被他人修改，已为你刷新列表')
+      ElMessage.warning('该记录已被他人修改，已为你刷新列表')
       editingId.value = null
       void fetchList()
     } else {
