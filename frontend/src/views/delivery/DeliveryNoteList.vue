@@ -401,7 +401,7 @@ function noteNoOf(id: string): string {
         <div class="dnl-card-header">
           <ColumnVisibilityPopover
             :defs="columnDefs"
-            v-model="columnVisibility.currentMap"
+            :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
             @reset="columnVisibility.showAll"
           />
         </div>

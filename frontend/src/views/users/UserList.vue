@@ -14,7 +14,7 @@
       <template #toolbar>
         <ColumnVisibilityPopover
           :defs="columnDefs"
-          v-model="columnVisibility.currentMap"
+          :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
           @reset="columnVisibility.showAll"
         />
       </template>

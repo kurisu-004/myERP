@@ -786,7 +786,7 @@ watch(activeTab, async (t) => {
             <template #toolbar>
               <ColumnVisibilityPopover
                 :defs="sendableColumnDefs"
-                v-model="sendableColumnVisibility.currentMap"
+                :model-value="sendableColumnVisibility.currentMap" @update:model-value="sendableColumnVisibility.update"
                 @reset="sendableColumnVisibility.showAll"
               />
             </template>
@@ -1011,7 +1011,7 @@ watch(activeTab, async (t) => {
             <template #toolbar>
               <ColumnVisibilityPopover
                 :defs="receivingColumnDefs"
-                v-model="receivingColumnVisibility.currentMap"
+                :model-value="receivingColumnVisibility.currentMap" @update:model-value="receivingColumnVisibility.update"
                 @reset="receivingColumnVisibility.showAll"
               />
             </template>

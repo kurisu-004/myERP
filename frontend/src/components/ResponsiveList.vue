@@ -138,4 +138,14 @@ defineExpose({ elTableRef })
     padding: 12px 14px;
   }
 }
+
+// 2026-08-01：加急行 / 已开送货单行 用了 !important 强染色 (#fde2e2 / 默认蓝),
+// Element Plus 的 .current-row 浅蓝高亮被覆盖看不出点击态。
+// 这里集中覆盖 .current-row 在状态色行上的色为「更深的同色」,既保留状态色又显示高亮。
+:deep(.el-table__row.row-urgent.current-row > td.el-table__cell) {
+  background-color: #fbcaca !important;
+}
+:deep(.el-table__row.row-on-delivery-note.current-row > td.el-table__cell) {
+  background-color: #d6e8ff !important;
+}
 </style>

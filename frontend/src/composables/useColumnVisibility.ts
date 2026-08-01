@@ -40,7 +40,7 @@ export interface ColumnDef {
 }
 
 export interface ColumnVisibilityApi {
-  /** 当前可见性 map(v-model 绑定用);key 不在 map 中视为 true。
+  /** 当前可见性 map;key 不在 map 中视为 true。
    *  暴露为普通对象(`reactive`),而非 Ref/ComputedRef,这样 `v-model="columnVisibility.currentMap"`
    *  在 vue-tsc 下类型直通(原生 vue 的 v-model 模板展开,ref/computed 走特殊处理,
    *  vue-tsc 无法追踪)。 */
@@ -49,6 +49,9 @@ export interface ColumnVisibilityApi {
   isVisible: (key: string) => boolean
   /** 切换单 key(value 缺省时取反) */
   toggle: (key: string, value?: boolean) => void
+  /** 整表更新(从 el-checkbox-group 的「全选/全不选」或 popover 整表 emit 用)。
+   *  原地突变 reactive Proxy,保持 watch 依赖不断。 */
+  update: (next: Record<string, boolean>) => void
   /** 全部显示 */
   showAll: () => void
   /** 全部隐藏(操作列等不应隐藏的 key 不放进 defs 即可) */
@@ -157,6 +160,20 @@ export function useColumnVisibility(
     currentMap[key] = target
   }
 
+  /**
+   * 整表更新(弹窗「全选/全不选/重置」或 `el-checkbox-group` 整表 emit 用):
+   * 删掉旧 key 不在新表里的 + 写新表的 key,保持 reactive Proxy 引用稳定
+   * (避免 `let currentMap = next` 替换引用,导致 watch / isVisible 失效)。
+   */
+  function update(next: Record<string, boolean>): void {
+    for (const k of Object.keys(currentMap)) {
+      if (!(k in next)) delete currentMap[k]
+    }
+    for (const [k, v] of Object.entries(next)) {
+      currentMap[k] = v
+    }
+  }
+
   function showAll(): void {
     for (const k of allKeys) currentMap[k] = true
   }
@@ -165,5 +182,5 @@ export function useColumnVisibility(
     for (const k of allKeys) currentMap[k] = false
   }
 
-  return { currentMap, isVisible, toggle, showAll, hideAll, allKeys }
+  return { currentMap, isVisible, toggle, update, showAll, hideAll, allKeys }
 }
