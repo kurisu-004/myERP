@@ -412,7 +412,8 @@
 
       <el-table-column
         v-if="columnVisibility.isVisible('quantity')"
-        label="数量" min-width="110" align="right">
+        prop="quantity"
+        label="数量" min-width="110" sortable="custom" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -429,7 +430,8 @@
 
       <el-table-column
         v-if="!isInspector && columnVisibility.isVisible('unit_price')"
-        label="单价" min-width="120" align="right">
+        prop="unit_price"
+        label="单价" min-width="120" sortable="custom" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -449,7 +451,8 @@
      （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
       <el-table-column
         v-if="!isInspector && columnVisibility.isVisible('total_price')"
-        label="总价" min-width="120" align="right">
+        prop="total_price"
+        label="总价" min-width="120" sortable="custom" align="right">
         <template #default="{ row }">
           <span>{{ displayTotalPrice(row as PartListItem) }}</span>
         </template>
@@ -534,9 +537,107 @@
         </template>
       </el-table-column>
 
-                  <el-table-column
-                    v-if="columnVisibility.isVisible('location')"
-                    label="所在位置" min-width="150" show-overflow-tooltip align="center">
+      <!-- 2026-08-01：下一道工序列（位置：location 列左侧；带多选筛选 popover） -->
+      <el-table-column
+        v-if="columnVisibility.isVisible('next_process')"
+        label="下一道工序"
+        min-width="130"
+        align="center"
+      >
+        <template #header>
+          <span class="header-cell" :class="{ 'is-active': nextProcessFilterActive }">
+            <span>{{ nextProcessFilterActive ? `下一道工序(${nextProcessSelectedCount})` : '下一道工序' }}</span>
+            <el-popover
+              :width="240"
+              placement="bottom-start"
+              trigger="click"
+              :show-arrow="false"
+              v-model:visible="nextProcessPopoverVisible"
+              @show="onNextProcessPopoverShow"
+            >
+              <template #reference>
+                <el-icon
+                  class="filter-icon"
+                  :class="{ active: nextProcessFilterActive }"
+                >
+                  <Filter />
+                </el-icon>
+              </template>
+              <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                多选下一道工序；装配行无工序不参与筛选
+              </div>
+              <el-checkbox-group v-model="nextProcessDraft" style="max-height: 280px; overflow-y: auto">
+                <el-checkbox
+                  v-for="opt in nextProcessOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </el-checkbox-group>
+              <div class="filter-actions">
+                <el-button size="small" link @click="resetNextProcessDraft">重置</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click="confirmNextProcessFilter"
+                >确定</el-button>
+              </div>
+            </el-popover>
+          </span>
+        </template>
+        <template #default="{ row }">
+          <span v-if="row.row_type === 'ASSEMBLY'" class="muted">—</span>
+          <span v-else-if="row.next_process_name">{{ row.next_process_name }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+
+      <!-- 2026-08-01：所在位置列加多选筛选 popover -->
+      <el-table-column
+        v-if="columnVisibility.isVisible('location')"
+        label="所在位置" min-width="150" show-overflow-tooltip align="center"
+      >
+        <template #header>
+          <span class="header-cell" :class="{ 'is-active': locationFilterActive }">
+            <span>{{ locationFilterActive ? `所在位置(${locationSelectedCount})` : '所在位置' }}</span>
+            <el-popover
+              :width="220"
+              placement="bottom-start"
+              trigger="click"
+              :show-arrow="false"
+              v-model:visible="locationPopoverVisible"
+              @show="syncLocationDraft"
+            >
+              <template #reference>
+                <el-icon
+                  class="filter-icon"
+                  :class="{ active: locationFilterActive }"
+                >
+                  <Filter />
+                </el-icon>
+              </template>
+              <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
+                多选物理位置
+              </div>
+              <el-checkbox-group v-model="locationDraft">
+                <el-checkbox
+                  v-for="opt in LOCATION_OPTIONS"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </el-checkbox-group>
+              <div class="filter-actions">
+                <el-button size="small" link @click="resetLocationDraft">重置</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click="confirmLocationFilter"
+                >确定</el-button>
+              </div>
+            </el-popover>
+          </span>
+        </template>
         <template #default="{ row }">
           <span v-if="row.location === 'PRODUCTION_SHELF' && row.shelf_code">
             货架 {{ row.shelf_code }}
@@ -1017,6 +1118,10 @@ interface SearchState {
   /** 2026-07-21 PR-F：系统交期区间（含端点；空串=无限制） */
   systemDeliveryDateFrom: string
   systemDeliveryDateTo: string
+  /** 2026-08-01：下一道工序 id 多选（雪花 ID 字符串；空数组=全部） */
+  nextProcessIds: string[]
+  /** 2026-08-01：物理位置多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空数组=全部） */
+  locations: string[]
 }
 function initialSearch(): SearchState {
   return {
@@ -1034,6 +1139,8 @@ function initialSearch(): SearchState {
     plannedDeliveryDateTo: '',
     systemDeliveryDateFrom: '',
     systemDeliveryDateTo: '',
+    nextProcessIds: [],
+    locations: [],
   }
 }
 const search = reactive<SearchState>(initialSearch())
@@ -1119,6 +1226,84 @@ function confirmStatusFilter(): void {
   if (batchMode.value) clearAllSelection()
   onSearch()
 }
+
+// ============ 2026-08-01：下一道工序列头 popover ============
+const nextProcessPopoverVisible = ref(false)
+const nextProcessDraft = ref<string[]>([])
+
+const nextProcessOptions = computed<{ value: string; label: string }[]>(() =>
+  processes.value
+    .map((p) => ({ value: String(p.id), label: `${p.code} / ${p.name}` })),
+)
+
+async function ensureProcessesLoadedForFilter(): Promise<void> {
+  if (processes.value.length > 0) return
+  try {
+    processes.value = (await listProcesses({ limit: 200 })).items
+  } catch {
+    processes.value = []
+  }
+}
+
+async function onNextProcessPopoverShow(): Promise<void> {
+  await ensureProcessesLoadedForFilter()
+  nextProcessDraft.value = [...search.nextProcessIds]
+}
+
+function syncNextProcessDraft(): void {
+  nextProcessDraft.value = [...search.nextProcessIds]
+}
+
+function resetNextProcessDraft(): void {
+  nextProcessDraft.value = []
+  search.nextProcessIds = []
+  nextProcessPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmNextProcessFilter(): void {
+  search.nextProcessIds = [...nextProcessDraft.value]
+  nextProcessPopoverVisible.value = false
+  if (batchMode.value) clearAllSelection()
+  onSearch()
+}
+
+const nextProcessFilterActive = computed(() => search.nextProcessIds.length > 0)
+const nextProcessSelectedCount = computed(() => search.nextProcessIds.length)
+
+// ============ 2026-08-01：所在位置列头 popover ============
+// 硬编码 5 项与 model.enums.PartLocation 保持一致；增删位置需同步。
+const LOCATION_OPTIONS: { value: string; label: string }[] = [
+  { value: 'OFFICE', label: '办公室' },
+  { value: 'PRODUCTION_SHELF', label: '生产货架' },
+  { value: 'WORKER', label: '工人' },
+  { value: 'INSPECTION_SHELF', label: '品检货架' },
+  { value: 'OUTSOURCE_COMPANY', label: '外协公司' },
+]
+
+const locationPopoverVisible = ref(false)
+const locationDraft = ref<string[]>([])
+
+function syncLocationDraft(): void {
+  locationDraft.value = [...search.locations]
+}
+
+function resetLocationDraft(): void {
+  locationDraft.value = []
+  search.locations = []
+  locationPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmLocationFilter(): void {
+  search.locations = [...locationDraft.value]
+  locationPopoverVisible.value = false
+  if (batchMode.value) clearAllSelection()
+  onSearch()
+}
+
+const locationFilterActive = computed(() => search.locations.length > 0)
+const locationSelectedCount = computed(() => search.locations.length)
 
 // ============ 客户列头 popover（draft + 确定/重置） ============
 const customerPopoverVisible = ref(false)
@@ -1574,6 +1759,13 @@ function buildParams(): ListPartsParams {
     planned_delivery_date_to: search.plannedDeliveryDateTo || undefined,
     system_delivery_date_from: search.systemDeliveryDateFrom || undefined,
     system_delivery_date_to: search.systemDeliveryDateTo || undefined,
+    // 2026-08-01：下一道工序 / 物理位置多选筛选。
+    // 雪花 ID 转 int 后传后端；空数组 = undefined（不发参数，保留现有清空过滤行为）。
+    next_process_ids:
+      search.nextProcessIds.length > 0
+        ? search.nextProcessIds.map((id) => Number(id))
+        : undefined,
+    locations: search.locations.length > 0 ? search.locations : undefined,
     sort_by: sortBy.value,
     sort_dir: sortDir.value,
     limit: pageSize.value,
@@ -1656,6 +1848,7 @@ const columnDefs = [
   { key: 'planned_delivery_date', label: '计划交期' },
   { key: 'system_delivery_date', label: '系统交期' },
   { key: 'is_urgent', label: '加急' },
+  { key: 'next_process', label: '下一道工序' },  // 2026-08-01 新增
   { key: 'location', label: '所在位置' },
   { key: 'note', label: '备注' },
 ] as const
@@ -1712,6 +1905,13 @@ onMounted(async () => {
         persisted.search.systemDeliveryDateFrom ?? search.systemDeliveryDateFrom
       search.systemDeliveryDateTo =
         persisted.search.systemDeliveryDateTo ?? search.systemDeliveryDateTo
+      // 2026-08-01：下一道工序 / 物理位置多选恢复（lenient：旧快照缺字段=空数组）
+      search.nextProcessIds = Array.isArray(persisted.search.nextProcessIds)
+        ? persisted.search.nextProcessIds
+        : []
+      search.locations = Array.isArray(persisted.search.locations)
+        ? persisted.search.locations
+        : []
       // localStorage 存的是 string，恢复时按合法值收敛（默认值兜底）
       sortBy.value = (SORT_PROP_MAP[persisted.sortBy]
         ? persisted.sortBy as PartSortKey

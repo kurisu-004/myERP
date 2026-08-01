@@ -134,6 +134,18 @@ async def list_parts(
             "2026-07-20 新增；按下发/接收/外协相关事件 EXISTS 判定）"
         ),
     ),
+    # 2026-08-01：下一道工序 / 物理位置多选筛选。
+    next_process_ids: list[int] | None = Query(
+        default=None,
+        description="下一道工序 id 多选（雪花 ID int；空=全部；NULL 工序的零件会被自然排除）",
+    ),
+    locations: list[str] | None = Query(
+        default=None,
+        description=(
+            "物理位置多选（OFFICE / PRODUCTION_SHELF / WORKER / "
+            "INSPECTION_SHELF / OUTSOURCE_COMPANY；空=全部）"
+        ),
+    ),
     request_date_from: date | None = Query(default=None, description="请购日期区间起点（含）"),
     request_date_to: date | None = Query(default=None, description="请购日期区间终点（含）"),
     planned_delivery_date_from: date | None = Query(default=None, description="计划交期区间起点（含）"),
@@ -149,7 +161,7 @@ async def list_parts(
     offset: int = Query(default=0, ge=0),
     svc: PartService = Depends(get_part_service),
 ) -> PartListOut:
-    from model.enums import PartSortKey, PartStatus, SortDir
+    from model.enums import PartLocation, PartSortKey, PartStatus, SortDir
 
     return await svc.list_parts(
         PartListQuery(
@@ -160,6 +172,8 @@ async def list_parts(
             order_no=order_no,
             serial_no=serial_no,
             has_outsource_history=has_outsource_history,
+            next_process_ids=next_process_ids,  # 2026-08-01
+            locations=[PartLocation(loc) for loc in locations] if locations else None,  # 2026-08-01
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,

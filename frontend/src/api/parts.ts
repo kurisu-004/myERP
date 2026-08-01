@@ -102,6 +102,10 @@ export interface ListPartsParams {
   /** 2026-07-21 PR-F：系统交期区间（含端点；任一端点为空表示半开；NULL 字段视为落在区间内） */
   system_delivery_date_from?: string
   system_delivery_date_to?: string
+  /** 2026-08-01：下一道工序多选（雪花 ID 转 int 后传给后端；空=全部；NULL 工序自然被排除） */
+  next_process_ids?: number[]
+  /** 2026-08-01：物理位置多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空=全部） */
+  locations?: string[]
   sort_by?: PartSortKey
   sort_dir?: SortDir
   limit?: number

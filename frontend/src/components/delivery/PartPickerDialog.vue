@@ -137,9 +137,15 @@ function statusLabel(s: string): string {
           <span class="batch-label">{{ row.batch_label }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="serial_no" label="序列号" min-width="110" align="center"/>
-      <el-table-column prop="drawing_no" label="图号" min-width="110" align="center"/>
-      <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip align="center"/>
+      <el-table-column prop="serial_no" label="序列号" min-width="110" sortable align="center"/>
+      <el-table-column prop="drawing_no" label="图号" min-width="110" sortable align="center"/>
+      <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip sortable align="center"/>
+      <!-- 2026-08-01：图号后新增订单号列（与详情页一致），可排序 -->
+      <el-table-column prop="order_no" label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
+        <template #default="{ row }">
+          <span :class="{ muted: !row.order_no }">{{ row.order_no || '—' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="批次量" width="80" align="right">
         <template #default="{ row }">{{ row.quantity }}</template>
       </el-table-column>
@@ -179,7 +185,7 @@ function statusLabel(s: string): string {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="planned_delivery_date" label="交期" min-width="110" align="center"/>
+      <el-table-column prop="planned_delivery_date" label="交期" min-width="110" sortable align="center"/>
     </el-table>
 
     <template #footer>

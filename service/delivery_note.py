@@ -1033,6 +1033,7 @@ class DeliveryNoteService:
                 applicant_name=p.applicant_name,
                 status=b.status,
                 planned_delivery_date=p.planned_delivery_date,
+                order_no=p.order_no,  # 2026-08-01 picker 新增
             ))
         return result
 

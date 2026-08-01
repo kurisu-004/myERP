@@ -327,6 +327,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            next_process_ids=None,
+            locations=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -346,6 +348,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            next_process_ids=None,
+            locations=None,
         )
         assert isinstance(result, PartListOut)
         assert len(result.items) == 1
@@ -396,6 +400,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            next_process_ids=None,
+            locations=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,
@@ -439,6 +445,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            next_process_ids=None,
+            locations=None,
             sort_by=PartSortKey.PLANNED_DELIVERY_DATE,
             sort_dir=SortDir.ASC,
             limit=50,

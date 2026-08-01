@@ -152,6 +152,9 @@ class PartSortKey(str, enum.Enum):
     DRAWING_NO = "DRAWING_NO"
     NAME = "NAME"
     ORDER_NO = "ORDER_NO"  # 2026-07-22 新增
+    QUANTITY = "QUANTITY"  # 2026-08-01 新增
+    UNIT_PRICE = "UNIT_PRICE"  # 2026-08-01 新增
+    TOTAL_PRICE = "TOTAL_PRICE"  # 2026-08-01 新增
 
 
 class SortDir(str, enum.Enum):

@@ -164,4 +164,13 @@ a {
   }
 }
 
+/* 2026-08-01：全局加深 el-table 选中行色。EP 默认 #ecf5ff（light-9）
+   在加急 / 送货单浅蓝背景下几乎不可见，提到 light-8 (#cce0f4) 一档。
+   覆盖 ResponsiveList / DeliveryNoteDetail 内嵌表 / PartPickerDialog 等
+   所有 el-table。带状态的行（row-urgent / row-on-delivery-note）由
+   ResponsiveList.vue 的 :deep() 规则用更高特异性继续覆盖。 */
+.el-table__row.current-row > td.el-table__cell {
+  background-color: #cce0f4 !important;
+}
+
 

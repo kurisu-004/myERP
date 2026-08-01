@@ -277,6 +277,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,  # 2026-08-01
+                locations=query.locations,  # 2026-08-01
                 sort_by=query.sort_by,
                 sort_dir=query.sort_dir,
                 limit=query.limit,
@@ -296,6 +298,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,  # 2026-08-01
+                locations=query.locations,  # 2026-08-01
             )
             items = await self._to_list_out(rows)
             return PartListOut(
@@ -319,6 +323,8 @@ class PartService:
             planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
+            next_process_ids=query.next_process_ids,  # 2026-08-01
+            locations=query.locations,  # 2026-08-01
             sort_by=query.sort_by,
             sort_dir=query.sort_dir,
             assembly_id_is_null=True,
@@ -339,15 +345,24 @@ class PartService:
             planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
+            next_process_ids=query.next_process_ids,  # 2026-08-01
+            locations=query.locations,  # 2026-08-01
             assembly_id_is_null=True,
         )
 
         # 2. 装配件（statuses 取交集）
         # 2026-07-31：装配件本身不外协（外协走 t_part），所以 has_outsource_history
         # 开启时直接跳过整个装配体查询块。
+        # 2026-08-01：装配件没有 next_process_id / part.location，故 next_process_ids /
+        # locations 任一非空时也直接跳过 asm_rows（合并结果里不出现装配行）。
         asm_rows: list[TAssembly] = []
         asm_total = 0
-        if self.assemblies is not None and not query.has_outsource_history:
+        if (
+            self.assemblies is not None
+            and not query.has_outsource_history
+            and not query.next_process_ids
+            and not query.locations
+        ):
             assembly_statuses = None
             if query.statuses is not None:
                 valid_asm_statuses = {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}
@@ -365,6 +380,9 @@ class PartService:
                     PartSortKey.SERIAL_NO: AssemblySortKey.SERIAL_NO,
                     PartSortKey.DRAWING_NO: AssemblySortKey.DRAWING_NO,
                     PartSortKey.NAME: AssemblySortKey.NAME,
+                    PartSortKey.QUANTITY: AssemblySortKey.QUANTITY,  # 2026-08-01
+                    PartSortKey.UNIT_PRICE: AssemblySortKey.UNIT_PRICE,  # 2026-08-01
+                    PartSortKey.TOTAL_PRICE: AssemblySortKey.TOTAL_PRICE,  # 2026-08-01
                 }
                 asm_sort_by = _sort_key_map.get(query.sort_by, AssemblySortKey.PLANNED_DELIVERY_DATE)
                 asm_rows = await self.assemblies.list_with_filters(
@@ -439,6 +457,16 @@ class PartService:
             elif query.sort_by == PartSortKey.ORDER_NO:
                 val = item.order_no
                 return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.QUANTITY:
+                val = item.quantity
+                # 数量列非 NULL（default 1 / server_default 1），无需 None 兜底
+                return (non_none_flag, val if val is not None else 0)
+            elif query.sort_by == PartSortKey.UNIT_PRICE:
+                val = item.unit_price
+                return (non_none_flag, val if val is not None else Decimal("0"))
+            elif query.sort_by == PartSortKey.TOTAL_PRICE:
+                val = item.total_price
+                return (non_none_flag, val if val is not None else Decimal("0"))
             return (non_none_flag, "")
 
         # 先按 id DESC 稳定排序（保证 tie-break 与 SQL 一致）

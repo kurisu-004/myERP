@@ -277,6 +277,31 @@ async function onRemoveSelected() {
 // ============================================================
 const canAdd = computed(() => note.value && canAddRemoveParts(note.value.status, role.value))
 const canEdit = computed(() => canAdd.value)
+
+// 2026-08-01：客户端排序（详情一次性返回所有 line_items；null 强制末尾）。
+// 用 @sort-change 而不是 sortable="custom"，因为所有数据都在内存中；
+// sort-change 默认行为已含 null 兜底（null 排在末尾），但这里用显式
+// 排序保持与后端一致：null 永远在末尾。
+function onLineItemSort({
+  prop,
+  order,
+}: {
+  prop: string | null
+  order: 'ascending' | 'descending' | null
+}): void {
+  if (!note.value || !prop || !order) return
+  const dir = order === 'ascending' ? 1 : -1
+  note.value.line_items.sort((a: any, b: any) => {
+    const av = a[prop]
+    const bv = b[prop]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av < bv) return -1 * dir
+    if (av > bv) return 1 * dir
+    return 0
+  })
+}
 </script>
 
 <template>
@@ -360,6 +385,7 @@ const canEdit = computed(() => canAdd.value)
           border
           height="500"
           @selection-change="(rows: any[]) => selectedItemIds = rows.map(r => r.id)"
+          @sort-change="onLineItemSort"
         >
           <el-table-column
             v-if="canEdit"
@@ -368,27 +394,33 @@ const canEdit = computed(() => canAdd.value)
             :selectable="() => true"
           />
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column prop="batch_label" label="批次" min-width="100" align="center"/>
-          <el-table-column prop="serial_no" label="序列号" min-width="120" align="center"/>
-          <el-table-column prop="drawing_no" label="图号" min-width="140" align="center"/>
-          <el-table-column prop="name" label="名称" min-width="180" align="center"/>
+          <el-table-column prop="batch_label" label="批次" min-width="100" sortable align="center"/>
+          <el-table-column prop="serial_no" label="序列号" min-width="120" sortable align="center"/>
+          <el-table-column prop="drawing_no" label="图号" min-width="140" sortable align="center"/>
+          <el-table-column prop="name" label="名称" min-width="180" sortable align="center"/>
           <el-table-column label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
             <template #default="{ row }">
               <span>{{ row.customer_path ?? row.customer_name ?? '—' }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="applicant_name" label="申请人" min-width="100" align="center"/>
-          <el-table-column prop="quantity" label="数量" min-width="70" align="center" />
+          <el-table-column prop="applicant_name" label="申请人" min-width="100" sortable align="center"/>
+          <el-table-column prop="quantity" label="数量" min-width="70" sortable align="center" />
           <el-table-column label="请购日期" min-width="120" align="center">
             <template #default="{ row }">{{ row.request_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="计划交期" min-width="120" align="center">
+          <el-table-column
+            prop="planned_delivery_date"
+            label="计划交期" min-width="120" sortable align="center">
             <template #default="{ row }">{{ row.planned_delivery_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="系统交期" min-width="120" align="center">
+          <el-table-column
+            prop="system_delivery_date"
+            label="系统交期" min-width="120" sortable align="center">
             <template #default="{ row }">{{ row.system_delivery_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="订单号" min-width="120" show-overflow-tooltip align="center">
+          <el-table-column
+            prop="order_no"
+            label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
             <template #default="{ row }">{{ row.order_no || '—' }}</template>
           </el-table-column>
           <el-table-column label="备注" min-width="120" show-overflow-tooltip align="center">
