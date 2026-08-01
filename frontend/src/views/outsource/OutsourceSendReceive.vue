@@ -18,6 +18,8 @@ import ResponsiveList from '@/components/ResponsiveList.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { listApprovedForSend, listOutsourceInFlight } from '@/api/outsource'
 import { listCustomers, type Customer } from '@/api/customer'
 import { listShelves } from '@/api/shelves'
@@ -120,6 +122,23 @@ const { restore: restoreSendableState } = useListStatePersist(
   { sendableFilter, sendablePageSize },
   { exclude: new Set(['sendablePage']) },
 )
+
+// ============ 列可见性 (可发送 tab) ============
+// 「操作」列不放进 defs → 始终可见
+const sendableColumnDefs = [
+  { key: 'part_serial_no', label: '序列号' },
+  { key: 'part_drawing_no', label: '图号' },
+  { key: 'part_name', label: '名称' },
+  { key: 'quantity', label: '数量' },
+  { key: 'planned_delivery_date', label: '计划交期' },
+  { key: 'shelf_code', label: '源货架' },
+  { key: 'send_mode', label: '模式' },
+  { key: 'customer_path', label: '客户' },
+  { key: 'next_process_name', label: '下一道工序' },
+  { key: 'outsource_company_name', label: '外协公司' },
+  { key: 'price', label: '单价' },
+] as const
+const sendableColumnVisibility = useColumnVisibility(sendableColumnDefs, { listKey: 'outsource_send_receive_sendable' })
 
 async function refreshSendable(): Promise<void> {
   sendableLoading.value = true
@@ -440,6 +459,19 @@ const { restore: restoreReceivingState } = useListStatePersist(
   { exclude: new Set(['receivingPage']) },
 )
 
+// ============ 列可见性 (待接收 tab) ============
+const receivingColumnDefs = [
+  { key: 'serial_no', label: '序列号' },
+  { key: 'drawing_no', label: '图号' },
+  { key: 'name', label: '名称' },
+  { key: 'batch_no', label: '批次号' },
+  { key: 'quantity', label: '数量' },
+  { key: 'outsource_company_name', label: '外协公司' },
+  { key: 'sent_at', label: '发送时间' },
+  { key: 'customer_path', label: '客户' },
+] as const
+const receivingColumnVisibility = useColumnVisibility(receivingColumnDefs, { listKey: 'outsource_send_receive_receiving' })
+
 async function refreshReceiving(): Promise<void> {
   receivingLoading.value = true
   receivingError.value = null
@@ -751,8 +783,21 @@ watch(activeTab, async (t) => {
             border
             size="small"
           >
-            <el-table-column prop="part_serial_no" label="序列号" min-width="100" align="center"/>
-            <el-table-column prop="part_drawing_no" label="图号" min-width="120" align="center">
+            <template #toolbar>
+              <ColumnVisibilityPopover
+                :defs="sendableColumnDefs"
+                v-model="sendableColumnVisibility.currentMap"
+                @reset="sendableColumnVisibility.showAll"
+              />
+            </template>
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('part_serial_no')"
+              prop="part_serial_no" label="序列号" min-width="100" align="center"
+            />
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('part_drawing_no')"
+              prop="part_drawing_no" label="图号" min-width="120" align="center"
+            >
               <template #default="{ row }">
                 <!-- 2026-07-29 PR-fix-0.2.0 批次化：行=批次，图号旁显示批次号提示 -->
                 <span>{{ (row as SendableItem).part_drawing_no }}</span>
@@ -767,10 +812,22 @@ watch(activeTab, async (t) => {
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="part_name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
-            <el-table-column prop="quantity" label="数量" min-width="80" align="right" />
-            <el-table-column prop="planned_delivery_date" label="计划交期" min-width="120" align="center"/>
-            <el-table-column label="源货架" min-width="80" align="center">
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('part_name')"
+              prop="part_name" label="名称" min-width="180" show-overflow-tooltip align="center"
+            />
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('quantity')"
+              prop="quantity" label="数量" min-width="80" align="right"
+            />
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('planned_delivery_date')"
+              prop="planned_delivery_date" label="计划交期" min-width="120" align="center"
+            />
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('shelf_code')"
+              label="源货架" min-width="80" align="center"
+            >
               <template #default="{ row }">
                 <el-tag v-if="(row as SendableItem).shelf_code" type="info" size="small">
                   {{ (row as SendableItem).shelf_code }}
@@ -778,17 +835,29 @@ watch(activeTab, async (t) => {
                 <span v-else>—</span>
               </template>
             </el-table-column>
-            <el-table-column label="模式" min-width="90" align="center">
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('send_mode')"
+              label="模式" min-width="90" align="center"
+            >
               <template #default="{ row }">
                 <el-tag v-if="(row as SendableItem).send_mode === 'DIRECT'" type="success" size="small">免审批</el-tag>
                 <el-tag v-else type="warning" size="small">已批报价</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center"/>
-            <el-table-column label="下一道工序" min-width="140" show-overflow-tooltip align="center">
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('customer_path')"
+              prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center"
+            />
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('next_process_name')"
+              label="下一道工序" min-width="140" show-overflow-tooltip align="center"
+            >
               <template #default="{ row }">{{ (row as SendableItem).next_process_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="外协公司" min-width="160" show-overflow-tooltip align="center">
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('outsource_company_name')"
+              label="外协公司" min-width="160" show-overflow-tooltip align="center"
+            >
               <template #default="{ row }">
                 <template v-if="(row as SendableItem).send_mode === 'DIRECT'">
                   {{ (row as DirectOutsourceCandidateItem).company_options.map((c) => c.name).join(' / ') || '—' }}
@@ -798,7 +867,10 @@ watch(activeTab, async (t) => {
                 </template>
               </template>
             </el-table-column>
-            <el-table-column label="单价(元)" min-width="100" align="right">
+            <el-table-column
+              v-if="sendableColumnVisibility.isVisible('price')"
+              label="单价(元)" min-width="100" align="right"
+            >
               <template #default="{ row }">
                 <template v-if="(row as SendableItem).send_mode === 'DIRECT'">—</template>
                 <template v-else>{{ (row as ApprovedQuoteForSendItem).price }}</template>
@@ -936,26 +1008,57 @@ watch(activeTab, async (t) => {
             border
             size="small"
           >
-            <el-table-column prop="serial_no" label="序列号" min-width="100" align="center"/>
-            <el-table-column prop="drawing_no" label="图号" min-width="120" align="center"/>
-            <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
-            <el-table-column label="批次号" min-width="80" align="center">
+            <template #toolbar>
+              <ColumnVisibilityPopover
+                :defs="receivingColumnDefs"
+                v-model="receivingColumnVisibility.currentMap"
+                @reset="receivingColumnVisibility.showAll"
+              />
+            </template>
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('serial_no')"
+              prop="serial_no" label="序列号" min-width="100" align="center"
+            />
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('drawing_no')"
+              prop="drawing_no" label="图号" min-width="120" align="center"
+            />
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('name')"
+              prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"
+            />
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('batch_no')"
+              label="批次号" min-width="80" align="center"
+            >
               <template #default="{ row }">
                 <el-tag type="info" size="small">批次 {{ (row as OutsourceInFlightItem).batch_no }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="quantity" label="数量" min-width="80" align="right"/>
-            <el-table-column label="外协公司" min-width="160" show-overflow-tooltip align="center">
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('quantity')"
+              prop="quantity" label="数量" min-width="80" align="right"
+            />
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('outsource_company_name')"
+              label="外协公司" min-width="160" show-overflow-tooltip align="center"
+            >
               <template #default="{ row }">
                 {{ (row as OutsourceInFlightItem).outsource_company_name || '—' }}
               </template>
             </el-table-column>
-            <el-table-column label="发送时间" min-width="160" align="center">
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('sent_at')"
+              label="发送时间" min-width="160" align="center"
+            >
               <template #default="{ row }">
                 {{ (row as OutsourceInFlightItem).sent_at ? new Date((row as OutsourceInFlightItem).sent_at!).toLocaleString() : '—' }}
               </template>
             </el-table-column>
-            <el-table-column prop="customer_path" label="客户" min-width="180" show-overflow-tooltip align="center"/>
+            <el-table-column
+              v-if="receivingColumnVisibility.isVisible('customer_path')"
+              prop="customer_path" label="客户" min-width="180" show-overflow-tooltip align="center"
+            />
             <el-table-column label="操作" min-width="100" fixed="right" align="center">
               <template #default="{ row }">
                 <el-button
