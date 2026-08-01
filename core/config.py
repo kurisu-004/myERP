@@ -105,6 +105,24 @@ class Settings(BaseSettings):
         description="容器可用 CPU 核心数；打印渲染/下载并发依此派生",
     )
 
+    # ---- 打印 CJK 字体（2026-08-01 引入；修复 info card 中文字形 + PDFium 源字体替代）----
+    # Docker runtime 已 `apk add font-noto-cjk`，默认字体文件位于
+    # /usr/share/fonts/noto/NotoSansCJK-Regular.ttc，与 service/printing.py
+    # _load_cn_font 的候选路径一致。空字符串 = 走自动候选发现。
+    # 生产建议显式指定并打开 strict 模式，避免候选路径漂移造成静默 tofu。
+    print_cn_font_path: str = Field(
+        default="", alias="PRINT_CN_FONT_PATH",
+        description=(
+            "显式覆盖 CJK 字体绝对路径；空字符串走 _load_cn_font 自动候选扫描。"
+            "Alpine font-noto-cjk 默认路径：/usr/share/fonts/noto/NotoSansCJK-Regular.ttc"
+        ),
+    )
+    # 启动期/首次调用时若全部候选失败：True → RuntimeError；False → warning + PIL 默认
+    print_cn_font_strict: bool = Field(
+        default=False, alias="PRINT_CN_FONT_STRICT",
+        description="True 时 CJK 字体不可用直接报错；False 仅 warning 退回 PIL 默认位图",
+    )
+
     # ---- 打印正面页 L1 本地磁盘缓存（2026-07-31 引入）----
     # 不可写时（如 read-only rootfs / printcache 卷未挂载）自动降级为仅 L2 COS，
     # 不影响功能，只损失一次跨网下载延迟。

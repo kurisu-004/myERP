@@ -33,10 +33,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # font-dejavu：service/printing.py 渲染序列号（ASCII 字符如 F1004）需要支持 size
 # 的 TTF 字体；alpine 默认无任何字体，_load_cn_font 会 fallback 到 PIL 内置
 # ~10px bitmap（完全忽略 size 参数），导致序列号在部署后变成蚂蚁大小。
-# 不装 CJK 字体（2026-07-31 移除 font-wqy-microhei：alpine apk 仓库里没这个包名，
-# 实际包名是 wqy-microhei，但会引入 ~10MB 镜像增量且当前 ASCII 标签已够用；
-# info card 中文会显示成 tofu 字符，可接受）。
-RUN apk add --no-cache tzdata tini font-dejavu \
+# font-noto-cjk（2026-08-01 新增）：信息卡中文 / PDFium 源字体替代所需的 CJK 字体；
+# alpine community 包，含 NotoSans/Serif CJK Regular/Bold TTC，~71 MB 安装大小；
+# 装在 /usr/share/fonts/noto/NotoSansCJK-Regular.ttc，与 _load_cn_font 候选路径
+# 第 5 项一致，覆盖 SC/TC/HK/JP/KR。可由 .env 的 PRINT_CN_FONT_PATH 覆盖到企业
+# 自有字体；删除此包会让中文字符回退到 tofu。
+# 注：Alpine 主仓库没有 wqy-microhei 包（只有 font-noto-cjk / font-wqy-zenhei
+# 名字，且 font-wqy-zenhei 也已不在 community repo），故选用 font-noto-cjk。
+RUN apk add --no-cache tzdata tini font-dejavu font-noto-cjk \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone
 
