@@ -8,7 +8,9 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import { Filter, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PdfViewer from '@/components/PdfViewer.vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
@@ -180,6 +182,20 @@ const { restore: restoreQuoteFilter } = useListStatePersist(
   { search, sortBy, sortDir, pageSize },
   { exclude: new Set(['page']) },
 )
+
+// ============ 列可见性 ============
+// 「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'part_serial_no', label: '序列号' },
+  { key: 'part_drawing_no', label: '图号' },
+  { key: 'part_name', label: '名称' },
+  { key: 'outsource_company_name', label: '外协公司' },
+  { key: 'process_code', label: '工序' },
+  { key: 'price', label: '单价' },
+  { key: 'status', label: '状态' },
+  { key: 'customer', label: '客户' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'outsource_quote_list' })
 
 const SORT_PROP_MAP: Record<string, SortKey> = {
   part_serial_no: 'CREATED_AT',  // 默认按创建时间
@@ -708,7 +724,15 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         @row-click="onRowClick"
         @card-click="onRowClick"
       >
+        <template #toolbar>
+          <ColumnVisibilityPopover
+            :defs="columnDefs"
+            v-model="columnVisibility.currentMap"
+            @reset="columnVisibility.showAll"
+          />
+        </template>
         <el-table-column
+          v-if="columnVisibility.isVisible('part_serial_no')"
           prop="part_serial_no"
           label="序列号"
           min-width="100"
@@ -716,6 +740,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           show-overflow-tooltip align="center"/>
 
         <el-table-column
+          v-if="columnVisibility.isVisible('part_drawing_no')"
           prop="part_drawing_no"
           label="图号"
           min-width="120"
@@ -733,6 +758,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         </el-table-column>
 
         <el-table-column
+          v-if="columnVisibility.isVisible('part_name')"
           prop="part_name"
           label="名称"
           min-width="180"
@@ -740,6 +766,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           show-overflow-tooltip align="center"/>
 
         <el-table-column
+          v-if="columnVisibility.isVisible('outsource_company_name')"
           prop="outsource_company_name"
           label="外协公司"
           min-width="160"
@@ -747,12 +774,14 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
           show-overflow-tooltip align="center"/>
 
         <el-table-column
+          v-if="columnVisibility.isVisible('process_code')"
           prop="process_code"
           label="工序"
           min-width="100"
           sortable="custom" align="center"/>
 
         <el-table-column
+          v-if="columnVisibility.isVisible('price')"
           prop="price"
           label="单价(元)"
           min-width="100"
@@ -761,7 +790,9 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         />
 
         <!-- 状态列（无 sortable；用列头 popover 过滤） -->
-        <el-table-column label="状态" min-width="110" align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('status')"
+          label="状态" min-width="110" align="center">
           <template #header>
             <span class="header-cell">
               <span>状态</span>
@@ -815,7 +846,9 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         </el-table-column>
 
         <!-- 客户列（无 sortable；用列头 popover 过滤 L1 客户） -->
-        <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('customer')"
+          label="客户" min-width="180" show-overflow-tooltip align="center">
           <template #header>
             <span class="header-cell">
               <span>客户</span>
