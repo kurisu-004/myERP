@@ -32,6 +32,7 @@ import asyncio
 import functools
 import io
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -93,36 +94,71 @@ def _a4_px(orientation: str) -> tuple[int, int]:
 # ============================================================
 # 字体（仅信息卡占位页 + vector=1 图片输入路径在用）
 # ============================================================
+# 候选路径列表（2026-08-01 改为模块级常量以便单测 monkeypatch 注入失败场景）
+_CN_FONT_CANDIDATES: list[str] = [
+    # Alpine apk add font-noto-cjk 安装位置（2026-08-01 默认；71 MB）
+    "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto/NotoSerifCJK-Regular.ttc",
+    # 历史 Alpine wqy 系列路径（保留兼容；新装镜像无此包）
+    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
+    "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    # Alpine apk add font-dejavu 安装位置（仅 Latin，候选兜底）
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    # Debian/Ubuntu apt install fonts-dejavu 路径
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    # macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+]
+_CN_FONT_FALLBACK_WARNED = False  # 模块级 flag：保证「缺字体」warning 只发一次
+
+
 @functools.lru_cache(maxsize=32)
 def _load_cn_font(size: int) -> ImageFont.ImageFont:
-    """尽量加载中文字体；找不到时 fallback 到默认（标签仍可显示）。
+    """尽量加载中文字体；找不到时降级到 PIL 默认（中文会变成 tofu）。
 
-    部署环境（alpine）默认无任何字体；2026-07-31 Dockerfile 加装
-    font-wqy-microhei 后信息卡中文可正常渲染。候选路径覆盖 Alpine / Debian /
-    Ubuntu / macOS 常见位置。
+    解析顺序（2026-08-01 重构）：
+      1. `settings.print_cn_font_path`（若非空且文件存在 → 强制使用）
+      2. 候选路径列表：Alpine wqy-microhei/zenhei/Noto、Debian DejaVu、macOS PingFang/STHeiti
+      3. `ImageFont.load_default(size=size)`，并在首次降级时记录 **一次** WARNING
+
+    字体由 Dockerfile runtime `apk add font-noto-cjk` 提供（默认路径
+    `/usr/share/fonts/noto/NotoSansCJK-Regular.ttc`）。该函数同时被 PDFium
+    源图纸（不嵌入字体的 PDF）作为系统字体替代兜底。
+
+    `settings.print_cn_font_strict=True` 时：全部候选失败直接抛 `RuntimeError`，
+    避免生产静默吐出 tofu。`lru_cache` 保证错误只发生一次，启动期即炸。
     """
-    candidates = [
-        # Alpine apk add font-wqy-microhei 安装位置（2026-07-31 新增）
-        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
-        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        # Alpine apk add font-noto-cjk 安装位置（备用）
-        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
-        # Alpine apk add font-dejavu 安装位置（仅 Latin）
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        # Debian/Ubuntu apt install fonts-dejavu 路径
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        # macOS
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-    ]
-    for fp in candidates:
+    # 1) 显式覆盖优先（生产推荐在 .env 写入绝对路径）
+    configured = settings.print_cn_font_path.strip()
+    if configured and os.path.isfile(configured):
+        return ImageFont.truetype(configured, size=size)
+
+    # 2) 候选路径扫描
+    for fp in _CN_FONT_CANDIDATES:
         try:
             return ImageFont.truetype(fp, size=size)
         except OSError:
             continue
-    return ImageFont.load_default()
+
+    # 3) 全部失败：strict 抛错，否则降级并 warning 一次
+    global _CN_FONT_FALLBACK_WARNED
+    if settings.print_cn_font_strict:
+        raise RuntimeError(
+            "PRINT_CN_FONT_STRICT=true 但所有候选字体均不可用；"
+            "请确认镜像已 `apk add font-noto-cjk` 或在 .env 设置 PRINT_CN_FONT_PATH。"
+        )
+    if not _CN_FONT_FALLBACK_WARNED:
+        _logger.warning(
+            "CJK font not found: tried configured path %r + %d system candidates; "
+            "info card 中文字符将退到 PIL 默认位图（tofu）。"
+            "Dockerfile 应 `apk add font-noto-cjk` 或在 .env 设置 PRINT_CN_FONT_PATH。",
+            configured, len(_CN_FONT_CANDIDATES),
+        )
+        _CN_FONT_FALLBACK_WARNED = True
+    return ImageFont.load_default(size=size)
 
 
 # ============================================================

@@ -55,6 +55,10 @@ services:
       APP_CPU_CORES: ${APP_CPU_CORES:-4}
       # 2026-07-31：打印正面页 L1 缓存目录；不可写时降级为仅 L2 COS
       PRINT_CACHE_DIR: ${PRINT_CACHE_DIR:-/app/.cache/print}
+      # 2026-08-01：CJK 字体配置；与 Dockerfile apk add font-noto-cjk 配套
+      # 路径为空时走 service/printing.py::_load_cn_font 自动候选扫描
+      PRINT_CN_FONT_PATH: ${PRINT_CN_FONT_PATH:-/usr/share/fonts/noto/NotoSansCJK-Regular.ttc}
+      PRINT_CN_FONT_STRICT: ${PRINT_CN_FONT_STRICT:-true}
     volumes:
       # 2026-07-31：打印正面页 L1 缓存挂载到命名卷；跨容器重建保留
       - printcache:/app/.cache/print
