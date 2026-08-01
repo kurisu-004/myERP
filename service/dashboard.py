@@ -28,7 +28,7 @@ from model.enums import (
 )
 
 
-DASHBOARD_TOP_N = 20
+DASHBOARD_TOP_N = 1000
 
 
 @dataclass
@@ -240,11 +240,13 @@ async def _fetch_on_zone_shelves(
 async def _fetch_in_process_worker(
     session: AsyncSession, top_n: int
 ) -> list[tuple[TPartBatch, TPart]]:
-    """IN_PROCESS 且 holder 在 t_worker(is_active) 集合内（批次级）。"""
-    worker_subq = select(TWorker.id).where(
-        TWorker.deleted_at.is_(None),
-        TWorker.is_active.is_(True),
-    )
+    """批次级：所有 IN_PROCESS + location=WORKER 的活跃批次。
+
+    不再二次过滤 worker.is_active / deleted_at：pick-up 入口已校验
+    （service/part.py:2363-2368），运行时脱岗不应让批次从大屏静默消失。
+    限流改在 Python 端按 holder 分桶，每桶取前 top_n 条（默认 1000，
+    远高于单工人合理在持量，仅作防爆兜底）。
+    """
     stmt = (
         select(TPartBatch, TPart)
         .join(TPart, TPart.id == TPartBatch.part_id)
@@ -252,12 +254,25 @@ async def _fetch_in_process_worker(
         .where(TPartBatch.location == "WORKER")
         .where(TPartBatch.deleted_at.is_(None))
         .where(TPart.deleted_at.is_(None))
-        .where(TPartBatch.current_holder_id.in_(worker_subq))
-        .order_by(TPartBatch.id.desc())
-        .limit(top_n)
+        .where(TPartBatch.current_holder_id.is_not(None))
+        .order_by(
+            TPartBatch.current_holder_id.asc(),
+            TPart.is_urgent.desc(),
+            TPart.planned_delivery_date.asc(),
+            TPartBatch.id.asc(),
+        )
     )
-    result = await session.execute(stmt)
-    return [(r[0], r[1]) for r in result.all()]
+    rows = [(r[0], r[1]) for r in (await session.execute(stmt)).all()]
+    # 按 holder 分桶限流：与生产货架区段同样手法（避免单工人极端在持撑爆 WS payload）
+    per_holder_count: dict[int, int] = {}
+    capped: list[tuple[TPartBatch, TPart]] = []
+    for b, p in rows:
+        h = b.current_holder_id
+        per_holder_count[h] = per_holder_count.get(h, 0) + 1
+        if per_holder_count[h] > top_n:
+            continue
+        capped.append((b, p))
+    return capped
 
 
 async def _fetch_upcoming_delivery(
@@ -352,10 +367,10 @@ async def _fetch_worker_names(
 ) -> dict[int, str]:
     if not worker_ids:
         return {}
-    stmt = select(TWorker).where(
-        TWorker.id.in_(worker_ids),
-        TWorker.deleted_at.is_(None),
-    )
+    # 不再过滤 deleted_at：脱岗/软删工人名下仍持有批次时，名字应继续展示
+    # （与 _fetch_in_process_worker 的去绑定策略一致，镜像
+    # PartBatchRepository.list_held_by_worker 的宽松语义）
+    stmt = select(TWorker).where(TWorker.id.in_(worker_ids))
     workers = list((await session.execute(stmt)).scalars().all())
     return {w.id: w.name for w in workers}
 
