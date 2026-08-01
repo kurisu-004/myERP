@@ -40,7 +40,9 @@ import {
 } from '@/utils/deliveryNotePermissions'
 import { listCustomers } from '@/api/customer'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
 
 const router = useRouter()
@@ -72,6 +74,20 @@ const { restore: restoreNoteListFilter } = useListStatePersist(
   { statuses, customerId, keyword, pageSize },
   { exclude: new Set(['page']) },
 )
+
+// ============ 列可见性 ============
+// 「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'delivery_note_no', label: '单号' },
+  { key: 'delivery_date', label: '送货日期' },
+  { key: 'customer', label: '客户' },
+  { key: 'status', label: '状态' },
+  { key: 'part_count', label: '零件数' },
+  { key: 'submitted_at', label: '提交时间' },
+  { key: 'picked_up_at', label: '领取时间' },
+  { key: 'driver_worker_name', label: '司机' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'delivery_note_list' })
 
 const customers = ref<{ id: string; name: string; path: string; parent_id: string | null }[]>([])
 
@@ -380,27 +396,51 @@ function noteNoOf(id: string): string {
       </el-form>
     </el-card>
 
+    <el-card shadow="never" style="margin-top: 16px">
+      <template #header>
+        <div class="dnl-card-header">
+          <ColumnVisibilityPopover
+            :defs="columnDefs"
+            :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+            @reset="columnVisibility.showAll"
+          />
+        </div>
+      </template>
     <el-table
       v-loading="loading"
       :data="items"
+      :row-key="(r: DeliveryNoteOut) => r.id"
+      :max-height="'calc(100vh - 360px)'"
+      highlight-current-row
       stripe
       border
-      style="margin-top: 16px"
       :empty-text="loading ? '加载中' : '无数据'"
     >
-      <el-table-column prop="delivery_note_no" label="单号" min-width="180" align="center"/>
-      <el-table-column label="送货日期" min-width="120" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('delivery_note_no')"
+        prop="delivery_note_no" label="单号" min-width="180" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('delivery_date')"
+        label="送货日期" min-width="120" align="center"
+      >
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).delivery_date ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="客户" min-width="130" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('customer')"
+        label="客户" min-width="130" align="center"
+      >
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).customer_path
             ?? (scope.row as DeliveryNoteOut).customer_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="状态" min-width="80" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('status')"
+        label="状态" min-width="80" align="center"
+      >
         <template #default="scope">
           <el-tag
             :type="DELIVERY_NOTE_STATUS_TAG[(scope.row as DeliveryNoteOut).status] || 'info'"
@@ -411,20 +451,32 @@ function noteNoOf(id: string): string {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="part_count" label="零件数" min-width="70" align="center" />
-      <el-table-column label="提交时间" min-width="170" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('part_count')"
+        prop="part_count" label="零件数" min-width="70" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('submitted_at')"
+        label="提交时间" min-width="170" align="center"
+      >
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).submitted_at
             ? new Date((scope.row as DeliveryNoteOut).submitted_at!).toLocaleString() : '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="领取时间" min-width="170" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('picked_up_at')"
+        label="领取时间" min-width="170" align="center"
+      >
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).picked_up_at
             ? new Date((scope.row as DeliveryNoteOut).picked_up_at!).toLocaleString() : '—' }}
         </template>
       </el-table-column>
-      <el-table-column prop="driver_worker_name" label="司机" min-width="80" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('driver_worker_name')"
+        prop="driver_worker_name" label="司机" min-width="80" align="center"
+      >
         <template #default="scope">
           {{ (scope.row as DeliveryNoteOut).driver_worker_name ?? '—' }}
         </template>
@@ -472,6 +524,7 @@ function noteNoOf(id: string): string {
         </template>
       </el-table-column>
     </el-table>
+    </el-card>
 
     <el-pagination
       class="pager"
@@ -587,6 +640,11 @@ function noteNoOf(id: string): string {
 .delivery-note-list { padding: 16px; }
 .filter-card :deep(.el-form-item) { margin-bottom: 0; }
 .pager { margin-top: 16px; justify-content: flex-end; }
+.dnl-card-header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
 .picker-summary {
   display: flex;
   align-items: center;

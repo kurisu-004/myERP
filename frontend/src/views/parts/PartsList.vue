@@ -190,6 +190,13 @@
       @row-click="onBatchRowClick"
       @row-dblclick="onRowDblClick"
     >
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
       <el-table-column
         v-if="batchMode"
         type="selection"
@@ -199,6 +206,7 @@
       />
 
       <el-table-column
+        v-if="columnVisibility.isVisible('serial_no')"
         prop="serial_no"
         label="序列号"
         min-width="110"
@@ -211,6 +219,7 @@
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('order_no')"
         prop="order_no"
         label="订单号"
         min-width="130"
@@ -227,6 +236,7 @@
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('drawing_no')"
         prop="drawing_no"
         label="图号"
         min-width="130"
@@ -244,6 +254,7 @@
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('name')"
         prop="name"
         label="名称"
         min-width="200"
@@ -266,7 +277,9 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('customer')"
+        label="客户" min-width="180" show-overflow-tooltip align="center">
         <template #header>
           <span class="header-cell" :class="{ 'is-active': customerFilterActive }">
             <span>{{ customerFilterActive ? '客户(1)' : '客户' }}</span>
@@ -321,7 +334,9 @@
       </el-table-column>
 
 
-      <el-table-column label="申请人" min-width="110" show-overflow-tooltip align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('applicant')"
+        label="申请人" min-width="110" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -333,6 +348,7 @@
       </el-table-column>
 
 <el-table-column
+        v-if="columnVisibility.isVisible('status')"
         label="状态"
         min-width="140"
         align="center"
@@ -394,7 +410,9 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="数量" min-width="110" align="right">
+      <el-table-column
+        v-if="columnVisibility.isVisible('quantity')"
+        label="数量" min-width="110" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -409,7 +427,9 @@
         </template>
       </el-table-column>
 
-      <el-table-column v-if="!isInspector" label="单价" min-width="120" align="right">
+      <el-table-column
+        v-if="!isInspector && columnVisibility.isVisible('unit_price')"
+        label="单价" min-width="120" align="right">
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === row.id"
@@ -427,13 +447,16 @@
 
       <!-- 2026-07-24 v2 调整：总价 = quantity × unit_price **前端实时计算**
      （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
-      <el-table-column v-if="!isInspector" label="总价" min-width="120" align="right">
+      <el-table-column
+        v-if="!isInspector && columnVisibility.isVisible('total_price')"
+        label="总价" min-width="120" align="right">
         <template #default="{ row }">
           <span>{{ displayTotalPrice(row as PartListItem) }}</span>
         </template>
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('request_date')"
         prop="request_date"
         label="请购日期"
         min-width="150"
@@ -453,6 +476,7 @@
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('planned_delivery_date')"
         prop="planned_delivery_date"
         label="计划交期"
         min-width="150"
@@ -472,6 +496,7 @@
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('system_delivery_date')"
         prop="system_delivery_date"
         label="系统交期"
         min-width="150"
@@ -490,7 +515,9 @@
         </template>
       </el-table-column>
 
-            <el-table-column label="加急" min-width="80" align="center">
+            <el-table-column
+              v-if="columnVisibility.isVisible('is_urgent')"
+              label="加急" min-width="80" align="center">
         <template #default="{ row }">
           <el-switch
             v-if="editingId === row.id"
@@ -507,7 +534,9 @@
         </template>
       </el-table-column>
 
-                  <el-table-column label="所在位置" min-width="150" show-overflow-tooltip align="center">
+                  <el-table-column
+                    v-if="columnVisibility.isVisible('location')"
+                    label="所在位置" min-width="150" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <span v-if="row.location === 'PRODUCTION_SHELF' && row.shelf_code">
             货架 {{ row.shelf_code }}
@@ -522,7 +551,9 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="备注" min-width="160" show-overflow-tooltip align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('note')"
+        label="备注" min-width="160" show-overflow-tooltip align="center">
         <template #default="{ row }">
           <el-input
             v-if="editingId === row.id"
@@ -954,6 +985,8 @@ import { useAuthSession } from '@/composables/useAuthSession'
 import { usePermissions } from '@/composables/usePermissions'
 import { useCustomerTree } from '@/composables/useCustomerTree'
 import { useListFilterPersist } from '@/composables/useListFilterPersist'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 
 // ============ 角色 & 默认筛选 ============
 const { hasRole } = useAuthSession()
@@ -1605,6 +1638,28 @@ const { restore: restorePartsFilter, clear: clearPartsFilter, snapshot: snapshot
     'parts_list_filter',
     { search, sortBy, sortDir, pageSize },
   )
+
+// ============ 列可见性 ============
+// 「操作」和 batch 模式下的「selection」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'serial_no', label: '序列号' },
+  { key: 'order_no', label: '订单号' },
+  { key: 'drawing_no', label: '图号' },
+  { key: 'name', label: '名称' },
+  { key: 'customer', label: '客户' },
+  { key: 'applicant', label: '申请人' },
+  { key: 'status', label: '状态' },
+  { key: 'quantity', label: '数量' },
+  { key: 'unit_price', label: '单价' },
+  { key: 'total_price', label: '总价' },
+  { key: 'request_date', label: '请购日期' },
+  { key: 'planned_delivery_date', label: '计划交期' },
+  { key: 'system_delivery_date', label: '系统交期' },
+  { key: 'is_urgent', label: '加急' },
+  { key: 'location', label: '所在位置' },
+  { key: 'note', label: '备注' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'parts_list_columns' })
 
 function onReset(): void {
   // 2026-07-29 PR-fix-0.2.0：重置只清两个查询框 + 三个日期区间，保留 status / customer

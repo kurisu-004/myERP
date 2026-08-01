@@ -76,7 +76,15 @@
       size="small"
       :row-class-name="rowClassName"
     >
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
       <el-table-column
+        v-if="columnVisibility.isVisible('serial_no')"
         prop="serial_no"
         label="序列号"
         min-width="110"
@@ -88,6 +96,7 @@
       </el-table-column>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('drawing_no')"
         prop="drawing_no"
         label="图号"
         min-width="130"
@@ -95,6 +104,7 @@
         show-overflow-tooltip align="center"/>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('name')"
         prop="name"
         label="名称"
         min-width="200"
@@ -106,20 +116,27 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="批次" min-width="100" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('batch_label')"
+        label="批次" min-width="100" align="center"
+      >
         <template #default="{ row }">
           <span class="batch-label">{{ (row as RowState).batch_label || '—' }}</span>
         </template>
       </el-table-column>
 
-      <el-table-column prop="quantity" label="批次量" min-width="80" align="right" />
+      <el-table-column
+        v-if="columnVisibility.isVisible('quantity')"
+        prop="quantity" label="批次量" min-width="80" align="right" />
 
       <el-table-column
+        v-if="columnVisibility.isVisible('planned_delivery_date')"
         prop="planned_delivery_date"
         label="计划交期"
         min-width="120" align="center"/>
 
       <el-table-column
+        v-if="columnVisibility.isVisible('system_delivery_date')"
         prop="system_delivery_date"
         label="系统交期"
         min-width="120"
@@ -132,7 +149,10 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="客户" min-width="180" show-overflow-tooltip align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('customer')"
+        label="客户" min-width="180" show-overflow-tooltip align="center"
+      >
         <template #default="{ row }">
           <span v-if="row.customer_path">{{ row.customer_path }}</span>
           <span v-else-if="row.customer_name" class="muted">{{ row.customer_name }}</span>
@@ -140,7 +160,10 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="品检货架" min-width="150" show-overflow-tooltip align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('shelf_code')"
+        label="品检货架" min-width="150" show-overflow-tooltip align="center"
+      >
         <template #default="{ row }">
           <span v-if="row.shelf_code">品检 {{ row.shelf_code }}</span>
           <span v-else class="muted">—</span>
@@ -407,7 +430,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import {
   failInspection,
@@ -504,6 +529,21 @@ const { restore: restoreInspectionFilter, clear: clearInspectionFilter } = useLi
   { search, pageSize, autoRefresh },
   { exclude: new Set(['page']) },
 )
+
+// ============ 列可见性 ============
+// 「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'serial_no', label: '序列号' },
+  { key: 'drawing_no', label: '图号' },
+  { key: 'name', label: '名称' },
+  { key: 'batch_label', label: '批次' },
+  { key: 'quantity', label: '批次量' },
+  { key: 'planned_delivery_date', label: '计划交期' },
+  { key: 'system_delivery_date', label: '系统交期' },
+  { key: 'customer', label: '客户' },
+  { key: 'shelf_code', label: '品检货架' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'inspection_pending' })
 
 onBeforeUnmount(() => {
   if (autoRefreshTimer !== null) {

@@ -35,24 +35,46 @@
         border
         size="small"
       >
+        <template #toolbar>
+          <ColumnVisibilityPopover
+            :defs="columnDefs"
+            :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+            @reset="columnVisibility.showAll"
+          />
+        </template>
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="name" label="公司名" min-width="160" align="center"/>
-        <el-table-column prop="contact_name" label="联系人" min-width="100" align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('name')"
+          prop="name" label="公司名" min-width="160" align="center"
+        />
+        <el-table-column
+          v-if="columnVisibility.isVisible('contact_name')"
+          prop="contact_name" label="联系人" min-width="100" align="center"
+        >
           <template #default="{ row }">
             {{ (row as OutsourceCompany).contact_name || '—' }}
           </template>
         </el-table-column>
-        <el-table-column prop="contact_phone" label="联系电话" min-width="120" align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('contact_phone')"
+          prop="contact_phone" label="联系电话" min-width="120" align="center"
+        >
           <template #default="{ row }">
             {{ (row as OutsourceCompany).contact_phone || '—' }}
           </template>
         </el-table-column>
-        <el-table-column prop="address" label="地址" min-width="200" show-overflow-tooltip align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('address')"
+          prop="address" label="地址" min-width="200" show-overflow-tooltip align="center"
+        >
           <template #default="{ row }">
             {{ (row as OutsourceCompany).address || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" min-width="80" align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('is_active')"
+          label="状态" min-width="80" align="center"
+        >
           <template #default="{ row }">
             <el-tag :type="(row as OutsourceCompany).is_active ? 'success' : 'info'" size="small">
               {{ (row as OutsourceCompany).is_active ? '启用' : '停用' }}
@@ -194,7 +216,9 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
@@ -233,6 +257,17 @@ const { restore: restoreOutsourceCompanyFilter } = useListStatePersist(
   'outsource_company_list',
   { search },
 )
+
+// ============ 列可见性 ============
+// 「#」和「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'name', label: '公司名' },
+  { key: 'contact_name', label: '联系人' },
+  { key: 'contact_phone', label: '联系电话' },
+  { key: 'address', label: '地址' },
+  { key: 'is_active', label: '状态' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'outsource_company_list' })
 
 const outsourceProcesses = ref<Process[]>([])
 

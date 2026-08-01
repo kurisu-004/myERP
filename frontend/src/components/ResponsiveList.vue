@@ -15,10 +15,15 @@
   <div class="responsive-list">
     <!-- 桌面：表格 -->
     <div v-if="!isMobile" v-loading="loading" class="rl-table-wrap">
+      <div v-if="$slots.toolbar" class="rl-toolbar">
+        <slot name="toolbar" />
+      </div>
       <el-table
         ref="elTableRef"
         :data="items"
         :row-key="rowKey"
+        :max-height="maxHeight"
+        highlight-current-row
         style="width: 100%"
         v-bind="$attrs"
         @row-dblclick="(row, column, event) => emit('row-dblclick', row, column, event)"
@@ -62,12 +67,17 @@ const props = withDefaults(
     emptyText?: string
     /** 卡片额外 class：字符串或按行计算（如加急高亮） */
     cardClass?: string | ((row: any) => string)
+    /** 表格最大高度；触发表头 sticky 的滚动容器。string|number 都接受
+     *  （Element Plus 2.14.x max-height prop）。默认 `calc(100vh - 280px)` —
+     *  估算 MainLayout 顶栏 + filter card + 分页器等 chrome。 */
+    maxHeight?: string | number
   }>(),
   {
     loading: false,
     rowKey: 'id',
     emptyText: '暂无数据',
     cardClass: '',
+    maxHeight: 'calc(100vh - 280px)',
   },
 )
 
@@ -107,6 +117,15 @@ defineExpose({ elTableRef })
   overflow-x: auto;
 }
 
+.rl-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 8px;
+  min-height: 32px;
+}
+
 .rl-cards {
   display: flex;
   flex-direction: column;
@@ -118,5 +137,15 @@ defineExpose({ elTableRef })
   :deep(.el-card__body) {
     padding: 12px 14px;
   }
+}
+
+// 2026-08-01：加急行 / 已开送货单行 用了 !important 强染色 (#fde2e2 / 默认蓝),
+// Element Plus 的 .current-row 浅蓝高亮被覆盖看不出点击态。
+// 这里集中覆盖 .current-row 在状态色行上的色为「更深的同色」,既保留状态色又显示高亮。
+:deep(.el-table__row.row-urgent.current-row > td.el-table__cell) {
+  background-color: #fbcaca !important;
+}
+:deep(.el-table__row.row-on-delivery-note.current-row > td.el-table__cell) {
+  background-color: #d6e8ff !important;
 }
 </style>

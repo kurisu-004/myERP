@@ -62,14 +62,31 @@
         border
         size="small"
       >
+        <template #toolbar>
+          <ColumnVisibilityPopover
+            :defs="columnDefs"
+            :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+            @reset="columnVisibility.showAll"
+          />
+        </template>
+
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="name" label="姓名" min-width="160" align="center"/>
-        <el-table-column label="所属一级客户" min-width="180" align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('name')"
+          prop="name" label="姓名" min-width="160" align="center"
+        />
+        <el-table-column
+          v-if="columnVisibility.isVisible('customer_name')"
+          label="所属一级客户" min-width="180" align="center"
+        >
           <template #default="{ row }">
             {{ row.customer_name || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" min-width="180" align="center">
+        <el-table-column
+          v-if="columnVisibility.isVisible('created_at')"
+          label="创建时间" min-width="180" align="center"
+        >
           <template #default="{ row }">
             {{ formatDate(row.created_at) }}
           </template>
@@ -150,7 +167,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, RefreshLeft, Search } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import { listCustomers, type Customer } from '@/api/customer'
@@ -163,6 +182,15 @@ import {
 import type { Applicant } from '@/types/applicant'
 
 const { isMobile } = useBreakpoint()
+
+// ============ 列可见性 ============
+// 「#」和「操作」列不放进 defs → 始终可见,且不出现在列设置弹窗
+const columnDefs = [
+  { key: 'name', label: '姓名' },
+  { key: 'customer_name', label: '所属一级客户' },
+  { key: 'created_at', label: '创建时间' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'applicant_list' })
 
 const loading = ref(false)
 const saving = ref(false)

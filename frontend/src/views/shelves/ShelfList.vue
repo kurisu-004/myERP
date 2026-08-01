@@ -12,13 +12,35 @@
       stripe
       :default-sort="{ prop: 'display_order', order: 'ascending' }"
     >
-      <el-table-column prop="code" label="代码" min-width="110" align="center"/>
-      <el-table-column prop="name" label="名称" min-width="140" align="center"/>
-      <el-table-column label="区域" min-width="90" align="center">
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
+      <el-table-column
+        v-if="columnVisibility.isVisible('code')"
+        prop="code" label="代码" min-width="110" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('name')"
+        prop="name" label="名称" min-width="140" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('zone')"
+        label="区域" min-width="90" align="center"
+      >
         <template #default="{ row }"><el-tag :type="row.zone === 'PRODUCTION' ? 'primary' : 'warning'" size="small">{{ row.zone === 'PRODUCTION' ? '生产' : '品检' }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="location" label="位置" min-width="120" align="center"/>
-      <el-table-column prop="display_order" label="物理顺序" min-width="100" align="center" sortable>
+      <el-table-column
+        v-if="columnVisibility.isVisible('location')"
+        prop="location" label="位置" min-width="120" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('display_order')"
+        prop="display_order" label="物理顺序" min-width="100" align="center" sortable
+      >
         <template #default="{ row }">
           <el-tag
             :type="row.display_order > 0 ? 'info' : 'warning'"
@@ -29,8 +51,14 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="account_count" label="账号数" min-width="80" align="center" />
-      <el-table-column label="状态" min-width="80" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('account_count')"
+        prop="account_count" label="账号数" min-width="80" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('is_active')"
+        label="状态" min-width="80" align="center"
+      >
         <template #default="{ row }"><el-tag :type="row.is_active ? 'success' : 'danger'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag></template>
       </el-table-column>
       <el-table-column label="操作" min-width="160" fixed="right" align="center">
@@ -135,7 +163,9 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { listShelves, createShelf, updateShelf, deactivateShelf, getShelfProcesses, setShelfProcesses } from '@/api/shelves'
 import { listProcesses } from '@/api/process'
@@ -144,6 +174,19 @@ import type { Process } from '@/types/process'
 import { PROCESS_CATEGORY_LABEL } from '@/types/process'
 
 const { isMobile } = useBreakpoint()
+
+// ============ 列可见性 ============
+// 「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'code', label: '代码' },
+  { key: 'name', label: '名称' },
+  { key: 'zone', label: '区域' },
+  { key: 'location', label: '位置' },
+  { key: 'display_order', label: '物理顺序' },
+  { key: 'account_count', label: '账号数' },
+  { key: 'is_active', label: '状态' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'shelf_list' })
 
 const items = ref<Shelf[]>([])
 const loading = ref(false)

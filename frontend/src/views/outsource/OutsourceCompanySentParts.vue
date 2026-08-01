@@ -13,7 +13,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type SummaryMethod } from 'element-plus'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   getOutsourceCompany,
@@ -56,6 +58,22 @@ const { restore: restoreSentPartsFilter } = useListStatePersist(
   'outsource_company_sent_parts',
   { filter, sortBy, sortDir },
 )
+
+// ============ 列可见性 ============
+const columnDefs = [
+  { key: 'part_drawing_no', label: '图号' },
+  { key: 'part_name', label: '名称' },
+  { key: 'customer_path', label: '客户' },
+  { key: 'batch_no', label: '批次号' },
+  { key: 'quantity', label: '数量' },
+  { key: 'unit_price', label: '单价' },
+  { key: 'total_price', label: '总价' },
+  { key: 'sent_at', label: '发送时间' },
+  { key: 'received_at', label: '回收时间' },
+  { key: 'status', label: '状态' },
+  { key: 'is_billed', label: '对账' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'outsource_company_sent_parts' })
 
 async function loadCompany(): Promise<void> {
   if (!companyId.value) return
@@ -353,19 +371,41 @@ watch(companyId, () => {
       @row-dblclick="onRowDblClick"
       @sort-change="onSortChange"
     >
-      <el-table-column prop="part_drawing_no" label="图号" min-width="120" align="center"/>
-      <el-table-column prop="part_name" label="名称" min-width="160" show-overflow-tooltip align="center"/>
-      <el-table-column prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center">
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
+      <el-table-column
+        v-if="columnVisibility.isVisible('part_drawing_no')"
+        prop="part_drawing_no" label="图号" min-width="120" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('part_name')"
+        prop="part_name" label="名称" min-width="160" show-overflow-tooltip align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('customer_path')"
+        prop="customer_path" label="客户" min-width="160" show-overflow-tooltip align="center"
+      >
         <template #default="{ row }">
           {{ (row as OutsourceSentPartItem).customer_path ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="批次号" min-width="90" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('batch_no')"
+        label="批次号" min-width="90" align="center"
+      >
         <template #default="{ row }">
           {{ (row as OutsourceSentPartItem).batch_no ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="数量" min-width="90" align="right">
+      <el-table-column
+        v-if="columnVisibility.isVisible('quantity')"
+        label="数量" min-width="90" align="right"
+      >
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === (row as OutsourceSentPartItem).shipment_id"
@@ -380,7 +420,10 @@ watch(companyId, () => {
           <span v-else>{{ (row as OutsourceSentPartItem).quantity ?? '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="单价(元)" prop="unit_price" min-width="110" align="right" sortable="custom">
+      <el-table-column
+        v-if="columnVisibility.isVisible('unit_price')"
+        label="单价(元)" prop="unit_price" min-width="110" align="right" sortable="custom"
+      >
         <template #default="{ row }">
           <el-input-number
             v-if="editingId === (row as OutsourceSentPartItem).shipment_id"
@@ -404,17 +447,26 @@ watch(companyId, () => {
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="总价" min-width="110" align="right">
+      <el-table-column
+        v-if="columnVisibility.isVisible('total_price')"
+        label="总价" min-width="110" align="right"
+      >
         <template #default="{ row }">
           <span>{{ displayTotalPrice(row as OutsourceSentPartItem) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="发送时间" prop="sent_at" min-width="160" align="center" sortable="custom">
+      <el-table-column
+        v-if="columnVisibility.isVisible('sent_at')"
+        label="发送时间" prop="sent_at" min-width="160" align="center" sortable="custom"
+      >
         <template #default="{ row }">
           {{ fmtDt((row as OutsourceSentPartItem).sent_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="回收时间" prop="received_at" min-width="160" align="center" sortable="custom">
+      <el-table-column
+        v-if="columnVisibility.isVisible('received_at')"
+        label="回收时间" prop="received_at" min-width="160" align="center" sortable="custom"
+      >
         <template #default="{ row }">
           <template v-if="(row as OutsourceSentPartItem).received_at">
             {{ fmtDt((row as OutsourceSentPartItem).received_at) }}
@@ -422,14 +474,20 @@ watch(companyId, () => {
           <span v-else style="color: var(--el-color-warning);">未回收</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" min-width="90" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('status')"
+        label="状态" min-width="90" align="center"
+      >
         <template #default="{ row }">
           <el-tag :type="statusTagType((row as OutsourceSentPartItem).status)" size="small">
             {{ statusLabel((row as OutsourceSentPartItem).status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="对账" min-width="80" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('is_billed')"
+        label="对账" min-width="80" align="center"
+      >
         <template #default="{ row }">
           <el-switch
             v-if="editingId === (row as OutsourceSentPartItem).shipment_id"

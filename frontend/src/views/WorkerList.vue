@@ -48,10 +48,26 @@
       border
       size="small"
     >
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          :model-value="columnVisibility.currentMap" @update:model-value="columnVisibility.update"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
       <el-table-column type="index" label="#" width="50" />
-      <el-table-column prop="badge_code" label="工牌码" min-width="160" align="center"/>
-      <el-table-column prop="name" label="姓名" min-width="120" align="center"/>
-      <el-table-column label="工种" min-width="120" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('badge_code')"
+        prop="badge_code" label="工牌码" min-width="160" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('name')"
+        prop="name" label="姓名" min-width="120" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('work_type')"
+        label="工种" min-width="120" align="center"
+      >
         <template #default="{ row }">
           <el-tag v-if="(row as Worker).work_type_id" size="small" type="primary">
             {{ workTypeNameById[(row as Worker).work_type_id!] || '...' }}
@@ -59,15 +75,24 @@
           <span v-else style="color: #c0c4cc">未分配</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" min-width="100" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('is_active')"
+        label="状态" min-width="100" align="center"
+      >
         <template #default="{ row }">
           <el-tag :type="(row as Worker).is_active ? 'success' : 'info'" effect="light" size="small">
             {{ (row as Worker).is_active ? '在职' : '停用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" min-width="170" align="center"/>
-      <el-table-column prop="updated_at" label="更新时间" min-width="170" align="center"/>
+      <el-table-column
+        v-if="columnVisibility.isVisible('created_at')"
+        prop="created_at" label="创建时间" min-width="170" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('updated_at')"
+        prop="updated_at" label="更新时间" min-width="170" align="center"
+      />
       <el-table-column label="操作" min-width="220" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as Worker)">编辑</el-button>
@@ -187,7 +212,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
   createWorker,
@@ -223,6 +250,18 @@ const { restore: restoreWorkerFilter, clear: clearWorkerFilter } = useListStateP
   'worker_list',
   { search },
 )
+
+// ============ 列可见性 ============
+// 「#」和「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'badge_code', label: '工牌码' },
+  { key: 'name', label: '姓名' },
+  { key: 'work_type', label: '工种' },
+  { key: 'is_active', label: '状态' },
+  { key: 'created_at', label: '创建时间' },
+  { key: 'updated_at', label: '更新时间' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'worker_list' })
 
 const dialogVisible = ref(false)
 const editing = ref<Worker | null>(null)
