@@ -11,9 +11,25 @@
       empty-text="暂无账号"
       stripe
     >
-      <el-table-column prop="username" label="用户名" min-width="120" align="center"/>
-      <el-table-column prop="full_name" label="姓名" min-width="100" align="center"/>
-      <el-table-column label="角色" min-width="200" align="center">
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          v-model="columnVisibility.currentMap"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
+      <el-table-column
+        v-if="columnVisibility.isVisible('username')"
+        prop="username" label="用户名" min-width="120" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('full_name')"
+        prop="full_name" label="姓名" min-width="100" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('roles')"
+        label="角色" min-width="200" align="center"
+      >
         <template #default="{ row }">
           <el-tag v-for="r in row.roles" :key="r.id" size="small" style="margin-right:4px" :type="r.scope_type ? 'warning' : 'primary'">
             {{ r.role }}{{ r.shelf_code ? ` @${r.shelf_code}` : '' }}
@@ -21,7 +37,10 @@
           <span v-if="!row.roles.length" class="no-roles">无角色</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" min-width="80" align="center">
+      <el-table-column
+        v-if="columnVisibility.isVisible('is_active')"
+        label="状态" min-width="80" align="center"
+      >
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag>
         </template>
@@ -171,7 +190,9 @@ import type { UserOut, UserRoleOut } from '@/types/user'
 import type { Shelf } from '@/types/shelf'
 import { InfoFilled } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 
@@ -194,6 +215,16 @@ const { restore: restoreUserFilter, clear: clearUserFilter } = useListStatePersi
   { size },
   { exclude: new Set(['page']) },
 )
+
+// ============ 列可见性 ============
+// 「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'username', label: '用户名' },
+  { key: 'full_name', label: '姓名' },
+  { key: 'roles', label: '角色' },
+  { key: 'is_active', label: '状态' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'user_list' })
 
 const showCreate = ref(false)
 const saving = ref(false)

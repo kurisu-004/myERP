@@ -22,11 +22,30 @@
       border
       size="small"
     >
+      <template #toolbar>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          v-model="columnVisibility.currentMap"
+          @reset="columnVisibility.showAll"
+        />
+      </template>
       <el-table-column type="index" label="#" width="50" />
-      <el-table-column prop="code" label="代码" min-width="140" align="center"/>
-      <el-table-column prop="name" label="名称" min-width="160" align="center"/>
-      <el-table-column prop="description" label="描述" min-width="200" align="center"/>
-      <el-table-column prop="sort_order" label="排序" min-width="80" align="center"/>
+      <el-table-column
+        v-if="columnVisibility.isVisible('code')"
+        prop="code" label="代码" min-width="140" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('name')"
+        prop="name" label="名称" min-width="160" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('description')"
+        prop="description" label="描述" min-width="200" align="center"
+      />
+      <el-table-column
+        v-if="columnVisibility.isVisible('sort_order')"
+        prop="sort_order" label="排序" min-width="80" align="center"
+      />
       <el-table-column label="操作" min-width="180" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as WorkType)">编辑</el-button>
@@ -91,7 +110,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, Plus } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import {
@@ -116,6 +137,16 @@ const { restore: restoreWorkTypeFilter, clear: clearWorkTypeFilter } = useListSt
   'work_type_list',
   { search },
 )
+
+// ============ 列可见性 ============
+// 「#」和「操作」列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'code', label: '代码' },
+  { key: 'name', label: '名称' },
+  { key: 'description', label: '描述' },
+  { key: 'sort_order', label: '排序' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'work_type_list' })
 
 const dialogVisible = ref(false)
 const editing = ref<WorkType | null>(null)
