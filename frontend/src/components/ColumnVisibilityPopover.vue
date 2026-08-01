@@ -6,7 +6,7 @@
   绑定到 useColumnVisibility 暴露的 currentMap。
 
   用法:
-    <ColumnVisibilityPopover :defs="columnDefs" v-model="columnVisibility.currentMap" />
+    <ColumnVisibilityPopover :defs="columnDefs" :model-value="columnVisibility.currentMap" @update:model-value="(v: Record<string, boolean>) => (columnVisibility.currentMap = v)" />
 
   Props:
     - defs:        ColumnDef[]          列定义(key + label + defaultVisible?)
@@ -36,7 +36,11 @@
 
     <div class="cvp">
       <div class="cvp__header">显示列</div>
-      <el-checkbox-group :model-value="visibleKeys" @update:model-value="onChange" class="cvp__list">
+      <el-checkbox-group
+        :model-value="visibleKeys"
+        @update:model-value="onChange"
+        class="cvp__list"
+      >
         <el-checkbox
           v-for="d in defs"
           :key="d.key"
@@ -62,7 +66,6 @@ import type { ColumnDef } from '@/composables/useColumnVisibility'
 
 interface Props {
   defs: readonly ColumnDef[]
-  modelValue: Record<string, boolean>
   label?: string
   placement?: 'bottom' | 'bottom-start' | 'bottom-end' | 'top' | 'top-start' | 'top-end'
   width?: number
@@ -74,8 +77,12 @@ const props = withDefaults(defineProps<Props>(), {
   width: 220,
 })
 
+// Vue 3.4+ defineModel:接受 v-model 绑定,自动处理 prop + emit 双向。
+// 这里「visible 自身无默认」 → required:true 由 useColumnVisibility.currentMap
+// (WritableComputedRef) 提供,无需任何 cast 即可与 `v-model="x.currentMap"` 配合。
+const modelValue = defineModel<Record<string, boolean>>({ required: true })
+
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, boolean>]
   reset: []
 }>()
 
@@ -85,19 +92,23 @@ const popoverVisible = ref(false)
 const visibleKeys = computed<string[]>(() => {
   const keys: string[] = []
   for (const d of props.defs) {
-    if (props.modelValue[d.key] !== false) keys.push(d.key)
+    if (modelValue.value[d.key] !== false) keys.push(d.key)
   }
   return keys
 })
 
 // 把 array → map(每个 defs.key 都出现,不在新数组里的 = false)
-function onChange(newKeys: string[]): void {
-  const set = new Set(newKeys)
+// el-checkbox-group 的 @update:model-value 实际类型是 CheckboxGroupValueType
+// (string | number | boolean),但我们这里 el-checkbox 的 :value 全部是 string,
+// 所以运行时只可能是 string[];为通过 vue-tsc 类型校验用 unknown 收口。
+function onChange(newKeys: unknown): void {
+  const arr = Array.isArray(newKeys) ? newKeys.filter((k): k is string => typeof k === 'string') : []
+  const set = new Set(arr)
   const next: Record<string, boolean> = {}
   for (const d of props.defs) {
     next[d.key] = set.has(d.key)
   }
-  emit('update:modelValue', next)
+  modelValue.value = next
 }
 
 const allVisible = computed(() => visibleKeys.value.length === props.defs.length)
@@ -106,13 +117,13 @@ const allHidden = computed(() => visibleKeys.value.length === 0)
 function emitShowAll(): void {
   const next: Record<string, boolean> = {}
   for (const d of props.defs) next[d.key] = true
-  emit('update:modelValue', next)
+  modelValue.value = next
 }
 
 function emitHideAll(): void {
   const next: Record<string, boolean> = {}
   for (const d of props.defs) next[d.key] = false
-  emit('update:modelValue', next)
+  modelValue.value = next
 }
 
 function emitReset(): void {

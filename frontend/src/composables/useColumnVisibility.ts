@@ -27,7 +27,7 @@
 // 列设置弹窗(见 components/ColumnVisibilityPopover.vue):
 //   <ColumnVisibilityPopover :defs="columnDefs" v-model="columnVisibility.currentMap" />
 
-import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, watch, type Ref, type WritableComputedRef } from 'vue'
 import { useAuthSession } from './useAuthSession'
 
 export interface ColumnDef {
@@ -40,8 +40,11 @@ export interface ColumnDef {
 }
 
 export interface ColumnVisibilityApi {
-  /** 当前可见性 map(v-model 绑定用);key 不在 map 中视为 true */
-  currentMap: Ref<Record<string, boolean>>
+  /** 当前可见性 map(v-model 绑定用);key 不在 map 中视为 true。
+   *  暴露为普通对象(`reactive`),而非 Ref/ComputedRef,这样 `v-model="columnVisibility.currentMap"`
+   *  在 vue-tsc 下类型直通(原生 vue 的 v-model 模板展开,ref/computed 走特殊处理,
+   *  vue-tsc 无法追踪)。 */
+  currentMap: Record<string, boolean>
   /** 单 key 查询;未知 key 视为可见 */
   isVisible: (key: string) => boolean
   /** 切换单 key(value 缺省时取反) */
@@ -118,15 +121,19 @@ export function useColumnVisibility(
 ): ColumnVisibilityApi {
   const allKeys = defs.map((d) => d.key)
   const initial = buildInitial(defs)
-  const currentMap = ref<Record<string, boolean>>(restoreFromStorage(options.listKey, initial))
+  // 用 reactive() 包装让 v-model 在 vue-tsc 下类型直通;
+  // 写入/读取 currentMap[key] 自动触发响应式。
+  const currentMap = reactive<Record<string, boolean>>(
+    restoreFromStorage(options.listKey, initial),
+  )
 
   // 防抖落盘(300ms),与 useListStatePersist 节奏一致
   let timer: ReturnType<typeof setTimeout> | null = null
   watch(
     currentMap,
-    (next) => {
+    () => {
       if (timer !== null) clearTimeout(timer)
-      timer = setTimeout(() => persistToStorage(options.listKey, next), 300)
+      timer = setTimeout(() => persistToStorage(options.listKey, currentMap), 300)
     },
     { deep: true },
   )
@@ -137,25 +144,25 @@ export function useColumnVisibility(
       clearTimeout(timer)
       timer = null
     }
-    persistToStorage(options.listKey, currentMap.value)
+    persistToStorage(options.listKey, currentMap)
   })
 
   function isVisible(key: string): boolean {
-    return currentMap.value[key] !== false
+    return currentMap[key] !== false
   }
 
   function toggle(key: string, value?: boolean): void {
-    const target = value === undefined ? !currentMap.value[key] : value
-    // 原地修改,保持 ref 引用稳定(deep watch 仍会触发)
-    currentMap.value[key] = target
+    const target = value === undefined ? !currentMap[key] : value
+    // 原地修改,保持 Proxy 引用稳定(deep watch 仍会触发)
+    currentMap[key] = target
   }
 
   function showAll(): void {
-    for (const k of allKeys) currentMap.value[k] = true
+    for (const k of allKeys) currentMap[k] = true
   }
 
   function hideAll(): void {
-    for (const k of allKeys) currentMap.value[k] = false
+    for (const k of allKeys) currentMap[k] = false
   }
 
   return { currentMap, isVisible, toggle, showAll, hideAll, allKeys }
