@@ -15,10 +15,15 @@
   <div class="responsive-list">
     <!-- 桌面：表格 -->
     <div v-if="!isMobile" v-loading="loading" class="rl-table-wrap">
+      <div v-if="$slots.toolbar" class="rl-toolbar">
+        <slot name="toolbar" />
+      </div>
       <el-table
         ref="elTableRef"
         :data="items"
         :row-key="rowKey"
+        :max-height="maxHeight"
+        highlight-current-row
         style="width: 100%"
         v-bind="$attrs"
         @row-dblclick="(row, column, event) => emit('row-dblclick', row, column, event)"
@@ -62,12 +67,17 @@ const props = withDefaults(
     emptyText?: string
     /** 卡片额外 class：字符串或按行计算（如加急高亮） */
     cardClass?: string | ((row: any) => string)
+    /** 表格最大高度；触发表头 sticky 的滚动容器。string|number 都接受
+     *  （Element Plus 2.14.x max-height prop）。默认 `calc(100vh - 280px)` —
+     *  估算 MainLayout 顶栏 + filter card + 分页器等 chrome。 */
+    maxHeight?: string | number
   }>(),
   {
     loading: false,
     rowKey: 'id',
     emptyText: '暂无数据',
     cardClass: '',
+    maxHeight: 'calc(100vh - 280px)',
   },
 )
 
@@ -105,6 +115,15 @@ defineExpose({ elTableRef })
   border-radius: 4px;
   padding: 4px;
   overflow-x: auto;
+}
+
+.rl-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 8px;
+  min-height: 32px;
 }
 
 .rl-cards {
