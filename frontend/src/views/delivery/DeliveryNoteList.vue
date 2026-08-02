@@ -25,6 +25,7 @@ import {
   softDeleteNote,
   submitNote,
   type AddPartsItem,
+  type PrintNoteProgress,
 } from '@/api/deliveryNote'
 import {
   DELIVERY_NOTE_STATUS_LABEL,
@@ -318,7 +319,7 @@ async function onPrint(n: DeliveryNoteOut) {
   if (dlMap[n.id]?.state === 'downloading') return
   dlMap[n.id] = { loaded: 0, total: 0, state: 'downloading' }
   try {
-    const { blob, filename } = await printNote(n.id, (p) => {
+    const { blob, filename } = await printNote(n.id, {}, (p: PrintNoteProgress) => {
       dlMap[n.id] = { ...dlMap[n.id], ...p }
     })
     triggerBrowserDownload(blob, filename)

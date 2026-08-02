@@ -14,7 +14,6 @@ import {
   addParts,
   getNote,
   listNoteEvents,
-  printNote,
   removeParts,
   recallNote,
   softDeleteNote,
@@ -47,6 +46,7 @@ import { useAuthSession } from '@/composables/useAuthSession'
 import { useColumnVisibility } from '@/composables/useColumnVisibility'  // 2026-08-02
 import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
 import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'  // 2026-08-02
+import PrintPreviewDialog from '@/components/delivery/PrintPreviewDialog.vue'  // 2026-08-02
 
 const route = useRoute()
 const router = useRouter()
@@ -157,48 +157,14 @@ async function onSoftDelete() {
 }
 
 // ============================================================
-// 打印下载进度（单实例 ref；按钮右侧挂 <el-progress type="circle">）
+// 2026-08-02：打印改为「预览 → 拖动 → 确认导出」两段式。
+// 真实下载触发挪到 PrintPreviewDialog.onConfirm。
 // ============================================================
-const dlProgress = ref<
-  { loaded: number; total: number; state: 'downloading' | 'success' | 'error' } | null
->(null)
-
-const pct = computed(() => {
-  const p = dlProgress.value
-  if (!p || !p.total) return p?.loaded ? 100 : 0
-  return Math.min(100, Math.round((p.loaded / p.total) * 100))
-})
-
-function triggerBrowserDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
+const previewVisible = ref(false)
 
 async function onPrint() {
-  if (!note.value || dlProgress.value?.state === 'downloading') return
-  dlProgress.value = { loaded: 0, total: 0, state: 'downloading' }
-  try {
-    const { blob, filename } = await printNote(note.value.id, (p) => {
-      dlProgress.value = { ...dlProgress.value!, ...p }
-    })
-    triggerBrowserDownload(blob, filename)
-    dlProgress.value = { ...dlProgress.value!, state: 'success' }
-    setTimeout(() => {
-      dlProgress.value = null
-    }, 1500)
-  } catch (e) {
-    dlProgress.value = { ...dlProgress.value!, state: 'error' }
-    ElMessage.error((e as Error).message ?? '打印失败')
-    setTimeout(() => {
-      dlProgress.value = null
-    }, 2000)
-  }
+  // 2026-08-02：仅打开预览对话框；下载在确认时触发
+  previewVisible.value = true
 }
 
 // ============================================================
@@ -517,7 +483,6 @@ const columnVisibility = useColumnVisibility(columnDefs, {
             <el-button
               v-if="(role.MANAGER || role.CLERK) && note.part_count > 0"
               type="success"
-              :loading="dlProgress?.state === 'downloading'"
               @click="onPrint"
             >
               打印送货单
@@ -561,24 +526,11 @@ const columnVisibility = useColumnVisibility(columnDefs, {
       @submit="onPickerSubmit"
     />
 
-    <!-- 右上角下载进度条卡片（fixed 定位，单实例） -->
-    <div v-if="dlProgress" class="dl-tray" aria-live="polite">
-      <div class="dl-card">
-        <div class="dl-card-header">
-          <span class="dl-card-name">{{ note?.delivery_note_no ?? '' }}</span>
-          <span class="dl-card-pct">{{ pct }}%</span>
-        </div>
-        <el-progress
-          type="line"
-          :percentage="pct"
-          :status="dlProgress.state === 'success' ? 'success'
-                  : dlProgress.state === 'error' ? 'exception'
-                  : undefined"
-          :show-text="false"
-          :stroke-width="8"
-        />
-      </div>
-    </div>
+    <!-- 2026-08-02：打印预览对话框（拖动行可调整顺序，确认后导出 XLSX） -->
+    <PrintPreviewDialog
+      v-model="previewVisible"
+      :note="note"
+    />
   </div>
 </template>
 
@@ -624,8 +576,5 @@ const columnVisibility = useColumnVisibility(columnDefs, {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 180px;
-}
-.dl-card-pct {
-  font-variant-numeric: tabular-nums;
 }
 </style>

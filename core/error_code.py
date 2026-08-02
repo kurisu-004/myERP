@@ -61,6 +61,7 @@ class ErrCode(IntEnum):
     BIZ_DELIVERY_PARTS_MULTIPLE_CUSTOMERS = 21110  # 所选零件分属多个 L1 root customer
     BIZ_DELIVERY_PART_STATUS_INVALID = 21111       # 所选零件状态非 READY_TO_SHIP
     BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS = 21112   # 2026-07-20：所选零件超过模板数据行容量（法 14 / 路 25）
+    BIZ_DELIVERY_PRINT_BAD_ORDER = 21113         # 2026-08-02：custom_order 含非法 batch id 或漏行（422）
 
     # ---- 货架（t_shelf）----
     # 205xx：货架相关

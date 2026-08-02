@@ -269,12 +269,20 @@ export interface PrintNoteResult {
   filename: string
 }
 
+export interface PrintNotePayload {
+  /** 2026-08-02 新增：批次 id 顺序（与预览组件产出对齐；空 = 走默认 DB 顺序） */
+  custom_order?: string[]
+}
+
 export async function printNote(
   noteId: string,
+  payload: PrintNotePayload = {},
   onProgress?: (p: PrintNoteProgress) => void,
 ): Promise<PrintNoteResult> {
-  const resp = await api.get<Blob>(
+  // 2026-08-02 改 POST + body（携带 custom_order；GET 无法带 array body）
+  const resp = await api.post<Blob>(
     `/delivery-notes/${encodeURIComponent(noteId)}/print`,
+    payload,
     {
       responseType: 'blob',
       onDownloadProgress: (event) => {

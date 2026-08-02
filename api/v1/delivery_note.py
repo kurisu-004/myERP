@@ -13,8 +13,9 @@
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from api.deps import get_delivery_note_service
 from core.permission import (
@@ -326,20 +327,33 @@ async def soft_delete_delivery_note(
 CHUNK_SIZE = 64 * 1024  # 64KB，与典型 TCP send buffer 同量级
 
 
-@router.get(
+class PrintDeliveryNoteRequest(BaseModel):
+    """2026-08-02 新增：预览确认后导出用；custom_order 为空走默认 DB 顺序。"""
+
+    custom_order: list[str] = Field(
+        default_factory=list,
+        description="批次 id 列表（雪花 ID 字符串）；与详情页 line_items.id 一一对应",
+    )
+
+
+@router.post(
     "/{note_id}/print",
     summary=(
-        "下载送货单 XLSX（Authorization header；DRAFT/SUBMITTED/PICKED_UP/"
-        "ARCHIVED 全状态可打；StreamingResponse 让前端 onDownloadProgress 拿到"
-        "细粒度 loaded 事件）"
+        "导出送货单 XLSX（2026-08-02 改 POST + body 携带 custom_order；"
+        "DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 全状态可打；"
+        "StreamingResponse 让前端 onDownloadProgress 拿到细粒度 loaded 事件）"
     ),
     dependencies=_OFFICE_DEP,
 )
 async def print_delivery_note(
     note_id: str,
+    payload: PrintDeliveryNoteRequest = Body(default=PrintDeliveryNoteRequest()),
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
 ) -> StreamingResponse:
-    xlsx_bytes, prefix = await svc.print_xlsx(note_id)
+    xlsx_bytes, prefix = await svc.print_xlsx(
+        note_id,
+        custom_order=payload.custom_order or None,
+    )
     filename = f"delivery_note_{prefix}_{note_id}.xlsx"
 
     async def stream_chunks():
