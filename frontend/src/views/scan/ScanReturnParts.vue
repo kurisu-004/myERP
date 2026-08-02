@@ -96,6 +96,7 @@
           <el-card
             v-for="p in parts"
             :key="p.batch_id || p.id"
+            :data-batch-id="String(p.batch_id || p.id)"
             shadow="hover"
             class="part-row"
             :class="{
@@ -259,9 +260,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeMount, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Avatar,
   Back,
@@ -281,11 +282,12 @@ import PdfViewer from '@/components/PdfViewer.vue'
 import { getDownloadUrl, listPartFiles } from '@/api/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
+import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useScanBus } from '@/composables/useScanBus'
 import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
 import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
-import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
+import { getPartBySerial, listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 import ProcessPickerDialog from '@/views/scan/components/ProcessPickerDialog.vue'
 import type { Process } from '@/types/process'
@@ -293,6 +295,7 @@ import { formatDeliveryDate, deliveryDaysLeftText, deliveryUrgencyClass } from '
 
 const router = useRouter()
 const { worker, requireWorker, reset: resetScanSession } = useScanSession()
+const { onScan } = useBarcodeScanner()
 const { emitHeldChanged } = useScanBus()
 
 const parts = ref<PartItem[]>([])
@@ -332,12 +335,80 @@ const showShelfPicker = ref(false)
 const showQtyDialog = ref(false)
 const pendingShelfId = ref<string>('')
 
+// --- 扫码：扫描直接选中 + 滚动居中 + 触发 onSelect tail；不在列表则提示当前位置 ---
+
+/** 在当前列表按 serial_no / drawing_no 找匹配卡片 */
+function getMatchInList(code: string): PartItem | null {
+  return parts.value.find((p) =>
+    (p.serial_no && p.serial_no === code) ||
+    (p.drawing_no && p.drawing_no === code),
+  ) ?? null
+}
+
+/** 调 getPartBySerial；成功阻塞弹窗显示当前位置；失败 ElMessage.warning */
+async function findPartBySerialAndPrompt(code: string): Promise<void> {
+  let part: PartItem
+  try {
+    part = await getPartBySerial(code)
+  } catch (e) {
+    ElMessage.warning(`未找到条码 ${code} 对应的零件：${(e as Error).message ?? ''}`)
+    return
+  }
+  const where = part.current_holder_display ?? part.location ?? '未知位置'
+  const lines = [
+    `条码：${part.serial_no ?? part.drawing_no ?? code}`,
+    `名称：${part.name}`,
+    `批次：${part.batch_no ?? '—'}`,
+    `状态：${part.status}`,
+    `当前所在：${where}`,
+    part.next_process_name ? `下一工序：${part.next_process_name}` : null,
+    `提示：该零件不在本工序，请到「${where}」继续流程。`,
+  ].filter(Boolean)
+  await ElMessageBox.alert(lines.join('\n'), '该零件当前不在本工序', {
+    type: 'warning',
+    confirmButtonText: '知道了',
+  })
+}
+
+/** 选中后等一拍再滚动；元素不在容器内则静默返回 */
+async function scrollCardIntoView(batchKey: string): Promise<void> {
+  await nextTick()
+  const root = contentRef.value
+  if (!root) return
+  const el = root.querySelector<HTMLElement>(
+    `.part-row[data-batch-id="${CSS.escape(batchKey)}"]`,
+  )
+  if (!el || !root.contains(el)) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+async function onScanToSelect(rawCode: string): Promise<void> {
+  const code = rawCode.trim()
+  if (!code) return
+  if (submitting.value || showProcessDialog.value || showShelfPicker.value || showQtyDialog.value) return
+  const inList = getMatchInList(code)
+  if (inList) {
+    // 列表里命中：直接设置选中、滚动居中、走现有 onSelect 的 tail（打开工序选择弹窗）
+    selectedPart.value = inList
+    selectedQty.value = inList.quantity
+    selectedNextProcessId.value = inList.next_process_id ?? ''
+    const key = String(inList.batch_id || inList.id)
+    await scrollCardIntoView(key)
+    showProcessDialog.value = true
+  } else {
+    await findPartBySerialAndPrompt(code)
+  }
+}
+
+const unsubScan = onScan((code) => { void onScanToSelect(code) })
+
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
   await refresh()
 })
 
 onBeforeUnmount(() => {
+  unsubScan()
   if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
 })
 
