@@ -48,6 +48,8 @@ export interface PartItem {
   /** holder 是外协公司时的公司名（2026-07-15 接入） */
   outsource_company_name: string | null
   location: string | null
+  /** 后端 service/part.py:3675-3684 生成的当前位置描述：货架 A-01 / 品检 A-01 / 工人 张三 / 外协 公司名 / 编程员持有。仅用于「扫描错页」等展示用途，不参与业务校验。 */
+  current_holder_display?: string | null
   placed_at: string | null
   /** 下一道工序 id（NULL = 未设置） */
   next_process_id: string | null

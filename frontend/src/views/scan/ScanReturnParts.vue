@@ -96,6 +96,7 @@
           <el-card
             v-for="p in parts"
             :key="p.batch_id || p.id"
+            :data-batch-id="String(p.batch_id || p.id)"
             shadow="hover"
             class="part-row"
             :class="{
@@ -167,6 +168,15 @@
     </div>
 
     <ScrollFabPair :target="contentRef" />
+
+    <!-- 同条码多批次选择弹窗 -->
+    <BatchPickerDialog
+      v-if="showBatchPicker"
+      v-model="showBatchPicker"
+      :code="batchPickerCode"
+      :rows="batchPickerRows"
+      @pick="onBatchPicked"
+    />
 
     <!-- 下一道工序选择对话框（2026-07-17 升级为大卡 + INHOUSE/OUTSOURCE tabs） -->
     <ProcessPickerDialog
@@ -259,7 +269,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeMount, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -281,6 +291,7 @@ import PdfViewer from '@/components/PdfViewer.vue'
 import { getDownloadUrl, listPartFiles } from '@/api/assembly'
 import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
+import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useScanBus } from '@/composables/useScanBus'
 import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
@@ -288,11 +299,14 @@ import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 import ProcessPickerDialog from '@/views/scan/components/ProcessPickerDialog.vue'
+import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
 import type { Process } from '@/types/process'
 import { formatDeliveryDate, deliveryDaysLeftText, deliveryUrgencyClass } from '@/utils/deliveryDate'
+import { findAllByCode, findPartBySerialAndPrompt } from '@/utils/scanHelpers'
 
 const router = useRouter()
 const { worker, requireWorker, reset: resetScanSession } = useScanSession()
+const { onScan } = useBarcodeScanner()
 const { emitHeldChanged } = useScanBus()
 
 const parts = ref<PartItem[]>([])
@@ -332,12 +346,71 @@ const showShelfPicker = ref(false)
 const showQtyDialog = ref(false)
 const pendingShelfId = ref<string>('')
 
+// --- 多批次扫码命中弹窗 ---
+const showBatchPicker = ref(false)
+const batchPickerCode = ref('')
+const batchPickerRows = ref<PartItem[]>([])
+
+// --- 扫码：扫描直接选中 + 滚动居中 + 触发 per-page tail；不在列表则提示当前位置 ---
+
+/** 选中后等一拍再滚动；元素不在容器内则静默返回 */
+async function scrollCardIntoView(batchKey: string): Promise<void> {
+  await nextTick()
+  const root = contentRef.value
+  if (!root) return
+  const el = root.querySelector<HTMLElement>(
+    `.part-row[data-batch-id="${CSS.escape(batchKey)}"]`,
+  )
+  if (!el || !root.contains(el)) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+/** RETURN tail：选中 + 设 next_process_id 兜底 + 滚动 + 开工序选择弹窗 */
+async function applyScanSelection(p: PartItem): Promise<void> {
+  selectedPart.value = p
+  selectedQty.value = p.quantity
+  selectedNextProcessId.value = p.next_process_id ?? ''
+  const key = String(p.batch_id || p.id)
+  await scrollCardIntoView(key)
+  showProcessDialog.value = true
+}
+
+async function onScanToSelect(rawCode: string): Promise<void> {
+  const code = rawCode.trim()
+  if (!code) return
+  if (
+    submitting.value ||
+    showProcessDialog.value ||
+    showShelfPicker.value ||
+    showQtyDialog.value ||
+    showBatchPicker.value
+  ) return
+  const matches = findAllByCode(parts.value, code)
+  if (matches.length === 1) {
+    await applyScanSelection(matches[0])
+  } else if (matches.length > 1) {
+    batchPickerCode.value = code
+    batchPickerRows.value = matches
+    showBatchPicker.value = true
+  } else {
+    await findPartBySerialAndPrompt(code)
+  }
+}
+
+function onBatchPicked(p: PartItem): void {
+  showBatchPicker.value = false
+  void applyScanSelection(p)
+}
+
+const unsubScan = onScan((code) => { void onScanToSelect(code) })
+
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
   await refresh()
 })
 
 onBeforeUnmount(() => {
+  unsubScan()
   if (previewBlobUrl.value) URL.revokeObjectURL(previewBlobUrl.value)
 })
 

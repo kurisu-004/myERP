@@ -98,6 +98,7 @@
           <el-card
             v-for="p in parts"
             :key="p.batch_id || p.id"
+            :data-batch-id="String(p.batch_id || p.id)"
             shadow="hover"
             class="part-row"
             :class="{
@@ -169,6 +170,15 @@
     </div>
 
     <ScrollFabPair :target="contentRef" />
+
+    <!-- 同条码多批次选择弹窗 -->
+    <BatchPickerDialog
+      v-if="showBatchPicker"
+      v-model="showBatchPicker"
+      :code="batchPickerCode"
+      :rows="batchPickerRows"
+      @pick="onBatchPicked"
+    />
 
     <!-- 品检货架选择（送检只需选架，不需下一道工序） -->
     <ShelfPickerDialog
@@ -251,7 +261,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeMount, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -280,7 +290,9 @@ import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
 import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
+import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
 import { formatDeliveryDate, deliveryDaysLeftText, deliveryUrgencyClass } from '@/utils/deliveryDate'
+import { findAllByCode, findPartBySerialAndPrompt } from '@/utils/scanHelpers'
 
 const router = useRouter()
 const { worker, requireWorker, reset: resetScanSession } = useScanSession()
@@ -320,15 +332,63 @@ const showShelfPicker = ref(false)
 const showQtyDialog = ref(false)
 const pendingShelfId = ref<string>('')
 
+// --- 多批次扫码命中弹窗 ---
+const showBatchPicker = ref(false)
+const batchPickerCode = ref('')
+const batchPickerRows = ref<PartItem[]>([])
+
 onBeforeMount(async () => {
   if (!requireWorker(router)) return
   await refresh()
 })
 
-// 全局扫码订阅：仅在「待扫码确认」状态下消费，其余忽略（防误扫）
-const unsubScan = onScan((code) => {
-  onScanCode(code)
-})
+// --- 扫码：扫描直接选中 + 滚动居中 + 打开品检货架选择弹窗；不在列表则提示当前位置 ---
+
+/** 选中后等一拍再滚动；元素不在容器内则静默返回 */
+async function scrollCardIntoView(batchKey: string): Promise<void> {
+  await nextTick()
+  const root = contentRef.value
+  if (!root) return
+  const el = root.querySelector<HTMLElement>(
+    `.part-row[data-batch-id="${CSS.escape(batchKey)}"]`,
+  )
+  if (!el || !root.contains(el)) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+/** INSPECT tail：选中 + 清 awaitingScan + 滚动 + 开品检货架选择弹窗 */
+async function applyScanSelection(p: PartItem): Promise<void> {
+  selectedPart.value = p
+  selectedQty.value = p.quantity
+  awaitingScan.value = false
+  const key = String(p.batch_id || p.id)
+  await scrollCardIntoView(key)
+  showShelfPicker.value = true
+}
+
+async function onScanToSelect(rawCode: string): Promise<void> {
+  const code = rawCode.trim()
+  if (!code) return
+  if (submitting.value || showShelfPicker.value || showQtyDialog.value || showBatchPicker.value) return
+  const matches = findAllByCode(parts.value, code)
+  if (matches.length === 1) {
+    await applyScanSelection(matches[0])
+  } else if (matches.length > 1) {
+    batchPickerCode.value = code
+    batchPickerRows.value = matches
+    showBatchPicker.value = true
+  } else {
+    await findPartBySerialAndPrompt(code)
+  }
+}
+
+function onBatchPicked(p: PartItem): void {
+  showBatchPicker.value = false
+  void applyScanSelection(p)
+}
+
+// 全局扫码订阅：扫描直接触发 onScanToSelect
+const unsubScan = onScan((code) => { void onScanToSelect(code) })
 
 onBeforeUnmount(() => {
   unsubScan()
@@ -368,25 +428,6 @@ function onSelect(p: PartItem): void {
   selectedPart.value = p
   selectedQty.value = p.quantity
   awaitingScan.value = true
-}
-
-/**
- * 扫码确认（与 ScanPickParts.vue::onScanCode 同款模式）：
- * 只有已选中件且处于 awaitingScan 时才消费；条码与选中件 serial_no 精确匹配
- * 才弹送检货架 picker，否则报错让工人重扫。
- */
-function onScanCode(rawCode: string): void {
-  const code = rawCode.trim()
-  if (!code) return
-  if (submitting.value || showShelfPicker.value || showQtyDialog.value) return
-  if (!selectedPart.value || !awaitingScan.value) return
-  const expect = selectedPart.value.serial_no || selectedPart.value.drawing_no
-  if (code !== expect) {
-    ElMessage.error(`扫码与选中件不匹配 (期望 ${expect}, 扫到 ${code})`)
-    return
-  }
-  awaitingScan.value = false
-  showShelfPicker.value = true
 }
 
 // --- 预览 ---
