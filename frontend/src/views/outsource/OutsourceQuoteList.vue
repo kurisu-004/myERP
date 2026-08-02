@@ -191,7 +191,8 @@ const columnDefs = [
   { key: 'part_name', label: '名称' },
   { key: 'outsource_company_name', label: '外协公司' },
   { key: 'process_code', label: '工序' },
-  { key: 'price', label: '单价' },
+  { key: 'price', label: '外协报价' },
+  { key: 'part_unit_price', label: '订单单价' },  // 2026-08-02 新增
   { key: 'status', label: '状态' },
   { key: 'customer', label: '客户' },
 ] as const
@@ -204,6 +205,7 @@ const SORT_PROP_MAP: Record<string, SortKey> = {
   outsource_company_name: 'CREATED_AT',
   process_code: 'CREATED_AT',
   price: 'PRICE',
+  part_unit_price: 'CREATED_AT',  // 2026-08-02 新增（无对应 enum，按 CREATED_AT 兜底）
   customer_path: 'CREATED_AT',
 }
 
@@ -783,11 +785,27 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         <el-table-column
           v-if="columnVisibility.isVisible('price')"
           prop="price"
-          label="单价(元)"
-          min-width="100"
+          label="外协报价(元)"
+          min-width="110"
           align="right"
           sortable="custom"
         />
+
+        <!-- 2026-08-02 新增：所属零件的客户下单单价（与外协报价并列对比谈判空间） -->
+        <el-table-column
+          v-if="columnVisibility.isVisible('part_unit_price')"
+          prop="part_unit_price"
+          label="订单单价(元)"
+          min-width="110"
+          align="right"
+          sortable="custom"
+        >
+          <template #default="{ row }">
+            <span :class="{ muted: !(row as OutsourceQuote).part_unit_price }">
+              {{ (row as OutsourceQuote).part_unit_price ?? '—' }}
+            </span>
+          </template>
+        </el-table-column>
 
         <!-- 状态列（无 sortable；用列头 popover 过滤） -->
         <el-table-column

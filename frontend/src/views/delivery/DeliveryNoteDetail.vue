@@ -14,7 +14,6 @@ import {
   addParts,
   getNote,
   listNoteEvents,
-  printNote,
   removeParts,
   recallNote,
   softDeleteNote,
@@ -44,7 +43,10 @@ import {
   canSubmit,
 } from '@/utils/deliveryNotePermissions'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'  // 2026-08-02
 import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'  // 2026-08-02
+import PrintPreviewDialog from '@/components/delivery/PrintPreviewDialog.vue'  // 2026-08-02
 
 const route = useRoute()
 const router = useRouter()
@@ -155,48 +157,14 @@ async function onSoftDelete() {
 }
 
 // ============================================================
-// 打印下载进度（单实例 ref；按钮右侧挂 <el-progress type="circle">）
+// 2026-08-02：打印改为「预览 → 拖动 → 确认导出」两段式。
+// 真实下载触发挪到 PrintPreviewDialog.onConfirm。
 // ============================================================
-const dlProgress = ref<
-  { loaded: number; total: number; state: 'downloading' | 'success' | 'error' } | null
->(null)
-
-const pct = computed(() => {
-  const p = dlProgress.value
-  if (!p || !p.total) return p?.loaded ? 100 : 0
-  return Math.min(100, Math.round((p.loaded / p.total) * 100))
-})
-
-function triggerBrowserDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
+const previewVisible = ref(false)
 
 async function onPrint() {
-  if (!note.value || dlProgress.value?.state === 'downloading') return
-  dlProgress.value = { loaded: 0, total: 0, state: 'downloading' }
-  try {
-    const { blob, filename } = await printNote(note.value.id, (p) => {
-      dlProgress.value = { ...dlProgress.value!, ...p }
-    })
-    triggerBrowserDownload(blob, filename)
-    dlProgress.value = { ...dlProgress.value!, state: 'success' }
-    setTimeout(() => {
-      dlProgress.value = null
-    }, 1500)
-  } catch (e) {
-    dlProgress.value = { ...dlProgress.value!, state: 'error' }
-    ElMessage.error((e as Error).message ?? '打印失败')
-    setTimeout(() => {
-      dlProgress.value = null
-    }, 2000)
-  }
+  // 2026-08-02：仅打开预览对话框；下载在确认时触发
+  previewVisible.value = true
 }
 
 // ============================================================
@@ -277,6 +245,51 @@ async function onRemoveSelected() {
 // ============================================================
 const canAdd = computed(() => note.value && canAddRemoveParts(note.value.status, role.value))
 const canEdit = computed(() => canAdd.value)
+
+// 2026-08-01：客户端排序（详情一次性返回所有 line_items；null 强制末尾）。
+// 用 @sort-change 而不是 sortable="custom"，因为所有数据都在内存中；
+// sort-change 默认行为已含 null 兜底（null 排在末尾），但这里用显式
+// 排序保持与后端一致：null 永远在末尾。
+function onLineItemSort({
+  prop,
+  order,
+}: {
+  prop: string | null
+  order: 'ascending' | 'descending' | null
+}): void {
+  if (!note.value || !prop || !order) return
+  const dir = order === 'ascending' ? 1 : -1
+  note.value.line_items.sort((a: any, b: any) => {
+    const av = a[prop]
+    const bv = b[prop]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av < bv) return -1 * dir
+    if (av > bv) return 1 * dir
+    return 0
+  })
+}
+
+// 2026-08-02：零件列表列显隐（selection/index 始终可见不放进 defs）
+const columnDefs = [
+  { key: 'batch_label', label: '批次' },
+  { key: 'serial_no', label: '序列号' },
+  { key: 'drawing_no', label: '图号' },
+  { key: 'order_no', label: '订单号' },
+  { key: 'name', label: '名称' },
+  { key: 'customer', label: '客户（二级）' },
+  { key: 'applicant_name', label: '申请人' },
+  { key: 'quantity', label: '数量' },
+  { key: 'request_date', label: '请购日期' },
+  { key: 'planned_delivery_date', label: '计划交期' },
+  { key: 'system_delivery_date', label: '系统交期' },
+  { key: 'note', label: '备注' },
+  { key: 'status', label: '状态' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, {
+  listKey: 'delivery_note_detail_line_items',
+})
 </script>
 
 <template>
@@ -335,6 +348,13 @@ const canEdit = computed(() => canAdd.value)
           <div class="card-header">
             <span>零件列表 ({{ note.line_items.length }})</span>
             <div class="actions">
+              <!-- 2026-08-02：列显隐控制 -->
+              <ColumnVisibilityPopover
+                :defs="columnDefs"
+                :model-value="columnVisibility.currentMap"
+                @update:model-value="columnVisibility.update"
+                @reset="columnVisibility.showAll"
+              />
               <el-button
                 v-if="canAdd"
                 type="primary"
@@ -359,8 +379,11 @@ const canEdit = computed(() => canAdd.value)
           stripe
           border
           height="500"
+          highlight-current-row
           @selection-change="(rows: any[]) => selectedItemIds = rows.map(r => r.id)"
+          @sort-change="onLineItemSort"
         >
+          <!-- selection / index 始终可见，不放 defs -->
           <el-table-column
             v-if="canEdit"
             type="selection"
@@ -368,33 +391,62 @@ const canEdit = computed(() => canAdd.value)
             :selectable="() => true"
           />
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column prop="batch_label" label="批次" min-width="100" align="center"/>
-          <el-table-column prop="serial_no" label="序列号" min-width="120" align="center"/>
-          <el-table-column prop="drawing_no" label="图号" min-width="140" align="center"/>
-          <el-table-column prop="name" label="名称" min-width="180" align="center"/>
-          <el-table-column label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
+          <!-- 2026-08-02：每列加 v-if；订单号搬到图号/名称之间 -->
+          <el-table-column
+            v-if="columnVisibility.isVisible('batch_label')"
+            prop="batch_label" label="批次" min-width="100" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('serial_no')"
+            prop="serial_no" label="序列号" min-width="120" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('drawing_no')"
+            prop="drawing_no" label="图号" min-width="140" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('order_no')"
+            prop="order_no" label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
+            <template #default="{ row }">{{ row.order_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            v-if="columnVisibility.isVisible('name')"
+            prop="name" label="名称" min-width="180" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('customer')"
+            label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
             <template #default="{ row }">
               <span>{{ row.customer_path ?? row.customer_name ?? '—' }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="applicant_name" label="申请人" min-width="100" align="center"/>
-          <el-table-column prop="quantity" label="数量" min-width="70" align="center" />
-          <el-table-column label="请购日期" min-width="120" align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('applicant_name')"
+            prop="applicant_name" label="申请人" min-width="100" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('quantity')"
+            prop="quantity" label="数量" min-width="70" sortable align="center" />
+          <el-table-column
+            v-if="columnVisibility.isVisible('request_date')"
+            label="请购日期" min-width="120" align="center">
             <template #default="{ row }">{{ row.request_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="计划交期" min-width="120" align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('planned_delivery_date')"
+            prop="planned_delivery_date"
+            label="计划交期" min-width="120" sortable align="center">
             <template #default="{ row }">{{ row.planned_delivery_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="系统交期" min-width="120" align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('system_delivery_date')"
+            prop="system_delivery_date"
+            label="系统交期" min-width="120" sortable align="center">
             <template #default="{ row }">{{ row.system_delivery_date || '—' }}</template>
           </el-table-column>
-          <el-table-column label="订单号" min-width="120" show-overflow-tooltip align="center">
-            <template #default="{ row }">{{ row.order_no || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="备注" min-width="120" show-overflow-tooltip align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('note')"
+            label="备注" min-width="120" show-overflow-tooltip align="center">
             <template #default="{ row }">{{ row.note || '—' }}</template>
           </el-table-column>
-          <el-table-column label="状态" min-width="120" align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('status')"
+            label="状态" min-width="120" align="center">
             <template #default="{ row }">
               <el-tag
                 :type="partStatusTagType(row.status)"
@@ -431,7 +483,6 @@ const canEdit = computed(() => canAdd.value)
             <el-button
               v-if="(role.MANAGER || role.CLERK) && note.part_count > 0"
               type="success"
-              :loading="dlProgress?.state === 'downloading'"
               @click="onPrint"
             >
               打印送货单
@@ -475,24 +526,11 @@ const canEdit = computed(() => canAdd.value)
       @submit="onPickerSubmit"
     />
 
-    <!-- 右上角下载进度条卡片（fixed 定位，单实例） -->
-    <div v-if="dlProgress" class="dl-tray" aria-live="polite">
-      <div class="dl-card">
-        <div class="dl-card-header">
-          <span class="dl-card-name">{{ note?.delivery_note_no ?? '' }}</span>
-          <span class="dl-card-pct">{{ pct }}%</span>
-        </div>
-        <el-progress
-          type="line"
-          :percentage="pct"
-          :status="dlProgress.state === 'success' ? 'success'
-                  : dlProgress.state === 'error' ? 'exception'
-                  : undefined"
-          :show-text="false"
-          :stroke-width="8"
-        />
-      </div>
-    </div>
+    <!-- 2026-08-02：打印预览对话框（拖动行可调整顺序，确认后导出 XLSX） -->
+    <PrintPreviewDialog
+      v-model="previewVisible"
+      :note="note"
+    />
   </div>
 </template>
 
@@ -538,8 +576,5 @@ const canEdit = computed(() => canAdd.value)
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 180px;
-}
-.dl-card-pct {
-  font-variant-numeric: tabular-nums;
 }
 </style>

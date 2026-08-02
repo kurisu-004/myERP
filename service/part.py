@@ -277,6 +277,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,  # 2026-08-01
+                locations=query.locations,  # 2026-08-01
                 sort_by=query.sort_by,
                 sort_dir=query.sort_dir,
                 limit=query.limit,
@@ -296,6 +298,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,  # 2026-08-01
+                locations=query.locations,  # 2026-08-01
             )
             items = await self._to_list_out(rows)
             return PartListOut(
@@ -319,6 +323,8 @@ class PartService:
             planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
+            next_process_ids=query.next_process_ids,  # 2026-08-01
+            locations=query.locations,  # 2026-08-01
             sort_by=query.sort_by,
             sort_dir=query.sort_dir,
             assembly_id_is_null=True,
@@ -339,15 +345,24 @@ class PartService:
             planned_delivery_date_to=query.planned_delivery_date_to,
             system_delivery_date_from=query.system_delivery_date_from,
             system_delivery_date_to=query.system_delivery_date_to,
+            next_process_ids=query.next_process_ids,  # 2026-08-01
+            locations=query.locations,  # 2026-08-01
             assembly_id_is_null=True,
         )
 
         # 2. 装配件（statuses 取交集）
         # 2026-07-31：装配件本身不外协（外协走 t_part），所以 has_outsource_history
         # 开启时直接跳过整个装配体查询块。
+        # 2026-08-01：装配件没有 next_process_id / part.location，故 next_process_ids /
+        # locations 任一非空时也直接跳过 asm_rows（合并结果里不出现装配行）。
         asm_rows: list[TAssembly] = []
         asm_total = 0
-        if self.assemblies is not None and not query.has_outsource_history:
+        if (
+            self.assemblies is not None
+            and not query.has_outsource_history
+            and not query.next_process_ids
+            and not query.locations
+        ):
             assembly_statuses = None
             if query.statuses is not None:
                 valid_asm_statuses = {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}
@@ -365,6 +380,9 @@ class PartService:
                     PartSortKey.SERIAL_NO: AssemblySortKey.SERIAL_NO,
                     PartSortKey.DRAWING_NO: AssemblySortKey.DRAWING_NO,
                     PartSortKey.NAME: AssemblySortKey.NAME,
+                    PartSortKey.QUANTITY: AssemblySortKey.QUANTITY,  # 2026-08-01
+                    PartSortKey.UNIT_PRICE: AssemblySortKey.UNIT_PRICE,  # 2026-08-01
+                    PartSortKey.TOTAL_PRICE: AssemblySortKey.TOTAL_PRICE,  # 2026-08-01
                 }
                 asm_sort_by = _sort_key_map.get(query.sort_by, AssemblySortKey.PLANNED_DELIVERY_DATE)
                 asm_rows = await self.assemblies.list_with_filters(
@@ -439,6 +457,16 @@ class PartService:
             elif query.sort_by == PartSortKey.ORDER_NO:
                 val = item.order_no
                 return (non_none_flag, val) if val is not None else (none_flag, "")
+            elif query.sort_by == PartSortKey.QUANTITY:
+                val = item.quantity
+                # 数量列非 NULL（default 1 / server_default 1），无需 None 兜底
+                return (non_none_flag, val if val is not None else 0)
+            elif query.sort_by == PartSortKey.UNIT_PRICE:
+                val = item.unit_price
+                return (non_none_flag, val if val is not None else Decimal("0"))
+            elif query.sort_by == PartSortKey.TOTAL_PRICE:
+                val = item.total_price
+                return (non_none_flag, val if val is not None else Decimal("0"))
             return (non_none_flag, "")
 
         # 先按 id DESC 稳定排序（保证 tie-break 与 SQL 一致）
@@ -2100,20 +2128,13 @@ class PartService:
         与 place_on_shelf 走同一个货架/工序校验，落到 ON_SHELF 状态机入口
         复用同一份 on_enter_ON_SHELF 副作用；事件类型为 CNC_RELEASED
         （见 on_release_from_programming 回调）。
-
-        2026-07-10 起加文件前置校验（项目约定 9）：
-        - 必须已上传 ≥1 G 代码（kind=G_CODE）；
-        - 必须已上传 ≥1 CNC 设定单（kind=SETUP_SHEET）；
-        - 否则 BIZ_CNC_PROGRAM_REQUIRED / BIZ_CNC_SETUP_SHEET_REQUIRED。
         """
         part = await self._get_part_or_404(part_id)
-        # 1) 前置文件校验（DB 访问校验，按项目约定放 service 层）
-        await self._assert_cnc_release_prerequisites(part_id)
-        # 2) 货架 / 工序校验
+        # 货架 / 工序校验
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
         )
-        # 3) 批次解析 + 状态机转换（2026-07-29 批次化）
+        # 批次解析 + 状态机转换（2026-07-29 批次化）
         batch = await self._resolve_target_batch(
             part, self._parse_batch_id(data),
             expect=lambda b: b.status == "PROGRAMMING",
@@ -2137,35 +2158,6 @@ class PartService:
             ),
         )
         return items[0]
-
-    async def _assert_cnc_release_prerequisites(self, part_id: int) -> None:
-        """下发前置：必须已上传 ≥1 G 代码 + ≥1 CNC 设定单（否则拒绝）。"""
-        from model.enums import PartFileKind
-
-        if self.files is None:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message="server missing part file repository",
-                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        g_codes = await self.files.list_by_part(part_id, kind=PartFileKind.G_CODE.value)
-        if not g_codes:
-            raise BizError(
-                code=ErrCode.BIZ_CNC_PROGRAM_REQUIRED,
-                message="未上传 G 代码，无法下发零件到货架",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-
-        setup_sheets = await self.files.list_by_part(
-            part_id, kind=PartFileKind.SETUP_SHEET.value,
-        )
-        if not setup_sheets:
-            raise BizError(
-                code=ErrCode.BIZ_CNC_SETUP_SHEET_REQUIRED,
-                message="未上传 CNC 设定单，无法下发零件到货架",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
 
     async def _get_part_or_404(self, part_id: int) -> TPart:
         part = await self.parts.get_by_id(part_id)

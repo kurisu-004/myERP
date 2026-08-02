@@ -1033,12 +1033,20 @@ class DeliveryNoteService:
                 applicant_name=p.applicant_name,
                 status=b.status,
                 planned_delivery_date=p.planned_delivery_date,
+                order_no=p.order_no,  # 2026-08-01 picker 新增
             ))
         return result
 
-    async def print_xlsx(self, note_id: str) -> tuple[bytes, str]:
+    async def print_xlsx(
+        self,
+        note_id: str,
+        custom_order: list[str] | None = None,  # 2026-08-02 新增：预览组件拖动后的 batch id 顺序
+    ) -> tuple[bytes, str]:
         """按 L1 客户前缀分发模板（template/delivery_note_{prefix}.xlsx），
         返回 (bytes, prefix)；状态不限（DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 都可）。
+
+        - ``custom_order`` 为 None / 空 → 按 ``TPartBatch.id ASC``（旧行为）
+        - ``custom_order`` 提供 → 按其顺序投影；非法 batch id 或漏行 → 422
 
         真正的填表逻辑在 `service/delivery_note_print.py::DeliveryNotePrintService`；
         这里只负责 note 加载 + 薄包装。
@@ -1058,7 +1066,7 @@ class DeliveryNoteService:
             customers=self.customers,
             part_batches=self._batches(),
         )
-        return await printer.render(obj)
+        return await printer.render(obj, custom_order=custom_order)
 
     # ============================================================
     # 内部 helpers

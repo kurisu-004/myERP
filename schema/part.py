@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
+from model.enums import PartEventType, PartLocation, PartSortKey, PartStatus, SortDir
 from schema._types import IdStr, IdStrNonNull
 
 # 仅为 Pydantic 类型注解（TYPE_CHECKING 守卫）做静态类型提示；
@@ -60,6 +60,18 @@ class PartListQuery(BaseModel):
     # —— 2026-07-30：装配体并入零件一览 ——
     include_assemblies: bool = Field(
         default=False, description="True 时合并返回装配件行（子件从顶层隐藏）"
+    )
+    # —— 2026-08-01：下一道工序 / 物理位置多选筛选 ——
+    next_process_ids: list[int] | None = Field(
+        default=None,
+        description="下一道工序 id 多选（雪花 ID int；空=全部；NULL 工序的零件会被自然排除）",
+    )
+    locations: list[PartLocation] | None = Field(
+        default=None,
+        description=(
+            "物理位置多选（OFFICE / PRODUCTION_SHELF / WORKER / "
+            "INSPECTION_SHELF / OUTSOURCE_COMPANY；空=全部）"
+        ),
     )
 
 

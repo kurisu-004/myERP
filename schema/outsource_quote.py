@@ -57,6 +57,8 @@ class OutsourceQuoteOut(BaseModel):
     process_code: str | None = None
     process_name: str | None = None
     customer_path: str | None = None  # "法拉电子 / 三厂" 格式
+    # 2026-08-02 新增：所属零件的客户下单单价（CNY；与 price 对比谈判空间）
+    part_unit_price: Decimal | None = None
 
 
 # ============================================================

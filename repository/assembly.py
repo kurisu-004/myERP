@@ -24,6 +24,9 @@ class AssemblySortKey(str, enum.Enum):
     SERIAL_NO = "SERIAL_NO"
     DRAWING_NO = "DRAWING_NO"
     NAME = "NAME"
+    QUANTITY = "QUANTITY"  # 2026-08-01 新增（与 PartSortKey 对齐）
+    UNIT_PRICE = "UNIT_PRICE"  # 2026-08-01 新增
+    TOTAL_PRICE = "TOTAL_PRICE"  # 2026-08-01 新增
 
 
 AssemblySortDir = str  # "asc" | "desc"，保持简化的字符串
@@ -117,6 +120,9 @@ class AssemblyRepository:
             AssemblySortKey.SERIAL_NO: TAssembly.serial_no,
             AssemblySortKey.DRAWING_NO: TAssembly.drawing_no,
             AssemblySortKey.NAME: TAssembly.name,
+            AssemblySortKey.QUANTITY: TAssembly.quantity,  # 2026-08-01 新增
+            AssemblySortKey.UNIT_PRICE: TAssembly.unit_price,  # 2026-08-01 新增
+            AssemblySortKey.TOTAL_PRICE: TAssembly.total_price,  # 2026-08-01 新增
         }[sort_by]
         if sort_dir == "asc":
             stmt = stmt.order_by(sort_col.asc(), TAssembly.id.desc())

@@ -1089,6 +1089,8 @@ class OutsourceQuoteService:
                 process_code=process.code if process else None,
                 process_name=process.name if process else None,
                 customer_path=customer_path,
+                # 2026-08-02 新增：所属零件的客户下单单价（part_map 已批量取，零额外查询）
+                part_unit_price=part.unit_price if part else None,
             ))
         return out
 

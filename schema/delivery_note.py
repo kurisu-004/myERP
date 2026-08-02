@@ -183,6 +183,7 @@ class DeliveryNoteCandidatePart(BaseModel):
     applicant_name: str | None = None
     status: PartStatus = Field(description="批次状态")
     planned_delivery_date: date | None = None
+    order_no: str | None = Field(default=None, description="订单号（2026-08-01 picker 新增）")
 
 
 class DeliveryNoteCandidatePartsOut(BaseModel):

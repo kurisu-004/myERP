@@ -116,6 +116,8 @@ export interface DeliveryNoteCandidatePart {
   /** INSPECTION 待检 / READY_TO_SHIP 已通过品检 */
   status: 'INSPECTION' | 'READY_TO_SHIP' | string
   planned_delivery_date: string | null
+  /** 2026-08-01：订单号（picker 新增列与排序） */
+  order_no: string | null
 }
 
 // 2026-07-23 Bug 4：精简为 4 类事件 + RECALLED（历史只读）

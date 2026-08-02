@@ -680,6 +680,147 @@ async def test_print_xlsx_null_delivery_date_falls_back_to_today(clean_db):
 
 
 # ============================================================
+# T18+: print_xlsx custom_order（2026-08-02 预览对话框拖动改序）
+# ============================================================
+async def test_print_xlsx_custom_order_respected(clean_db):
+    """custom_order 非空时按其顺序填表（预览拖动后导出顺序生效）。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    # 3 个零件按 created_at 顺序入库 → DB 默认顺序 p1,p2,p3
+    p1 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8001", drawing_no="D-F8001",
+    )
+    p2 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8002", drawing_no="D-F8002",
+    )
+    p3 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F8003", drawing_no="D-F8003",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2), _item(p3)],
+        version=note.version,
+    )
+    # 取批次 id（_item(part) 自动创建 batch_no=1 根批次）
+    line_items = {li.serial_no: li for li in detail.line_items}
+
+    # 反向顺序：third, first, second
+    custom_order = [
+        str(line_items["F8003"].id),
+        str(line_items["F8001"].id),
+        str(line_items["F8002"].id),
+    ]
+    xlsx_bytes, prefix = await svc.print_xlsx(
+        note_id=str(note.id), custom_order=custom_order,
+    )
+    assert prefix == "F"
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    # 法拉模板数据起始 R3；row_index 列(1) = 1,2,3 顺序
+    assert ws.cell(row=3, column=1).value == 1  # row_index
+    assert ws.cell(row=4, column=1).value == 2
+    assert ws.cell(row=5, column=1).value == 3
+    # 列 5 (drawing_no) 与列 6 (name) 反映反向顺序
+    assert ws.cell(row=3, column=5).value == "D-F8003"  # third
+    assert ws.cell(row=4, column=5).value == "D-F8001"  # first
+    assert ws.cell(row=5, column=5).value == "D-F8002"  # second
+
+
+async def test_print_xlsx_no_custom_order_uses_db_order(clean_db):
+    """custom_order 为空走默认 TPartBatch.id ASC（旧行为）。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F9001", drawing_no="D-F9001",
+    )
+    p2 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="F9002", drawing_no="D-F9002",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    # 默认顺序 p1, p2
+    assert ws.cell(row=3, column=5).value == "D-F9001"
+    assert ws.cell(row=4, column=5).value == "D-F9002"
+
+
+async def test_print_xlsx_custom_order_invalid_id_raises_422(clean_db):
+    """custom_order 含不属于本单的 batch id → 422 BIZ_DELIVERY_PRINT_BAD_ORDER。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="FA001", drawing_no="D-FA001",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id), items=[_item(part)], version=note.version,
+    )
+    real_bid = str(detail.line_items[0].id)
+
+    # 真实 id + 一个不存在的 id
+    with pytest.raises(BizError) as exc_info:
+        await svc.print_xlsx(
+            note_id=str(note.id),
+            custom_order=[real_bid, "999999999999"],
+        )
+    assert exc_info.value.code == ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER
+    assert exc_info.value.http_status == 422
+
+
+async def test_print_xlsx_custom_order_missing_rows_raises_422(clean_db):
+    """custom_order 漏行 → 422（不允许静默丢弃）。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="FB001", drawing_no="D-FB001",
+    )
+    p2 = await _make_part(
+        clean_db, customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="FB002", drawing_no="D-FB002",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    detail = await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2)],
+        version=note.version,
+    )
+    line_items = {li.serial_no: li for li in detail.line_items}
+
+    # 只给一个 batch id，漏了另一个
+    with pytest.raises(BizError) as exc_info:
+        await svc.print_xlsx(
+            note_id=str(note.id),
+            custom_order=[str(line_items["FB001"].id)],
+        )
+    assert exc_info.value.code == ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER
+    assert exc_info.value.http_status == 422
+
+
+# ============================================================
 # T19: SUBMITTED 后冻结零件清单（2026-07-23 Bug 5）
 # ============================================================
 async def test_add_parts_blocked_when_submitted(clean_db):

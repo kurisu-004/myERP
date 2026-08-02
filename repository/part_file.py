@@ -142,6 +142,23 @@ class PartFileRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_where_paired_file_id(
+        self, paired_file_id: int
+    ) -> list[TPartFile]:
+        """列出所有 paired_file_id == 给定 id 且未软删的活跃行。
+
+        用于 N→1 配对场景：删除设定单时，找出所有指向它的 gcode 行清空其 paired_file_id。
+        """
+        stmt = (
+            select(TPartFile)
+            .where(
+                TPartFile.paired_file_id == paired_file_id,
+                TPartFile.deleted_at.is_(None),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_by_parts(
         self,
         part_ids: list[int],

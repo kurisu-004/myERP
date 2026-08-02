@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
 from model import TPart, TPartBatch, TPartEvent
-from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
+from model.enums import PartEventType, PartLocation, PartSortKey, PartStatus, SortDir
 
 
 class PartRepository:
@@ -86,6 +86,8 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
+        locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
@@ -108,6 +110,8 @@ class PartRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            next_process_ids=next_process_ids,
+            locations=locations,
             include_deleted=include_deleted,
             assembly_id_is_null=assembly_id_is_null,
         )
@@ -120,6 +124,9 @@ class PartRepository:
             PartSortKey.DRAWING_NO: TPart.drawing_no,
             PartSortKey.NAME: TPart.name,
             PartSortKey.ORDER_NO: TPart.order_no,
+            PartSortKey.QUANTITY: TPart.quantity,  # 2026-08-01 新增
+            PartSortKey.UNIT_PRICE: TPart.unit_price,  # 2026-08-01 新增
+            PartSortKey.TOTAL_PRICE: TPart.total_price,  # 2026-08-01 新增
         }[sort_by]
         # 2026-07-21：可空列（system_delivery_date / order_no）排序时 NULL 排末尾。
         _nulls_last_keys = {
@@ -157,6 +164,8 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
+        locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
         include_deleted: bool = False,
         assembly_id_is_null: bool | None = None,
     ) -> int:
@@ -175,6 +184,8 @@ class PartRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            next_process_ids=next_process_ids,
+            locations=locations,
             include_deleted=include_deleted,
             assembly_id_is_null=assembly_id_is_null,
         ).with_only_columns(func.count(TPart.id))
@@ -530,6 +541,8 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
+        locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
         include_deleted: bool,
         assembly_id_is_null: bool | None = None,
     ):
@@ -619,6 +632,15 @@ class PartRepository:
         # 2026-07-30：装配体并入零件一览——排除装配件子件
         if assembly_id_is_null:
             stmt = stmt.where(TPart.assembly_id.is_(None))
+        # 2026-08-01：下一道工序 / 物理位置多选筛选。
+        # 与 `statuses` 语义一致：None / 空列表 = 无筛选；非空列表走 IN 谓词。
+        # `next_process_id IS NULL` 的零件会被 SQL `IN` 排除，符合「未指派下一道工序 = 不参与筛选」。
+        if next_process_ids:
+            stmt = stmt.where(TPart.next_process_id.in_(next_process_ids))
+        if locations:
+            stmt = stmt.where(
+                TPart.location.in_([loc.value for loc in locations])
+            )
         return stmt
 
     # ============================================================

@@ -7,9 +7,8 @@
   - 数据侧：调 GET /parts/pending-programming（status=PROGRAMMING 已硬编码于后端）。
   - 两个动作（2026-07-20 移除「文件」按钮 + el-drawer，理由：「df6b4d8 引入的过度设计」）
     * 「详情」 → 跳 /parts/{id}（PartDetail 页内有图纸下载 / G 代码上传 / 设定单上传）
-    * 「下发到生产」 → 弹 el-dialog 同时选 PRODUCTION 货架 + 下一道工序，
+    * 「下发到生产」 → 弹 el-dialog 同时选下一道工序 + 目标 PRODUCTION 货架，
       调 POST /parts/{id}/release-from-programming（PROGRAMMING → IN_PROCESS）。
-      后端要求必须先上传 G_CODE + SETUP_SHEET，否则 400；前端 catch 后 ElMessage.error。
   - 移动端适配（2026-07-21）：
     * 表格用 ResponsiveList 包裹，< md 自动改为卡片流
     * 分页 layout 按 isMobile 切换（手机只保留 prev/pager/next）
@@ -211,86 +210,70 @@
       />
     </div>
 
-    <!-- 下发到生产 对话框：2026-07-21 改 —— 先选下一道工序，再选目标货架（按 shelf↔process 映射过滤） -->
+    <!-- 下发到 CNC 货架 对话框（PROGRAMMING → IN_PROCESS） —— 与 PartDetail 同款 -->
     <el-dialog
       v-model="releaseDialogVisible"
-      title="下发到生产 — 先选下一道工序，再选目标货架"
+      title="下发到 CNC 货架"
       :width="releaseDlg.width.value"
       :top="releaseDlg.top.value"
       :fullscreen="releaseDlg.fullscreen.value"
-      :close-on-click-modal="false"
       @closed="onReleaseDialogClosed"
     >
-      <div v-if="releaseTarget" class="release-summary">
-        <div><strong>流水号：</strong>{{ releaseTarget.serial_no || '—' }}</div>
-        <div><strong>图号：</strong>{{ releaseTarget.drawing_no }}</div>
-        <div><strong>名称：</strong>{{ releaseTarget.name }}</div>
-      </div>
-
-      <el-form label-width="110px" style="margin-top: 12px">
+      <el-form label-width="96px">
         <el-form-item label="下一道工序" required>
-          <el-radio-group
+          <el-select
             v-model="releaseProcessId"
-            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto"
+            placeholder="请先选择下一道工序"
+            style="width: 100%"
+            filterable
+            clearable
           >
-            <el-radio
+            <el-option
               v-for="p in filteredInhouseProcesses"
               :key="p.id"
-              :value="String(p.id)"
-            >
-              {{ p.code }} — {{ p.name }}
-              <el-tag
-                :type="p.category === 'INHOUSE' ? 'success' : 'info'"
-                size="small"
-                effect="plain"
-                style="margin-left: 4px"
-              >
-                {{ p.category === 'INHOUSE' ? '自产' : '外协' }}
-              </el-tag>
-            </el-radio>
-            <span v-if="filteredInhouseProcesses.length === 0" class="muted">
-              没有 INHOUSE 工序，请先在「设置 → 工序管理」中新增
-            </span>
-          </el-radio-group>
+              :label="`${p.code} / ${p.name}`"
+              :value="p.id"
+            />
+            <template #empty>
+              <span class="muted">没有可用的工序</span>
+            </template>
+          </el-select>
         </el-form-item>
-
         <el-form-item label="目标生产货架" required>
-          <el-radio-group
+          <el-select
             v-model="releaseShelfId"
+            placeholder="先选工序；货架候选按映射过滤"
+            style="width: 100%"
+            filterable
+            clearable
             :disabled="!releaseProcessId"
-            style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto"
           >
-            <el-radio
+            <el-option
               v-for="s in filteredProductionShelves"
               :key="s.id"
-              :value="String(s.id)"
+              :label="`${s.code} — ${s.name}`"
+              :value="s.id"
               :disabled="!s.is_active"
             >
-              {{ s.code }} — {{ s.name }}
+              <span>{{ s.code }} — {{ s.name }}</span>
               <span v-if="!s.is_active" class="muted">（已停用）</span>
-            </el-radio>
-            <span v-if="filteredProductionShelves.length === 0" class="muted">
-              {{
-                releaseProcessId
-                  ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
-                  : '没有可用生产货架'
-              }}
-            </span>
-          </el-radio-group>
+            </el-option>
+            <template #empty>
+              <span class="muted">
+                {{
+                  releaseProcessId
+                    ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                    : '请先选择下一道工序'
+                }}
+              </span>
+            </template>
+          </el-select>
         </el-form-item>
-
-        <el-alert
-          type="info"
-          :closable="false"
-          title="下发后零件进入 IN_PROCESS / ON_SHELF 状态；必须先上传 G_CODE 与 SETUP_SHEET，否则后端会返回 400。"
-          show-icon
-        />
       </el-form>
-
       <template #footer>
         <el-button @click="releaseDialogVisible = false">取消</el-button>
         <el-button
-          type="success"
+          type="primary"
           :loading="releaseSubmitting"
           :disabled="!releaseShelfId || !releaseProcessId"
           @click="onReleaseConfirm"
@@ -302,7 +285,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   RefreshLeft,
   Search,
@@ -424,12 +407,12 @@ onBeforeUnmount(() => {
   }
 })
 
-// ============ 下发到生产 对话框 ============
-const releaseDlg = useDialogSize({ desktopWidth: 560 })
+// ============ 下发到 CNC 货架 对话框 ============
+const releaseDlg = useDialogSize({ desktopWidth: 440, fullscreenOnMobile: true })
 const releaseDialogVisible = ref(false)
 const releaseTarget = ref<RowState | null>(null)
-const releaseShelfId = ref<string>('')
-const releaseProcessId = ref<string>('')
+const releaseShelfId = ref<string | null>(null)
+const releaseProcessId = ref<string | null>(null)
 const releaseSubmitting = ref(false)
 const productionShelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
@@ -446,71 +429,45 @@ const {
 } = useShelfProcessFilter(
   productionShelves,
   inhouseProcesses,
-  computed({
-    get: () => releaseShelfId.value || null,
-    set: (v) => { releaseShelfId.value = v ?? '' },
-  }),
-  computed({
-    get: () => releaseProcessId.value || null,
-    set: (v) => { releaseProcessId.value = v ?? '' },
-  }),
+  releaseShelfId,
+  releaseProcessId,
 )
-
-async function loadProductionShelves(): Promise<void> {
-  try {
-    const resp = await listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
-    productionShelves.value = resp.items
-  } catch (e) {
-    ElMessage.error(`加载生产货架失败：${(e as Error).message}`)
-    productionShelves.value = []
-  }
-}
-
-async function loadProcesses(): Promise<void> {
-  try {
-    const resp = await listProcesses({ limit: 200 })
-    processes.value = resp.items
-  } catch (e) {
-    ElMessage.error(`加载工序失败：${(e as Error).message}`)
-    processes.value = []
-  }
-}
 
 async function openReleaseDialog(row: RowState): Promise<void> {
   releaseTarget.value = row
-  releaseShelfId.value = ''
-  releaseProcessId.value = ''
+  releaseShelfId.value = null
+  releaseProcessId.value = null
+  try {
+    const [shelfResp, procResp] = await Promise.all([
+      productionShelves.value.length === 0
+        ? listShelves({ zone: 'PRODUCTION', is_active: true, limit: 200 })
+        : Promise.resolve(null),
+      processes.value.length === 0
+        ? listProcesses({ limit: 200 })
+        : Promise.resolve(null),
+    ])
+    if (shelfResp) productionShelves.value = shelfResp.items
+    if (procResp) processes.value = procResp.items
+    void loadReleaseMap()
+  } catch (e) {
+    ElMessage.error(`加载失败：${(e as Error).message}`)
+  }
   releaseDialogVisible.value = true
-  await Promise.all([
-    productionShelves.value.length === 0 ? loadProductionShelves() : Promise.resolve(),
-    processes.value.length === 0 ? loadProcesses() : Promise.resolve(),
-  ])
-  // 2026-07-17：shelves/processes 加载完后异步拉映射
-  void loadReleaseMap()
 }
 
 function onReleaseDialogClosed(): void {
   releaseTarget.value = null
-  releaseShelfId.value = ''
-  releaseProcessId.value = ''
+  releaseShelfId.value = null
+  releaseProcessId.value = null
 }
 
 async function onReleaseConfirm(): Promise<void> {
   if (!releaseTarget.value || !releaseShelfId.value || !releaseProcessId.value) return
   const row = releaseTarget.value
   const shelfCode =
-    productionShelves.value.find((s) => String(s.id) === releaseShelfId.value)?.code ?? ''
+    productionShelves.value.find((s) => s.id === releaseShelfId.value)?.code ?? ''
   const processCode =
-    processes.value.find((p) => String(p.id) === releaseProcessId.value)?.code ?? ''
-  try {
-    await ElMessageBox.confirm(
-      `确认下发「${row.name}」（${row.serial_no || row.drawing_no}）到生产货架 ${shelfCode}，下一道工序 ${processCode}？`,
-      '下发到生产',
-      { type: 'success', confirmButtonText: '确认下发', cancelButtonText: '取消' },
-    )
-  } catch {
-    return  // 用户取消
-  }
+    processes.value.find((p) => p.id === releaseProcessId.value)?.code ?? ''
   row._releasing = true
   releaseSubmitting.value = true
   try {
@@ -588,13 +545,5 @@ onMounted(() => {
 }
 :deep(.row-urgent td) {
   background: #fde2e2 !important;
-}
-.release-summary {
-  background: #fdf6ec;
-  border: 1px solid #faecd8;
-  border-radius: 4px;
-  padding: 10px 14px;
-  line-height: 1.8;
-  font-size: 13px;
 }
 </style>

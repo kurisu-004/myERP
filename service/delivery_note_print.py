@@ -133,8 +133,17 @@ class DeliveryNotePrintService:
         self.customers = customers
         self.part_batches = part_batches
 
-    async def render(self, note: TDeliveryNote) -> tuple[bytes, str]:
-        """填模板并返回字节流 + 模板 prefix。"""
+    async def render(
+        self,
+        note: TDeliveryNote,
+        custom_order: list[str] | None = None,  # 2026-08-02 新增：预览组件拖动后的 batch id 顺序
+    ) -> tuple[bytes, str]:
+        """填模板并返回字节流 + 模板 prefix。
+
+        - ``custom_order`` 为 None / 空 → 按 ``TPartBatch.id ASC``（旧行为）
+        - ``custom_order`` 提供 → 按其列表顺序投影；含非法 batch id 或漏行 → 422
+        """
+        custom_order_list: list[str] = list(custom_order) if custom_order else []
         # 1) 拉 L1 客户的 serial_prefix（决定模板）
         cust = await self.customers.get_by_id(note.customer_id)
         if cust is None:
@@ -203,6 +212,35 @@ class DeliveryNotePrintService:
                 http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         linked = await self.part_batches.list_by_delivery_note(note.id)
+        # 2026-08-02：先按 custom_order 重排，再过滤缺 serial/drawing 的行
+        if custom_order_list:
+            pairs_by_id: dict[str, tuple[Any, TPart]] = {
+                str(b.id): (b, p) for b, p in linked
+            }
+            ordered: list[tuple[Any, TPart]] = []
+            seen: set[str] = set()
+            for bid in custom_order_list:
+                if bid not in pairs_by_id:
+                    raise BizError(
+                        code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                        message=(
+                            f"custom_order 含不属于本单的 batch id: {bid}"
+                        ),
+                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    )
+                ordered.append(pairs_by_id[bid])
+                seen.add(bid)
+            missing = set(pairs_by_id) - seen
+            if missing:
+                raise BizError(
+                    code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                    message=(
+                        f"custom_order 漏掉 {len(missing)} 行；"
+                        "不允许静默丢弃（请确保预览包含全部行）"
+                    ),
+                    http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            linked = ordered
         rows: list[tuple[Any, TPart]] = []  # (batch, part)
         for b, p in linked:
             if not p.serial_no or not p.drawing_no:

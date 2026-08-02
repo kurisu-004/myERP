@@ -292,50 +292,55 @@
             <el-icon><Cpu /></el-icon>
             <span>CNC 文件</span>
           </span>
-          <span v-if="canManageCncFiles && part?.status === 'PROGRAMMING'" class="event-count">
-            下发前需上传 G 代码 + 设定单
-          </span>
         </div>
       </template>
 
       <!-- 配对列表：G 代码（左列）+ 设定单（右列），两两对应 -->
-      <div v-if="cncPairs.length > 0" class="cnc-pair-list">
-        <div class="cnc-pair-header">
-          <span class="cnc-pair-header-col">G 代码</span>
-          <span class="cnc-pair-header-col">CNC 设定单</span>
+      <div v-if="cncSetupGroups.length > 0" class="cnc-group-list">
+        <div class="cnc-group-header">
+          <span class="cnc-group-header-col">G 代码</span>
+          <span class="cnc-group-header-col">CNC 设定单</span>
         </div>
-        <div v-for="(pair, idx) in cncPairs" :key="pair.g?.id ?? pair.s?.id ?? idx" class="cnc-pair-row">
-          <!-- G 代码列 -->
-          <div class="cnc-pair-col">
-            <template v-if="pair.g">
-              <el-tag size="small" type="info">{{ pair.g.file_type }}</el-tag>
-              <span class="cnc-name">{{ pair.g.original_filename }}</span>
-              <span class="cnc-size">{{ formatBytes(pair.g.file_size) }}</span>
-              <span class="cnc-time">{{ formatDateTime(pair.g.created_at) }}</span>
-              <el-button link type="primary" size="small" @click="onDownloadCnc(pair.g)">下载</el-button>
-              <el-button
-                v-if="canManageCncFiles"
-                link type="danger" size="small"
-                @click="onDeleteCnc(pair.g.id)"
-              >删除</el-button>
+        <div
+          v-for="(group, gIdx) in cncSetupGroups"
+          :key="group.setup?.id ?? `__unpaired_${gIdx}`"
+          class="cnc-group-row"
+        >
+          <!-- 左列：N 个 G 代码纵向堆叠 -->
+          <div class="cnc-gcode-col">
+            <template v-if="group.gcodes.length > 0">
+              <div v-for="g in group.gcodes" :key="g.id" class="cnc-sub-row">
+                <el-tag size="small" type="info">{{ g.file_type }}</el-tag>
+                <span class="cnc-name">{{ g.original_filename }}</span>
+                <span class="cnc-size">{{ formatBytes(g.file_size) }}</span>
+                <span class="cnc-time">{{ formatDateTime(g.created_at) }}</span>
+                <el-button link type="primary" size="small" @click="onDownloadCnc(g)">下载</el-button>
+                <el-button
+                  v-if="canManageCncFiles"
+                  link type="danger" size="small"
+                  @click="onDeleteCnc(g.id)"
+                >删除</el-button>
+              </div>
             </template>
             <span v-else class="cnc-empty">—</span>
           </div>
-          <!-- 设定单列 -->
-          <div class="cnc-pair-col">
-            <template v-if="pair.s">
-              <el-tag size="small" type="success">PDF</el-tag>
-              <span class="cnc-name">{{ pair.s.original_filename }}</span>
-              <span class="cnc-size">{{ formatBytes(pair.s.file_size) }}</span>
-              <span class="cnc-time">{{ formatDateTime(pair.s.created_at) }}</span>
-              <el-button link type="primary" size="small" @click="onDownloadCnc(pair.s)">下载</el-button>
-              <el-button
-                v-if="canManageSetupSheet"
-                link type="danger" size="small"
-                @click="onDeleteCnc(pair.s.id)"
-              >删除</el-button>
+          <!-- 右列：每组 1 个或 0 个设定单 -->
+          <div class="cnc-setup-col">
+            <template v-if="group.setup">
+              <div class="cnc-sub-row">
+                <el-tag size="small" type="success">PDF</el-tag>
+                <span class="cnc-name">{{ group.setup.original_filename }}</span>
+                <span class="cnc-size">{{ formatBytes(group.setup.file_size) }}</span>
+                <span class="cnc-time">{{ formatDateTime(group.setup.created_at) }}</span>
+                <el-button link type="primary" size="small" @click="onDownloadCnc(group.setup)">下载</el-button>
+                <el-button
+                  v-if="canManageSetupSheet"
+                  link type="danger" size="small"
+                  @click="onDeleteCnc(group.setup.id)"
+                >删除</el-button>
+              </div>
             </template>
-            <span v-else class="cnc-empty">—</span>
+            <span v-else class="cnc-empty">无设定单</span>
           </div>
         </div>
       </div>
@@ -367,12 +372,13 @@
             <el-upload
               :auto-upload="false"
               :show-file-list="true"
-              :limit="1"
+              multiple
               accept=".nc,.tap,.cnc,.mpf,.ngc"
+              :file-list="pairGcodeFiles"
               :on-change="onPairGcodeChange"
-              :on-remove="() => { pairGcodeFile = null }"
+              :on-remove="onPairGcodeRemove"
             >
-              <el-button plain>选择 G 代码 (.nc, .tap, .cnc, ...)</el-button>
+              <el-button plain>选择 G 代码（可多个）</el-button>
             </el-upload>
           </el-form-item>
           <el-form-item label="CNC 设定单">
@@ -393,7 +399,7 @@
           <el-button
             type="primary"
             :loading="pairUploading"
-            :disabled="!pairGcodeFile || !pairSetupFile"
+            :disabled="pairGcodeFiles.length === 0 || !pairSetupFile"
             @click="onPairUploadConfirm"
           >确认上传</el-button>
         </template>
@@ -1182,42 +1188,42 @@ const cncLoading = ref(false)
 const assemblyLoading = ref(false)
 // 配对上传对话框
 const pairUploadVisible = ref(false)
-const pairGcodeFile = ref<File | null>(null)
+const pairGcodeFiles = ref<UploadFile[]>([])
 const pairSetupFile = ref<File | null>(null)
 const pairUploading = ref(false)
 
-interface CncPair {
-  g: PartFileItem | null
-  s: PartFileItem | null
+interface CncSetupGroup {
+  setup: PartFileItem | null  // null = 「未配对 gcode」桶
+  gcodes: PartFileItem[]
 }
-const cncPairs = computed<CncPair[]>(() => {
+const cncSetupGroups = computed<CncSetupGroup[]>(() => {
   const gcodeList = cncPrograms.value
   const setupList = setupSheets.value
-  const pairs: CncPair[] = []
-  const byId = new Map<string, PartFileItem>()
-  for (const g of gcodeList) byId.set(g.id, g)
-  for (const s of setupList) byId.set(s.id, s)
-  const paired = new Set<string>()
+  const setupById = new Map<string, PartFileItem>()
+  for (const s of setupList) setupById.set(s.id, s)
 
-  // First pass: items with paired_file_id
+  // 按 paired_file_id 把 gcode 分配到 setup
+  const bySetupId = new Map<string, PartFileItem[]>()
+  const unpairedGcodes: PartFileItem[] = []
   for (const g of gcodeList) {
-    if (g.paired_file_id && byId.has(g.paired_file_id)) {
-      pairs.push({ g, s: byId.get(g.paired_file_id)! })
-      paired.add(g.id)
-      paired.add(g.paired_file_id)
+    if (g.paired_file_id && setupById.has(g.paired_file_id)) {
+      const arr = bySetupId.get(g.paired_file_id) ?? []
+      arr.push(g)
+      bySetupId.set(g.paired_file_id, arr)
+    } else {
+      unpairedGcodes.push(g)
     }
   }
+
+  // 渲染顺序：先所有 setup（按原列表顺序）+ 其下挂载的 gcodes，再「未配对」桶
+  const groups: CncSetupGroup[] = []
   for (const s of setupList) {
-    if (s.paired_file_id && !paired.has(s.id) && byId.has(s.paired_file_id)) {
-      pairs.push({ g: byId.get(s.paired_file_id)!, s })
-      paired.add(s.id)
-      paired.add(s.paired_file_id)
-    }
+    groups.push({ setup: s, gcodes: bySetupId.get(s.id) ?? [] })
   }
-  // Second pass: unpaired items
-  for (const g of gcodeList) { if (!paired.has(g.id)) pairs.push({ g, s: null }) }
-  for (const s of setupList) { if (!paired.has(s.id)) pairs.push({ g: null, s }) }
-  return pairs
+  if (unpairedGcodes.length > 0) {
+    groups.push({ setup: null, gcodes: unpairedGcodes })
+  }
+  return groups
 })
 
 // ============ 编辑模式 ============
@@ -1638,21 +1644,37 @@ async function onUploadSetupSheet(req: { file: File }): Promise<void> {
 
 // ===== 配对上传（G 代码 + 设定单） =====
 function onPairGcodeChange(file: UploadFile): void {
-  pairGcodeFile.value = file.raw ?? null
+  // 按 uid 去重 + 扩展名校验（与 PartBatchNew.vue 的 fileList 模式一致）
+  pairGcodeFiles.value = fileList(
+    pairGcodeFiles.value,
+    file,
+    '.nc,.tap,.cnc,.mpf,.ngc',
+    true,
+  )
+}
+function onPairGcodeRemove(file: UploadFile): void {
+  pairGcodeFiles.value = pairGcodeFiles.value.filter((f) => f.uid !== file.uid)
 }
 function onPairSetupChange(file: UploadFile): void {
   pairSetupFile.value = file.raw ?? null
 }
 function onPairUploadClose(): void {
-  pairGcodeFile.value = null
+  pairGcodeFiles.value = []
   pairSetupFile.value = null
 }
 async function onPairUploadConfirm(): Promise<void> {
-  if (!pairGcodeFile.value || !pairSetupFile.value) return
+  const raws: File[] = []
+  for (const f of pairGcodeFiles.value) {
+    if (f.raw) raws.push(f.raw)
+  }
+  if (raws.length === 0 || !pairSetupFile.value) return
   pairUploading.value = true
   try {
-    await uploadCncPair(partId.value, pairGcodeFile.value, pairSetupFile.value)
-    ElMessage.success('配对上传成功')
+    // 逐个上传；setup 走 SHA-256 dedup 实际只上传一次
+    for (const gcode of raws) {
+      await uploadCncPair(partId.value, gcode, pairSetupFile.value)
+    }
+    ElMessage.success(`配对上传成功（${raws.length} 个 G 代码 + 1 个设定单）`)
     pairUploadVisible.value = false
     onPairUploadClose()
     void fetchCncPrograms()
@@ -1661,6 +1683,25 @@ async function onPairUploadConfirm(): Promise<void> {
   } finally {
     pairUploading.value = false
   }
+}
+
+// 多文件 staging 助手（仿 PartBatchNew.vue:1803-1819）
+function fileList(
+  current: UploadFile[],
+  file: UploadFile,
+  accept: string,
+  matchExt = false,
+): UploadFile[] {
+  if (current.some((f) => f.uid === file.uid)) return current
+  if (matchExt) {
+    const name = (file.name || '').toLowerCase()
+    const exts = accept.replace(/\./g, '').split(',')
+    if (!exts.some((e) => name.endsWith('.' + e))) {
+      ElMessage.warning(`不支持的文件类型：${file.name}`)
+      return current
+    }
+  }
+  return [...current, file]
 }
 
 async function onDownloadCnc(p: PartFileItem): Promise<void> {
@@ -2210,10 +2251,26 @@ function onViewQuoteDetail(_q: OutsourceQuote): void {
     flex-direction: column;
     gap: 6px;
   }
-  .cnc-row,
-  .cnc-pair-row {
+  .cnc-group-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .cnc-group-header {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 2fr 1fr;     // 左列宽于右列
+    gap: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+  .cnc-group-header-col {
+    text-align: left;
+  }
+  .cnc-group-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
     align-items: stretch;
     gap: 8px;
     padding: 6px 8px;
@@ -2226,19 +2283,14 @@ function onViewQuoteDetail(_q: OutsourceQuote): void {
       gap: 4px;
     }
   }
-  .cnc-pair-header {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    padding: 4px 8px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
+  .cnc-gcode-col,
+  .cnc-setup-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
   }
-  .cnc-pair-header-col {
-    text-align: left;
-  }
-  .cnc-pair-col {
+  .cnc-sub-row {
     display: flex;
     align-items: center;
     gap: 8px;

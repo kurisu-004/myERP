@@ -10,7 +10,7 @@ from sqlalchemy.orm import configure_mappers
 
 configure_mappers()
 from model import TAssembly, TCustomer, TPart
-from model.enums import PartSortKey, PartStatus, SortDir, AssemblyStatus
+from model.enums import PartSortKey, PartStatus, SortDir, AssemblyStatus, PartLocation
 from schema.part import PartListQuery
 from service.part import PartService
 from tests.unit._fake_batches import FakePartBatchRepository
@@ -575,3 +575,161 @@ class TestListPartsIncludeAssemblies:
         # 行全部是 PART
         assert all(i.row_type == "PART" for i in result.items)
         assert result.total == 1
+
+    # ===== 2026-08-01：下一道工序 / 物理位置多选筛选 =====
+
+    async def test_next_process_ids_filter_threaded_to_part_repo(
+        self, service, mock_parts, mock_customers
+    ):
+        """next_process_ids 非空时透传给 PartRepository.list_with_filters /
+        count_with_filters（include_assemblies=False 分支）。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(
+            include_assemblies=False,
+            next_process_ids=[101, 202, 303],
+        )
+        await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert list_kwargs["next_process_ids"] == [101, 202, 303]
+        assert count_kwargs["next_process_ids"] == [101, 202, 303]
+
+    async def test_locations_filter_threaded_to_part_repo(
+        self, service, mock_parts, mock_customers
+    ):
+        """locations 非空时透传给 PartRepository（include_assemblies=False 分支）。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(
+            include_assemblies=False,
+            locations=[PartLocation.PRODUCTION_SHELF, PartLocation.WORKER],
+        )
+        await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        count_kwargs = mock_parts.count_with_filters.await_args.kwargs
+        assert list_kwargs["locations"] == [
+            PartLocation.PRODUCTION_SHELF,
+            PartLocation.WORKER,
+        ]
+        assert count_kwargs["locations"] == [
+            PartLocation.PRODUCTION_SHELF,
+            PartLocation.WORKER,
+        ]
+
+    async def test_next_process_ids_excludes_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """include_assemblies=True 且 next_process_ids 非空时，装配件段整体跳过。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        mock_assemblies.list_with_filters.return_value = [
+            _make_assembly(id=100, customer_id=10)
+        ]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True,
+            next_process_ids=[101],
+        )
+        result = await service.list_parts(query)
+
+        # 装配件仓储不被调用
+        mock_assemblies.list_with_filters.assert_not_awaited()
+        mock_assemblies.count_with_filters.assert_not_awaited()
+        # 行全部是 PART
+        assert all(i.row_type == "PART" for i in result.items)
+        assert result.total == 1
+
+    async def test_locations_excludes_assemblies(
+        self, service, mock_parts, mock_customers, mock_assemblies
+    ):
+        """include_assemblies=True 且 locations 非空时，装配件段整体跳过。"""
+        cust = _make_customer(id=10, name="ChildCorp")
+        mock_customers.get_by_id.return_value = cust
+        mock_customers.list_by_ids.return_value = [cust]
+
+        part = _make_part(id=1, customer_id=10)
+        mock_parts.list_with_filters.return_value = [part]
+        mock_parts.count_with_filters.return_value = 1
+
+        mock_assemblies.list_with_filters.return_value = [
+            _make_assembly(id=100, customer_id=10)
+        ]
+        mock_assemblies.count_with_filters.return_value = 1
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_parts.session.execute.return_value = result_mock
+
+        query = PartListQuery(
+            include_assemblies=True,
+            locations=[PartLocation.PRODUCTION_SHELF],
+        )
+        result = await service.list_parts(query)
+
+        mock_assemblies.list_with_filters.assert_not_awaited()
+        mock_assemblies.count_with_filters.assert_not_awaited()
+        assert all(i.row_type == "PART" for i in result.items)
+        assert result.total == 1
+
+    # ===== 2026-08-01：数量 / 单价 / 总价排序 =====
+
+    async def test_sort_by_quantity_threaded(
+        self, service, mock_parts, mock_customers
+    ):
+        """sort_by=QUANTITY 透传到 PartRepository。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(sort_by=PartSortKey.QUANTITY)
+        await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert list_kwargs["sort_by"] == PartSortKey.QUANTITY
+
+    async def test_sort_by_unit_price_threaded(
+        self, service, mock_parts, mock_customers
+    ):
+        """sort_by=UNIT_PRICE 透传到 PartRepository。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(sort_by=PartSortKey.UNIT_PRICE, sort_dir=SortDir.DESC)
+        await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert list_kwargs["sort_by"] == PartSortKey.UNIT_PRICE
+        assert list_kwargs["sort_dir"] == SortDir.DESC
+
+    async def test_sort_by_total_price_threaded(
+        self, service, mock_parts, mock_customers
+    ):
+        """sort_by=TOTAL_PRICE 透传到 PartRepository。"""
+        mock_customers.list_by_ids.return_value = []
+        mock_parts.list_with_filters.return_value = []
+        mock_parts.count_with_filters.return_value = 0
+
+        query = PartListQuery(sort_by=PartSortKey.TOTAL_PRICE)
+        await service.list_parts(query)
+
+        list_kwargs = mock_parts.list_with_filters.await_args.kwargs
+        assert list_kwargs["sort_by"] == PartSortKey.TOTAL_PRICE
