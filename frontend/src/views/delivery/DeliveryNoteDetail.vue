@@ -44,7 +44,9 @@ import {
   canSubmit,
 } from '@/utils/deliveryNotePermissions'
 import { useAuthSession } from '@/composables/useAuthSession'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'  // 2026-08-02
 import PartPickerDialog from '@/components/delivery/PartPickerDialog.vue'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'  // 2026-08-02
 
 const route = useRoute()
 const router = useRouter()
@@ -302,6 +304,26 @@ function onLineItemSort({
     return 0
   })
 }
+
+// 2026-08-02：零件列表列显隐（selection/index 始终可见不放进 defs）
+const columnDefs = [
+  { key: 'batch_label', label: '批次' },
+  { key: 'serial_no', label: '序列号' },
+  { key: 'drawing_no', label: '图号' },
+  { key: 'order_no', label: '订单号' },
+  { key: 'name', label: '名称' },
+  { key: 'customer', label: '客户（二级）' },
+  { key: 'applicant_name', label: '申请人' },
+  { key: 'quantity', label: '数量' },
+  { key: 'request_date', label: '请购日期' },
+  { key: 'planned_delivery_date', label: '计划交期' },
+  { key: 'system_delivery_date', label: '系统交期' },
+  { key: 'note', label: '备注' },
+  { key: 'status', label: '状态' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, {
+  listKey: 'delivery_note_detail_line_items',
+})
 </script>
 
 <template>
@@ -360,6 +382,13 @@ function onLineItemSort({
           <div class="card-header">
             <span>零件列表 ({{ note.line_items.length }})</span>
             <div class="actions">
+              <!-- 2026-08-02：列显隐控制 -->
+              <ColumnVisibilityPopover
+                :defs="columnDefs"
+                :model-value="columnVisibility.currentMap"
+                @update:model-value="columnVisibility.update"
+                @reset="columnVisibility.showAll"
+              />
               <el-button
                 v-if="canAdd"
                 type="primary"
@@ -384,9 +413,11 @@ function onLineItemSort({
           stripe
           border
           height="500"
+          highlight-current-row
           @selection-change="(rows: any[]) => selectedItemIds = rows.map(r => r.id)"
           @sort-change="onLineItemSort"
         >
+          <!-- selection / index 始终可见，不放 defs -->
           <el-table-column
             v-if="canEdit"
             type="selection"
@@ -394,39 +425,62 @@ function onLineItemSort({
             :selectable="() => true"
           />
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column prop="batch_label" label="批次" min-width="100" sortable align="center"/>
-          <el-table-column prop="serial_no" label="序列号" min-width="120" sortable align="center"/>
-          <el-table-column prop="drawing_no" label="图号" min-width="140" sortable align="center"/>
-          <el-table-column prop="name" label="名称" min-width="180" sortable align="center"/>
-          <el-table-column label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
+          <!-- 2026-08-02：每列加 v-if；订单号搬到图号/名称之间 -->
+          <el-table-column
+            v-if="columnVisibility.isVisible('batch_label')"
+            prop="batch_label" label="批次" min-width="100" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('serial_no')"
+            prop="serial_no" label="序列号" min-width="120" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('drawing_no')"
+            prop="drawing_no" label="图号" min-width="140" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('order_no')"
+            prop="order_no" label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
+            <template #default="{ row }">{{ row.order_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            v-if="columnVisibility.isVisible('name')"
+            prop="name" label="名称" min-width="180" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('customer')"
+            label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
             <template #default="{ row }">
               <span>{{ row.customer_path ?? row.customer_name ?? '—' }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="applicant_name" label="申请人" min-width="100" sortable align="center"/>
-          <el-table-column prop="quantity" label="数量" min-width="70" sortable align="center" />
-          <el-table-column label="请购日期" min-width="120" align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('applicant_name')"
+            prop="applicant_name" label="申请人" min-width="100" sortable align="center"/>
+          <el-table-column
+            v-if="columnVisibility.isVisible('quantity')"
+            prop="quantity" label="数量" min-width="70" sortable align="center" />
+          <el-table-column
+            v-if="columnVisibility.isVisible('request_date')"
+            label="请购日期" min-width="120" align="center">
             <template #default="{ row }">{{ row.request_date || '—' }}</template>
           </el-table-column>
           <el-table-column
+            v-if="columnVisibility.isVisible('planned_delivery_date')"
             prop="planned_delivery_date"
             label="计划交期" min-width="120" sortable align="center">
             <template #default="{ row }">{{ row.planned_delivery_date || '—' }}</template>
           </el-table-column>
           <el-table-column
+            v-if="columnVisibility.isVisible('system_delivery_date')"
             prop="system_delivery_date"
             label="系统交期" min-width="120" sortable align="center">
             <template #default="{ row }">{{ row.system_delivery_date || '—' }}</template>
           </el-table-column>
           <el-table-column
-            prop="order_no"
-            label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
-            <template #default="{ row }">{{ row.order_no || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="备注" min-width="120" show-overflow-tooltip align="center">
+            v-if="columnVisibility.isVisible('note')"
+            label="备注" min-width="120" show-overflow-tooltip align="center">
             <template #default="{ row }">{{ row.note || '—' }}</template>
           </el-table-column>
-          <el-table-column label="状态" min-width="120" align="center">
+          <el-table-column
+            v-if="columnVisibility.isVisible('status')"
+            label="状态" min-width="120" align="center">
             <template #default="{ row }">
               <el-tag
                 :type="partStatusTagType(row.status)"

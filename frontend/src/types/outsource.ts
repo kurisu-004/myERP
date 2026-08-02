@@ -123,6 +123,8 @@ export interface OutsourceQuote {
   process_code: string | null
   process_name: string | null
   customer_path: string | null
+  /** 2026-08-02 新增：所属零件的客户下单单价（CNY；与 price 对比谈判空间） */
+  part_unit_price: string | null
 }
 
 export interface OutsourceQuoteListResult {
