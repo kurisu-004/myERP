@@ -385,16 +385,31 @@ class PartFileService:
 
     async def delete_file(self, file_id: int) -> None:
         f = await self._get_or_404(file_id)
-        # 删除前先清除配对文件的 paired_file_id（G_CODE <-> SETUP_SHEET 双向关联）
+        # 删除前先处理 paired_file_id 关系（N→1：N 个 gcode 可指向同一 setup）
         if f.paired_file_id is not None:
-            mate = await self.files.get_by_id(f.paired_file_id)
-            if mate is not None:
-                mate.paired_file_id = None
-                await self.files.update(mate)
+            if f.kind == PartFileKind.SETUP_SHEET.value:
+                # 删除设定单：清掉所有指向它的 gcode 行的 paired_file_id
+                mates = await self.files.list_where_paired_file_id(f.id)
+                for m in mates:
+                    m.paired_file_id = None
+                    await self.files.update(m)
                 _logger.info(
-                    "part_file unpaired: file_id=%s paired_file_id=%s (mate %s unlinked)",
-                    f.id, f.paired_file_id, mate.id,
+                    "part_file unpaired (setup deleted): setup_id=%s cleared %s gcode(s)",
+                    f.id, len(mates),
                 )
+            elif f.kind == PartFileKind.G_CODE.value:
+                # 删除单个 gcode：不动 setup（setup 可能还被其他 gcode 指向）
+                pass
+            else:
+                # 其他 kind（理论上 paired_file_id 只在 G/SETUP 之间，兜底）
+                mate = await self.files.get_by_id(f.paired_file_id)
+                if mate is not None:
+                    mate.paired_file_id = None
+                    await self.files.update(mate)
+                    _logger.info(
+                        "part_file unpaired: file_id=%s paired_file_id=%s (mate %s unlinked)",
+                        f.id, f.paired_file_id, mate.id,
+                    )
         key = f.object_key
         f.updated_by = self._user_id
         await self.files.soft_delete(f)

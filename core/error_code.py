@@ -56,8 +56,6 @@ class ErrCode(IntEnum):
     BIZ_PART_FILE_TOO_LARGE = 21103      # 文件大小 ≤0 或 > cos_max_file_size_bytes
     BIZ_PART_FILE_UPLOAD_FAILED = 21104  # COS SDK 抛错
     BIZ_PART_FILE_OWNER_NOT_FOUND = 21105  # polymorphic owner (part/assembly) 不存在
-    BIZ_CNC_PROGRAM_REQUIRED = 21106     # 下发前必须上传 G 代码
-    BIZ_CNC_SETUP_SHEET_REQUIRED = 21107 # 下发前必须上传设定单
     BIZ_PART_FILE_DUPLICATE = 21108      # 2026-07-14：同 part+kind+content_sha256 撞唯一索引（并发兜底）
     BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED = 21109  # 2026-07-17：root customer prefix 未在 DELIVERY_NOTE_TEMPLATE_BY_PREFIX 配置
     BIZ_DELIVERY_PARTS_MULTIPLE_CUSTOMERS = 21110  # 所选零件分属多个 L1 root customer

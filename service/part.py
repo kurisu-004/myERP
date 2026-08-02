@@ -2128,20 +2128,13 @@ class PartService:
         与 place_on_shelf 走同一个货架/工序校验，落到 ON_SHELF 状态机入口
         复用同一份 on_enter_ON_SHELF 副作用；事件类型为 CNC_RELEASED
         （见 on_release_from_programming 回调）。
-
-        2026-07-10 起加文件前置校验（项目约定 9）：
-        - 必须已上传 ≥1 G 代码（kind=G_CODE）；
-        - 必须已上传 ≥1 CNC 设定单（kind=SETUP_SHEET）；
-        - 否则 BIZ_CNC_PROGRAM_REQUIRED / BIZ_CNC_SETUP_SHEET_REQUIRED。
         """
         part = await self._get_part_or_404(part_id)
-        # 1) 前置文件校验（DB 访问校验，按项目约定放 service 层）
-        await self._assert_cnc_release_prerequisites(part_id)
-        # 2) 货架 / 工序校验
+        # 货架 / 工序校验
         shelf, process = await self._validate_production_shelf_and_process(
             data.shelf_id, data.next_process_id,
         )
-        # 3) 批次解析 + 状态机转换（2026-07-29 批次化）
+        # 批次解析 + 状态机转换（2026-07-29 批次化）
         batch = await self._resolve_target_batch(
             part, self._parse_batch_id(data),
             expect=lambda b: b.status == "PROGRAMMING",
@@ -2165,35 +2158,6 @@ class PartService:
             ),
         )
         return items[0]
-
-    async def _assert_cnc_release_prerequisites(self, part_id: int) -> None:
-        """下发前置：必须已上传 ≥1 G 代码 + ≥1 CNC 设定单（否则拒绝）。"""
-        from model.enums import PartFileKind
-
-        if self.files is None:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message="server missing part file repository",
-                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        g_codes = await self.files.list_by_part(part_id, kind=PartFileKind.G_CODE.value)
-        if not g_codes:
-            raise BizError(
-                code=ErrCode.BIZ_CNC_PROGRAM_REQUIRED,
-                message="未上传 G 代码，无法下发零件到货架",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-
-        setup_sheets = await self.files.list_by_part(
-            part_id, kind=PartFileKind.SETUP_SHEET.value,
-        )
-        if not setup_sheets:
-            raise BizError(
-                code=ErrCode.BIZ_CNC_SETUP_SHEET_REQUIRED,
-                message="未上传 CNC 设定单，无法下发零件到货架",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
 
     async def _get_part_or_404(self, part_id: int) -> TPart:
         part = await self.parts.get_by_id(part_id)
