@@ -196,22 +196,18 @@ async def test_programming_can_be_cancelled(clean_db):
     assert part.serial_no is None  # 释放流水号
 
 
-async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db):
-    """集成测试：release_from_programming 必须先上传 G_CODE + SETUP_SHEET。
+async def _build_release_env(session, *, name: str = "测试客户", code: str = "X"):
+    """构造 release_from_programming 集成测试所需的环境：客户/货架/工序/映射。
 
-    走 PartService.release_from_programming 端到端，验证前置校验。
+    返回 (customer, shelf, process, part_svc, files_svc)；tests 自行创建 part。
     """
     from sqlalchemy import text as _sql_text
 
-    from core.exception import BizError
     from repository.customer import CustomerRepository
     from repository.part_file import PartFileRepository
     from service.part import PartService
     from service.part_file import PartFileService
-    from schema.part import PlaceOnShelfRequest
-    from model.enums import PartFileKind
 
-    session = clean_db
     await session.execute(_sql_text("TRUNCATE TABLE t_part_event RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_part_file RESTART IDENTITY"))
     await session.execute(_sql_text("TRUNCATE TABLE t_shelf RESTART IDENTITY"))
@@ -220,42 +216,28 @@ async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db
     await session.execute(_sql_text("TRUNCATE TABLE t_serial_counter"))
     await session.commit()
 
-    customer = await _make_customer(session, "测试客户")
+    customer = await _make_customer(session, name)
     shelf_repo = ShelfRepository(session)
     shelf = await shelf_repo.create(
-        TShelf(code="PROD-CNC-X", name="CNC 货架 X", zone=ShelfZone.PRODUCTION.value)
+        TShelf(
+            code=f"PROD-CNC-{code}", name=f"CNC 货架 {code}",
+            zone=ShelfZone.PRODUCTION.value,
+        )
     )
     process_repo = ProcessRepository(session)
     process = await process_repo.create(
-        await _make_process(session, "CNC-OPX", "CNC 操机 X")
+        await _make_process(session, f"CNC-OP-{code}", f"CNC 操机 {code}")
     )
     # 货架↔工序映射：release_from_programming 落货架时的 _assert_shelf_maps_process 需要
     session.add(TShelfProcess(shelf_id=shelf.id, process_id=process.id, sort_order=0))
     await session.flush()
-
-    part_repo = PartRepository(session)
-    part = await part_repo.create(
-        TPart(
-            name="cnc-need-files",
-            drawing_no="D-NEED",
-            applicant_name="tester",
-            quantity=1,
-            request_date=date(2026, 7, 10),
-            planned_delivery_date=date(2026, 7, 20),
-            customer_id=customer.id,
-            serial_no="X0001",
-            status=PartStatus.PROGRAMMING.value,
-            location="OFFICE",
-        )
-    )
-    from tests.conftest import seed_root_batch
-    await seed_root_batch(session, part)
 
     files_repo = PartFileRepository(session)
     files_svc = PartFileService(files=files_repo)
     # 屏蔽真实 COS 调用
     from unittest.mock import AsyncMock as _AM, patch as _P
     _P("service.part_file.cos_mod.upload_object", new=_AM()).start()
+    part_repo = PartRepository(session)
     part_svc = PartService(
         parts=part_repo,
         part_batches=PartBatchRepository(session),
@@ -273,33 +255,96 @@ async def test_release_from_programming_requires_g_code_and_setup_sheet(clean_db
         event_broadcaster=None,
     )
 
-    # case 1: 既无 G 代码也无设定单 → BIZ_CNC_PROGRAM_REQUIRED
-    with pytest.raises(BizError) as exc:
-        await part_svc.release_from_programming(
-            part_id=part.id,
-            data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
-        )
-    assert exc.value.code.value == 21106
+    return customer, shelf, process, part_svc, files_svc
 
-    # case 2: 只有 G 代码 → BIZ_CNC_SETUP_SHEET_REQUIRED
+
+async def _make_programming_part(session, customer, drawing_no: str, serial_no: str = "X0001"):
+    """创建一个 PROGRAMMING 状态的零件 + 根批次，用于 release_from_programming 测试。"""
+    part = await PartRepository(session).create(
+        TPart(
+            name=f"cnc-{drawing_no.lower()}",
+            drawing_no=drawing_no,
+            applicant_name="tester",
+            quantity=1,
+            request_date=date(2026, 7, 10),
+            planned_delivery_date=date(2026, 7, 20),
+            customer_id=customer.id,
+            serial_no=serial_no,
+            status=PartStatus.PROGRAMMING.value,
+            location="OFFICE",
+        )
+    )
+    from tests.conftest import seed_root_batch
+    await seed_root_batch(session, part)
+    return part
+
+
+async def test_release_from_programming_succeeds_with_no_files_uploaded(clean_db):
+    """2026-08-02 起 release_from_programming 不再做文件前置校验。
+
+    集成测试：完全没上传任何 CNC 文件，也能成功下发（PROGRAMMING → IN_PROCESS）。
+    """
+    from schema.part import PlaceOnShelfRequest
+
+    session = clean_db
+    customer, shelf, process, part_svc, _files_svc = await _build_release_env(
+        session, code="A",
+    )
+    part = await _make_programming_part(session, customer, "D-NOFILE", serial_no="X0001")
+
+    out = await part_svc.release_from_programming(
+        part_id=part.id,
+        data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
+    )
+    assert out.status == PartStatus.IN_PROCESS.value
+
+
+async def test_release_from_programming_succeeds_with_only_g_code_uploaded(clean_db):
+    """集成测试：只上传 G 代码（无设定单）也能成功 release。"""
+    from model.enums import PartFileKind
+    from schema.part import PlaceOnShelfRequest
+
+    session = clean_db
+    customer, shelf, process, part_svc, files_svc = await _build_release_env(
+        session, code="B",
+    )
+    part = await _make_programming_part(session, customer, "D-ONLY-NC", serial_no="X0001")
+
     await files_svc.upload(
         owner_id=part.id, kind=PartFileKind.G_CODE,
         data=b"%NC", original_filename="p.nc",
         content_type=None,
     )
-    with pytest.raises(BizError) as exc:
-        await part_svc.release_from_programming(
-            part_id=part.id,
-            data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
-        )
-    assert exc.value.code.value == 21107
 
-    # case 3: 又有 G 代码又有设定单 → 成功（状态机走 PROGRAMMING → IN_PROCESS）
+    out = await part_svc.release_from_programming(
+        part_id=part.id,
+        data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
+    )
+    assert out.status == PartStatus.IN_PROCESS.value
+
+
+async def test_release_from_programming_succeeds_with_both_files_uploaded(clean_db):
+    """集成测试：G 代码 + 设定单都上传也能成功 release（既有 happy path）。"""
+    from model.enums import PartFileKind
+    from schema.part import PlaceOnShelfRequest
+
+    session = clean_db
+    customer, shelf, process, part_svc, files_svc = await _build_release_env(
+        session, code="C",
+    )
+    part = await _make_programming_part(session, customer, "D-BOTH", serial_no="X0001")
+
+    await files_svc.upload(
+        owner_id=part.id, kind=PartFileKind.G_CODE,
+        data=b"%NC", original_filename="p.nc",
+        content_type=None,
+    )
     await files_svc.upload(
         owner_id=part.id, kind=PartFileKind.SETUP_SHEET,
         data=b"%PDF", original_filename="setup.pdf",
         content_type=None,
     )
+
     out = await part_svc.release_from_programming(
         part_id=part.id,
         data=PlaceOnShelfRequest(shelf_id=shelf.id, next_process_id=process.id),
