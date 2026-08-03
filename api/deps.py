@@ -573,6 +573,7 @@ def get_delivery_note_service(
         workers=WorkerRepository(session),
         work_types=WorkTypeRepository(session),
         part_events=PartEventRepository(session),
+        assemblies=AssemblyRepository(session),  # 2026-08-03：pickup 触发装配件 rollup
         broadcaster=_broadcaster if broadcaster is None else broadcaster,
         event_broadcaster=(
             _event_broadcaster if event_broadcaster is None
