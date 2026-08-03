@@ -136,7 +136,7 @@ class PartCreateRequest(BaseModel):
 
 ### 4. 状态机校验在 service 层
 
-`PartStatus`（10 个 DB 状态）和 `AssemblyStatus`（4 态）定义在 `model/enums.py`。状态流转由 `python-statemachine` (`StateChart`) 管理，详见 §状态机约定。DB 访问型校验（货架存在、区域、工人有效）在 service 层于 `sm.send()` 之前执行；状态机内部不含 DB 访问。
+`PartStatus`（10 个 DB 状态）和 `AssemblyStatus`（7 态，2026-08-03 扩展）定义在 `model/enums.py`。状态流转由 `python-statemachine` (`StateChart`) 管理，详见 §状态机约定。DB 访问型校验（货架存在、区域、工人有效）在 service 层于 `sm.send()` 之前执行；状态机内部不含 DB 访问。
 
 ### 5. 错误处理
 
@@ -198,7 +198,11 @@ INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
 - `OUTSOURCE` → DB `status="OUTSOURCE"` + `location="OUTSOURCE_COMPANY"` + `current_holder_id = outsource_company.id`。
 - 终态：`COMPLETED`、`CANCELLED`。
 
-**Assembly 状态（4 态）**：`PENDING → IN_PROCESS → COMPLETED`，可从 PENDING/IN_PROCESS → CANCELLED。`IN_PROCESS` / `COMPLETED` 由 service 在子件状态变更时自动维护。
+**Assembly 状态（7 态，2026-08-03 扩展）**：`PENDING → IN_PROCESS → INSPECTION → READY_TO_SHIP → DELIVERED → COMPLETED`，可从任何非终态 → CANCELLED。
+- 父件状态 = min(非取消子件进度)（见 `service/_assembly_rollup.py::ASSEMBLY_ROLLUP_TARGET` + 复用 `service/_batch_ops.py::ROLLUP_PROGRESS`）；含 BACKWARD regression（子件 fail_inspection / start_repair 时父件同步回退）。
+- 终态：`COMPLETED`（所有非取消子件 COMPLETED）、`CANCELLED`（显式取消）。
+- 维护入口：`PartService._check_parent_assembly`（子件流转后）+ `DeliveryNoteService.pickup`（批量配送后，2026-08-03 新增 — 之前绕过）。
+- rollup path 走 `AssemblyStateMachine.recompute(target)`（任意方向），显式 cancel 仍走 named transition `cancel`。
 
 **回调与副作用**：PartEvent 创建、流水号释放（COMPLETED/CANCELLED）、看板广播均在状态机回调中执行，通过 `send()` 的 `**kwargs` 接收依赖。回调都带 `created_by: int | None = None` kwarg 写入 `TPartEvent.created_by`。
 
@@ -553,7 +557,7 @@ frontend/src/
 | ORM | 表 | 关键列（非审计/非 ID） |
 |-----|----|----|
 | TPart | t_part | serial_no, name, drawing_no, applicant_name, quantity, unit_price, total_price, request_date, planned_delivery_date, actual_delivery_date, **order_no, system_delivery_date, note**, status(10 态), location(OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/**OUTSOURCE_COMPANY**), is_urgent, current_holder_id(多态→shelf/worker/**outsource_company**), placed_at, customer_id, assembly_id, next_process_id |
-| TAssembly | t_assembly | serial_no, drawing_no, name, applicant_name, customer_id, request_date, planned_delivery_date, actual_delivery_date, is_urgent, status(PENDING/IN_PROCESS/COMPLETED/CANCELLED) |
+| TAssembly | t_assembly | serial_no, drawing_no, name, applicant_name, customer_id, request_date, planned_delivery_date, actual_delivery_date, is_urgent, status(PENDING/IN_PROCESS/INSPECTION/READY_TO_SHIP/DELIVERED/COMPLETED/CANCELLED) |
 | TPartEvent | t_part_event | part_id, worker_id, created_by, event_type, from_status, to_status, drawing_code, badge_code, note |
 | TCustomer | t_customer | name, parent_id(自引用邻接表), serial_prefix(A-Z) |
 | TApplicant | t_applicant | name, customer_id（partial unique `(name, customer_id) WHERE deleted_at IS NULL`）|
@@ -579,7 +583,7 @@ frontend/src/
 
 - `PartStatus`: PENDING, PROGRAMMING, IN_PROCESS, INSPECTION, READY_TO_SHIP, DELIVERED, REPAIRING, **OUTSOURCE**, COMPLETED, CANCELLED（10）
 - `PartLocation`: OFFICE, PRODUCTION_SHELF, WORKER, INSPECTION_SHELF, **OUTSOURCE_COMPANY**
-- `AssemblyStatus`: PENDING, IN_PROCESS, COMPLETED, CANCELLED
+- `AssemblyStatus`: PENDING, IN_PROCESS, **INSPECTION**, **READY_TO_SHIP**, **DELIVERED**, COMPLETED, CANCELLED（7，2026-08-03 扩展）
 - `PartEventType`: CREATED, RELEASED, SENT_TO_PROGRAMMING, CNC_RELEASED, PLACED_ON_SHELF, PICKED_UP, RETURNED, INSPECTED, INSPECTION_FAILED, STATUS_CHANGED, REPAIR_STARTED, REPAIR_COMPLETED, SENT_TO_OUTSOURCE, RECEIVED_FROM_OUTSOURCE, QUOTE_CREATED, QUOTE_APPROVED, CANCELLED, COMPLETED
 - `UserRole`: MANAGER, SHELF_ACCOUNT, CLERK, INSPECTOR, CNC_PROGRAMMER
 - `ShelfZone`: PRODUCTION, INSPECTION

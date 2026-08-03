@@ -462,7 +462,8 @@ def upgrade() -> None:
     )
 
     # =================================================================
-    # 9) t_assembly：4 态 PENDING/IN_PROCESS/COMPLETED/CANCELLED
+    # 9) t_assembly：7 态（2026-08-03 扩展） PENDING/IN_PROCESS/INSPECTION/
+    # READY_TO_SHIP/DELIVERED/COMPLETED/CANCELLED
     # =================================================================
     op.create_table(
         "t_assembly",

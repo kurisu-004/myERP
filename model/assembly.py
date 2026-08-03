@@ -94,7 +94,11 @@ class TAssembly(Base, AuditMixin):
         default="PENDING",
         server_default="PENDING",
         index=True,
-        comment="PENDING（默认）/ IN_PROCESS / COMPLETED / CANCELLED",
+        comment=(
+            "PENDING（默认）/ IN_PROCESS / INSPECTION / READY_TO_SHIP / "
+            "DELIVERED / COMPLETED / CANCELLED（2026-08-03 扩 7 态，"
+            "由 service/_assembly_rollup.py 从子件派生）"
+        ),
     )
     # 装配体级别序列号（与 t_part.serial_no 同 String(8)）。
     # 老装配件此字段为 NULL；service 层 cancel / soft_delete 跳过 NULL。
