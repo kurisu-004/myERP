@@ -71,6 +71,7 @@ local_settings.py
 .env.*
 !.env.example
 !.env.production.example
+!.env.staging.example
 *.pem
 *.key
 secrets.yaml
