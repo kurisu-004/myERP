@@ -114,7 +114,7 @@ async def recompute_assembly_status(
         session, assembly, attrs=("status", "version", "updated_at"),
     )
 
-    # 6. 走 SM.recompute（任意方向，含回退）
+    # 6. 走 SM.recompute（任意方向，含回退；同步方法）
     if not assembly.sm.recompute(target):
         # 终态短路或非法 target → SM 拒绝；本函数已确保不会出现，
         # 但防御性兜底：返回 False
