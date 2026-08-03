@@ -20,7 +20,7 @@ FROM nginx:1.27-alpine AS runtime
 
 # 移除默认 default.conf 避免与我们的 server 块冲突
 RUN rm -f /etc/nginx/conf.d/default.conf \
-    && apk add --no-cache wget bash \
+    && apk add --no-cache wget bash gettext \
     && mkdir -p /etc/nginx/ssl
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf

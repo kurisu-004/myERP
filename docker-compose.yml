@@ -73,9 +73,16 @@ services:
       - "${FRONTEND_HTTPS_PORT:-443}:443"
     volumes:
       # 备案后 SSL 证书挂进 frontend 容器（绑定到 nginx 期望的路径）。
-      # 腾讯云合并证书（含中间 CA）+ 私钥；证书缺失时 entrypoint.sh 会自动 sed 删 HTTPS 块。
+      # 腾讯云合并证书（含中间 CA）+ 私钥；证书缺失时 entrypoint.sh 会自动切到 HTTP-only 模板。
       - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud_bundle.crt:/etc/nginx/ssl/hsh-erp.cloud_bundle.crt:ro
       - /home/ubuntu/hsh-erp/ssl/hsh-erp.cloud.key:/etc/nginx/ssl/hsh-erp.cloud.key:ro
+    environment:
+      # nginx 模板占位符默认值（生产 = hsh-erp.cloud）；测试服务器覆盖：
+      # NGINX_SERVER_NAME=_ / NGINX_REDIRECT_TARGET= / 不挂证书。
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-hsh-erp.cloud}
+      NGINX_REDIRECT_TARGET: ${NGINX_REDIRECT_TARGET:-https://hsh-erp.cloud}
+      SSL_CRT_FILENAME: ${SSL_CRT_FILENAME:-hsh-erp.cloud_bundle.crt}
+      SSL_KEY_FILENAME: ${SSL_KEY_FILENAME:-hsh-erp.cloud.key}
     # frontend/nginx.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
 
 # 注：nanobot 服务已于 2026-07-11 暂时下线。
