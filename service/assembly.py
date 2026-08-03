@@ -31,7 +31,7 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from model import TAssembly, TPart, TPartEvent
-from model.enums import PartEventType, PartFileKind, PartStatus
+from model.enums import AssemblyStatus, PartEventType, PartFileKind, PartStatus
 from repository import (
     ApplicantRepository,
     AssemblyRepository,
@@ -74,7 +74,9 @@ def _parse_status(value: str | None) -> str | None:
     if value is None:
         return None
     v = value.strip().upper()
-    if v not in {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}:
+    # 2026-08-03：跟随 AssemblyStatus 枚举自动追踪（7 态）
+    valid = {s.value for s in AssemblyStatus}
+    if v not in valid:
         raise BizError(
             code=ErrCode.BIZ_INVALID_VALUE,
             message=f"invalid assembly status: {value!r}",
