@@ -14,6 +14,7 @@ from . import (
     part,
     process,
     shelf,
+    statistics,
     user,
     work_type,
     worker,
@@ -71,3 +72,5 @@ api_router.include_router(outsource_quote.read_router)
 api_router.include_router(outsource_quote.write_router)
 # 外协发货记录：对账页编辑（2026-07-30 新增）
 api_router.include_router(outsource_shipment.router)
+# 生产统计（MANAGER-only；2026-08-03 新增）
+api_router.include_router(statistics.router)

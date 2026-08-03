@@ -583,6 +583,33 @@ def get_delivery_note_service(
 
 
 # ============================================================
+# 生产统计 DI（2026-08-03 新增）
+# ============================================================
+def get_statistics_service(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> "StatisticsService":
+    """生产统计 service 工厂（MANAGER-only）。
+
+    仅读路径；不写 DB、不广播 dashboard：避免无谓大屏重推。
+    注入：StatisticsRepository + PartRepository / PartEventRepository /
+    WorkerRepository / WorkTypeRepository（保留 API，service 内部按需使用）。
+    """
+    from service.statistics import StatisticsService
+    from repository.statistics import StatisticsRepository
+
+    return StatisticsService(
+        session=session,
+        stats_repo=StatisticsRepository(session),
+        parts=PartRepository(session),
+        events=PartEventRepository(session),
+        workers=WorkerRepository(session),
+        work_types=WorkTypeRepository(session),
+        current_user=user,
+    )
+
+
+# ============================================================
 # 外协公司 DI（2026-07-15 新增）
 # ============================================================
 def get_outsource_company_repo(
