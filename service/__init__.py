@@ -12,10 +12,11 @@ from .part_file import PartFileService
 from .process import ProcessService
 from .shelf import ShelfService
 from .shelf_process import ShelfProcessService
+from .statistics import StatisticsService
 from .user import UserService
-from .worker import WorkerService
 from .work_type import WorkTypeService
 from .work_type_process import WorkTypeProcessService
+from .worker import WorkerService
 
 __all__ = [
     "ApplicantService",
@@ -30,10 +31,11 @@ __all__ = [
     "ProcessService",
     "ShelfProcessService",
     "ShelfService",
+    "StatisticsService",
     "UserService",
-    "WorkerService",
     "WorkTypeProcessService",
     "WorkTypeService",
+    "WorkerService",
     "build_menu_tree",
     "build_snapshot_with_workers",
 ]

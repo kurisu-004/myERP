@@ -9,9 +9,9 @@ from .delivery_note import (
 from .menu import MenuRepository
 from .outsource_company import OutsourceCompanyRepository
 from .outsource_company_process import OutsourceCompanyProcessRepository
-from .outsource_shipment import OutsourceShipmentRepository
 from .outsource_quote import OutsourceQuoteRepository
 from .outsource_quote_event import OutsourceQuoteEventRepository
+from .outsource_shipment import OutsourceShipmentRepository
 from .part import PartRepository
 from .part_batch import PartBatchRepository
 from .part_event import PartEventRepository
@@ -20,10 +20,11 @@ from .process import ProcessRepository
 from .serial_counter import SerialCounterRepository
 from .shelf import ShelfRepository
 from .shelf_process import ShelfProcessRepository
+from .statistics import StatisticsRepository
 from .user import UserRepository, UserRoleRepository
-from .worker import WorkerRepository
 from .work_type import WorkTypeRepository
 from .work_type_process import WorkTypeProcessRepository
+from .worker import WorkerRepository
 
 __all__ = [
     "ApplicantRepository",
@@ -38,17 +39,18 @@ __all__ = [
     "OutsourceQuoteEventRepository",
     "OutsourceQuoteRepository",
     "OutsourceShipmentRepository",
+    "PartBatchRepository",
     "PartEventRepository",
     "PartFileRepository",
-    "PartBatchRepository",
     "PartRepository",
     "ProcessRepository",
     "SerialCounterRepository",
     "ShelfProcessRepository",
     "ShelfRepository",
+    "StatisticsRepository",
     "UserRepository",
     "UserRoleRepository",
-    "WorkerRepository",
     "WorkTypeProcessRepository",
     "WorkTypeRepository",
+    "WorkerRepository",
 ]

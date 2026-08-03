@@ -203,6 +203,17 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '货架管理', icon: 'Platform', menuCode: 'shelves_list', breadcrumb: [{ label: '车间', path: '/shelves' }, { label: '货架管理' }] },
       },
       {
+        path: 'statistics',
+        name: 'ProductionStats',
+        component: () => import('@/views/statistics/ProductionStats.vue'),
+        meta: {
+          title: '生产统计',
+          icon: 'DataAnalysis',
+          menuCode: 'production_stats',
+          breadcrumb: [{ label: '生产统计' }],
+        },
+      },
+      {
         path: 'customers',
         name: 'CustomerList',
         component: () => import('@/views/customers/CustomerList.vue'),
