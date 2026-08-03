@@ -564,6 +564,152 @@ class TestAssemblySoftDelete:
         assert rows == []
 
 
+# ============================================================
+# 2026-08-03 新增：装配体 rollup 端到端测试
+# ============================================================
+class TestAssemblyRollup:
+    """装配件状态跟随子件进度派生态（7 态）。
+
+    直接走 ``service/_assembly_rollup.recompute_assembly_status`` 验证：
+    - 最落后子件 = PENDING → 父件 PENDING
+    - 最落后子件 = INSPECTION → 父件 INSPECTION
+    - 最落后子件 = READY_TO_SHIP → 父件 READY_TO_SHIP
+    - 最落后子件 = DELIVERED → 父件 DELIVERED
+    - 全 COMPLETED → 父件 COMPLETED
+    - 回退：INSPECTION → IN_PROCESS（子件 fail_inspection → ON_SHELF）
+    - 终态短路：COMPLETED / CANCELLED 不被改写
+    """
+
+    async def test_rollup_to_inspection(self, clean_db):
+        """最落后子件 = INSPECTION → 父件 INSPECTION（之前停留在 IN_PROCESS）。"""
+        world = await _make_world(clean_db, prefix="R")
+        asm, parts = await _seed_assembly_with_children(clean_db, world, child_qty=2)
+
+        # 直接 UPDATE 子件 status 模拟业务流（绕开 service 复杂路径）
+        parts[0].status = "INSPECTION"
+        parts[1].status = "INSPECTION"
+        await clean_db.commit()
+        for p in parts:
+            await clean_db.refresh(p)
+
+        from service._assembly_rollup import recompute_assembly_status
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        assert asm.status == "INSPECTION"
+
+    async def test_rollup_to_ready_to_ship(self, clean_db):
+        """最落后子件 = READY_TO_SHIP → 父件 READY_TO_SHIP。"""
+        world = await _make_world(clean_db, prefix="R")
+        asm, parts = await _seed_assembly_with_children(clean_db, world, child_qty=2)
+
+        parts[0].status = "READY_TO_SHIP"
+        parts[1].status = "DELIVERED"  # 一个更前
+        await clean_db.commit()
+
+        from service._assembly_rollup import recompute_assembly_status
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        assert asm.status == "READY_TO_SHIP"
+
+    async def test_rollup_to_delivered(self, clean_db):
+        """最落后子件 = DELIVERED → 父件 DELIVERED。"""
+        world = await _make_world(clean_db, prefix="R")
+        asm, parts = await _seed_assembly_with_children(clean_db, world, child_qty=2)
+
+        for p in parts:
+            p.status = "DELIVERED"
+        await clean_db.commit()
+
+        from service._assembly_rollup import recompute_assembly_status
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        assert asm.status == "DELIVERED"
+
+    async def test_rollup_to_completed(self, clean_db):
+        """全非取消子件 COMPLETED → 父件 COMPLETED。"""
+        world = await _make_world(clean_db, prefix="R")
+        asm, parts = await _seed_assembly_with_children(clean_db, world, child_qty=3)
+
+        for p in parts:
+            p.status = "COMPLETED"
+        await clean_db.commit()
+
+        from service._assembly_rollup import recompute_assembly_status
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        assert asm.status == "COMPLETED"
+
+    async def test_rollup_backward_regression(self, clean_db):
+        """回退：INSPECTION → IN_PROCESS 当子件 fail_inspection（→ ON_SHELF → IN_PROCESS）。"""
+        world = await _make_world(clean_db, prefix="R")
+        asm, parts = await _seed_assembly_with_children(clean_db, world, child_qty=2)
+
+        # 父件先升到 INSPECTION
+        parts[0].status = "INSPECTION"
+        parts[1].status = "INSPECTION"
+        await clean_db.commit()
+        from service._assembly_rollup import recompute_assembly_status
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        assert asm.status == "INSPECTION"
+
+        # 一个子件 fail_inspection → DB status = IN_PROCESS（fail_inspection FSM
+        # 走 INSPECTION → ON_SHELF，但 DB 列统一写 IN_PROCESS）
+        parts[0].status = "IN_PROCESS"
+        await clean_db.commit()
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        # 最落后子件现在是 IN_PROCESS → 父件应回退到 IN_PROCESS
+        assert asm.status == "IN_PROCESS"
+
+    async def test_rollup_terminal_no_change(self, clean_db):
+        """COMPLETED 父件拒绝被改写（即使子件还在变）。"""
+        world = await _make_world(clean_db, prefix="R")
+        asm, parts = await _seed_assembly_with_children(clean_db, world, child_qty=1)
+
+        asm.status = "COMPLETED"
+        parts[0].status = "COMPLETED"
+        await clean_db.commit()
+
+        # 尝试模拟业务流：子件被新流转成 READY_TO_SHIP（理论上不该发生，但防御性测试）
+        parts[0].status = "READY_TO_SHIP"
+        await clean_db.commit()
+
+        from service._assembly_rollup import recompute_assembly_status
+        await recompute_assembly_status(
+            session=clean_db, assembly=asm,
+            parts=PartRepository(clean_db), user_id=None,
+        )
+        await clean_db.commit()
+        await clean_db.refresh(asm)
+        # 终态短路 → 仍 COMPLETED
+        assert asm.status == "COMPLETED"
+
+
 async def _batch_id_for(part_id: int, session) -> int:
     """helper：取某 part_id 的根批次 id（async）。"""
     from sqlalchemy import select as _sa_select
