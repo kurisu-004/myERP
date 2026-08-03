@@ -36,7 +36,7 @@
               <el-icon><Edit /></el-icon>
               <span>编辑元数据</span>
             </el-button>
-            <!-- 取消（CLERK+）：PENDING/IN_PROCESS 可触发 -->
+            <!-- 取消（CLERK+）：非终态（PENDING / IN_PROCESS / INSPECTION / READY_TO_SHIP / DELIVERED）可触发 -->
             <el-button
               v-if="canCancel"
               type="warning"

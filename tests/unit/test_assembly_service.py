@@ -1198,14 +1198,18 @@ class TestParseStatus:
         assert _parse_status(None) is None
 
     async def test_valid(self):
-        # Exact match
+        # Exact match — 2026-08-03 7 态扩展
         assert _parse_status("PENDING") == "PENDING"
         assert _parse_status("IN_PROCESS") == "IN_PROCESS"
+        assert _parse_status("INSPECTION") == "INSPECTION"
+        assert _parse_status("READY_TO_SHIP") == "READY_TO_SHIP"
+        assert _parse_status("DELIVERED") == "DELIVERED"
         assert _parse_status("COMPLETED") == "COMPLETED"
         assert _parse_status("CANCELLED") == "CANCELLED"
         # Case-insensitive
         assert _parse_status("in_process") == "IN_PROCESS"
         assert _parse_status("In_Process") == "IN_PROCESS"
+        assert _parse_status("inspection") == "INSPECTION"
         # Stripped
         assert _parse_status("  completed  ") == "COMPLETED"
 

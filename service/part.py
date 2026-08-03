@@ -365,7 +365,9 @@ class PartService:
         ):
             assembly_statuses = None
             if query.statuses is not None:
-                valid_asm_statuses = {"PENDING", "IN_PROCESS", "COMPLETED", "CANCELLED"}
+                # 2026-08-03：装配件状态扩到 7 态，过滤白名单跟随枚举自动追踪
+                from model.enums import AssemblyStatus
+                valid_asm_statuses = {s.value for s in AssemblyStatus}
                 assembly_statuses = [s.value for s in query.statuses if s.value in valid_asm_statuses]
                 if not assembly_statuses:
                     # 无匹配装配件状态，装配件集为空
@@ -3516,10 +3518,16 @@ class PartService:
         return await self.list_batches(part_id)
 
     async def _check_parent_assembly(self, part: TPart) -> None:
-        """Part 状态变更后，检查并自动更新父 Assembly 状态。"""
+        """Part 状态变更后，rollup 父装配件状态（2026-08-03：派生态 helper 化）。
+
+        所有派生规则集中在 ``service/_assembly_rollup.py``；本函数只负责：
+        - 拉父装配件（含 deleted_at 过滤，与旧实现对齐）
+        - 委托给 ``recompute_assembly_status``
+        """
         if part.assembly_id is None:
             return
         from model.assembly import TAssembly
+        from service._assembly_rollup import recompute_assembly_status
 
         session = self.parts.session
         from sqlalchemy import select
@@ -3533,24 +3541,12 @@ class PartService:
         if assembly is None:
             return
 
-        children = await self.parts.list_children(assembly.id)
-        non_cancelled = [p for p in children if p.status != "CANCELLED"]
-
-        # PENDING -> IN_PROCESS: any non-cancelled child is not PENDING
-        if assembly.status == "PENDING" and any(
-            p.status not in ("PENDING", "CANCELLED") for p in non_cancelled
-        ):
-            assembly.sm.start_production()
-            assembly.updated_by = self._user_id
-            await session.flush()
-
-        # IN_PROCESS -> COMPLETED: all non-cancelled children are COMPLETED
-        if assembly.status == "IN_PROCESS" and non_cancelled and all(
-            p.status == "COMPLETED" for p in non_cancelled
-        ):
-            assembly.sm.complete()
-            assembly.updated_by = self._user_id
-            await session.flush()
+        await recompute_assembly_status(
+            session=session,
+            assembly=assembly,
+            parts=self.parts,
+            user_id=self._user_id,
+        )
 
     # ============================================================
     # 内部：拼客户路径 + location 字段 + 多态 holder

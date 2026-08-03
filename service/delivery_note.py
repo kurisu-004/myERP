@@ -39,6 +39,7 @@ from model.enums import (
 )
 from model.part import TPart
 from model.part_batch import TPartBatch
+from repository.assembly import AssemblyRepository
 from repository.customer import CustomerRepository
 from repository.delivery_note import (
     DeliveryNoteCounterRepository,
@@ -87,6 +88,7 @@ class DeliveryNoteService:
         current_user,
         work_types: WorkTypeRepository | None = None,
         part_batches: PartBatchRepository | None = None,
+        assemblies: "AssemblyRepository | None" = None,  # 2026-08-03：pickup 触发装配件 rollup
         broadcaster=None,
         event_broadcaster=None,
     ) -> None:
@@ -100,6 +102,7 @@ class DeliveryNoteService:
         self.workers = workers
         self.work_types = work_types
         self.part_events = part_events
+        self.assemblies = assemblies  # 2026-08-03：装配件 rollup 用（可空）
         self._user_id = (
             current_user.id if current_user and hasattr(current_user, "id")
             else None
@@ -838,6 +841,27 @@ class DeliveryNoteService:
             )
             part.updated_by = self._user_id
             await self.parts.update(part)
+
+        # 2026-08-03：装配件级 rollup（之前 pickup 只触发 part 级 rollup，
+        # 装配体仍停留在 IN_PROCESS/INSPECTION/READY_TO_SHIP，导致 PartsList
+        # 装配体行 badge 与详情页不一致）。必须放在 part 级 rollup 之后；
+        # 同一事务内 flush。
+        if self.assemblies is not None:
+            from model.assembly import TAssembly
+            from service._assembly_rollup import recompute_assembly_status
+            for part_id in {b.part_id for b, _p in note_batches}:
+                part = await self.parts.get_by_id(part_id)
+                if part is None or part.assembly_id is None:
+                    continue
+                asm = await self.session.get(TAssembly, part.assembly_id)
+                if asm is None or asm.deleted_at is not None:
+                    continue
+                await recompute_assembly_status(
+                    session=self.session,
+                    assembly=asm,
+                    parts=self.parts,
+                    user_id=self._user_id,
+                )
 
         # 单据 SUBMITTED → PICKED_UP（2026-07-23 决策：停在 PICKED_UP，不自动
         # archive；PICKED_UP 展示为「已送货」。ARCHIVED 状态暂不使用，保留定义。）

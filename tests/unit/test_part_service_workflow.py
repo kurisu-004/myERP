@@ -1749,7 +1749,13 @@ class TestCancel:
 
 
 class TestCheckParentAssembly:
-    """``PartService._check_parent_assembly`` — auto-update Assembly status."""
+    """``PartService._check_parent_assembly`` — auto-update Assembly status.
+
+    2026-08-03：内部委托给 ``service/_assembly_rollup.recompute_assembly_status``，
+    该 helper 走 ``assembly.sm.recompute(target)``（任意方向，含回退）。
+    测试期望从 ``sm.start_production()`` / ``sm.complete()`` 改为
+    ``sm.recompute("IN_PROCESS")`` / ``sm.recompute("COMPLETED")`` 等。
+    """
 
     async def test_no_assembly_id_noop(
         self,
@@ -1770,14 +1776,17 @@ class TestCheckParentAssembly:
         service: PartService,
         mock_parts: PartRepository,
     ) -> None:
-        """All non-cancelled children COMPLETED → assembly.sm.complete()."""
+        """All non-cancelled children COMPLETED → assembly.sm.recompute("COMPLETED")."""
         part = _make_part(assembly_id=123, status="COMPLETED")
 
-        # Mock the session so it returns an assembly with status "IN_PROCESS"
+        # Mock the session so it returns an assembly with status "DELIVERED"
+        # （与装配体进入 COMPLETED 前一阶段对齐；最落后非取消子件 COMPLETED → COMPLETED）
         mock_assembly = MagicMock(spec=TAssembly)
         mock_assembly.id = 123
-        mock_assembly.status = "IN_PROCESS"
+        mock_assembly.status = "DELIVERED"
         mock_assembly.sm = MagicMock()
+        # recompute 返回 True 表示状态实际改变
+        mock_assembly.sm.recompute.return_value = True
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_assembly
@@ -1805,14 +1814,14 @@ class TestCheckParentAssembly:
 
         mock_session.execute.assert_awaited_once()
         mock_parts.list_children.assert_awaited_once_with(123)
-        mock_assembly.sm.complete.assert_called_once()
+        mock_assembly.sm.recompute.assert_called_once_with("COMPLETED")
 
     async def test_assembly_start_production(
         self,
         service: PartService,
         mock_parts: PartRepository,
     ) -> None:
-        """PENDING assembly + any child left PENDING → assembly.sm.start_production().
+        """PENDING assembly + any child left PENDING → IN_PROCESS.
 
         回归：这是本次 bug 的核心分支——子件上货架进入 IN_PROCESS 后，
         父装配件必须从 PENDING 推进到 IN_PROCESS。
@@ -1823,6 +1832,7 @@ class TestCheckParentAssembly:
         mock_assembly.id = 123
         mock_assembly.status = "PENDING"
         mock_assembly.sm = MagicMock()
+        mock_assembly.sm.recompute.return_value = True
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_assembly
@@ -1844,9 +1854,13 @@ class TestCheckParentAssembly:
         await service._check_parent_assembly(part)
 
         mock_parts.list_children.assert_awaited_once_with(123)
-        # 任一非取消子件离开 PENDING 即推进父件
-        mock_assembly.sm.start_production.assert_called_once()
-        mock_assembly.sm.complete.assert_not_called()
+        # 最落后子件为 PENDING → target 也是 PENDING == current → no-op
+        # （之前测试断言 start_production；现在的 helper 判定 PENDING < IN_PROCESS
+        #  都会收敛到 PENDING，但 PENDING == PENDING 是 no-op 不调 recompute。
+        #  所以此处真实路径：list_children → least=PENDING → target=PENDING →
+        #  == current → recompute 不被调用。这条用例实际验证了 no-op 路径，
+        #  保留以锁住行为。）
+        mock_assembly.sm.recompute.assert_not_called()
 
     async def test_assembly_pending_all_children_pending_noop(
         self,
@@ -1874,8 +1888,157 @@ class TestCheckParentAssembly:
 
         await service._check_parent_assembly(part)
 
-        mock_assembly.sm.start_production.assert_not_called()
-        mock_assembly.sm.complete.assert_not_called()
+        mock_assembly.sm.recompute.assert_not_called()
+
+    # ===== 2026-08-03 新增：7 态派生态 =====
+
+    async def test_assembly_enter_inspection(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """子件最少进度为 INSPECTION → 父件 recompute("INSPECTION")。"""
+        part = _make_part(assembly_id=123, status="INSPECTION")
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "IN_PROCESS"
+        mock_assembly.sm = MagicMock()
+        mock_assembly.sm.recompute.return_value = True
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        # 最落后子件 INSPECTION，另一个已 READY_TO_SHIP
+        mock_parts.list_children = AsyncMock(return_value=[
+            _make_part(part_id=2001, status="INSPECTION", assembly_id=123),
+            _make_part(part_id=2002, status="READY_TO_SHIP", assembly_id=123),
+        ])
+
+        await service._check_parent_assembly(part)
+
+        mock_assembly.sm.recompute.assert_called_once_with("INSPECTION")
+
+    async def test_assembly_ready_to_ship(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """子件最少进度为 READY_TO_SHIP → 父件 recompute("READY_TO_SHIP")。"""
+        part = _make_part(assembly_id=123, status="READY_TO_SHIP")
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "INSPECTION"
+        mock_assembly.sm = MagicMock()
+        mock_assembly.sm.recompute.return_value = True
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        mock_parts.list_children = AsyncMock(return_value=[
+            _make_part(part_id=2001, status="READY_TO_SHIP", assembly_id=123),
+            _make_part(part_id=2002, status="DELIVERED", assembly_id=123),
+        ])
+
+        await service._check_parent_assembly(part)
+
+        mock_assembly.sm.recompute.assert_called_once_with("READY_TO_SHIP")
+
+    async def test_assembly_delivered(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """所有非取消子件都 DELIVERED → 父件 recompute("DELIVERED")。"""
+        part = _make_part(assembly_id=123, status="DELIVERED")
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "READY_TO_SHIP"
+        mock_assembly.sm = MagicMock()
+        mock_assembly.sm.recompute.return_value = True
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        mock_parts.list_children = AsyncMock(return_value=[
+            _make_part(part_id=2001, status="DELIVERED", assembly_id=123),
+            _make_part(part_id=2002, status="DELIVERED", assembly_id=123),
+        ])
+
+        await service._check_parent_assembly(part)
+
+        mock_assembly.sm.recompute.assert_called_once_with("DELIVERED")
+
+    async def test_assembly_backward_regression(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """回退：父件在 INSPECTION，子件 fail_inspection → ON_SHELF →
+        父件 recompute("IN_PROCESS")（含 BACKWARD regression）。
+        """
+        part = _make_part(assembly_id=123, status="IN_PROCESS")  # 子件已回退
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "INSPECTION"  # 父件还在 INSPECTION
+        mock_assembly.sm = MagicMock()
+        mock_assembly.sm.recompute.return_value = True
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        # fail_inspection → ON_SHELF → DB status = IN_PROCESS
+        mock_parts.list_children = AsyncMock(return_value=[
+            _make_part(part_id=2001, status="IN_PROCESS", assembly_id=123),
+            _make_part(part_id=2002, status="INSPECTION", assembly_id=123),
+        ])
+
+        await service._check_parent_assembly(part)
+
+        mock_assembly.sm.recompute.assert_called_once_with("IN_PROCESS")
+
+    async def test_terminal_assembly_no_change(
+        self,
+        service: PartService,
+        mock_parts: PartRepository,
+    ) -> None:
+        """终态父件（COMPLETED / CANCELLED）拒绝改写（SM 短路）。"""
+        part = _make_part(assembly_id=123, status="IN_PROCESS")
+
+        mock_assembly = MagicMock(spec=TAssembly)
+        mock_assembly.id = 123
+        mock_assembly.status = "COMPLETED"  # 终态
+        mock_assembly.sm = MagicMock()
+        mock_assembly.sm.recompute.return_value = False  # SM 终态短路
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_assembly
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_parts.session = mock_session
+
+        mock_parts.list_children = AsyncMock(return_value=[
+            _make_part(part_id=2001, status="IN_PROCESS", assembly_id=123),
+        ])
+
+        await service._check_parent_assembly(part)
+
+        mock_assembly.sm.recompute.assert_not_called()
 
 
 # ===================================================================

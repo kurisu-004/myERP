@@ -15,22 +15,35 @@ export type AssemblySortKey =
 
 export type SortDir = 'ASC' | 'DESC'
 
-/** 装配件状态枚举（与后端 model/enums.py::AssemblyStatus 对齐）。 */
-export type AssemblyStatus = 'PENDING' | 'IN_PROCESS' | 'COMPLETED' | 'CANCELLED'
+/** 装配件状态枚举（与后端 model/enums.py::AssemblyStatus 对齐，2026-08-03 扩 7 态）。 */
+export type AssemblyStatus =
+  | 'PENDING'
+  | 'IN_PROCESS'
+  | 'INSPECTION'
+  | 'READY_TO_SHIP'
+  | 'DELIVERED'
+  | 'COMPLETED'
+  | 'CANCELLED'
 
 /** 装配件状态 → 中文 label（与 PartsList 同款模式）。 */
 export const ASSEMBLY_STATUS_LABEL: Record<AssemblyStatus, string> = {
   PENDING: '待生产',
   IN_PROCESS: '生产中',
+  INSPECTION: '待品检',
+  READY_TO_SHIP: '待送货',
+  DELIVERED: '已送货',
   COMPLETED: '已完成',
   CANCELLED: '已取消',
 }
 
-/** 装配件状态 → el-tag type。 */
+/** 装配件状态 → el-tag type（与 ORDER_STATUS_TAG_TYPE 视觉语义对齐）。 */
 export const ASSEMBLY_STATUS_TAG_TYPE: Record<AssemblyStatus,
   'info' | 'warning' | 'success' | 'danger' | 'primary'> = {
   PENDING: 'info',
   IN_PROCESS: 'primary',
+  INSPECTION: 'warning',
+  READY_TO_SHIP: 'primary',
+  DELIVERED: 'success',
   COMPLETED: 'success',
   CANCELLED: 'info',
 }
@@ -54,7 +67,7 @@ export interface AssemblyItem {
   planned_delivery_date: string
   actual_delivery_date: string | null
   is_urgent: boolean
-  /** PENDING / IN_PROCESS / COMPLETED / CANCELLED */
+  /** PENDING / IN_PROCESS / INSPECTION / READY_TO_SHIP / DELIVERED / COMPLETED / CANCELLED */
   status: AssemblyStatus
   child_count: number
   // —— 2026-07-24 新增：装配体自身价格 + 送货单字段 ——

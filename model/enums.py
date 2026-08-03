@@ -41,29 +41,40 @@ class PartLocation(str, enum.Enum):
 
 
 class AssemblyStatus(str, enum.Enum):
-    """装配件状态机。
+    """装配件状态机（2026-08-03 扩展：跟随子件派生态）。
 
     DB 存 `varchar(20)`，Python 层靠本 Enum 做合法值校验，service 层抛
     `BIZ_INVALID_VALUE` / `BIZ_INVALID_TRANSITION`。
 
     流转示意（service 层 / 事件触发维护）：
-        PENDING ──任一子件进入生产/品检/待送货/已送货──▶ IN_PROCESS
-                                                                  │
-        所有子件 COMPLETED ────────────────────────────────────▶ COMPLETED
-        手动取消（整装级联，所有子件一同 CANCELLED）───▶ CANCELLED
+        PENDING ──任一子件进入生产/编程/外协/品检/待送货/已送货──▶ IN_PROCESS
+                  （PROGRAMMING / IN_PROCESS / REPAIRING / OUTSOURCE 全部映射
+                   到 IN_PROCESS；与零件 rollup 规则一致——见 ROLLUP_PROGRESS）
+        IN_PROCESS ──任一子件进入 INSPECTION──▶ INSPECTION
+        INSPECTION ──任一子件进入 READY_TO_SHIP──▶ READY_TO_SHIP
+        READY_TO_SHIP ──任一子件进入 DELIVERED──▶ DELIVERED
+        DELIVERED ──任一非取消子件进入 COMPLETED──▶ COMPLETED
+        （上述任意阶段，子件回退时父件可同步回退——fail_inspection / start_repair
+         触发 rollup backward regression。）
+        手动取消（整装级联，所有子件一同 CANCELLED）──▶ CANCELLED
 
     注意：
-    - IN_PROCESS / COMPLETED 切换由 service 在子件状态变更事件里**自动维护**，
-      不会走 `change-status` 端点（避免与子件状态不一致）。
+    - IN_PROCESS / INSPECTION / READY_TO_SHIP / DELIVERED / COMPLETED 切换
+      由 service 在子件状态变更事件里**自动维护**，不会走 `change-status`
+      端点（避免与子件状态不一致）；详见 `service/_assembly_rollup.py`。
     - CANCELLED 是**显式动作**：调用 `POST /assemblies/{id}/cancel` 端点，
       service 在该事务内把所有未完成的子件也置为 CANCELLED（保留审计事件）。
-    - 终态（COMPLETED / CANCELLED）不接受任何再变更。
+    - 终态（COMPLETED / CANCELLED）不接受任何再变更；其他中段态可由
+      子件回退连带回退（向下兼容）。
     """
 
-    PENDING = "PENDING"           # 创建时初始状态
-    IN_PROCESS = "IN_PROCESS"     # 至少有一个子件进入生产环节
-    COMPLETED = "COMPLETED"       # 所有子件均 COMPLETED
-    CANCELLED = "CANCELLED"       # 手动取消（含级联子件）
+    PENDING = "PENDING"             # 创建时初始状态
+    IN_PROCESS = "IN_PROCESS"       # 至少有一个子件进入生产/编程/外协/返修环节
+    INSPECTION = "INSPECTION"       # 至少有一个非取消子件进入 INSPECTION（2026-08-03 新增）
+    READY_TO_SHIP = "READY_TO_SHIP" # 至少有一个非取消子件进入 READY_TO_SHIP（2026-08-03 新增）
+    DELIVERED = "DELIVERED"         # 至少有一个非取消子件进入 DELIVERED（2026-08-03 新增）
+    COMPLETED = "COMPLETED"         # 所有非取消子件均 COMPLETED
+    CANCELLED = "CANCELLED"         # 手动取消（含级联子件）
 
 
 class PartEventType(str, enum.Enum):
