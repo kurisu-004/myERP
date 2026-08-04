@@ -55,6 +55,7 @@
             v-model="search.serialNo"
             placeholder="序列号"
             clearable
+            :class="{ 'scan-flash': serialNoFlash }"
             style="width: 160px"
             @keyup.enter="onSearch"
             @clear="onSearch"
@@ -1087,6 +1088,7 @@ import { usePermissions } from '@/composables/usePermissions'
 import { useCustomerTree } from '@/composables/useCustomerTree'
 import { useListFilterPersist } from '@/composables/useListFilterPersist'
 import { useColumnVisibility } from '@/composables/useColumnVisibility'
+import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 
 // ============ 角色 & 默认筛选 ============
@@ -1144,6 +1146,8 @@ function initialSearch(): SearchState {
   }
 }
 const search = reactive<SearchState>(initialSearch())
+// 2026-08-04：扫码命中序列号时给输入框加 0.6s 脉冲动画（视觉反馈）
+const serialNoFlash = ref(false)
 
 const statusOptions: { value: OrderStatus; label: string }[] = (
   Object.keys(ORDER_STATUS_LABEL) as OrderStatus[]
@@ -1805,6 +1809,44 @@ const onSearch = (): void => {
   void fetchList()
 }
 
+// 2026-08-04：扫码直接按序列号搜索——清空其它筛选条件（用户决定），只保留 serialNo 搜索。
+// 用户在 serialNo 输入框聚焦时由 useBarcodeScanner 的 isInTextField 守卫自动跳过；
+// 行内编辑中也不要打断，所以 editingId 非空时静默返回。
+function onSerialNoScan(rawCode: string): void {
+  const code = rawCode.trim()
+  if (!code) return
+  if (editingId.value !== null) return
+  // 清空所有筛选（keyword/orderNo/serialNo/statuses/isUrgent/customerId/
+  // 3 个日期区间/nextProcessIds/locations），只保留 serialNo 搜索。
+  search.keyword = ''
+  search.orderNo = ''
+  search.serialNo = code
+  search.statuses = []
+  search.isUrgent = null
+  search.customerId = ''
+  search.requestDateFrom = ''
+  search.requestDateTo = ''
+  search.plannedDeliveryDateFrom = ''
+  search.plannedDeliveryDateTo = ''
+  search.systemDeliveryDateFrom = ''
+  search.systemDeliveryDateTo = ''
+  search.nextProcessIds = []
+  search.locations = []
+  // 同步刷新 popover 内 draft 状态（避免下次打开还看到旧的）。
+  statusDraft.value = []
+  statusUrgentDraft.value = false
+  nextProcessDraft.value = []
+  customerDraft.value = null
+  locationDraft.value = []
+  // 持久化（与 onReset 同步写 localStorage）。
+  snapshotPartsFilter()
+  // 触发查询（onSearch 内会清空批量选择 + fetchList）。
+  onSearch()
+  // 视觉反馈：serialNo 输入框脉冲动画 0.6s。
+  serialNoFlash.value = true
+  setTimeout(() => { serialNoFlash.value = false }, 600)
+}
+
 function onSortChange({
   prop,
   order,
@@ -2032,9 +2074,14 @@ watch(editingId, (val) => {
   }
 })
 
+// 2026-08-04：扫码枪扫描序列号直接搜索（与 onReset 类似但保留 serialNo）。
+const { onScan } = useBarcodeScanner()
+const unsubPartsListScan = onScan((code) => { onSerialNoScan(code) })
+
 onBeforeUnmount(() => {
   if (typeof document === 'undefined') return
   document.removeEventListener('keydown', onEditEnter)
+  unsubPartsListScan()
 })
 
 // 2026-07-24 v2：总价列响应式显示（编辑态用 editBuffer，非编辑态用 row）
@@ -2545,4 +2592,11 @@ async function onBatchDispatchConfirm(): Promise<void> {
 :deep(.el-table__row.row-on-delivery-note:hover > td.el-table__cell) {
   background-color: #d0e8ff !important;
 }
+
+// 2026-08-04：扫码命中序列号时输入框 0.6s 脉冲动画
+@keyframes scanFlash {
+  0%   { box-shadow: 0 0 0 0 rgba(64, 158, 255, 0.5); }
+  100% { box-shadow: 0 0 0 6px rgba(64, 158, 255, 0);   }
+}
+.scan-flash { animation: scanFlash 0.6s ease-out; }
 </style>
