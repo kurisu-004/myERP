@@ -35,6 +35,7 @@ class ErrCode(IntEnum):
 
     BIZ_WORKER_NOT_FOUND = 20201
     BIZ_WORKER_INACTIVE = 20202
+    BIZ_WORKER_IN_USE = 20203        # 2026-08-04：还有 part.current_holder_id 指向此 worker 且 location=WORKER → 拒停用
 
     # ---- 装配体（图文档 + 子件）----
     # 203xx：装配体相关

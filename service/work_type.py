@@ -97,6 +97,8 @@ class WorkTypeService:
             wt.sort_order = data.sort_order
         wt.updated_by = self._user_id
         await self.work_types.update(wt)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
+        await self.work_types.session.refresh(wt)
         return _work_type_to_out(wt)
 
     async def soft_delete_work_type(self, work_type_id: int) -> None:

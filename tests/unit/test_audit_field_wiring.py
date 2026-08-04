@@ -316,7 +316,8 @@ class TestWorkerAudit:
         called = workers.update.await_args.args[0]
         assert called.updated_by == 502
         assert called.is_active is False
-        assert called.deleted_at is not None
+        # 2026-08-04 起 deactivate 只动 is_active，不再写 deleted_at
+        assert called.deleted_at is None
 
     async def test_reactivate_writes_updated_by(self):
         workers = WorkerRepository.__new__(WorkerRepository)

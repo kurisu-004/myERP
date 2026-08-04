@@ -331,6 +331,7 @@ def get_worker_service(
     return WorkerService(
         workers=WorkerRepository(session),
         work_types=WorkTypeRepository(session),
+        parts=PartRepository(session),  # 2026-08-04：停用前 BIZ_WORKER_IN_USE 校验
         current_user=user,
     )
 
