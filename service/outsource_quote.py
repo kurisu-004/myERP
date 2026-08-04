@@ -783,6 +783,8 @@ class OutsourceQuoteService:
                 serial_no=part.serial_no,
                 drawing_no=part.drawing_no,
                 name=part.name,
+                # 2026-08-04 新增：part 已是 rows tuple 里的 TPart，直接读列
+                is_urgent=bool(part.is_urgent),
                 customer_path=customer_path,
                 next_process_id=next_process_id,
                 next_process_name=process_map.get(int(next_process_id)) if next_process_id else None,
@@ -1091,6 +1093,8 @@ class OutsourceQuoteService:
                 customer_path=customer_path,
                 # 2026-08-02 新增：所属零件的客户下单单价（part_map 已批量取，零额外查询）
                 part_unit_price=part.unit_price if part else None,
+                # 2026-08-04 新增：零件加急（part_map 已批量取，直接读 TPart.is_urgent）
+                is_urgent=bool(part.is_urgent) if part else False,
             ))
         return out
 

@@ -472,6 +472,16 @@ const receivingColumnDefs = [
 ] as const
 const receivingColumnVisibility = useColumnVisibility(receivingColumnDefs, { listKey: 'outsource_send_receive_receiving' })
 
+// 2026-08-04：加急行整行红底（与 PartsList / 看板同款）。
+// 可发送 tab：行 type = SendableItem
+function sendableRowClassName({ row }: { row: SendableItem }): string {
+  return row.is_urgent ? 'row-urgent' : ''
+}
+// 待接收 tab：行 type = OutsourceInFlightItem
+function receivingRowClassName({ row }: { row: OutsourceInFlightItem }): string {
+  return row.is_urgent ? 'row-urgent' : ''
+}
+
 async function refreshReceiving(): Promise<void> {
   receivingLoading.value = true
   receivingError.value = null
@@ -778,6 +788,7 @@ watch(activeTab, async (t) => {
             :loading="sendableLoading"
             row-key="part_id"
             :empty-text="sendableError ?? '暂无符合条件的可发送零件'"
+            :row-class-name="sendableRowClassName"
             :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
             stripe
             border
@@ -1004,6 +1015,8 @@ watch(activeTab, async (t) => {
             :loading="receivingLoading"
             row-key="batch_id"
             :empty-text="receivingError ?? '暂无待接收的零件'"
+            :row-class-name="receivingRowClassName"
+            :card-class="(row) => row.is_urgent ? 'rl-card--urgent' : ''"
             stripe
             border
             size="small"
@@ -1072,6 +1085,7 @@ watch(activeTab, async (t) => {
             <template #card="{ row }">
               <div class="rl-card-head">
                 <span class="rl-card-title">{{ (row as OutsourceInFlightItem).name }}</span>
+                <el-tag v-if="(row as OutsourceInFlightItem).is_urgent" type="danger" size="small">加急</el-tag>
                 <el-tag type="warning" size="small">外协中</el-tag>
               </div>
               <div class="rl-card-sub">
@@ -1317,5 +1331,13 @@ watch(activeTab, async (t) => {
 }
 :deep(.el-tab-pane) {
   padding: 12px 0 0 0;
+}
+
+// 2026-08-04：加急行整行红底（与 PartsList / 看板同款；1c 前端会复用此块不重复加）
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 </style>

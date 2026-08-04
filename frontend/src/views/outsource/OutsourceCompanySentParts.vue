@@ -279,6 +279,11 @@ function statusTagType(s: string): 'warning' | 'primary' | 'success' | 'info' {
   return 'info'
 }
 
+// 2026-08-04：加急行整行红底（与 PartsList / 看板同款）
+function rowClassName({ row }: { row: OutsourceSentPartItem }): string {
+  return row.is_urgent ? 'row-urgent' : ''
+}
+
 // 表格底部合计行（总价列求和 + 第一列显示当前页总数）
 const totalPriceSummary: SummaryMethod<OutsourceSentPartItem> = ({
   columns,
@@ -363,6 +368,7 @@ watch(companyId, () => {
       :loading="loading"
       row-key="shipment_id"
       :empty-text="error ?? '暂无对账记录'"
+      :row-class-name="rowClassName"
       stripe
       border
       size="small"
@@ -576,5 +582,13 @@ watch(companyId, () => {
   margin-left: 12px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+
+// 2026-08-04：加急行整行红底（与 PartsList / 看板同款）
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 </style>

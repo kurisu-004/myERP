@@ -24,6 +24,8 @@ import {
 } from '@/utils/scanHelpers'
 import type { PartItem } from '@/api/parts'
 import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
+import { useColumnVisibility } from '@/composables/useColumnVisibility'
+import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 
 const props = defineProps<{
   /** v-model 兼容（标准命名 modelValue + update:modelValue 来自 el-dialog 习惯） */
@@ -65,6 +67,21 @@ const { onScan } = useBarcodeScanner()
 const existingSet = computed(
   () => new Set(props.existingBatchIds ?? []),
 )
+
+// ============ 列可见性 ============
+// 「selection 勾选列」「入单数量」操作列不放进 defs → 始终可见
+const columnDefs = [
+  { key: 'batch_label', label: '批次' },
+  { key: 'serial_no', label: '序列号' },
+  { key: 'drawing_no', label: '图号' },
+  { key: 'name', label: '名称' },
+  { key: 'order_no', label: '订单号' },
+  { key: 'quantity', label: '批次量' },
+  { key: 'applicant_name', label: '申请人' },
+  { key: 'status', label: '状态' },
+  { key: 'planned_delivery_date', label: '交期' },
+] as const
+const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'delivery_part_picker' })
 
 // 监听 customerId / 打开 → 拉候选
 watch(
@@ -231,9 +248,17 @@ onBeforeUnmount(() => {
       <span class="picker-tip">
         行=批次；数量默认批次全量，改小后入单时自动拆分。已在本单上的批次不可勾选
       </span>
-      <span class="picker-count">
-        已勾 {{ selectedRows.length }} 批
-      </span>
+      <div class="picker-toolbar-right">
+        <span class="picker-count">
+          已勾 {{ selectedRows.length }} 批
+        </span>
+        <ColumnVisibilityPopover
+          :defs="columnDefs"
+          :model-value="columnVisibility.currentMap"
+          @update:model-value="columnVisibility.update"
+          @reset="columnVisibility.showAll"
+        />
+      </div>
     </div>
 
     <el-table
@@ -247,21 +272,21 @@ onBeforeUnmount(() => {
       @selection-change="onSelectionChange"
     >
       <el-table-column type="selection" width="55" :selectable="rowSelectable" />
-      <el-table-column label="批次" min-width="100" align="center">
+      <el-table-column v-if="columnVisibility.isVisible('batch_label')" label="批次" min-width="100" align="center">
         <template #default="{ row }">
           <span class="batch-label">{{ row.batch_label }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="serial_no" label="序列号" min-width="110" sortable align="center"/>
-      <el-table-column prop="drawing_no" label="图号" min-width="110" sortable align="center"/>
-      <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip sortable align="center"/>
+      <el-table-column v-if="columnVisibility.isVisible('serial_no')" prop="serial_no" label="序列号" min-width="110" sortable align="center"/>
+      <el-table-column v-if="columnVisibility.isVisible('drawing_no')" prop="drawing_no" label="图号" min-width="110" sortable align="center"/>
+      <el-table-column v-if="columnVisibility.isVisible('name')" prop="name" label="名称" min-width="140" show-overflow-tooltip sortable align="center"/>
       <!-- 2026-08-01：图号后新增订单号列（与详情页一致），可排序 -->
-      <el-table-column prop="order_no" label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
+      <el-table-column v-if="columnVisibility.isVisible('order_no')" prop="order_no" label="订单号" min-width="120" show-overflow-tooltip sortable align="center">
         <template #default="{ row }">
           <span :class="{ muted: !row.order_no }">{{ row.order_no || '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="批次量" width="80" align="right">
+      <el-table-column v-if="columnVisibility.isVisible('quantity')" label="批次量" width="80" align="right">
         <template #default="{ row }">{{ row.quantity }}</template>
       </el-table-column>
       <el-table-column label="入单数量" width="150" align="center">
@@ -279,8 +304,8 @@ onBeforeUnmount(() => {
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="applicant_name" label="申请人" min-width="90" align="center"/>
-      <el-table-column label="状态" min-width="110" align="center">
+      <el-table-column v-if="columnVisibility.isVisible('applicant_name')" prop="applicant_name" label="申请人" min-width="90" align="center"/>
+      <el-table-column v-if="columnVisibility.isVisible('status')" label="状态" min-width="110" align="center">
         <template #default="{ row }">
           <el-tag
             :type="statusTagType(row.status)"
@@ -300,7 +325,7 @@ onBeforeUnmount(() => {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="planned_delivery_date" label="交期" min-width="110" sortable align="center"/>
+      <el-table-column v-if="columnVisibility.isVisible('planned_delivery_date')" prop="planned_delivery_date" label="交期" min-width="110" sortable align="center"/>
     </el-table>
 
     <template #footer>
@@ -332,6 +357,11 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   font-size: 13px;
   color: var(--el-text-color-secondary);
+}
+.picker-toolbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
 }
 .picker-count {
   font-weight: 600;

@@ -855,6 +855,9 @@ loadCustomers()
   background: #fde2e2 !important;
 }
 :deep(.row-urgent) {
-  background: #fdf6ec !important;
+  background: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 </style>

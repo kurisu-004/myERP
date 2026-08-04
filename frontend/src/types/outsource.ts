@@ -125,6 +125,8 @@ export interface OutsourceQuote {
   customer_path: string | null
   /** 2026-08-02 新增：所属零件的客户下单单价（CNY；与 price 对比谈判空间） */
   part_unit_price: string | null
+  /** 2026-08-04 新增：所属零件加急标记（前端加急红底用） */
+  is_urgent: boolean
 }
 
 export interface OutsourceQuoteListResult {
@@ -281,6 +283,8 @@ export interface OutsourceSentPartItem {
   /** OUTSOURCING / RECEIVED */
   status: string
   is_billed: boolean
+  /** 2026-08-04 新增：所属零件加急标记（前端加急红底用） */
+  is_urgent: boolean
 }
 
 export interface OutsourceSentPartListResult {
@@ -321,6 +325,8 @@ export interface OutsourceInFlightItem {
   sent_at: string | null
   /** 批次 version（OCC） */
   version: number
+  /** 2026-08-04 新增：所属零件加急标记（前端加急红底用） */
+  is_urgent: boolean
 }
 
 export interface OutsourceInFlightListResult {

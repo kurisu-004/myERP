@@ -165,6 +165,9 @@ class OutsourceSentPartItem(BaseModel):
     received_at: datetime | None = None
     status: str = Field(description="OUTSOURCING / RECEIVED")
     is_billed: bool = False
+    # 2026-08-04 新增：所属零件加急（service 从 t_part.is_urgent 填充，
+    # 已通过 list_by_ids 批查拿到 TPart 行，零额外查询）
+    is_urgent: bool = False
 
 
 class OutsourceSentPartListOut(BaseModel):

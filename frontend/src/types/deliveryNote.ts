@@ -67,6 +67,14 @@ export interface DeliveryNoteLineItem {
   /** 已扫过 = true；前端两种命名都允许读。 */
   is_scanned: boolean
   scanned: boolean
+
+  // 2026-08-04：装配件父行字段（仅子件行填；散件为 null）。前端详情页用它构造
+  // 可折叠的装配件父行，打印预览用它做「合并为一套」分组。
+  assembly_id: string | null
+  assembly_serial_no: string | null
+  assembly_drawing_no: string | null
+  assembly_name: string | null
+  assembly_order_no: string | null
 }
 
 export interface DeliveryNoteOut {

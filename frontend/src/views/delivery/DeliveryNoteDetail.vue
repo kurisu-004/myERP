@@ -211,6 +211,14 @@ function partStatusTagType(
   return (ORDER_STATUS_TAG_TYPE as Record<string, 'primary' | 'success' | 'warning' | 'info' | 'danger'>)[s] ?? 'info'
 }
 
+function deliveryLineRowClassName({ row }: { row: any }): string {
+  // 虚拟装配件父行的 urgent 取任一子件加急（与子件红底联动）
+  if (row.is_asm_row) {
+    return row.is_urgent ? 'row-urgent' : ''
+  }
+  return row.is_urgent ? 'row-urgent' : ''
+}
+
 // ============================================================
 // 移除选定零件
 // ============================================================
@@ -290,6 +298,80 @@ const columnDefs = [
 const columnVisibility = useColumnVisibility(columnDefs, {
   listKey: 'delivery_note_detail_line_items',
 })
+
+// ============================================================
+// 2026-08-04：装配件父行 + 可折叠子件行（参照 PartsList L271-278 / L1378-1399 模式，
+// 但走本地分组而非懒加载——详情已一次性返回全量 line_items，避免批次量语义不一致）
+// ============================================================
+interface AssemblyTreeRow extends DeliveryNoteLineItem {
+  is_asm_row?: boolean
+  has_children?: boolean
+  children?: DeliveryNoteLineItem[]
+  unit?: string
+}
+const treeLineItems = computed<AssemblyTreeRow[]>(() => {
+  if (!note.value) return []
+  const flat = note.value.line_items
+  const asmGroups = new Map<string, DeliveryTreeNode[]>()
+  const loose: DeliveryNoteLineItem[] = []
+  flat.forEach((li) => {
+    if (li.assembly_id) {
+      const arr = asmGroups.get(li.assembly_id) ?? []
+      arr.push(li)
+      asmGroups.set(li.assembly_id, arr)
+    } else {
+      loose.push(li)
+    }
+  })
+  const result: AssemblyTreeRow[] = []
+  const insertedAsm = new Set<string>()
+  flat.forEach((li) => {
+    if (!li.assembly_id) {
+      result.push(li as AssemblyTreeRow)
+      return
+    }
+    if (insertedAsm.has(li.assembly_id)) return
+    const children = asmGroups.get(li.assembly_id) ?? []
+    result.push({
+      id: `ASM_${li.assembly_id}`,
+      is_asm_row: true,
+      has_children: true,
+      assembly_id: li.assembly_id,
+      assembly_serial_no: li.assembly_serial_no,
+      assembly_drawing_no: li.assembly_drawing_no,
+      assembly_name: li.assembly_name,
+      assembly_order_no: li.assembly_order_no,
+      // 父行各列展示值（沿用 line_item 列字段，让 el-table 排序/模板不分支）
+      serial_no: li.assembly_serial_no ?? '',
+      drawing_no: li.assembly_drawing_no ?? '',
+      order_no: li.assembly_order_no ?? '',
+      name: li.assembly_name ?? '',
+      applicant_name: children[0]?.applicant_name ?? '',
+      customer_name: children[0]?.customer_name ?? '',
+      customer_path: children[0]?.customer_path ?? '',
+      quantity: 1,
+      unit: '套',
+      note: '',
+      is_urgent: children.some((c) => c.is_urgent),
+      status: 'INSPECTION', // 仅占位（父行不展示 status 列）
+      batch_label: null,
+      batch_no: null,
+      part_id: '',
+      request_date: null,
+      planned_delivery_date: children[0]?.planned_delivery_date ?? null,
+      system_delivery_date: null,
+      is_scanned: false,
+      scanned: false,
+      parent_customer_name: children[0]?.parent_customer_name ?? null,
+      children,
+    })
+    insertedAsm.add(li.assembly_id)
+  })
+  return result
+})
+
+// (alias for ts strict mode)
+type DeliveryTreeNode = DeliveryNoteLineItem
 </script>
 
 <template>
@@ -375,7 +457,10 @@ const columnVisibility = useColumnVisibility(columnDefs, {
           </div>
         </template>
         <el-table
-          :data="note.line_items"
+          :data="treeLineItems"
+          row-key="id"
+          :row-class-name="deliveryLineRowClassName"
+          :tree-props="{ children: 'children', hasChildren: 'has_children' }"
           stripe
           border
           height="500"
@@ -388,16 +473,25 @@ const columnVisibility = useColumnVisibility(columnDefs, {
             v-if="canEdit"
             type="selection"
             width="50"
-            :selectable="() => true"
+            :selectable="(row: any) => !row.is_asm_row"
           />
           <el-table-column type="index" label="#" width="50" />
           <!-- 2026-08-02：每列加 v-if；订单号搬到图号/名称之间 -->
           <el-table-column
             v-if="columnVisibility.isVisible('batch_label')"
-            prop="batch_label" label="批次" min-width="100" sortable align="center"/>
+            prop="batch_label" label="批次" min-width="100" sortable align="center">
+            <template #default="{ row }">
+              <template v-if="row.is_asm_row">—</template>
+              <template v-else>{{ row.batch_label || '—' }}</template>
+            </template>
+          </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('serial_no')"
-            prop="serial_no" label="序列号" min-width="120" sortable align="center"/>
+            prop="serial_no" label="序列号" min-width="120" sortable align="center">
+            <template #default="{ row }">
+              <span :class="{ muted: !row.serial_no }">{{ row.serial_no || '—' }}</span>
+            </template>
+          </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('drawing_no')"
             prop="drawing_no" label="图号" min-width="140" sortable align="center"/>
@@ -408,7 +502,20 @@ const columnVisibility = useColumnVisibility(columnDefs, {
           </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('name')"
-            prop="name" label="名称" min-width="180" sortable align="center"/>
+            label="名称" min-width="200" sortable align="center">
+            <template #default="{ row }">
+              <template v-if="row.is_asm_row">
+                <el-tag type="warning" size="small" class="asm-tag">装配件</el-tag>
+                <router-link
+                  :to="`/assemblies/${row.assembly_id}`"
+                  class="assembly-link"
+                >
+                  {{ row.name }}
+                </router-link>
+              </template>
+              <template v-else>{{ row.name }}</template>
+            </template>
+          </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('customer')"
             label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
@@ -418,10 +525,19 @@ const columnVisibility = useColumnVisibility(columnDefs, {
           </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('applicant_name')"
-            prop="applicant_name" label="申请人" min-width="100" sortable align="center"/>
+            prop="applicant_name" label="申请人" min-width="100" sortable align="center">
+            <template #default="{ row }">{{ row.applicant_name || '—' }}</template>
+          </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('quantity')"
-            prop="quantity" label="数量" min-width="70" sortable align="center" />
+            label="数量" min-width="80" sortable align="center">
+            <template #default="{ row }">
+              <template v-if="row.is_asm_row">
+                <strong>1</strong> <span class="muted">套</span>
+              </template>
+              <template v-else>{{ row.quantity }}</template>
+            </template>
+          </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('request_date')"
             label="请购日期" min-width="120" align="center">
@@ -448,7 +564,9 @@ const columnVisibility = useColumnVisibility(columnDefs, {
             v-if="columnVisibility.isVisible('status')"
             label="状态" min-width="120" align="center">
             <template #default="{ row }">
+              <template v-if="row.is_asm_row">—</template>
               <el-tag
+                v-else
                 :type="partStatusTagType(row.status)"
                 effect="plain"
                 size="small"
@@ -542,6 +660,22 @@ const columnVisibility = useColumnVisibility(columnDefs, {
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .event-note { font-size: 13px; color: #666; margin-top: 4px; }
+
+.asm-tag { margin-right: 6px; }
+.assembly-link {
+  color: var(--primary-color);
+  text-decoration: none;
+}
+.assembly-link:hover { text-decoration: underline; }
+.muted { color: var(--text-secondary); }
+
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
+}
+
 .dl-tray {
   position: fixed;
   top: 16px;

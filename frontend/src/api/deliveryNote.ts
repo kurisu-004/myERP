@@ -272,6 +272,11 @@ export interface PrintNoteResult {
 export interface PrintNotePayload {
   /** 2026-08-02 新增：批次 id 顺序（与预览组件产出对齐；空 = 走默认 DB 顺序） */
   custom_order?: string[]
+  /** 2026-08-04 新增：装配件子件合并为一行（数量 1，单位套，总装图信息）；
+   * false = 散件逐行（默认）。 */
+  merge_assemblies?: boolean
+  /** 2026-08-04 扩展：装配件合并行每套 override 数量（assembly_id 雪花 ID 字符串 → 套数，≥ 1） */
+  merge_quantities?: Record<string, number>
 }
 
 export async function printNote(

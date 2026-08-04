@@ -249,9 +249,12 @@ function onRowClick(row: unknown): void {
   previewDrawing(row as OutsourceQuote)
 }
 
-/** 行 cursor: pointer（用 :row-class-name 把 hover cursor 加上） */
-function drawingRowClass(): string {
-  return 'quote-row-clickable'
+/** 行 cursor: pointer（用 :row-class-name 把 hover cursor 加上） +
+ * 2026-08-04：加急行加 row-urgent 红底 */
+function quoteRowClassName({ row }: { row: OutsourceQuote }): string {
+  const cls = ['quote-row-clickable']
+  if (row.is_urgent) cls.push('row-urgent')
+  return cls.join(' ')
 }
 
 function buildParams() {
@@ -721,7 +724,7 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
         border
         size="small"
         :default-sort="defaultSort"
-        :row-class-name="drawingRowClass"
+        :row-class-name="quoteRowClassName"
         @sort-change="onSortChange"
         @row-click="onRowClick"
         @card-click="onRowClick"
@@ -1305,6 +1308,14 @@ async function onDelete(q: OutsourceQuote): Promise<void> {
 // 2026-07-16：行点击 → 预览图纸；光标暗示
 :deep(.el-table__row.quote-row-clickable) {
   cursor: pointer;
+}
+
+// 2026-08-04：加急行整行红底（与 PartsList / 看板同款）
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 
 .drawing-frame-wrap {

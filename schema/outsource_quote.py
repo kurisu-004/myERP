@@ -59,6 +59,9 @@ class OutsourceQuoteOut(BaseModel):
     customer_path: str | None = None  # "法拉电子 / 三厂" 格式
     # 2026-08-02 新增：所属零件的客户下单单价（CNY；与 price 对比谈判空间）
     part_unit_price: Decimal | None = None
+    # 2026-08-04 新增：所属零件加急标识（service 从 t_part.is_urgent 填充，
+    # 不再依赖 _to_out_many 已批查的 TPart 行做 getattr 兜底）
+    is_urgent: bool = False
 
 
 # ============================================================
@@ -262,6 +265,8 @@ class OutsourceInFlightItem(BaseModel):
     serial_no: str | None = None
     drawing_no: str | None = None
     name: str | None = None
+    # 2026-08-04 新增：所属零件加急（service 从 t_part.is_urgent 填充）
+    is_urgent: bool = False
     customer_path: str | None = None
     next_process_id: IdStr | None = None
     next_process_name: str | None = None

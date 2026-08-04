@@ -1065,12 +1065,16 @@ class DeliveryNoteService:
         self,
         note_id: str,
         custom_order: list[str] | None = None,  # 2026-08-02 新增：预览组件拖动后的 batch id 顺序
+        merge_assemblies: bool = False,  # 2026-08-04 新增：装配件子件合并为一行
+        merge_quantities: dict[str, int] | None = None,  # 2026-08-04 扩展：每套 override
     ) -> tuple[bytes, str]:
         """按 L1 客户前缀分发模板（template/delivery_note_{prefix}.xlsx），
         返回 (bytes, prefix)；状态不限（DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 都可）。
 
         - ``custom_order`` 为 None / 空 → 按 ``TPartBatch.id ASC``（旧行为）
         - ``custom_order`` 提供 → 按其顺序投影；非法 batch id 或漏行 → 422
+        - ``merge_assemblies`` 为 True → 同一装配体的子件合并为一行（数量 = merge_quantities
+          或默认 1，单位套，显示总装图号/装配体序列号/名称）；散件逐行保持不变
 
         真正的填表逻辑在 `service/delivery_note_print.py::DeliveryNotePrintService`；
         这里只负责 note 加载 + 薄包装。
@@ -1084,13 +1088,45 @@ class DeliveryNoteService:
                 message=f"delivery note {note_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+
+        # 2026-08-04：预查装配件基本信息（合并打印需要；print service 自己查 leaf_map）
+        note_batches = await self._note_batches(obj.id)
+        asm_ids = list({p.assembly_id for _b, p in note_batches if p.assembly_id})
+        assembly_map: dict[int, Any] = {}
+        if asm_ids:
+            from sqlalchemy import select
+            from model.assembly import TAssembly
+            res = await self.session.execute(
+                select(TAssembly).where(TAssembly.id.in_(asm_ids)),
+            )
+            assembly_map = {a.id: a for a in res.scalars().all()}
+
+        # 2026-08-04 扩展：merge_quantities str→int 转换（雪花 ID 字符串 → int 主键）
+        merge_quantities_int: dict[int, int] = {}
+        if merge_assemblies and merge_quantities:
+            for k, v in merge_quantities.items():
+                asm_int = parse_snowflake_id(k, field_name="assembly_id")
+                if v < 1:
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message=f"merge_quantities[{k}] 必须 ≥ 1，实际 {v}",
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                merge_quantities_int[asm_int] = v
+
         printer = DeliveryNotePrintService(
             notes=self.notes,
             parts=self.parts,
             customers=self.customers,
             part_batches=self._batches(),
         )
-        return await printer.render(obj, custom_order=custom_order)
+        return await printer.render(
+            obj,
+            custom_order=custom_order,
+            merge_assemblies=merge_assemblies,
+            assembly_map=assembly_map,
+            merge_quantities=merge_quantities_int,
+        )
 
     # ============================================================
     # 内部 helpers
@@ -1199,6 +1235,18 @@ class DeliveryNoteService:
             leaf_map = {}
             parent_map = {}
 
+        # 2026-08-04：一次性批查所有相关装配体（line_items 显示装配件父行用）
+        asm_ids = list({p.assembly_id for _b, p in note_batches if p.assembly_id})
+        if asm_ids:
+            from sqlalchemy import select
+            from model.assembly import TAssembly
+            res = await self.session.execute(
+                select(TAssembly).where(TAssembly.id.in_(asm_ids)),
+            )
+            assembly_map: dict[int, TAssembly] = {a.id: a for a in res.scalars().all()}
+        else:
+            assembly_map = {}
+
         items: list[DeliveryNoteLineItem] = []
         for b, p in note_batches:
             line_serial = p.serial_no or str(p.id)
@@ -1217,6 +1265,8 @@ class DeliveryNoteService:
                 if (parent_name and leaf_name and parent_name != leaf_name)
                 else leaf_name
             )
+            # 2026-08-04：装配件父行字段（仅子件行填；散件 None）
+            asm = assembly_map.get(p.assembly_id) if p.assembly_id else None
             items.append(DeliveryNoteLineItem(
                 id=str(b.id),
                 part_id=str(p.id),
@@ -1242,6 +1292,11 @@ class DeliveryNoteService:
                 customer_path=path,
                 is_scanned=line_serial in scanned_serials,
                 scanned=line_serial in scanned_serials,
+                assembly_id=str(asm.id) if asm else None,
+                assembly_serial_no=asm.serial_no if asm else None,
+                assembly_drawing_no=asm.drawing_no if asm else None,
+                assembly_name=asm.name if asm else None,
+            assembly_order_no=asm.order_no if asm else None,
             ))
         return DeliveryNoteDetailOut(
             **head.model_dump(),

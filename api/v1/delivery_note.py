@@ -328,11 +328,29 @@ CHUNK_SIZE = 64 * 1024  # 64KB，与典型 TCP send buffer 同量级
 
 
 class PrintDeliveryNoteRequest(BaseModel):
-    """2026-08-02 新增：预览确认后导出用；custom_order 为空走默认 DB 顺序。"""
+    """2026-08-02 新增：预览确认后导出用；custom_order 为空走默认 DB 顺序。
+
+    2026-08-04 扩展：``merge_assemblies`` 控制装配件子件是否合并为一行（数量 1 套）。
+    2026-08-04 扩展：``merge_quantities`` 按装配件 override 套数（≥ 1）。
+    """
 
     custom_order: list[str] = Field(
         default_factory=list,
         description="批次 id 列表（雪花 ID 字符串）；与详情页 line_items.id 一一对应",
+    )
+    merge_assemblies: bool = Field(
+        default=False,
+        description=(
+            "True → 同一装配体的子件在送货单上合并为一行（数量 1，单位套，"
+            "显示总装图号/装配体序列号/名称）；False → 散件逐行（默认）。"
+        ),
+    )
+    merge_quantities: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "装配件合并打印时，每套数量 override（assembly_id 雪花 ID 字符串 → 套数，"
+            "≥ 1）；缺省 = 1。merge_assemblies=False 时忽略。"
+        ),
     )
 
 
@@ -353,6 +371,8 @@ async def print_delivery_note(
     xlsx_bytes, prefix = await svc.print_xlsx(
         note_id,
         custom_order=payload.custom_order or None,
+        merge_assemblies=payload.merge_assemblies,
+        merge_quantities=payload.merge_quantities,
     )
     filename = f"delivery_note_{prefix}_{note_id}.xlsx"
 
