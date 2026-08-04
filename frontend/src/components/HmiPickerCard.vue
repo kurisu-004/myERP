@@ -29,9 +29,10 @@
 <template>
   <div
     class="hmi-card"
-    :class="{ 'is-selected': isSelected }"
+    :class="{ 'is-selected': isSelected, 'is-disabled': disabled }"
     role="button"
     tabindex="0"
+    :aria-disabled="disabled || undefined"
     @click="onClick"
     @keydown.enter="onClick"
     @keydown.space.prevent="onClick"
@@ -75,6 +76,9 @@
         </el-tag>
       </div>
     </template>
+
+    <!-- 禁用提示（2026-08-05：放回禁选自身工序场景） -->
+    <div v-if="hint" class="hmi-picker-hint">{{ hint }}</div>
   </div>
 </template>
 
@@ -89,14 +93,21 @@
  * 自动推荐；工人点选 free。
  *
  * 选中态：调用方传 isSelected=true（通常由 selectedId 比较卡 id 得出）。
+ *
+ * 2026-08-05：新增 disabled/hint props，支持 ProcessPickerDialog 排除指定工序
+ *（不隐藏：工人能看到工序存在但不可选，避免困惑）。
  */
 import { Box } from '@element-plus/icons-vue'
 
-defineProps<{
+const props = defineProps<{
   kind: 'process' | 'shelf'
   code: string
   name: string
   isSelected: boolean
+  /** 禁用态：半透明 + 不可点击/键盘激活（pointer-events:none + onClick 短路） */
+  disabled?: boolean
+  /** 禁用原因展示在卡内底部（红字小字） */
+  hint?: string
 
   /** kind='process' */
   category?: 'INHOUSE' | 'OUTSOURCE'
@@ -112,6 +123,7 @@ const emit = defineEmits<{
 }>()
 
 function onClick(): void {
+  if (props.disabled) return
   emit('select')
 }
 </script>
@@ -145,6 +157,19 @@ function onClick(): void {
     background: linear-gradient(135deg, #f0f9eb 0%, #fff 60%);
     box-shadow: 0 4px 16px rgba(103, 194, 58, 0.25);
   }
+  /* 禁用：半透明 + 不可点；键盘激活仍走 onClick 短路保证语义一致 */
+  &.is-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+}
+
+.hmi-picker-hint {
+  font-size: 12px;
+  color: #f56c6c;
+  margin-top: 4px;
+  font-weight: 600;
 }
 
 .card-header {

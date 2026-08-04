@@ -184,6 +184,7 @@
       v-model="showProcessDialog"
       kind="return"
       :current-process-id="selectedPart?.next_process_id ?? null"
+      :exclude-process-ids="selectedPart?.next_process_id ? [selectedPart.next_process_id] : []"
       @confirm="onProcessPicked"
       @cancel="onProcessCancel"
     />
@@ -365,11 +366,11 @@ async function scrollCardIntoView(batchKey: string): Promise<void> {
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
-/** RETURN tail：选中 + 设 next_process_id 兜底 + 滚动 + 开工序选择弹窗 */
+/** RETURN tail：选中 + 清空 next_process_id（必须由弹窗显式选）+ 滚动 + 开工序选择弹窗 */
 async function applyScanSelection(p: PartItem): Promise<void> {
   selectedPart.value = p
   selectedQty.value = p.quantity
-  selectedNextProcessId.value = p.next_process_id ?? ''
+  selectedNextProcessId.value = ''
   const key = String(p.batch_id || p.id)
   await scrollCardIntoView(key)
   showProcessDialog.value = true
@@ -446,7 +447,7 @@ function onSelect(p: PartItem): void {
   }
   selectedPart.value = p
   selectedQty.value = p.quantity
-  selectedNextProcessId.value = p.next_process_id ?? ''
+  selectedNextProcessId.value = ''
   showProcessDialog.value = true
 }
 

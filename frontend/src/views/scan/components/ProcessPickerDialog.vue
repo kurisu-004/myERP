@@ -54,6 +54,8 @@
               :name="p.name"
               :category="p.category"
               :is-selected="p.id === selectedId"
+              :disabled="excludeProcessIds.includes(p.id)"
+              :hint="excludeProcessIds.includes(p.id) ? '当前工序不可选' : undefined"
               @select="onSelect(p.id)"
             />
           </div>
@@ -106,9 +108,12 @@ const props = withDefaults(defineProps<{
   kind?: 'return' | 'inspection'
   /** 工件 next_process_id：预填选中并标推荐（橙色边框） */
   currentProcessId?: string | null
+  /** 不可选的工序 id 列表（被排除的卡片显示为禁用 + hint） */
+  excludeProcessIds?: string[]
 }>(), {
   kind: 'return',
   currentProcessId: null,
+  excludeProcessIds: () => [],
 })
 
 const emit = defineEmits<{
@@ -167,6 +172,10 @@ watch(
     } else {
       // 无 currentProcessId：默认自产 tab
       activeTab.value = 'INHOUSE'
+    }
+    // 被排除的工序不能预填：清空（确认按钮会因 selectedId null 而禁用，强制用户改选）
+    if (selectedId.value && props.excludeProcessIds.includes(selectedId.value)) {
+      selectedId.value = null
     }
   },
   { immediate: true },
