@@ -95,6 +95,7 @@ class PartEventType(str, enum.Enum):
     - REPAIR_COMPLETED REPAIRING → IN_PROCESS
     - CANCELLED        → CANCELLED
     - COMPLETED        → COMPLETED
+    - RECALLED         召回（2026-08-05 新增）：ON_SHELF/PROGRAMMING → PENDING/PROGRAMMING
     """
 
     CREATED = "CREATED"
@@ -117,6 +118,7 @@ class PartEventType(str, enum.Enum):
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
     SPLIT = "SPLIT"   # 批次拆分（2026-07-29 新增）：从源批次拆出新批次
+    RECALLED = "RECALLED"   # 召回（2026-08-05 新增）：ON_SHELF/PROGRAMMING 召回为 PENDING/PROGRAMMING
 
 
 # 扫码类事件（pick-up / return / inspect）的子集；

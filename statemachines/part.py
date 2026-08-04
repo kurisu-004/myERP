@@ -96,6 +96,11 @@ class PartStateMachine(StateChart):
         | OUTSOURCE.to(CANCELLED)   # 2026-07-15 新增
     )
 
+    # 2026-08-05 召回：已下发未被工人领取的零件召回为待生产 / 待编程。
+    # 不影响 IN_PROCESS+WORKER（持有件不可召回）、INSPECTION / REPAIRING 等中段态。
+    recall_to_pending = ON_SHELF.to(PENDING) | PROGRAMMING.to(PENDING)
+    recall_to_programming = ON_SHELF.to(PROGRAMMING)
+
     # ============================================================
     # Init — restore state from model.status + model.location
     # ============================================================
@@ -135,6 +140,11 @@ class PartStateMachine(StateChart):
             self.model.status = "PENDING"
             self.model.location = "OFFICE"
             self.model.current_holder_id = None
+            # 2026-08-05 召回：进入 PENDING 时清空货架/工序相关派生字段
+            # （callers PENDING→IN_PROCESS/PROGRAMMING 也都已在 part 构造时
+            # 这两个字段本就 None；create_part 路径也是 None；安全扩展点）。
+            self.model.next_process_id = None
+            self.model.placed_at = None
 
     def on_enter_PROGRAMMING(self, **_):
         if self.model:
@@ -142,6 +152,10 @@ class PartStateMachine(StateChart):
             # 编程中不占货架，逻辑上仍在办公室 / 编程员处。
             self.model.location = "OFFICE"
             self.model.current_holder_id = None
+            # 2026-08-05 召回：从 ON_SHELF 召回为 PROGRAMMING 时清空下一道工序
+            # 与首次上架时间（PROGRAMMING 状态不应占货架/不带首架时间）。
+            self.model.next_process_id = None
+            self.model.placed_at = None
 
     def on_enter_ON_SHELF(self, shelf=None, process=None, **_):
         if self.model:
@@ -595,6 +609,53 @@ class PartStateMachine(StateChart):
                 event_type=PartEventType.CANCELLED,
                 from_status=from_status,
                 to_status=PartStatus.CANCELLED,
+                created_by=created_by,
+            )
+
+    def on_recall_to_pending(
+        self,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """2026-08-05 召回：ON_SHELF 或 PROGRAMMING → PENDING。
+
+        进入 PENDING 时 status/location/holder/next_process_id/placed_at
+        已由 on_enter_PENDING 设置；本回调只追加事件。from_status 由
+        before_transition 在 self._from_status 捕获。
+        """
+        if event_repo and self.model:
+            from_status = PartStatus(self._from_status) if self._from_status else None
+            self._add_event(
+                event_repo,
+                event_type=PartEventType.RECALLED,
+                from_status=from_status,
+                to_status=PartStatus.PENDING,
+                drawing_code=self._serial_of(self.model),
+                created_by=created_by,
+            )
+
+    def on_recall_to_programming(
+        self,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """2026-08-05 召回：ON_SHELF → PROGRAMMING。
+
+        进入 PROGRAMMING 时 status/location/holder/next_process_id/placed_at
+        已由 on_enter_PROGRAMMING 设置；本回调只追加事件。
+        """
+        if event_repo and self.model:
+            from_status = PartStatus(self._from_status) if self._from_status else None
+            self._add_event(
+                event_repo,
+                event_type=PartEventType.RECALLED,
+                from_status=from_status,
+                to_status=PartStatus.PROGRAMMING,
+                drawing_code=self._serial_of(self.model),
                 created_by=created_by,
             )
 

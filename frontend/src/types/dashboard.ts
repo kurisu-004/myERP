@@ -62,6 +62,7 @@ export type DashboardEventType =
   | 'INSPECTED'
   | 'ASSEMBLY_CANCELLED'
   | 'ASSEMBLY_DELETED'
+  | 'RECALLED'   // 2026-08-05 召回：ON_SHELF/PROGRAMMING → PENDING/PROGRAMMING
 
 export interface DashboardEventPayload {
   // 零件事件携带的字段（ASSEMBLY_* 不带这些）

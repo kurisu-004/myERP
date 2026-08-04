@@ -52,6 +52,7 @@ from schema.part import (
     RepairDispatchRequest,
     SendToOutsourceRequest,
 )
+from schema._types import IdStr  # 2026-08-05 召回：PartRecallRequest.batch_id 用 IdStr 序列化
 from service import PartService, OutsourceQuoteService
 from service._id_parse import parse_snowflake_id
 from service.applicant import ApplicantService
@@ -542,6 +543,40 @@ async def place_part_on_shelf(
     return await svc.place_on_shelf(part_id, payload)
 
 
+# 2026-08-05 召回：已下发未被工人领取的零件召回为待生产 / 待编程。
+# ON_SHELF+PROGRAMMING → PENDING（M/C）；ON_SHELF → PROGRAMMING（M/CNC）。
+class PartRecallRequest(BaseModel):
+    """召回请求体；`batch_id` 为可选目标批次（多在架批次必须指定）。"""
+
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id（多批次必填；缺省按 expect 唯一批次解析）",
+    )
+
+
+@router.post(
+    "/{part_id}/recall-to-pending",
+    response_model=PartOut,
+    summary=(
+        "2026-08-05 召回：ON_SHELF 或 PROGRAMMING → PENDING "
+        "（MANAGER / CLERK）；serial_no 保留"
+    ),
+    description=(
+        "适用：ON_SHELF（生产架上未被领取）或 PROGRAMMING（已发送 CNC 但编程员"
+        "未下发生产）。多批次 ON_SHELF 时必须指定 batch_id。"
+        "状态不符（WITHDRAWN 持有件 / INSPECTION / REPAIRING 等）→ 400 BIZ_INVALID_TRANSITION。"
+    ),
+    dependencies=_office_dep,
+)
+async def recall_part_to_pending(
+    part_id: int,
+    payload: PartRecallRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    batch_id = parse_snowflake_id(payload.batch_id, field_name="batch_id") \
+        if payload.batch_id else None
+    return await svc.recall_to_pending(part_id, batch_id=batch_id)
+
+
 @router.post(
     "/{part_id}/send-to-programming",
     response_model=PartOut,
@@ -557,6 +592,31 @@ async def send_part_to_programming(
     return await svc.send_to_programming(
         part_id, batch_id=batch_id, quantity=quantity,
     )
+
+
+@router.post(
+    "/{part_id}/recall-to-programming",
+    response_model=PartOut,
+    summary=(
+        "2026-08-05 召回：ON_SHELF → PROGRAMMING "
+        "（MANAGER / CNC_PROGRAMMER）；serial_no 保留"
+    ),
+    description=(
+        "适用：ON_SHELF（生产架上未被领取）。PROGRAMMING 状态本身已是目标态、"
+        "INSPECTION / REPAIRING 等中段态不可召回。多批次 ON_SHELF 必须指定 batch_id。"
+    ),
+    dependencies=[
+        Depends(require_roles(UserRole.MANAGER, UserRole.CNC_PROGRAMMER))
+    ],
+)
+async def recall_part_to_programming(
+    part_id: int,
+    payload: PartRecallRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    batch_id = parse_snowflake_id(payload.batch_id, field_name="batch_id") \
+        if payload.batch_id else None
+    return await svc.recall_to_programming(part_id, batch_id=batch_id)
 
 
 def _batch_action(

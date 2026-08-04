@@ -284,6 +284,35 @@ export async function sendToProgramming(id: number | string): Promise<PartItem> 
   return resp.data
 }
 
+/** 2026-08-05 召回：ON_SHELF 或 PROGRAMMING → PENDING（M/C）。
+ *  `batch_id` 缺省按 expect 唯一批次解析；多在架批次必须指定。 */
+export interface PartRecallPayload {
+  batch_id?: string | null
+}
+
+export async function recallToPending(
+  id: number | string,
+  payload?: PartRecallPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/recall-to-pending`,
+    payload ?? {},
+  )
+  return resp.data
+}
+
+/** 2026-08-05 召回：ON_SHELF → PROGRAMMING（M/CNC）。 */
+export async function recallToProgramming(
+  id: number | string,
+  payload?: PartRecallPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/recall-to-programming`,
+    payload ?? {},
+  )
+  return resp.data
+}
+
 /** PROGRAMMING → IN_PROCESS：编程员上传完 G 代码后下发到生产货架。 */
 export async function releaseFromProgramming(
   id: number | string,

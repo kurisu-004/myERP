@@ -93,6 +93,10 @@ function titleFor(item: BannerItem): string {
     const shelf = item.shelf_code || '未知货架'
     return `${subject} 已放置到 ${shelf} 等待加工`
   }
+  if (item.event_type === 'RECALLED') {
+    // 2026-08-05 召回：ON_SHELF/PROGRAMMING → PENDING/PROGRAMMING
+    return `${subject} 已被召回`
+  }
   if (item.event_type === 'ASSEMBLY_CANCELLED') {
     return `装配体 ${item.drawing_no || ''} 已取消`
   }
@@ -134,6 +138,9 @@ onBeforeUnmount(() => { offEvent?.(); offEvent = null; for (const t of timers.va
 .banner-returned .banner-icon { color: #67c23a; }
 .banner-inspected { border-left-color: #409eff; }
 .banner-inspected .banner-icon { color: #409eff; }
+/* 2026-08-05 召回 */
+.banner-recalled { border-left-color: #f56c6c; }
+.banner-recalled .banner-icon { color: #f56c6c; }
 .banner-icon { flex-shrink: 0; margin-top: 2px; }
 .banner-body { flex: 1; min-width: 0; }
 .banner-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-primary); line-height: 1.4; }

@@ -3573,6 +3573,79 @@ class PartService:
         return items[0]
 
     # ============================================================
+    # 召回（2026-08-05 新增）
+    # ============================================================
+    async def recall_to_pending(
+        self, part_id: int, *, batch_id: int | None = None,
+    ) -> PartOut:
+        """2026-08-05 召回：ON_SHELF 或 PROGRAMMING → PENDING。
+
+        适用条件（service 层校验）：
+        - 批次 status == 'PROGRAMMING'（PROGRAMMING 态）
+        - 或 status == 'IN_PROCESS' + location == 'PRODUCTION_SHELF'（在架）
+
+        不允许召回 WITH_WORKER / INSPECTION / REPAIRING / 等中段态（status 不符
+        → BIZ_INVALID_TRANSITION）。多批次 ON_SHELF 未指定 batch_id → BIZ_INVALID_VALUE。
+
+        serial_no 不释放（召回是回到 PENDING，未终态）；后续文员仍可正常下发。
+        """
+        part = await self._get_part_or_404(part_id)
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status == "PROGRAMMING" or (
+                b.status == "IN_PROCESS" and b.location == "PRODUCTION_SHELF"
+            ),
+            action="召回（待生产）",
+        )
+        batch.sm.recall_to_pending(
+            event_repo=self.events, created_by=self._user_id,
+        )
+        batch.updated_by = self._user_id
+        await self._batches().update(batch)
+        await self._after_batch_transition(part)
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "RECALLED",
+            self._banner_payload(part, customer_path=items[0].customer_path),
+        )
+        return items[0]
+
+    async def recall_to_programming(
+        self, part_id: int, *, batch_id: int | None = None,
+    ) -> PartOut:
+        """2026-08-05 召回：ON_SHELF → PROGRAMMING。
+
+        适用条件（service 层校验）：
+        - 批次 status == 'IN_PROCESS' + location == 'PRODUCTION_SHELF'（在架）
+
+        不允许召回 PROGRAMMING 状态本身（已是 PROGRAMMING 目标态）；不允许
+        召回 WITH_WORKER / INSPECTION / REPAIRING 等中段态。多批次 ON_SHELF
+        未指定 batch_id → BIZ_INVALID_VALUE。
+
+        serial_no 不释放。
+        """
+        part = await self._get_part_or_404(part_id)
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: (
+                b.status == "IN_PROCESS" and b.location == "PRODUCTION_SHELF"
+            ),
+            action="召回（待编程）",
+        )
+        batch.sm.recall_to_programming(
+            event_repo=self.events, created_by=self._user_id,
+        )
+        batch.updated_by = self._user_id
+        await self._batches().update(batch)
+        await self._after_batch_transition(part)
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "RECALLED",
+            self._banner_payload(part, customer_path=items[0].customer_path),
+        )
+        return items[0]
+
+    # ============================================================
     # 批次监控 / 手动拆分 / 批次取消（2026-07-29）
     # ============================================================
     async def list_batches(self, part_id: int) -> list["PartBatchOut"]:

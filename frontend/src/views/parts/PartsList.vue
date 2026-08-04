@@ -133,9 +133,10 @@
             <span>筛选</span>
           </el-button>
 
-          <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）-->
+          <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）；
+               2026-08-05：CNC 与 INSPECTOR 同样对待（看不到导入/批量/下发） -->
           <el-button
-            v-if="!isInspector"
+            v-if="canEdit"
             @click="router.push('/parts/new?tab=pdf')"
           >
             <el-icon><Document /></el-icon>
@@ -143,7 +144,7 @@
           </el-button>
 
           <!-- 批量打印 / 批量下发 toggle（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见；手机隐藏） -->
-          <template v-if="!isInspector && !isMobile">
+          <template v-if="canEdit && !isMobile">
             <template v-if="!batchMode">
               <el-button type="success" plain @click="onEnterBatchMode">
                 <el-icon><Printer /></el-icon>
@@ -181,7 +182,7 @@
       :default-sort="defaultSort"
       :row-class-name="rowClassName"
       :row-style="{ cursor: batchMode ? 'pointer' : 'default' }"
-      :show-summary="!isInspector"
+      :show-summary="canEdit"
       :summary-method="totalPriceSummary"
       lazy
       :load="loadChildren"
@@ -439,7 +440,7 @@
       </el-table-column>
 
       <el-table-column
-        v-if="!isInspector && columnVisibility.isVisible('unit_price')"
+        v-if="canEdit && columnVisibility.isVisible('unit_price')"
         prop="unit_price"
         label="单价" min-width="120" sortable="custom" align="right">
         <template #default="{ row }">
@@ -460,7 +461,7 @@
       <!-- 2026-07-24 v2 调整：总价 = quantity × unit_price **前端实时计算**
      （编辑态下改 unit_price / quantity 立即反映在总价列，无需等保存） -->
       <el-table-column
-        v-if="!isInspector && columnVisibility.isVisible('total_price')"
+        v-if="canEdit && columnVisibility.isVisible('total_price')"
         prop="total_price"
         label="总价" min-width="120" sortable="custom" align="right">
         <template #default="{ row }">
@@ -697,12 +698,28 @@
               @click="startEdit(row as PartListItem)"
             >编辑</el-button>
             <el-button
-              v-if="!isInspector && row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'"
+              v-if="canEdit && row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'"
               link
               type="success"
               size="small"
               @click="onDispatch(row as PartListItem)"
             >下发</el-button>
+            <!-- 2026-08-05 召回：M/C 召回 ON_SHELF/PROGRAMMING → PENDING -->
+            <el-button
+              v-if="canRecallToPending(row as PartListItem)"
+              link
+              type="danger"
+              size="small"
+              @click="onRecallToPending(row as PartListItem)"
+            >召回(待生产)</el-button>
+            <!-- 2026-08-05 召回：M/CNC 召回 ON_SHELF → PROGRAMMING -->
+            <el-button
+              v-if="canRecallToProgramming(row as PartListItem)"
+              link
+              type="warning"
+              size="small"
+              @click="onRecallToProgramming(row as PartListItem)"
+            >召回(待编程)</el-button>
           </template>
         </template>
       </el-table-column>
@@ -751,18 +768,34 @@
             @click="startEdit(row as PartListItem)"
           >编辑</el-button>
           <el-button
-            v-if="!isInspector && row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'"
+            v-if="canEdit && row.status === 'PENDING' && row.row_type !== 'ASSEMBLY'"
             link
             type="success"
             size="small"
             @click="onDispatch(row as PartListItem)"
           >下发</el-button>
+          <!-- 2026-08-05 召回：M/C 召回 ON_SHELF/PROGRAMMING → PENDING -->
+          <el-button
+            v-if="canRecallToPending(row as PartListItem)"
+            link
+            type="danger"
+            size="small"
+            @click="onRecallToPending(row as PartListItem)"
+          >召回(待生产)</el-button>
+          <!-- 2026-08-05 召回：M/CNC 召回 ON_SHELF → PROGRAMMING -->
+          <el-button
+            v-if="canRecallToProgramming(row as PartListItem)"
+            link
+            type="warning"
+            size="small"
+            @click="onRecallToProgramming(row as PartListItem)"
+          >召回(待编程)</el-button>
         </div>
       </template>
     </ResponsiveList>
 
-    <!-- 批量打印 / 批量下发 — 底部 action bar（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见） -->
-    <div v-if="!isInspector && batchMode" class="batch-bar">
+    <!-- 批量打印 / 批量下发 — 底部 action bar（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见；CNC 同样不可见） -->
+    <div v-if="canEdit && batchMode" class="batch-bar">
       <div class="bar-info">
         <span v-if="batchSelectedPartCount > 0">
           零件 <strong>{{ batchSelectedPartCount }}</strong> 件
@@ -1074,6 +1107,8 @@ import {
   listParts,
   placeOnShelf,
   printPartDrawingBatch,
+  recallToPending,
+  recallToProgramming,
   sendToProgramming,
   updatePart,
   type ListPartsParams,
@@ -1107,6 +1142,27 @@ const isCncProgrammer = hasRole('CNC_PROGRAMMER')
 const { isInspector } = usePermissions()
 // 行内编辑权限：与后端 POST /parts/{id}/update 一致（MANAGER / CLERK）
 const canEdit = hasRole('MANAGER') || hasRole('CLERK')
+// 2026-08-05 召回权限：与后端 POST /parts/{id}/recall-* 一致
+const canRecallToPendingAuth = hasRole('MANAGER') || hasRole('CLERK')
+const canRecallToProgrammingAuth =
+  hasRole('MANAGER') || hasRole('CNC_PROGRAMMER')
+
+/** 召回按钮可见性：与后端 `_resolve_target_batch` expect 保持一致。
+ *  不显式判定 status=='PROGRAMMING'：PROGRAMMING 是 PROGRAMMING DB status；
+ *  行 location 在该态下为 'OFFICE'，自然被排除。
+ */
+function canRecallToPending(row: PartListItem): boolean {
+  if (!canRecallToPendingAuth) return false
+  if (row.row_type === 'ASSEMBLY') return false
+  if (row.status === 'PROGRAMMING') return true
+  return row.status === 'IN_PROCESS' && row.location === 'PRODUCTION_SHELF'
+}
+
+function canRecallToProgramming(row: PartListItem): boolean {
+  if (!canRecallToProgrammingAuth) return false
+  if (row.row_type === 'ASSEMBLY') return false
+  return row.status === 'IN_PROCESS' && row.location === 'PRODUCTION_SHELF'
+}
 const { tree: customerTree } = useCustomerTree()
 const route = useRoute()
 const router = useRouter()
@@ -2264,6 +2320,49 @@ async function onDispatchConfirm(): Promise<void> {
     ElMessage.error((e as Error).message ?? '下发失败')
   } finally {
     dispatchSubmitting.value = false
+  }
+}
+
+// ============ 召回（2026-08-05）============
+async function onRecallToPending(row: PartListItem): Promise<void> {
+  const label = row.serial_no || row.drawing_no || row.id
+  try {
+    await ElMessageBox.confirm(
+      `确认召回「${label}」为待生产？`,
+      '召回确认',
+      { type: 'warning', confirmButtonText: '确认召回', cancelButtonText: '取消' },
+    )
+  } catch {
+    // 用户取消
+    return
+  }
+  try {
+    await recallToPending(row.id, { batch_id: row.batch_id ?? null })
+    ElMessage.success('已召回为待生产')
+    void fetchList()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '召回失败')
+  }
+}
+
+async function onRecallToProgramming(row: PartListItem): Promise<void> {
+  const label = row.serial_no || row.drawing_no || row.id
+  try {
+    await ElMessageBox.confirm(
+      `确认召回「${label}」为待编程？`,
+      '召回确认',
+      { type: 'warning', confirmButtonText: '确认召回', cancelButtonText: '取消' },
+    )
+  } catch {
+    // 用户取消
+    return
+  }
+  try {
+    await recallToProgramming(row.id, { batch_id: row.batch_id ?? null })
+    ElMessage.success('已召回为待编程')
+    void fetchList()
+  } catch (e) {
+    ElMessage.error((e as Error).message ?? '召回失败')
   }
 }
 
