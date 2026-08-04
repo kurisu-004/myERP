@@ -21,7 +21,7 @@ import sqlalchemy as sa
 
 
 revision: str = "000000000028"
-# 单 head 线性拓扑：… 020 → 022 → 023 → 024 → 025（新增返修标记）
+# 单 head 线性拓扑：… 024 → 025(prod_data) → 026 → 027 → 028（新增返修标记）
 down_revision: Union[str, None] = "000000000027"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
