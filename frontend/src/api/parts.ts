@@ -66,6 +66,8 @@ export interface PartItem {
   batch_id?: string | null
   batch_no?: number | null
   batch_label?: string | null
+  /** PR-M 2026-08-04：是否经历过返修（用于列表 / 卡片 / 详情显示「返修」标签） */
+  has_been_repaired?: boolean
 }
 
 export interface PartListResult {
@@ -525,21 +527,71 @@ export async function completePart(id: string): Promise<PartItem> {
   return resp.data
 }
 
-/** → REPAIRING：开始返修（INSPECTION/READY_TO_SHIP/DELIVERED 进入）。 */
-export async function startPartRepair(id: string): Promise<PartItem> {
-  const resp = await api.post<PartItem>(`/parts/${id}/start-repair`)
+/** → REPAIRING：开始返修（INSPECTION/READY_TO_SHIP/DELIVERED 进入）。
+ *  2026-08-04 PR-M：支持 batch_id + quantity（部分返修先拆再转）。 */
+export interface StartRepairPayload {
+  batch_id?: string | null
+  quantity?: number | null
+}
+export async function startPartRepair(
+  id: string,
+  payload?: StartRepairPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/start-repair`,
+    payload ?? undefined,
+  )
   return resp.data
 }
 
-/** REPAIRING → IN_PROCESS：返修完成，需要指定目标生产货架。 */
+/** REPAIRING → ON_SHELF / INSPECTION：返修完成（PR-M 2026-08-04）。
+ *
+ * - shelf.zone=PRODUCTION → REPAIRING → ON_SHELF（需 next_process_id）
+ * - shelf.zone=INSPECTION → REPAIRING → INSPECTION（无需 next_process_id）
+ */
+export interface CompleteRepairPayload {
+  batch_id?: string | null
+  next_process_id?: string | null
+}
 export async function completePartRepair(
   id: string,
   shelfId: string,
+  payload?: CompleteRepairPayload,
 ): Promise<PartItem> {
   const resp = await api.post<PartItem>(
     `/parts/${id}/complete-repair`,
-    null,
+    payload ?? undefined,
     { params: { shelf_id: shelfId } },
+  )
+  return resp.data
+}
+
+/** 返修接收 Tab·已送货（DELIVERED 批次；PR-M 2026-08-04）。 */
+export async function listRepairBatches(params: {
+  keyword?: string
+  serial_no?: string
+  customer_id?: string
+  limit?: number
+  offset?: number
+} = {}): Promise<InspectionBatchListResult> {
+  const resp = await api.get<InspectionBatchListResult>(
+    '/parts/repair-batches',
+    { params: cleanParams(params) },
+  )
+  return resp.data
+}
+
+/** 返修接收 Tab·返修中（REPAIRING 批次；PR-M 2026-08-04）。 */
+export async function listRepairingBatches(params: {
+  keyword?: string
+  serial_no?: string
+  customer_id?: string
+  limit?: number
+  offset?: number
+} = {}): Promise<InspectionBatchListResult> {
+  const resp = await api.get<InspectionBatchListResult>(
+    '/parts/repairing-batches',
+    { params: cleanParams(params) },
   )
   return resp.data
 }

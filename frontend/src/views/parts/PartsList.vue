@@ -408,6 +408,15 @@
           >
             {{ statusLabel(row.status) }}
           </el-tag>
+          <el-tag
+            v-if="row.has_been_repaired"
+            type="warning"
+            size="small"
+            effect="dark"
+            style="margin-left: 4px"
+          >
+            返修
+          </el-tag>
         </template>
       </el-table-column>
 

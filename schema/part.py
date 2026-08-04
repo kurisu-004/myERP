@@ -198,6 +198,11 @@ class PartOut(BaseModel):
         default=None,
         description="批次展示码（serial||'B'||batch_no，如 F1234B01；serial 释放后回退 批次N）",
     )
+    # —— 2026-08-04 「返修接收」PR-M：返修件标识 ——
+    has_been_repaired: bool = Field(
+        default=False,
+        description="是否经历过返修；为 true 时列表 / 卡片显示「返修」el-tag（PR-M）",
+    )
 
 
 class PartBatchOut(BaseModel):
@@ -223,6 +228,11 @@ class PartBatchOut(BaseModel):
     delivery_note_id: IdStr = Field(default=None, description="所属送货单 id")
     delivery_note_no: str | None = Field(default=None, description="所属送货单单号")
     parent_batch_id: IdStr = Field(default=None, description="拆分谱系：源批次 id")
+    # —— 2026-08-04 「返修接收」PR-M：批次级返修件标识 ——
+    has_been_repaired: bool = Field(
+        default=False,
+        description="本批次是否经历过返修；与服务层 t_part_batch.has_been_repaired 同步",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -349,6 +359,11 @@ class PartListItem(BaseModel):
     )
     child_count: int | None = Field(
         default=None, description="装配件子件数量（仅 row_type=ASSEMBLY 时填充）"
+    )
+    # —— 2026-08-04 「返修接收」PR-M：一览返修标记 ——
+    has_been_repaired: bool = Field(
+        default=False,
+        description="是否经历过返修；为 true 时列表行展示「返修」el-tag（PR-M）",
     )
 
 

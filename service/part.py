@@ -2753,6 +2753,77 @@ class PartService:
         )
         return await self._to_batch_out(rows), total
 
+    async def list_repair_batches(
+        self,
+        *,
+        keyword: str | None = None,
+        customer_id: str | None = None,
+        serial_no: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> tuple[list[PartOut], int]:
+        """PR-M 2026-08-04 「返修接收」Tab 1 (已送货): 列出 DELIVERED 批次.
+
+        复用 list_inspection_batches 的 query/sort 骨架; 行=批次, 每个批次
+        在前端对应一个「开始返修」按钮.
+        """
+        customer_ids_in: list[int] | None = None
+        if customer_id:
+            cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
+            if cid_int is not None:
+                customer_ids_in = await expand_customer_ids(self.customers, cid_int)
+        kw = (keyword or "").strip() or None
+        rows = await self._batches().list_batches_with_part(
+            statuses=[PartStatus.DELIVERED.value],
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+            serial_no=(serial_no or "").strip() or None,
+            limit=limit,
+            offset=offset,
+        )
+        total = await self._batches().count_batches_with_part(
+            statuses=[PartStatus.DELIVERED.value],
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+            serial_no=(serial_no or "").strip() or None,
+        )
+        return await self._to_batch_out(rows), total
+
+    async def list_repairing_batches(
+        self,
+        *,
+        keyword: str | None = None,
+        customer_id: str | None = None,
+        serial_no: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> tuple[list[PartOut], int]:
+        """PR-M 2026-08-04 「返修接收」Tab 2 (返修中): 列出 REPAIRING 批次.
+
+        行=批次; 每个批次在前端对应一个「完成返修」按钮 (REPAIRING -> ON_SHELF/INSPECTION).
+        """
+        customer_ids_in: list[int] | None = None
+        if customer_id:
+            cid_int = parse_snowflake_id(customer_id, field_name="customer_id")
+            if cid_int is not None:
+                customer_ids_in = await expand_customer_ids(self.customers, cid_int)
+        kw = (keyword or "").strip() or None
+        rows = await self._batches().list_batches_with_part(
+            statuses=[PartStatus.REPAIRING.value],
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+            serial_no=(serial_no or "").strip() or None,
+            limit=limit,
+            offset=offset,
+        )
+        total = await self._batches().count_batches_with_part(
+            statuses=[PartStatus.REPAIRING.value],
+            customer_ids_in=customer_ids_in,
+            keyword=kw,
+            serial_no=(serial_no or "").strip() or None,
+        )
+        return await self._to_batch_out(rows), total
+
     # ============================================================
     # 统一外协可发送一览（2026-07-28 新增；取代 list_direct_outsource_candidates）
     # ============================================================
@@ -3203,10 +3274,16 @@ class PartService:
             action="开始返修",
         )
         target = await self._maybe_split(part, batch, quantity)
+        # PR-M 2026-08-04: 标记工单 + 当前批次为「曾返修」;
+        # 贯穿到 COMPLETED/CANCELLED 之后仍可见, 便于列表 / 打印区分返修件.
+        target.has_been_repaired = True
+        part.has_been_repaired = True
         target.sm.start_repair(
             event_repo=self.events, created_by=self._user_id,
         )
         target.updated_by = self._user_id
+        part.updated_by = self._user_id
+        await self.parts.update(part)
         await self._batches().update(target)
         await self._after_batch_transition(part)
         items = await self._to_out([part])
@@ -3215,8 +3292,9 @@ class PartService:
     async def complete_repair(
         self, part_id: int, shelf_id: int, *,
         batch_id: int | None = None,
+        next_process_id: int | None = None,
     ) -> PartOut:
-        """REPAIRING -> IN_PROCESS：返修完成，放回生产货架。
+        """REPAIRING -> IN_PROCESS / INSPECTION (PR-M 2026-08-04)：返修完成，放回生产货架。
 
         2026-07-17：补 shelf↔process 校验——REPAIRING 期间 `next_process_id`
         由 start_repair 透传保留（ON_SHELF 进入时不传 process，next_process_id
@@ -3246,10 +3324,16 @@ class PartService:
                 message=f"shelf {shelf.code!r} is inactive",
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
-        if shelf.zone != ShelfZone.PRODUCTION.value:
+        if shelf.zone not in (
+            ShelfZone.PRODUCTION.value,
+            ShelfZone.INSPECTION.value,
+        ):
             raise BizError(
                 code=ErrCode.BIZ_INVALID_VALUE,
-                message=f"shelf {shelf.code!r} is zone={shelf.zone!r}; complete_repair requires PRODUCTION",
+                message=(
+                    f"shelf {shelf.code!r} zone={shelf.zone!r}; "
+                    "complete_repair requires PRODUCTION or INSPECTION"
+                ),
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         batch = await self._resolve_target_batch(
@@ -3257,13 +3341,23 @@ class PartService:
             expect=lambda b: b.status == "REPAIRING",
             action="完成返修",
         )
-        if batch.next_process_id is not None:
-            carried_process = await self._get_process(batch.next_process_id)
-            await self._assert_shelf_maps_process(shelf, carried_process)
-        batch.sm.complete_repair(
-            shelf=shelf, event_repo=self.events,
-            created_by=self._user_id,
-        )
+        # PR-M 2026-08-04: caller explicit next_process_id 覆盖 carried; 缺省沿用 batch 值
+        effective_next_pid = next_process_id or batch.next_process_id
+        if shelf.zone == ShelfZone.PRODUCTION.value:
+            if effective_next_pid is not None:
+                carried_process = await self._get_process(effective_next_pid)
+                await self._assert_shelf_maps_process(shelf, carried_process)
+            batch.next_process_id = effective_next_pid
+            batch.sm.complete_repair(
+                shelf=shelf, event_repo=self.events,
+                created_by=self._user_id,
+            )
+        else:
+            # INSPECTION zone: 走新 transition complete_repair_to_inspection, 无需 process 校验
+            batch.sm.complete_repair_to_inspection(
+                target_shelf=shelf, event_repo=self.events,
+                created_by=self._user_id,
+            )
         batch.updated_by = self._user_id
         await self._batches().update(batch)
         await self._after_batch_transition(part)
@@ -3718,6 +3812,8 @@ class PartService:
                     # 2026-07-21：transient 属性，仅 list_for_work_type* 路径会填；
                     # 其它 ORM（如 place_on_shelf、cancel、pick_up）getattr 默认 None。
                     last_inspection_fail_note=getattr(p, "last_inspection_fail_note", None),
+                    # 2026-08-04 「返修接收」PR-M：返修件标识
+                    has_been_repaired=bool(getattr(p, "has_been_repaired", False)),
                 )
             )
         return out
@@ -3820,6 +3916,12 @@ class PartService:
                     if b.next_process_id else None
                 ),
                 "placed_at": b.placed_at,
+                # 2026-08-04 「返修接收」PR-M：批次级返修标识
+                # 优先取批次标记（部分返修拆分时新批次独立计），无则继承工单标记
+                "has_been_repaired": bool(
+                    getattr(b, "has_been_repaired", False)
+                    or getattr(p, "has_been_repaired", False)
+                ),
             }))
         return out
 
@@ -3939,6 +4041,8 @@ class PartService:
                         if p.next_process_id else None
                     ),
                     created_at=p.created_at,
+                    # 2026-08-04 「返修接收」PR-M：一览返修标记
+                    has_been_repaired=bool(getattr(p, "has_been_repaired", False)),
                 )
             )
         return out

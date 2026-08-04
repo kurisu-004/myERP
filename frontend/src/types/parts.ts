@@ -129,6 +129,8 @@ export interface PartListItem {
   child_count?: number | null
   /** 2026-07-30：创建时间（装配件行带出） */
   created_at?: string | null
+  /** PR-M 2026-08-04：是否经历过返修（用于列表行展示「返修」el-tag） */
+  has_been_repaired?: boolean
 }
 
 /** 后端 PartEventType 枚举 */
