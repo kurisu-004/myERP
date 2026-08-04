@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
 }
 
-// 2026-08-04：扫码命中行 0.8s 背景闪烁
+/* 2026-08-04：扫码命中行 0.8s 背景闪烁 */
 @keyframes pickerScanFlash {
   0%   { background-color: #ecf5ff; }
   100% { background-color: transparent; }
