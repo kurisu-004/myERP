@@ -67,6 +67,8 @@ class PartStateMachine(StateChart):
         | DELIVERED.to(REPAIRING)
     )
     complete_repair = REPAIRING.to(ON_SHELF)
+    # 2026-08-04 「返修接收」：返修完成后也可直接送检（落到品检架）。
+    complete_repair_to_inspection = REPAIRING.to(INSPECTION)
 
     # 2026-07-15 外协流程：
     # - send_to_outsource：PENDING / ON_SHELF / WITH_WORKER → OUTSOURCE
@@ -545,6 +547,37 @@ class PartStateMachine(StateChart):
                 event_type=PartEventType.REPAIR_COMPLETED,
                 from_status=PartStatus.REPAIRING,
                 to_status=PartStatus.IN_PROCESS,
+                created_by=created_by,
+            )
+
+    def on_complete_repair_to_inspection(
+        self,
+        target_shelf=None,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """2026-08-04 「返修接收」：REPAIRING → INSPECTION（送检到品检架）。
+
+        location/holder 由 on_enter_INSPECTION 既定行为设置；本回调只追加事件。
+        事件类型复用 REPAIR_COMPLETED（避免 enum 改动）；note 区分走向。
+        """
+        if event_repo and self.model:
+            shelf_code = (
+                target_shelf.code
+                if target_shelf and hasattr(target_shelf, "code") else ""
+            )
+            note = (
+                f"返修完成后送检：{shelf_code}" if shelf_code
+                else "返修完成后送检"
+            )
+            self._add_event(
+                event_repo,
+                event_type=PartEventType.REPAIR_COMPLETED,
+                from_status=PartStatus.REPAIRING,
+                to_status=PartStatus.INSPECTION,
+                note=note,
                 created_by=created_by,
             )
 

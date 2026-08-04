@@ -198,6 +198,11 @@ class PartOut(BaseModel):
         default=None,
         description="批次展示码（serial||'B'||batch_no，如 F1234B01；serial 释放后回退 批次N）",
     )
+    # —— 2026-08-04 「返修接收」PR-M：返修件标识 ——
+    has_been_repaired: bool = Field(
+        default=False,
+        description="是否经历过返修；为 true 时列表 / 卡片显示「返修」el-tag（PR-M）",
+    )
 
 
 class PartBatchOut(BaseModel):
@@ -223,6 +228,11 @@ class PartBatchOut(BaseModel):
     delivery_note_id: IdStr = Field(default=None, description="所属送货单 id")
     delivery_note_no: str | None = Field(default=None, description="所属送货单单号")
     parent_batch_id: IdStr = Field(default=None, description="拆分谱系：源批次 id")
+    # —— 2026-08-04 「返修接收」PR-M：批次级返修件标识 ——
+    has_been_repaired: bool = Field(
+        default=False,
+        description="本批次是否经历过返修；与服务层 t_part_batch.has_been_repaired 同步",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -241,6 +251,22 @@ class PartBatchActionRequest(BaseModel):
     quantity: int | None = Field(
         default=None, gt=0, description="部分数量；缺省 = 批次全量",
     )
+
+
+class RepairDispatchRequest(BaseModel):
+    """PR-M 2026-08-04 续：一步式返修下发（DELIVERED → REPAIRING → ON_SHELF/INSPECTION）。
+
+    - shelf_id 必填；zone 必须 PRODUCTION 或 INSPECTION（其它 zone 拒绝）。
+    - next_process_id 可选；缺省沿用 start_repair 携带的下一道工序（PRODUCTION 区校验映射）。
+    - batch_id / quantity 可选；部分量走 _maybe_split 拆批。
+    """
+
+    shelf_id: int = Field(..., description="目标货架 id（PRODUCTION 或 INSPECTION）")
+    next_process_id: int | None = Field(
+        default=None, description="下一道工序 id（可选；缺省沿用 REPAIRING 携带的下一工序）",
+    )
+    batch_id: IdStr = Field(default=None, description="目标批次 id（可选；缺省按状态唯一批次解析）")
+    quantity: int | None = Field(default=None, gt=0, description="部分数量（可选；缺省 = 批次全量")
 
 
 class InspectionBatchListOut(BaseModel):
@@ -349,6 +375,11 @@ class PartListItem(BaseModel):
     )
     child_count: int | None = Field(
         default=None, description="装配件子件数量（仅 row_type=ASSEMBLY 时填充）"
+    )
+    # —— 2026-08-04 「返修接收」PR-M：一览返修标记 ——
+    has_been_repaired: bool = Field(
+        default=False,
+        description="是否经历过返修；为 true 时列表行展示「返修」el-tag（PR-M）",
     )
 
 

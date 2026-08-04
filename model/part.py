@@ -179,6 +179,17 @@ class TPart(Base, AuditMixin):
         comment="逻辑外键 → t_process.id；place_on_shelf / RETURNED 时更新",
     )
 
+    # —— 返修件标识（PR-M 2026-08-04）——
+    # start_repair 触发时被置 True；complete_repair 不清除；
+    # 工单进入 COMPLETED / CANCELLED 之后列表 / 卡片不再显示。
+    has_been_repaired: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="该工单是否经历过返修（返修件标识，贯穿到 COMPLETED/CANCELLED）",
+    )
+
     @property
     def sm(self) -> "PartStateMachine":
         """返回此零件的状态机实例。"""

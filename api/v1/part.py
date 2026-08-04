@@ -49,6 +49,7 @@ from schema.part import (
     PartUpdateRequest,
     PlaceOnShelfRequest,
     ReceiveToInspectionRequest,
+    RepairDispatchRequest,
     SendToOutsourceRequest,
 )
 from service import PartService, OutsourceQuoteService
@@ -83,6 +84,12 @@ _inspector_dep = [
 # MANAGER + CLERK + INSPECTOR：外协发送 / 接收 端点。
 # 品检员扫码批量发送外协 + 接收外协（PR-I 2026-07-20）。
 _inspector_outsource_dep = [
+    Depends(require_roles(
+        UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+    ))
+]
+
+_repair_dep = [
     Depends(require_roles(
         UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
     ))
@@ -421,6 +428,80 @@ async def list_inspection_batches(
     return InspectionBatchListOut(items=items, total=total, limit=limit, offset=offset)
 
 
+# PR-M 2026-08-04 「返修接收」端点
+# 注册顺序：必须在 /{part_id} catch-all 之前, 否则被截胡
+@router.get(
+    "/repair-batches",
+    response_model=InspectionBatchListOut,
+    summary=(
+        "PR-M 「返修接收」Tab 1 已送货：列出 DELIVERED 批次"
+        "（MANAGER / CLERK / INSPECTOR）"
+    ),
+    dependencies=_repair_dep,
+)
+async def list_repair_batches(
+    keyword: str | None = Query(default=None),
+    serial_no: str | None = Query(default=None, description="序列号（ILIKE 包含匹配）"),
+    customer_id: str | None = Query(default=None),
+    limit: int = Query(default=200, le=500),
+    offset: int = Query(default=0, ge=0),
+    svc: PartService = Depends(get_part_service),
+) -> InspectionBatchListOut:
+    items, total = await svc.list_repair_batches(
+        keyword=keyword, customer_id=customer_id, serial_no=serial_no,
+        limit=limit, offset=offset,
+    )
+    return InspectionBatchListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get(
+    "/repairing-batches",
+    response_model=InspectionBatchListOut,
+    summary=(
+        "PR-M 「返修接收」Tab 2 返修中：列出 REPAIRING 批次"
+        "（MANAGER / CLERK / INSPECTOR）"
+    ),
+    dependencies=_repair_dep,
+)
+async def list_repairing_batches(
+    keyword: str | None = Query(default=None),
+    serial_no: str | None = Query(default=None, description="序列号（ILIKE 包含匹配）"),
+    customer_id: str | None = Query(default=None),
+    limit: int = Query(default=200, le=500),
+    offset: int = Query(default=0, ge=0),
+    svc: PartService = Depends(get_part_service),
+) -> InspectionBatchListOut:
+    items, total = await svc.list_repairing_batches(
+        keyword=keyword, customer_id=customer_id, serial_no=serial_no,
+        limit=limit, offset=offset,
+    )
+    return InspectionBatchListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+# PR-M 2026-08-04 续：一步式返修下发（DELIVERED → REPAIRING → ON_SHELF/INSPECTION）
+# 注册顺序：必须在 /{part_id} catch-all 之前, 否则被截胡
+@router.post(
+    "/{part_id}/repair-dispatch",
+    response_model=PartOut,
+    summary=(
+        "PR-M 2026-08-04 续：一步式返修下发 → REPAIRING → ON_SHELF/INSPECTION "
+        "（DELIVERED / INSPECTION / READY_TO_SHIP 入口；MANAGER+CLERK+INSPECTOR）"
+    ),
+    dependencies=_repair_dep,
+)
+async def repair_dispatch_part(
+    part_id: int,
+    payload: RepairDispatchRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.repair_dispatch(
+        part_id, payload.shelf_id,
+        batch_id=payload.batch_id or None,
+        quantity=payload.quantity,
+        next_process_id=payload.next_process_id,
+    )
+
+
 @router.get(
     "/{part_id}",
     response_model=PartOut,
@@ -685,8 +766,8 @@ async def complete_part(
 @router.post(
     "/{part_id}/start-repair",
     response_model=PartOut,
-    summary="→ REPAIRING：开始返修（MANAGER / CLERK）",
-    dependencies=_office_dep,
+    summary="→ REPAIRING：开始返修（MANAGER / CLERK / INSPECTOR；PR-M 2026-08-04）",
+    dependencies=_repair_dep,
 )
 async def start_part_repair(
     part_id: int,
@@ -702,16 +783,26 @@ async def start_part_repair(
 @router.post(
     "/{part_id}/complete-repair",
     response_model=PartOut,
-    summary="REPAIRING → IN_PROCESS：返修完成（MANAGER / CLERK）",
-    dependencies=_office_dep,
+    summary=(
+        "REPAIRING → IN_PROCESS / INSPECTION：返修完成"
+        "（MANAGER / CLERK / INSPECTOR；PR-M 2026-08-04；"
+        "shelf.zone=PRODUCTION → ON_SHELF, =INSPECTION → INSPECTION）"
+    ),
+    dependencies=_repair_dep,
 )
 async def complete_part_repair(
     part_id: int,
-    shelf_id: int = Query(..., description="目标生产货架 id"),
+    shelf_id: int = Query(..., description="目标货架 id（PRODUCTION 或 INSPECTION）"),
     batch_id: int | None = Query(default=None, description="目标批次 id（可选）"),
+    next_process_id: int | None = Query(
+        default=None,
+        description="下一道工序 id（可选；缺省沿用 REPAIRING 携带的下一工序）",
+    ),
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
-    return await svc.complete_repair(part_id, shelf_id, batch_id=batch_id)
+    return await svc.complete_repair(
+        part_id, shelf_id, batch_id=batch_id, next_process_id=next_process_id,
+    )
 
 
 @router.post(

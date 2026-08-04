@@ -23,6 +23,15 @@
               <el-tag :type="statusTagType(part.status)" effect="plain" size="small">
                 {{ statusLabel(part.status) }}
               </el-tag>
+              <el-tag
+                v-if="part.has_been_repaired"
+                type="warning"
+                size="small"
+                effect="dark"
+                style="margin-left: 6px"
+              >
+                返修
+              </el-tag>
             </el-descriptions-item>
 
             <el-descriptions-item label="名称" :span="3">
@@ -77,6 +86,15 @@
             <el-descriptions-item label="状态">
               <el-tag :type="statusTagType(part.status)" effect="plain" size="small">
                 {{ statusLabel(part.status) }}
+              </el-tag>
+              <el-tag
+                v-if="part.has_been_repaired"
+                type="warning"
+                size="small"
+                effect="dark"
+                style="margin-left: 6px"
+              >
+                返修
               </el-tag>
             </el-descriptions-item>
 

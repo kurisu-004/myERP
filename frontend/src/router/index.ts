@@ -69,6 +69,21 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        // PR-M 2026-08-04 「返修接收」：订单管理子菜单，权限 MANAGER+CLERK+INSPECTOR
+        path: 'repair/receive',
+        name: 'RepairReceive',
+        component: () => import('@/views/repair/RepairReceive.vue'),
+        meta: {
+          title: '返修接收',
+          icon: 'Tools',
+          menuCode: 'repair_receive',
+          breadcrumb: [
+            { label: '订单管理', path: '/parts' },
+            { label: '返修接收' },
+          ],
+        },
+      },
+      {
         // 2026-07-14：待编程一览（status=PROGRAMMING），CNC 编程员专属页。
         // 侧栏作为顶级菜单渲染（t_menu.parent_id IS NULL）；权限通过 menuCode 守卫。
         path: 'cnc/pending',
