@@ -49,6 +49,7 @@ model/*.py           # SQLAlchemy ORM
 |------|-------|-----------|---------|----------|
 | 零件 | `TPart` | `PartRepository` | `part.py` | `api/v1/part.py` |
 | 零件事件 | `TPartEvent` | `PartEventRepository` | (状态机回调写) | — |
+| 跳序取件事件 | `TPickupSkipEvent` | `PickupSkipEventRepository` | (在 `pick_up_by_scan` 写) | — |
 | 客户 | `TCustomer` | `CustomerRepository` | `customer.py` | `api/v1/customer.py` |
 | 申请人 | `TApplicant` | `ApplicantRepository` | `applicant.py` | `api/v1/applicant.py` |
 | 装配体 | `TAssembly` | `AssemblyRepository` | `assembly.py` | `api/v1/assembly.py` |
@@ -191,6 +192,8 @@ REPAIRING → ON_SHELF
    ↑
 INSPECTION / READY_TO_SHIP / DELIVERED → REPAIRING
 任意非终态 → CANCELLED
+ON_SHELF / PROGRAMMING → PENDING （召回 CLERK/MANAGER）
+ON_SHELF → PROGRAMMING （召回 MANAGER/CNC）
 ```
 
 - `ON_SHELF` / `WITH_WORKER` 都映射 DB `status="IN_PROCESS"`，用 `location`（`PRODUCTION_SHELF` / `WORKER`）区分。
@@ -353,7 +356,7 @@ frontend/src/
 
 `alembic/versions/` 下用 **12 位零填充数字** revision id（如 `000000000001_schema_init.py`），不是 hex。模块顶部写明 `revision` / `down_revision` / `Create Date`，docstring 说明要点。
 
-**当前迁移（5 个 schema + 4 个 prod_data 共 9 文件，schema 链 001 → 003 → 005 → 009 → 010，单 head = `000000000010`）**：
+**当前迁移（5 个 schema + 4 个 prod_data 共 9 文件，schema 链 001 → 003 → 005 → 009 → 010，单 head = `000000000030`）**：
 
 | 文件 | revision | down | 内容 |
 |------|----------|------|------|
@@ -366,9 +369,11 @@ frontend/src/
 | `prod_data/000000000008_remove_assemblies_new_menu.py` | `000000000008` | `000000000007` | 删除装配体（assemblies_new）老菜单条目。 |
 | `schema/000000000009_delivery_note.py` | `000000000009` | `000000000008` | 送货单：`t_delivery_note` / `t_delivery_note_event` / `t_delivery_note_counter` + `t_part.delivery_note_id`；状态机 DRAFT ↔ SUBMITTED → PICKED_UP → ARCHIVED；菜单 `delivery_notes_manage`。 |
 | `schema/000000000010_add_delivery_note_delivery_date.py` | `000000000010` | `000000000009` | `t_delivery_note.delivery_date`（Date NULL；默认 = 创建当天）；DRAFT/SUBMITTED 可改；PICKED_UP/ARCHIVED 后保留打印能力。 |
+| `schema/000000000029_worktype_limit_and_pickup_skip.py` | `000000000029` | `000000000028` | `t_work_type.max_held_batches` 列 + `t_pickup_skip_event` 表（12 列 append-only）|
+| `prod_data/000000000030_cnc_parts_list_menu.py` | `000000000030` | `000000000029` | 编程员零件一览菜单（`t_role_menu` 幂等授予 CNC_PROGRAMMER）|
 
 - `alembic.ini`：`version_locations = schema:prod_data`（`recursive_version_locations = true`）。**无 `dev_data/` 目录**。
-- `alembic heads` 只返 1 行（`000000000010`）；`alembic upgrade head` 单命令即可（Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
+- `alembic heads` 只返 1 行（`000000000030`）；`alembic upgrade head` 单命令即可（Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
 - 冷启结果：seed 表有数据，业务表（part/customer/assembly/applicant/outsource）为空。
 - **新 schema 迁移放 `schema/` 子目录**，revision id 用下一个 12 位数字，`down_revision` 指向当前 head。改 `schema_init` 时验收门：全新库 `upgrade head` 后 `pg_dump --schema-only` 与旧链对比无意外差异。
 - **已有库对齐**：确认 schema 等价后 `alembic stamp <head>` 即可；dev 本地假数据另写独立 seed 脚本（不走迁移）。
@@ -422,6 +427,8 @@ frontend/src/
 | POST | /parts/{id}/complete | M,C | DELIVERED→COMPLETED，释放流水号 |
 | POST | /parts/{id}/start-repair · /complete-repair | M,C | 返修流转 |
 | POST | /parts/{id}/cancel | M,C | →CANCELLED，释放流水号 |
+| POST | /parts/{id}/recall-to-pending | M,C | ON_SHELF/PROGRAMMING→PENDING（仅未领批次）|
+| POST | /parts/{id}/recall-to-programming | M,CNC | ON_SHELF→PROGRAMMING |
 | POST | /parts/pick-up · /parts/scan | S@该shelf | 扫码领取 / 归还·送检 |
 | GET | /parts/by-serial/{serial_no} | * | 按序列号查 |
 | GET | /parts/by-work-type/{wt_id} | * | 可领件列表（query shelf_id；另有 all-shelves 变体）|
@@ -462,6 +469,16 @@ frontend/src/
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
 | POST | /delivery-notes/generate | M,C | 按客户前缀（F→法拉/L→路达模板）聚合 READY_TO_SHIP 零件导出 Excel（含条码）|
+
+### /statistics（api/v1/statistics.py — MANAGER-only）
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | /statistics/overview | M | 生产概览 |
+| GET | /statistics/workers | M | 工人贡献度一览 |
+| GET | /statistics/workers/{worker_id} | M | 工人详情 |
+| GET | /statistics/pickup-skips | M | 跳序取件次数汇总（按工人）|
+| GET | /statistics/pickup-skips/{worker_id} | M | 工人跳序明细（分页）|
 
 ### /workers（api/v1/worker.py）
 
@@ -558,11 +575,11 @@ frontend/src/
 |-----|----|----|
 | TPart | t_part | serial_no, name, drawing_no, applicant_name, quantity, unit_price, total_price, request_date, planned_delivery_date, actual_delivery_date, **order_no, system_delivery_date, note**, status(10 态), location(OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/**OUTSOURCE_COMPANY**), is_urgent, current_holder_id(多态→shelf/worker/**outsource_company**), placed_at, customer_id, assembly_id, next_process_id |
 | TAssembly | t_assembly | serial_no, drawing_no, name, applicant_name, customer_id, request_date, planned_delivery_date, actual_delivery_date, is_urgent, status(PENDING/IN_PROCESS/INSPECTION/READY_TO_SHIP/DELIVERED/COMPLETED/CANCELLED) |
-| TPartEvent | t_part_event | part_id, worker_id, created_by, event_type, from_status, to_status, drawing_code, badge_code, note |
+| TPartEvent | t_part_event | part_id, worker_id, created_by, event_type（含 `RECALLED`）, from_status, to_status, drawing_code, badge_code, note |
 | TCustomer | t_customer | name, parent_id(自引用邻接表), serial_prefix(A-Z) |
 | TApplicant | t_applicant | name, customer_id（partial unique `(name, customer_id) WHERE deleted_at IS NULL`）|
 | TWorker / TUser | t_worker / t_user | badge_code/name/is_active/work_type_id · username/password_hash/is_active/last_login_at/refresh_token_version |
-| TShelf / TProcess / TWorkType | | code/name/zone(PRODUCTION/INSPECTION) · code(unique)/category(INHOUSE/OUTSOURCE) · code(unique)/name |
+| TShelf / TProcess / TWorkType | | code/name/zone(PRODUCTION/INSPECTION) · code(unique)/category(INHOUSE/OUTSOURCE) · code(unique)/name · `max_held_batches`（工种可领取上限，NULL=不限）|
 | TOutsourceCompany | t_outsource_company | name, contact, phone, address, is_active |
 | TOutsourceQuote | t_outsource_quote | part_id, company_id, process_id, price, status(DRAFT/SUBMITTED/APPROVED/REJECTED/USED), reviewed_at/by |
 
@@ -584,7 +601,7 @@ frontend/src/
 - `PartStatus`: PENDING, PROGRAMMING, IN_PROCESS, INSPECTION, READY_TO_SHIP, DELIVERED, REPAIRING, **OUTSOURCE**, COMPLETED, CANCELLED（10）
 - `PartLocation`: OFFICE, PRODUCTION_SHELF, WORKER, INSPECTION_SHELF, **OUTSOURCE_COMPANY**
 - `AssemblyStatus`: PENDING, IN_PROCESS, **INSPECTION**, **READY_TO_SHIP**, **DELIVERED**, COMPLETED, CANCELLED（7，2026-08-03 扩展）
-- `PartEventType`: CREATED, RELEASED, SENT_TO_PROGRAMMING, CNC_RELEASED, PLACED_ON_SHELF, PICKED_UP, RETURNED, INSPECTED, INSPECTION_FAILED, STATUS_CHANGED, REPAIR_STARTED, REPAIR_COMPLETED, SENT_TO_OUTSOURCE, RECEIVED_FROM_OUTSOURCE, QUOTE_CREATED, QUOTE_APPROVED, CANCELLED, COMPLETED
+- `PartEventType`: CREATED, RELEASED, SENT_TO_PROGRAMMING, CNC_RELEASED, PLACED_ON_SHELF, PICKED_UP, RETURNED, INSPECTED, INSPECTION_FAILED, STATUS_CHANGED, REPAIR_STARTED, REPAIR_COMPLETED, SENT_TO_OUTSOURCE, RECEIVED_FROM_OUTSOURCE, QUOTE_CREATED, QUOTE_APPROVED, CANCELLED, RECALLED, COMPLETED
 - `UserRole`: MANAGER, SHELF_ACCOUNT, CLERK, INSPECTOR, CNC_PROGRAMMER
 - `ShelfZone`: PRODUCTION, INSPECTION
 - `PartSortKey`: PLANNED_DELIVERY_DATE, REQUEST_DATE, CREATED_AT, SERIAL_NO, DRAWING_NO, NAME · `SortDir`: ASC, DESC
