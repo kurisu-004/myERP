@@ -421,7 +421,7 @@ class TestDeactivate:
         service: WorkerService,
         mock_repo: WorkerRepository,
     ) -> None:
-        """deactivate sets is_active=False and deleted_at on the worker."""
+        """deactivate 只设置 is_active=False，不触碰 deleted_at（2026-08-04 起行为变更）。"""
         # ── arrange ──────────────────────────────────────────────
         w = _make_worker(id=1, is_active=True, deleted_at=None)
         mock_repo.get_by_id.return_value = w
@@ -433,7 +433,7 @@ class TestDeactivate:
         mock_repo.get_by_id.assert_awaited_once_with(1)
         mock_repo.update.assert_awaited_once_with(w)
         assert w.is_active is False
-        assert w.deleted_at is not None  # set by datetime.utcnow()
+        assert w.deleted_at is None  # 2026-08-04 起 deactivate 不再写 deleted_at
         assert result.is_active is False
 
     async def test_worker_not_found(
@@ -468,11 +468,9 @@ class TestReactivate:
         service: WorkerService,
         mock_repo: WorkerRepository,
     ) -> None:
-        """reactivate sets is_active=True and clears deleted_at, using include_deleted."""
+        """reactivate 只设置 is_active=True，不触碰 deleted_at（2026-08-04 起行为变更）。"""
         # ── arrange ──────────────────────────────────────────────
-        w = _make_worker(
-            id=1, is_active=False, deleted_at=datetime(2025, 6, 1, 12, 0, 0)
-        )
+        w = _make_worker(id=1, is_active=False)
         mock_repo.get_by_id.return_value = w
 
         # ── act ──────────────────────────────────────────────────
@@ -482,7 +480,6 @@ class TestReactivate:
         mock_repo.get_by_id.assert_awaited_once_with(1, include_deleted=True)
         mock_repo.update.assert_awaited_once_with(w)
         assert w.is_active is True
-        assert w.deleted_at is None
         assert result.is_active is True
 
     async def test_worker_not_found(

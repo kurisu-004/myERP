@@ -23,6 +23,7 @@ from model.enums import PartLocation, PartStatus
 from repository.part import PartRepository
 from repository.work_type import WorkTypeRepository
 from repository.worker import WorkerRepository
+from schema.worker import WorkerListQuery
 from service.worker import WorkerService
 from utils.id_gen import new_id
 
@@ -111,9 +112,9 @@ async def test_deactivate_returns_full_out_no_missing_greenlet(clean_db):
     assert out.updated_at is not None  # ← 关键：非 None 且不抛 MissingGreenlet
     # OCC 计数 +1
     assert out.version >= 1
-    # 软删标记：DB 侧 deleted_at 已置位（WorkerOut 不暴露 deleted_at）
+    # 新行为：deactivate 不再写 deleted_at，只动 is_active
     await session.refresh(w)
-    assert w.deleted_at is not None
+    assert w.deleted_at is None
 
 
 async def test_reactivate_round_trip_no_missing_greenlet(clean_db):
@@ -127,7 +128,7 @@ async def test_reactivate_round_trip_no_missing_greenlet(clean_db):
     out = await svc.deactivate(w.id)
     assert out.is_active is False
     await session.refresh(w)
-    assert w.deleted_at is not None
+    assert w.deleted_at is None
 
     out = await svc.reactivate(w.id)
     assert out.is_active is True
@@ -181,7 +182,7 @@ async def test_deactivate_allows_when_only_completed_parts_exist(clean_db):
     out = await svc.deactivate(w.id)  # 不抛
     assert out.is_active is False
     await session.refresh(w)
-    assert w.deleted_at is not None  # 软删已生效
+    assert w.deleted_at is None  # 新行为：deactivate 不写 deleted_at
 
 
 # ============================================================
@@ -198,14 +199,33 @@ async def test_deactivate_not_found_404(clean_db):
     assert exc_info.value.http_status == 404
 
 
-async def test_deactivate_already_inactive_returns_404(clean_db):
-    """第二次 deactivate 已软删行 → 仓库 get_by_id 默认过滤 deleted_at IS NOT NULL → 404。
-    现状行为：非幂等。如要改幂等另开 ticket。
+async def test_deactivate_is_idempotent(clean_db):
+    """2026-08-04 起：deactivate 不再写 deleted_at，二次停用从 404 变为 200 幂等返回。
+    无实际变更时不触发 UPDATE，version 保持不变。
     """
     session = clean_db
-    w = await _make_worker(session, badge="W-DUP-001", name="重复停用")
+    w = await _make_worker(session, badge="W-IDEMP-001", name="幂等停用")
     svc = _build_worker_service(session, actor_id=1)
-    await svc.deactivate(w.id)
-    with pytest.raises(BizError) as exc_info:
-        await svc.deactivate(w.id)
-    assert exc_info.value.code == ErrCode.BIZ_WORKER_NOT_FOUND
+    out1 = await svc.deactivate(w.id)
+    assert out1.is_active is False
+    out2 = await svc.deactivate(w.id)  # 不抛
+    assert out2.id == w.id
+    assert out2.is_active is False
+    assert out2.version == out1.version  # 无 dirty 字段 → 跳过 UPDATE → version 不变
+
+
+async def test_deactivated_worker_visible_in_list_with_is_active_false(clean_db):
+    """回归用户报的 bug：deactivate 后 ?is_active=false 必须能查到该行。
+
+    旧行为：deactivate 写 deleted_at → 被 list_with_filters 的软删守卫隐藏 →
+    前端「状态：停用」筛选永远空。新行为：deleted_at 保持 NULL，行可见。
+    """
+    session = clean_db
+    w = await _make_worker(session, badge="W-VISIBLE-001", name="应可见")
+    svc = _build_worker_service(session, actor_id=1)
+    await svc.deactivate(w.id)  # 不抛
+
+    out = await svc.list_workers(WorkerListQuery(is_active=False, limit=200, offset=0))
+    ids = [str(o.id) for o in out.items]
+    assert str(w.id) in ids
+    assert out.total >= 1

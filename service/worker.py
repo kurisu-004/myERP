@@ -5,7 +5,6 @@ from core.database import SessionLocal
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
-from core.time import now_naive
 from model import TPart, TWorker
 from model.enums import PartStatus
 from repository.work_type import WorkTypeRepository
@@ -179,7 +178,6 @@ class WorkerService:
         # 停用前校验：是否还有 active part 由此工人持有（location=WORKER）
         await self._assert_not_holding_parts(w.id)
         w.is_active = False
-        w.deleted_at = now_naive()
         w.updated_by = self._user_id
         await self.workers.update(w)
         # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
@@ -195,7 +193,6 @@ class WorkerService:
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
         w.is_active = True
-        w.deleted_at = None
         w.updated_by = self._user_id
         await self.workers.update(w)
         # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
