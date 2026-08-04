@@ -4,7 +4,7 @@
   大号触屏数量选择弹窗（2026-07-30）。
   - 用于领取 / 放回 / 送检三个扫码流程的 quantity 确认
   - 默认数值 = max（最大化）
-  - 按钮网格：+10 / +1 / -1 / -10 / 归零 / 最大化
+  - 按钮网格：-10 / -1 / +1 / +10 / 归零 / 最大化（左负右正）
 -->
 <template>
   <el-dialog
@@ -42,10 +42,10 @@
 
       <!-- 按钮网格 -->
       <div class="btn-grid">
-        <el-button class="qty-btn adjust" size="large" @click="add(10)">+10</el-button>
-        <el-button class="qty-btn adjust" size="large" @click="add(1)">+1</el-button>
-        <el-button class="qty-btn adjust" size="large" @click="sub(1)">-1</el-button>
         <el-button class="qty-btn adjust" size="large" @click="sub(10)">-10</el-button>
+        <el-button class="qty-btn adjust" size="large" @click="sub(1)">-1</el-button>
+        <el-button class="qty-btn adjust" size="large" @click="add(1)">+1</el-button>
+        <el-button class="qty-btn adjust" size="large" @click="add(10)">+10</el-button>
         <el-button class="qty-btn action" size="large" @click="setZero">归零</el-button>
         <el-button class="qty-btn action" size="large" type="primary" plain @click="setMax">
           最大化
