@@ -1245,6 +1245,7 @@ class PartService:
                 is_urgent=asm_meta.is_urgent,
                 status=PartStatus.PENDING.value,
                 serial_no=assembly_serial,
+                quantity=asm_meta.quantity,
             )
             if self._user_id is not None:
                 asm.created_by = self._user_id

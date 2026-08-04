@@ -503,6 +503,7 @@ class PartBatchTreeAssembly(BaseModel):
     system_delivery_date: date | None = Field(default=None, description="系统交期（装配体层 schema 接受，DB 不写）")
     note: str | None = Field(default=None, max_length=500, description="备注")
     is_urgent: bool = False
+    quantity: int = Field(default=1, ge=1, description="装配体套数")
 
     @field_validator("drawing_no", "name", "applicant_name")
     @classmethod

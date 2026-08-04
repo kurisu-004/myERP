@@ -897,6 +897,18 @@
                     />
                   </template>
                 </el-table-column>
+                <el-table-column label="套数" min-width="80" align="center">
+                  <template #default="{ row }">
+                    <el-input-number
+                      v-model="row.quantity"
+                      :min="1"
+                      :max="9999"
+                      size="small"
+                      controls-position="right"
+                      style="width: 85px"
+                    />
+                  </template>
+                </el-table-column>
                 <el-table-column label="装配图（总装图）" min-width="180" align="center">
                   <template #default="{ row }">
                     <el-select
@@ -1736,6 +1748,8 @@ interface AssemblyRow {
   note: string | null
   is_urgent: boolean
   masterPageIndex: number | null
+  /** 装配体套数（默认 1）。2026-08-04 新增：用于背面页 Q: 打印 */
+  quantity: number
   children: AssemblyChildRow[]
 }
 
@@ -2227,6 +2241,7 @@ async function onSubmitPdfTree(): Promise<void> {
         order_no: a.order_no,
         note: a.note,
         is_urgent: a.is_urgent,
+        quantity: a.quantity,
       })
       for (const c of a.children) {
         items.push({
@@ -2596,6 +2611,7 @@ async function mergeSelectedAsAssembly(): Promise<void> {
     note: null,
     is_urgent: false,
     masterPageIndex: null,
+    quantity: 1,
     children,
   })
   clearSelection()
@@ -2837,6 +2853,7 @@ async function confirmManualAssembly(): Promise<void> {
     note: null,
     is_urgent: false,
     masterPageIndex: totalPages > 1 ? 0 : null,
+    quantity: 1,
     children,
   })
   manualAsmDialogVisible.value = false

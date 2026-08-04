@@ -830,3 +830,67 @@ class TestPreparePartPrintDataDeliveryDate:
         )
         # planned_delivery_date 9/1 -> _buffered_delivery_date(-3) = 8/29
         assert data.planned_delivery_date == date(2026, 8, 29)
+
+
+class TestAssemblyMasterBackPageQuantity:
+    """2026-08-04：总装图背面也要打 `Q:`（= 装配体套数），此前恒为 None 漏打。"""
+
+    async def test_master_back_page_receives_assembly_quantity(
+        self, monkeypatch,
+    ) -> None:
+        """批量打印装配件 → 总装图背面页拿到 `quantity = asm.quantity`。
+
+        断言落在 `_build_back_page_pdf` 实际收到的 kwargs 上：这正是
+        `Q:` 行画不画的唯一判据（`quantity is None` ⇒ 整行不画）。
+        """
+        import service.printing as printing_mod
+        from service._print_back_page import _build_back_page_pdf as _real_back_page
+
+        captured: dict[str, int | None] = {}
+
+        def _spy(serial_no, **kwargs):
+            captured[serial_no] = kwargs.get("quantity")
+            return _real_back_page(serial_no, **kwargs)
+
+        monkeypatch.setattr(printing_mod, "_build_back_page_pdf", _spy)
+
+        asm = MagicMock()
+        asm.id = 1001
+        asm.serial_no = "L1001"
+        asm.drawing_no = "DWG-ASM-001"
+        asm.name = "测试装配体"
+        asm.quantity = 7  # 装配体套数
+
+        child = MagicMock()
+        child.id = 2001
+        child.serial_no = "L1001-01"
+        child.drawing_no = "DWG-CHILD-001"
+        child.name = "子件1"
+        child.assembly_id = 1001
+        child.quantity = 3
+
+        assemblies_repo = MagicMock()
+        assemblies_repo.get_by_id = AsyncMock(return_value=asm)
+
+        parts_repo = MagicMock()
+        parts_repo.list_by_ids = AsyncMock(return_value=[child])
+        parts_repo.list_children = AsyncMock(return_value=[child])
+
+        files_repo = MagicMock()
+        files_repo.list_by_parts = AsyncMock(
+            side_effect=lambda pids, kind=None, include_deleted=False: {
+                pid: _make_drawing_row("PDF", "pdf", f"drawings/{pid}/{kind}/aaa.pdf")
+                for pid in pids
+            }
+        )
+
+        from service.printing import build_parts_print_pdf_batch
+        await build_parts_print_pdf_batch(
+            part_ids=[2001],
+            parts=parts_repo,
+            part_files=files_repo,
+            assemblies=assemblies_repo,
+        )
+
+        assert captured["L1001"] == 7, "总装图背面漏打 Q:（装配体套数）"
+        assert captured["L1001-01"] == 3, "子件背面 Q: 回归"

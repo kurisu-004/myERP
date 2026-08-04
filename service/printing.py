@@ -195,7 +195,12 @@ def _image_to_pdf_bytes(
 
 
 def _detect_pdf_orientation(pdf_bytes: bytes) -> str:
-    """读 PDF 第一页有效页面尺寸判断朝向。"""
+    """读 PDF 第一页有效页面尺寸判断朝向。
+
+    ⚠️ 这里的 `/Rotate` 交换是**必要**的：pikepdf 的 `page.mediabox` 是原始值，
+    不含 `/Rotate`。与 `service/_print_front_cache.py` 的 pypdfium2 路径语义**相反**
+    （那边 `get_size()` / `render()` 已应用 `/Rotate`，再交换就会误判朝向）。
+    """
     try:
         with pikepdf.Pdf.open(io.BytesIO(pdf_bytes)) as pdf:
             if len(pdf.pages) == 0:
@@ -682,7 +687,11 @@ async def build_parts_print_pdf_batch(
                 planned_delivery_date=_buffered_delivery_date(
                     _src if isinstance(_src, date) else None
                 ),
-                quantity=None,
+                quantity=(
+                    asm_obj.quantity
+                    if isinstance(getattr(asm_obj, "quantity", None), int)
+                    else None
+                ),  # 2026-08-04：总装图背面同样要打 Q:（= 装配体套数），此前漏传
                 drawing_sha=sha, front_pdf_bytes=front_bytes,
             )
 

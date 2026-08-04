@@ -366,6 +366,8 @@ export interface PartBatchTreeAssemblyFE {
   order_no?: string | null
   note?: string | null
   is_urgent: boolean
+  /** 装配体套数（默认 1）。2026-08-04 新增：用于背面页 Q: 打印。 */
+  quantity: number
 }
 
 export interface PartBatchTreeItemFE {

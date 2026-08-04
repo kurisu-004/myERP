@@ -14,6 +14,16 @@
 历史备注：早期版本曾引入 L1 本地磁盘 + L2 COS 两级缓存，因图纸基本只打印
 一次（命中率低）+ COS 规格化结果相对原 PDF 体积优势有限（仍需存储/请求费用）
 于 2026-07-31 移除；本模块现在只负责规格化本体与 vector 逃生门。
+
+⚠️ `/Rotate` 语义约定（2026-08-04 踩坑后固化）：
+- **pypdfium2**：`page.get_size()` 与 `page.render()` **都已应用 `/Rotate`**
+  （PDFium 的 `CPDF_Page` 对 rotate%2 的页在构造时就交换了 mediabox 宽高）。
+  拿到的即可视尺寸 / 可视位图，**不得**再按 `get_rotation()` 交换一次。
+- **pikepdf / pypdf**：`page.mediabox` 是**原始**值，不含 `/Rotate`，
+  需要自己按 `/Rotate` 交换才能得到可视尺寸
+  （见 `service/printing.py::_detect_pdf_orientation`）。
+两套语义混用曾导致「纵向 mediabox + /Rotate 90」的横向图纸被误判成 portrait，
+横图被塞进竖版 A4 画布打印。
 """
 from __future__ import annotations
 
@@ -63,16 +73,18 @@ class FrontCacheResult:
 # 朝向探测 + 规格化
 # ============================================================
 def _detect_pdf_size(pdf_bytes: bytes) -> tuple[int, int] | None:
-    """读 PDF 第一页可视尺寸（处理 rotation），返回 (w_pt, h_pt)。失败返回 None。"""
+    """读 PDF 第一页**可视**尺寸，返回 (w_pt, h_pt)。失败返回 None。
+
+    ⚠️ pypdfium2 的 `page.get_size()` 已经把 `/Rotate` 算进去了（PDFium 的
+    `CPDF_Page` 构造时对 rotate%2 的页交换 mediabox 宽高），返回的就是可视尺寸。
+    **不要**再按 `get_rotation()` 交换一次——那会把「纵向 mediabox + /Rotate 90」
+    的横向图纸误判成竖版（2026-08-04 修复的正是这个 bug）。
+    """
     try:
         pdf = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
         if len(pdf) == 0:
             return None
-        page = pdf[0]
-        w, h = page.get_size()
-        rotation = page.get_rotation()
-        if rotation % 180:
-            w, h = h, w
+        w, h = pdf[0].get_size()
         return int(w), int(h)
     except Exception as e:  # noqa: BLE001
         _logger.warning("pypdfium2 detect size failed: %s", e)
@@ -86,23 +98,21 @@ def _render_pdf_page_to_a4_jpeg_pdf(pdf_bytes: bytes) -> tuple[bytes, str]:
     精确 A4 像素画布 → JPEG 编码 → PIL.save(PDF, resolution=_TARGET_DPI)，
     PIL 的 mediabox 推算 = px / DPI * 72，对 A4 像素画布来说就是 (595,842)
     或 (842,595) pt，天然精确。
+
+    朝向**由渲染出来的位图自身决定**：`page.render()` 已经把 `/Rotate` 应用到
+    输出位图上，所以「位图朝向 == 最终视觉朝向」，且「画布朝向 == 位图朝向」
+    成为构造性不变量，不会再出现横图贴竖版画布的情况。
     """
     pdf = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
     if len(pdf) == 0:
         raise BizError  # 实际由调用方 fallback 到 info card
 
-    page = pdf[0]
-    rotation = page.get_rotation()
-    w_pt, h_pt = page.get_size()
-    if rotation % 180:
-        w_pt, h_pt = h_pt, w_pt
-    orientation = "landscape" if w_pt > h_pt else "portrait"
-
     # pypdfium2 render：用 scale = DPI / 72 让输出像素 ≈ A4 像素
     scale = _TARGET_DPI / 72.0
-    pil = page.render(scale=scale).to_pil().convert("RGB")
+    pil = pdf[0].render(scale=scale).to_pil().convert("RGB")
     pdf.close()
 
+    orientation = "landscape" if pil.width > pil.height else "portrait"
     return _pil_to_a4_pdf(pil, orientation), orientation
 
 
