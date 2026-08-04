@@ -1,10 +1,13 @@
 from fastapi import status as http_status
+from sqlalchemy import select
 
+from core.database import SessionLocal
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from core.time import now_naive
-from model import TWorker
+from model import TPart, TWorker
+from model.enums import PartStatus
 from repository.work_type import WorkTypeRepository
 from repository.worker import WorkerRepository
 from schema.worker import (
@@ -24,11 +27,14 @@ class WorkerService:
         self,
         workers: WorkerRepository,
         work_types: WorkTypeRepository | None = None,
+        parts: "PartRepository | None" = None,
         *,
         current_user: CurrentUser | None = None,
     ) -> None:
         self.workers = workers
         self.work_types = work_types
+        # 可选：停用前校验是否仍有 active part 由此工人持有（location=WORKER）
+        self.parts = parts
         self._user_id: int | None = current_user.id if current_user else None
 
     async def _resolve_work_type(self, work_type_id: int | None) -> int | None:
@@ -170,10 +176,14 @@ class WorkerService:
                 message=f"worker {worker_id} not found",
                 http_status=http_status.HTTP_404_NOT_FOUND,
             )
+        # 停用前校验：是否还有 active part 由此工人持有（location=WORKER）
+        await self._assert_not_holding_parts(w.id)
         w.is_active = False
         w.deleted_at = now_naive()
         w.updated_by = self._user_id
         await self.workers.update(w)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
+        await self.workers.session.refresh(w)
         return _worker_to_out(w)
 
     async def reactivate(self, worker_id: int) -> WorkerOut:
@@ -188,7 +198,48 @@ class WorkerService:
         w.deleted_at = None
         w.updated_by = self._user_id
         await self.workers.update(w)
+        # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
+        await self.workers.session.refresh(w)
         return _worker_to_out(w)
+
+    async def _assert_not_holding_parts(self, worker_id: int) -> None:
+        """停用前校验：是否还有 active part 由此工人持有（location=WORKER）。
+
+        Mirror service/shelf.py::soft_delete_shelf 的 BIZ_SHELF_IN_USE 模式：
+        新开 session 防同一事务内的 in-flight 写入被错误命中。
+        t_part 是 rollup（CLAUDE.md §13），status / location / holder 由最落后活跃
+        批次派生；检查 t_part 已覆盖「有活跃批次由此 worker 持有」的所有情形。
+        """
+        if self.parts is None:
+            # 未注入 part repo 时跳过校验（保持 service 可单测/轻量调用）
+            return
+        async with SessionLocal() as s2:
+            stmt = (
+                select(TPart.id)
+                .where(
+                    TPart.current_holder_id == worker_id,
+                    TPart.deleted_at.is_(None),
+                    TPart.location == "WORKER",
+                    TPart.status.in_(
+                        [
+                            PartStatus.IN_PROCESS.value,
+                            PartStatus.INSPECTION.value,
+                            PartStatus.REPAIRING.value,
+                        ]
+                    ),
+                )
+                .limit(1)
+            )
+            found = (await s2.execute(stmt)).scalar_one_or_none()
+        if found is not None:
+            raise BizError(
+                code=ErrCode.BIZ_WORKER_IN_USE,
+                message=(
+                    f"worker {worker_id} still holds active parts; "
+                    "return or complete them first"
+                ),
+                http_status=http_status.HTTP_409_CONFLICT,
+            )
 
 
 def _worker_to_out(w: TWorker) -> WorkerOut:
