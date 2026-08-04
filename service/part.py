@@ -3284,7 +3284,6 @@ class PartService:
         )
         target.updated_by = self._user_id
         part.updated_by = self._user_id
-        await self.parts.update(part)
         await self._batches().update(target)
         await self._after_batch_transition(part)
         items = await self._to_out([part])
