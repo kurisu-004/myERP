@@ -8,10 +8,10 @@
   同步置 `True`；`complete_repair` 走生产架 / 走品检架均不再清。
 - 列保留到工单 COMPLETED / CANCELLED 之后；列表 / 卡片 / 详情显示 el-tag「返修」。
 
-接在 `000000000024`（production_stats_menu）之后，保持单 head 线性拓扑。
+接在 `000000000027`（update_repair_receive_sort_order）之后，保持单 head 线性拓扑。（原 revision 025 与 prod_data/000000000025_clear_deactivated_worker_deleted_at 撞号，改号 028。）
 
-Revision ID: 000000000025
-Revises: 000000000024
+Revision ID: 000000000028
+Revises: 000000000027
 Create Date: 2026-08-04
 """
 from typing import Sequence, Union
@@ -20,9 +20,9 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "000000000025"
+revision: str = "000000000028"
 # 单 head 线性拓扑：… 020 → 022 → 023 → 024 → 025（新增返修标记）
-down_revision: Union[str, None] = "000000000024"
+down_revision: Union[str, None] = "000000000027"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
