@@ -422,6 +422,36 @@
         >确认指定工序</el-button>
       </template>
     </el-dialog>
+
+    <!-- 2026-08-04：扫码命中 INSPECTION 行的二选一对话框（点按钮复用原 pass/fail dialog） -->
+    <el-dialog
+      v-model="scanChooserOpen"
+      title="扫码命中 - 选择动作"
+      width="420"
+      :close-on-click-modal="false"
+      append-to-body
+    >
+      <div v-if="scanChooserRow" class="fail-summary">
+        <div><strong>流水号：</strong>{{ scanChooserRow.serial_no || '—' }}</div>
+        <div><strong>批次：</strong>{{ scanChooserRow.batch_label || '—' }}</div>
+        <div><strong>图号：</strong>{{ scanChooserRow.drawing_no }}</div>
+        <div><strong>名称：</strong>{{ scanChooserRow.name }}</div>
+        <div><strong>数量：</strong>{{ scanChooserRow.quantity }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="scanChooserOpen = false">取消</el-button>
+        <el-button type="warning" @click="onScanChooserFail">指定下一工序</el-button>
+        <el-button type="success" @click="onScanChooserPass">品检通过</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 2026-08-04：扫码命中同一 serial 多批次时复用报工台 BatchPickerDialog -->
+    <BatchPickerDialog
+      v-model="showBatchPicker"
+      :code="batchPickerCode"
+      :rows="batchPickerRows"
+      @pick="onBatchPicked"
+    />
   </div>
 </template>
 
@@ -434,6 +464,11 @@ import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useDialogSize } from '@/composables/useDialogSize'
+import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
+import {
+  findAllByCode,
+  findPartBySerialAndPrompt,
+} from '@/utils/scanHelpers'
 import {
   failInspection,
   listInspectionBatches,
@@ -446,6 +481,7 @@ import { useShelfProcessFilter } from '@/composables/useShelfProcessFilter'
 import { useListStatePersist } from '@/composables/useListFilterPersist'
 import type { Shelf } from '@/types/shelf'
 import type { Process } from '@/types/process'
+import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
 
 // ============ 状态 ============
 interface RowState extends PartItem {
@@ -549,7 +585,83 @@ onBeforeUnmount(() => {
   if (autoRefreshTimer !== null) {
     window.clearInterval(autoRefreshTimer)
   }
+  // 2026-08-04：扫码订阅退订
+  unsubInspectionScan()
 })
+
+// ============ 2026-08-04：扫码枪扫描序列号 → 二选一弹框 / 报工台风格位置提示 ============
+//
+// 扫码命中 INSPECTION 行（serial_no || drawing_no 在当前列表里匹配且状态=INSPECTION）：
+//   - 1 条命中 → 弹「品检通过 / 指定下一工序」二选一对话框
+//   - 多条命中（同 serial 不同 batch）→ 弹 BatchPickerDialog 选具体批次再走二选一
+//   - 0 命中（零件不在 INSPECTION 状态或根本不存在）→ 走 findPartBySerialAndPrompt
+//     显示当前位置 / 持有人 / 状态 / 下一工序，提示「该零件不在本工序」。
+// 已有 dialog 显示时不抢流程。
+const scanChooserOpen = ref(false)
+const scanChooserRow = ref<RowState | null>(null)
+const showBatchPicker = ref(false)
+const batchPickerCode = ref('')
+const batchPickerRows = ref<PartItem[]>([])
+
+async function onInspectionScan(rawCode: string): Promise<void> {
+  const code = rawCode.trim()
+  if (!code) return
+  // 已有 dialog 在显示时不抢流程
+  if (
+    passDialogVisible.value ||
+    failDialogVisible.value ||
+    scanChooserOpen.value
+  ) {
+    return
+  }
+  // 在当前已加载列表里按 serial_no || drawing_no 匹配
+  const matches = findAllByCode(
+    items.value as unknown as PartItem[],
+    code,
+  ).filter((r) => r.status === 'INSPECTION')
+  if (matches.length === 1) {
+    scanChooserRow.value = matches[0] as unknown as RowState
+    scanChooserOpen.value = true
+    return
+  }
+  if (matches.length > 1) {
+    // 多批次命中 — 复用报工台 BatchPickerDialog
+    batchPickerCode.value = code
+    batchPickerRows.value = matches
+    showBatchPicker.value = true
+    return
+  }
+  // 0 命中 — 走报工台风格「该零件当前不在本工序」位置提示
+  await findPartBySerialAndPrompt(code)
+}
+
+function onScanChooserPass(): void {
+  const row = scanChooserRow.value
+  scanChooserOpen.value = false
+  scanChooserRow.value = null
+  if (row) onPass(row)  // 复用现有 onPass：弹原 pass dialog
+}
+
+function onScanChooserFail(): void {
+  const row = scanChooserRow.value
+  scanChooserOpen.value = false
+  scanChooserRow.value = null
+  if (row) void openFailDialog(row)  // 复用现有 openFailDialog
+}
+
+function onBatchPicked(p: PartItem): void {
+  showBatchPicker.value = false
+  if (p.status === 'INSPECTION') {
+    scanChooserRow.value = p as unknown as RowState
+    scanChooserOpen.value = true
+  } else {
+    // 极少见：批次状态在弹出 BatchPicker 期间被改了
+    void findPartBySerialAndPrompt(p.serial_no ?? p.drawing_no ?? '')
+  }
+}
+
+const { onScan } = useBarcodeScanner()
+const unsubInspectionScan = onScan((code) => { void onInspectionScan(code) })
 
 // ============ 品检通过（2026-07-29：带数量，部分通过先拆再过）============
 const passDlg = useDialogSize({ desktopWidth: 420 })

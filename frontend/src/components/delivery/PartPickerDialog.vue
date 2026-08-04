@@ -10,12 +10,20 @@
 //   - el-input-number：references/form.md §InputNumber
 //     > Source: https://element-plus.org/zh-CN/component/input-number.html
 
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import type { TableInstance } from 'element-plus'
 import type {
   DeliveryNoteCandidatePart,
 } from '@/types/deliveryNote'
 import { listCandidateParts, type AddPartsItem } from '@/api/deliveryNote'
+import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
+import {
+  findBySerialNo,
+  findPartBySerialAndPrompt,
+} from '@/utils/scanHelpers'
+import type { PartItem } from '@/api/parts'
+import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
 
 const props = defineProps<{
   /** v-model 兼容（标准命名 modelValue + update:modelValue 来自 el-dialog 习惯） */
@@ -40,6 +48,20 @@ const selectedRows = ref<DeliveryNoteCandidatePart[]>([])
 /** 每个勾选批次的入单数量（默认批次全量；可改小 → 后端自动拆分） */
 const qtyMap = ref<Record<string, number>>({})
 
+// 2026-08-04：扫码枪扫码勾选 — 仅按 serial_no 严格匹配（用户决定）。
+// 候选行已 INSPECTION/READY_TO_SHIP 过滤，所以 0 命中 = 零件不在可入单状态 → 走报工台风格位置提示。
+const tableRef = ref<TableInstance | null>(null)
+/** 扫码命中行 0.8s 背景闪烁（row-class-name 用） */
+const scanFlashBatchIds = ref<Set<string>>(new Set())
+/** 扫码订阅句柄（弹框关闭时退订，避免 DeliveryNoteList 关闭 picker 后还在劫持扫码） */
+const unsubPickerScan = ref<(() => void) | null>(null)
+/** 同一 serial 在候选里多批次（极少见）— 复用报工台 BatchPickerDialog 选一个 */
+const showPickerBatchPicker = ref(false)
+const pickerBatchCode = ref('')
+const pickerBatchRows = ref<PartItem[]>([])
+
+const { onScan } = useBarcodeScanner()
+
 const existingSet = computed(
   () => new Set(props.existingBatchIds ?? []),
 )
@@ -48,7 +70,12 @@ const existingSet = computed(
 watch(
   () => [props.modelValue, props.customerId] as const,
   async ([open, cid]) => {
-    if (!open || !cid) return
+    if (!open || !cid) {
+      // 关闭时退订扫码，避免 DeliveryNoteList 上也被这个组件劫持
+      unsubPickerScan.value?.()
+      unsubPickerScan.value = null
+      return
+    }
     loading.value = true
     try {
       rows.value = await listCandidateParts(cid)
@@ -58,6 +85,10 @@ watch(
       ElMessage.error((e as Error).message ?? '加载候选零件失败')
     } finally {
       loading.value = false
+    }
+    // 打开后订阅扫码（只在第一次挂一次，避免 HMR 重复挂）
+    if (!unsubPickerScan.value) {
+      unsubPickerScan.value = onScan((code) => { void onPickerScan(code) })
     }
   },
   { immediate: true },
@@ -104,6 +135,88 @@ function statusLabel(s: string): string {
   if (s === 'INSPECTION') return '待检'
   return s
 }
+
+// ============ 2026-08-04：扫码勾选 ============
+
+/** 行闪烁 0.8s（row-class-name 用） */
+function flashRow(batchId: string): void {
+  scanFlashBatchIds.value = new Set([...scanFlashBatchIds.value, batchId])
+  setTimeout(() => {
+    const next = new Set(scanFlashBatchIds.value)
+    next.delete(batchId)
+    scanFlashBatchIds.value = next
+  }, 800)
+}
+
+/** 程序化切换 el-table 选中状态，并同步本地 selectedRows / qtyMap。
+ *  注意：toggleRowSelection 在「取消选中」分支不一定触发 @selection-change，需手动同步。 */
+function toggleRowByBatchId(batchId: string): void {
+  const table = tableRef.value
+  if (!table) return
+  const row = rows.value.find((r) => r.batch_id === batchId)
+  if (!row) return
+  const isSelected = selectedRows.value.some((r) => r.batch_id === batchId)
+  if (isSelected) {
+    table.toggleRowSelection(row, false)
+    selectedRows.value = selectedRows.value.filter((r) => r.batch_id !== batchId)
+    const nextQty = { ...qtyMap.value }
+    delete nextQty[batchId]
+    qtyMap.value = nextQty
+  } else {
+    table.toggleRowSelection(row, true)
+    selectedRows.value = [...selectedRows.value, row]
+    qtyMap.value = { ...qtyMap.value, [batchId]: row.quantity }
+  }
+}
+
+/** 行 class — 用于扫码命中时 0.8s 背景闪烁 */
+function rowClass({ row }: { row: DeliveryNoteCandidatePart }): string {
+  return scanFlashBatchIds.value.has(row.batch_id) ? 'row-scan-flash' : ''
+}
+
+async function onPickerScan(rawCode: string): Promise<void> {
+  const code = rawCode.trim()
+  if (!code || !props.modelValue) return
+  // 仅按 serial_no 严格匹配（用户决定 — barcodes = 工单 serial）
+  const matches = findBySerialNo(
+    rows.value as unknown as Array<{ serial_no: string | null }>,
+    code,
+  ) as unknown as DeliveryNoteCandidatePart[]
+  // 过滤掉已在单上的批次（rowSelectable 已禁用，避免重复入单）
+  const selectable = matches.filter(
+    (r) => !existingSet.value.has(r.batch_id),
+  )
+  if (selectable.length === 0) {
+    // 候选里没有 → 报工台风格位置提示（零件可能不在 INSPECTION/READY_TO_SHIP）
+    await findPartBySerialAndPrompt(code)
+    return
+  }
+  if (selectable.length > 1) {
+    // 同一 serial 多批次 — 复用报工台 BatchPickerDialog
+    pickerBatchCode.value = code
+    pickerBatchRows.value = selectable as unknown as PartItem[]
+    showPickerBatchPicker.value = true
+    return
+  }
+  // 单条命中 → 切换勾选 + 行闪烁
+  const target = selectable[0]
+  toggleRowByBatchId(target.batch_id)
+  flashRow(target.batch_id)
+}
+
+function onPickerBatchPicked(p: PartItem): void {
+  showPickerBatchPicker.value = false
+  const batchId = p.batch_id
+  if (batchId) {
+    toggleRowByBatchId(batchId)
+    flashRow(batchId)
+  }
+}
+
+onBeforeUnmount(() => {
+  unsubPickerScan.value?.()
+  unsubPickerScan.value = null
+})
 </script>
 
 <template>
@@ -124,11 +237,13 @@ function statusLabel(s: string): string {
     </div>
 
     <el-table
+      ref="tableRef"
       v-loading="loading"
       :data="rows"
       row-key="batch_id"
       height="500"
       empty-text="该一级客户下暂无可入单的批次（INSPECTION / READY_TO_SHIP）"
+      :row-class-name="rowClass"
       @selection-change="onSelectionChange"
     >
       <el-table-column type="selection" width="55" :selectable="rowSelectable" />
@@ -199,6 +314,14 @@ function statusLabel(s: string): string {
       </el-button>
     </template>
   </el-dialog>
+
+  <!-- 2026-08-04：扫码命中同一 serial 多批次时复用报工台 BatchPickerDialog -->
+  <BatchPickerDialog
+    v-model="showPickerBatchPicker"
+    :code="pickerBatchCode"
+    :rows="pickerBatchRows"
+    @pick="onPickerBatchPicked"
+  />
 </template>
 
 <style scoped>
@@ -220,5 +343,14 @@ function statusLabel(s: string): string {
 }
 .muted {
   color: var(--el-text-color-secondary);
+}
+
+// 2026-08-04：扫码命中行 0.8s 背景闪烁
+@keyframes pickerScanFlash {
+  0%   { background-color: #ecf5ff; }
+  100% { background-color: transparent; }
+}
+:deep(.row-scan-flash td) {
+  animation: pickerScanFlash 0.8s ease-out;
 }
 </style>
