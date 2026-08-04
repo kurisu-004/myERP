@@ -1702,7 +1702,7 @@ class TestCompleteRepair:
     ) -> None:
         mock_parts.get_by_id.return_value = _make_part(status="REPAIRING")
         mock_shelves.get_by_id.return_value = _make_shelf(
-            zone=ShelfZone.INSPECTION.value
+            zone="OFFICE"
         )
 
         with pytest.raises(BizError) as exc:
