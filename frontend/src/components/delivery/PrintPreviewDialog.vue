@@ -1,16 +1,19 @@
 <!--
-  送货单打印预览对话框（2026-08-02 新增）。
+  送货单打印预览对话框（2026-08-02 新增；2026-08-04 装配件合并）。
 
   设计要点：
   - 列：序号（拖动 handle + 数字）/ 订单号 / 分厂 / 申请人 / 图号 / 名称 / 数量
   - 初始顺序 = 详情页当前 ``note.line_items`` 的内存顺序（含用户列头排序的结果）
   - 行可拖动：sortablejs 复用 ``PartBatchNew.vue`` 的低层 DOM API 模式
   - 用户拖动只影响预览副本；详情页 ``note.line_items`` 不变
-  - 确认导出 → POST /delivery-notes/{id}/print body { custom_order }
+  - 2026-08-04：单上有装配件子件时显示「合并为一套 / 分开打印所有子件」radio；
+    合并模式预览折叠子件为父行；导出时把父行 round-trip 展开为组内 batch id 连续。
+  - 确认导出 → POST /delivery-notes/{id}/print body { custom_order, merge_assemblies }
   - 取消 → 关闭对话框
 -->
 <script setup lang="ts">
 import {
+  computed,
   nextTick,
   onBeforeUnmount,
   ref,
@@ -43,16 +46,70 @@ const emit = defineEmits<{
 const dlg = useDialogSize({ desktopWidth: 1100, fullscreenOnMobile: true })
 
 const previewTableRef = ref()
-const rows = ref<DeliveryNoteLineItem[]>([])
+const rows = ref<PreviewRow[]>([])
 let sortable: Sortable | null = null
 const loading = ref(false)
 
+// 2026-08-04：单上是否含有装配件子件
+const hasAssemblies = computed(
+  () => props.note?.line_items.some((li) => li.assembly_id) ?? false,
+)
+// 默认「分开打印所有子件」（安全默认；现状行为）
+const mergeAssemblies = ref(false)
+
+interface PreviewAssemblyRow {
+  id: string
+  is_asm_row: true
+  assembly_id: string
+  order_no: string
+  customer_name: string
+  applicant_name: string
+  drawing_no: string
+  name: string
+  quantity: number
+  unit: string
+}
+type PreviewRow = DeliveryNoteLineItem | PreviewAssemblyRow
+
+// 预览表格行：合并模式构造父行 + 散件；非合并模式 = line_items 拷贝
+const previewRows = computed<PreviewRow[]>(() => {
+  if (!props.note) return []
+  const flat = props.note.line_items
+  if (!mergeAssemblies.value) {
+    return [...flat]
+  }
+  const result: PreviewRow[] = []
+  const insertedAsm = new Set<string>()
+  flat.forEach((li) => {
+    if (!li.assembly_id) {
+      result.push(li)
+      return
+    }
+    if (insertedAsm.has(li.assembly_id)) return
+    const siblings = flat.filter((x) => x.assembly_id === li.assembly_id)
+    result.push({
+      id: `ASM_${li.assembly_id}`,
+      is_asm_row: true,
+      assembly_id: li.assembly_id,
+      order_no: '',
+      customer_name: siblings[0]?.customer_name ?? '',
+      applicant_name: siblings[0]?.applicant_name ?? '',
+      drawing_no: li.assembly_drawing_no ?? '',
+      name: li.assembly_name ?? '',
+      quantity: 1,
+      unit: '套',
+    })
+    insertedAsm.add(li.assembly_id)
+  })
+  return result
+})
+
 watch(
-  () => props.modelValue,
-  async (open) => {
+  () => [props.modelValue, mergeAssemblies.value],
+  async ([open]) => {
     if (open && props.note) {
       // 拷贝当前内存顺序作为预览初始顺序（不污染详情页）
-      rows.value = [...props.note.line_items]
+      rows.value = previewRows.value
       await nextTick()
       initSortable()
     } else {
@@ -61,10 +118,15 @@ watch(
   },
 )
 
-watch(
-  () => rows.value.length,
-  () => nextTick(initSortable),
-)
+watch(previewRows, (next) => {
+  rows.value = next
+  nextTick(initSortable)
+})
+
+function isAsmRow(r: unknown): r is PreviewAssemblyRow {
+  return typeof r === 'object' && r !== null
+    && (r as PreviewAssemblyRow).is_asm_row === true
+}
 
 function initSortable(): void {
   const root = previewTableRef.value?.$el
@@ -105,14 +167,29 @@ async function onConfirm(): Promise<void> {
   if (!props.note) return
   loading.value = true
   try {
-    // 把行 id 转字符串雪花 ID（detail.line_items[i].id 在 Pydantic IdStrNonNull 序列化为 str，
-    // 但 TypeScript 端是 string）—— 与后端 API 契约一致
-    const custom_order = rows.value.map((r) => String(r.id))
+    let custom_order: string[]
+    let mergeFlag = false
+    if (mergeAssemblies.value) {
+      // 合并模式：父行 → 组内 batch id 连续；散件行原样
+      custom_order = []
+      const flat = props.note.line_items
+      rows.value.forEach((r) => {
+        if (isAsmRow(r)) {
+          flat
+            .filter((li) => li.assembly_id === r.assembly_id)
+            .forEach((c) => custom_order.push(String(c.id)))
+        } else {
+          custom_order.push(String((r as DeliveryNoteLineItem).id))
+        }
+      })
+      mergeFlag = true
+    } else {
+      custom_order = rows.value.map((r) => String((r as DeliveryNoteLineItem).id))
+    }
     const { blob, filename } = await printNote(
       props.note.id,
-      { custom_order },
+      { custom_order, merge_assemblies: mergeFlag },
       (p: PrintNoteProgress) => {
-        // 进度条可后续加；本轮先不动
         void p
       },
     )
@@ -139,7 +216,17 @@ async function onConfirm(): Promise<void> {
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <div class="preview-tip">
-      预览共 {{ rows.length }} 行；导出顺序 = 当前预览顺序
+      <span>预览共 {{ rows.length }} 行；导出顺序 = 当前预览顺序。</span>
+      <!-- 2026-08-04：仅当单上含装配件子件时显示 -->
+      <el-radio-group
+        v-if="hasAssemblies"
+        v-model="mergeAssemblies"
+        size="small"
+        class="merge-toggle"
+      >
+        <el-radio :value="false">装配件分开打印所有子件</el-radio>
+        <el-radio :value="true">装配件合并为一套打印</el-radio>
+      </el-radio-group>
     </div>
     <el-table
       ref="previewTableRef"
@@ -170,9 +257,24 @@ async function onConfirm(): Promise<void> {
       <el-table-column
         prop="drawing_no" label="图号" min-width="140" align="center"/>
       <el-table-column
-        prop="name" label="名称" min-width="180" show-overflow-tooltip align="center"/>
+        label="名称" min-width="180" show-overflow-tooltip align="center">
+        <template #default="{ row }">
+          <template v-if="isAsmRow(row)">
+            <el-tag type="warning" size="small" class="asm-tag">装配件</el-tag>
+            {{ row.name }}
+          </template>
+          <template v-else>{{ row.name }}</template>
+        </template>
+      </el-table-column>
       <el-table-column
-        prop="quantity" label="数量" min-width="80" align="right"/>
+        label="数量" min-width="90" align="right">
+        <template #default="{ row }">
+          <template v-if="isAsmRow(row)">
+            <strong>1</strong> 套
+          </template>
+          <template v-else>{{ row.quantity }}</template>
+        </template>
+      </el-table-column>
     </el-table>
 
     <template #footer>
@@ -209,5 +311,14 @@ async function onConfirm(): Promise<void> {
   margin-bottom: 8px;
   color: var(--text-secondary);
   font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
+.merge-toggle {
+  color: var(--text-primary);
+}
+.asm-tag { margin-right: 4px; }
 </style>

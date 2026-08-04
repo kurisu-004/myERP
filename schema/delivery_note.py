@@ -91,6 +91,21 @@ class DeliveryNoteLineItem(BaseModel):
         description="is_scanned 的别名；前端表格两种命名都可读",
     )
 
+    # —— 2026-08-04 装配件展示与打印 ——
+    assembly_id: IdStr = Field(
+        default=None,
+        description="所属装配件 id（子件行填；散件为 None）",
+    )
+    assembly_serial_no: str | None = Field(
+        default=None, description="装配件序列号（仅子件行填）",
+    )
+    assembly_drawing_no: str | None = Field(
+        default=None, description="装配件总装图号（仅子件行填）",
+    )
+    assembly_name: str | None = Field(
+        default=None, description="装配件名称（仅子件行填）",
+    )
+
 
 class DeliveryNoteDetailOut(DeliveryNoteOut):
     """送货单详情（含 line_items + 扫码进度）。"""
