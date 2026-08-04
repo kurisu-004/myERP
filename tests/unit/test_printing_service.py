@@ -777,10 +777,11 @@ class TestCpuCoresEnvDerived:
 
 
 class TestPreparePartPrintDataDeliveryDate:
-    """v0.2.5：_prepare_part_print_data 优先 system_delivery_date，回退 planned_delivery_date。"""
+    """打印背面日期直印 part.planned_delivery_date：不再优先 system_delivery_date，
+    也不再减 N 天 buffer。"""
 
     @pytest.mark.asyncio
-    async def test_system_delivery_date_preferred_over_planned(self) -> None:
+    async def test_uses_planned_delivery_date_directly(self) -> None:
         from service.printing import _prepare_part_print_data
         from repository.part import PartRepository
         from repository.part_file import PartFileRepository
@@ -791,7 +792,7 @@ class TestPreparePartPrintDataDeliveryDate:
         part.drawing_no = "DWG-001"
         part.name = "测试"
         part.planned_delivery_date = date(2026, 9, 1)
-        part.system_delivery_date = date(2026, 8, 20)  # 更早，按订单方
+        part.system_delivery_date = date(2026, 8, 20)  # 不再优先
         part.quantity = 5
 
         parts = MagicMock(spec=PartRepository)
@@ -802,11 +803,11 @@ class TestPreparePartPrintDataDeliveryDate:
         data = await _prepare_part_print_data(
             part_id=1234, parts=parts, part_files=part_files,
         )
-        # system_delivery_date 8/20 -> _buffered_delivery_date(-3) = 8/17
-        assert data.planned_delivery_date == date(2026, 8, 17)
+        # 直印 planned_delivery_date，无 system 优先、无 -3 天 buffer
+        assert data.planned_delivery_date == date(2026, 9, 1)
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_planned_when_system_missing(self) -> None:
+    async def test_planned_delivery_date_none_when_part_missing(self) -> None:
         from service.printing import _prepare_part_print_data
         from repository.part import PartRepository
         from repository.part_file import PartFileRepository
@@ -816,7 +817,7 @@ class TestPreparePartPrintDataDeliveryDate:
         part.serial_no = "L2014"
         part.drawing_no = "DWG-001"
         part.name = "测试"
-        part.planned_delivery_date = date(2026, 9, 1)
+        part.planned_delivery_date = None
         part.system_delivery_date = None
         part.quantity = 5
 
@@ -828,8 +829,8 @@ class TestPreparePartPrintDataDeliveryDate:
         data = await _prepare_part_print_data(
             part_id=1234, parts=parts, part_files=part_files,
         )
-        # planned_delivery_date 9/1 -> _buffered_delivery_date(-3) = 8/29
-        assert data.planned_delivery_date == date(2026, 8, 29)
+        # 交期为 NULL → 透传 None
+        assert data.planned_delivery_date is None
 
 
 class TestAssemblyMasterBackPageQuantity:

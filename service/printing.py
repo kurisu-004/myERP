@@ -34,7 +34,7 @@ import io
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 from PIL import Image, ImageDraw, ImageFont
 import pikepdf
@@ -67,21 +67,6 @@ A4_LANDSCAPE = (842, 595)
 # 渲染像素尺寸（信息卡占位用，@ 150 dpi）
 DPI = 150
 PX_PER_PT = DPI / 72.0
-
-# 打印交期缓冲：图纸背面 / 扫码台 / 大屏展示的「交期」比真实工单交期提前 N 天，
-# 留给物流/分厂流转余量。**仅渲染层**应用，业务查询不感知（不滚 DEP-DB 显示）。
-DELIVERY_DATE_BUFFER_DAYS = 3
-
-
-def _buffered_delivery_date(d: date | None) -> date | None:
-    """打印背面 / 扫码台 / 大屏展示用交期 = 真实交期 - N 天缓冲。
-
-    渲染层保持 dumb，缓冲只在这一层应用一次；后端仅打印走此函数，
-    其他业务查询不受影响。
-    """
-    if d is None:
-        return None
-    return d - timedelta(days=DELIVERY_DATE_BUFFER_DAYS)
 
 
 def _a4_px(orientation: str) -> tuple[int, int]:
@@ -346,8 +331,8 @@ async def _prepare_part_print_data(
             _logger.exception("failed to download master drawing, fallback to info card")
             drawing_bytes = None
 
-    # v0.2.5：优先用订单方 system_delivery_date，无则回退到我方 planned_delivery_date。
-    _delivery_source = getattr(part, "system_delivery_date", None) or part.planned_delivery_date
+    # 直印 part.planned_delivery_date（无 system 优先回退、无 -N 天 buffer）
+    _planned = part.planned_delivery_date
     return _PartPrintData(
         part_id=part_id,
         serial_no=serial_no,
@@ -356,9 +341,7 @@ async def _prepare_part_print_data(
         drawing_bytes=drawing_bytes,
         drawing_ext=drawing_ext,
         orientation=front_orientation,
-        planned_delivery_date=_buffered_delivery_date(
-            _delivery_source if isinstance(_delivery_source, date) else None
-        ),
+        planned_delivery_date=_planned if isinstance(_planned, date) else None,
         quantity=part.quantity if isinstance(getattr(part, "quantity", None), int) else None,
         drawing_sha=drawing_sha,
         front_pdf_bytes=front_pdf_bytes,
@@ -647,15 +630,13 @@ async def build_parts_print_pdf_batch(
                     orientation = _r.orientation
                 except Exception:  # noqa: BLE001
                     _logger.exception("batch front normalize fail part=%d", pid)
-            _src = getattr(p, "system_delivery_date", None) or p.planned_delivery_date
+            _planned = p.planned_delivery_date
             return _PartPrintData(
                 part_id=pid, serial_no=p.serial_no or "NO-SERIAL",
                 drawing_no=p.drawing_no or "", name=p.name or "",
                 drawing_bytes=raw_bytes, drawing_ext=ext,
                 orientation=orientation,
-                planned_delivery_date=_buffered_delivery_date(
-                    _src if isinstance(_src, date) else None
-                ),
+                planned_delivery_date=_planned if isinstance(_planned, date) else None,
                 quantity=p.quantity if isinstance(getattr(p, "quantity", None), int) else None,
                 drawing_sha=sha, front_pdf_bytes=front_bytes,
             )
@@ -678,15 +659,13 @@ async def build_parts_print_pdf_batch(
                     orientation = _r.orientation
                 except Exception:  # noqa: BLE001
                     _logger.exception("batch front normalize fail asm=%d", aid)
-            _src = getattr(asm_obj, "system_delivery_date", None) or asm_obj.planned_delivery_date
+            _planned = asm_obj.planned_delivery_date
             return _PartPrintData(
                 part_id=aid, serial_no=asm_obj.serial_no or "NO-SERIAL",
                 drawing_no=asm_obj.drawing_no or "", name=asm_obj.name or "",
                 drawing_bytes=raw_bytes, drawing_ext=ext,
                 orientation=orientation,
-                planned_delivery_date=_buffered_delivery_date(
-                    _src if isinstance(_src, date) else None
-                ),
+                planned_delivery_date=_planned if isinstance(_planned, date) else None,
                 quantity=(
                     asm_obj.quantity
                     if isinstance(getattr(asm_obj, "quantity", None), int)
