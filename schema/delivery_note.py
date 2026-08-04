@@ -105,6 +105,9 @@ class DeliveryNoteLineItem(BaseModel):
     assembly_name: str | None = Field(
         default=None, description="装配件名称（仅子件行填）",
     )
+    assembly_order_no: str | None = Field(
+        default=None, description="装配件订单号（仅子件行填）",
+    )
 
 
 class DeliveryNoteDetailOut(DeliveryNoteOut):

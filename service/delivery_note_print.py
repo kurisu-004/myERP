@@ -354,7 +354,10 @@ class DeliveryNotePrintService:
                 _write_footer(sheet, note=note, prefix=prefix)
                 # 2026-08-04 扩展：数据行统一 25 磅 + 列宽按内容自适配（保证不溢出）
                 _set_data_row_heights(sheet, cfg.start_row, len(page_rows))
-                _autosize_columns(sheet, max_col=max(b.col for b in cfg.bindings))
+                if prefix == "F":
+                    _autosize_columns(sheet, max_col=10, fixed_cols={1: 5}, wide_cols={10}, wide_max=60)
+                else:
+                    _autosize_columns(sheet, max_col=9, fixed_cols={1: 5}, wide_cols={9}, wide_max=60)
 
             buf = io.BytesIO()
             wb.save(buf)
@@ -424,7 +427,7 @@ class DeliveryNotePrintService:
             merged_items.append((
                 group_min_idx,
                 PrintRow(
-                    order_no="",
+                    order_no=asm.order_no or "",
                     applicant_name=asm.applicant_name or "",
                     drawing_no=asm.drawing_no or "",
                     name=asm.name or "",
@@ -494,13 +497,29 @@ def _estimate_cell_width(s: Any) -> int:
     return cn * 2 + (len(text) - cn)
 
 
-def _autosize_columns(ws, max_col: int, min_width: int = 8, max_width: int = 40) -> None:
+def _autosize_columns(
+    ws,
+    max_col: int,
+    *,
+    min_width: int = 8,
+    max_width: int = 40,
+    fixed_cols: dict[int, int] | None = None,
+    wide_cols: set[int] | None = None,
+    wide_max: int = 60,
+) -> None:
     """按当前 sheet 已写内容估算每列宽度并写入 column_dimensions。
 
-    限制 [min_width, max_width] 防极端值（长备注 / 空列）。
+    ``fixed_cols`` 中的列直接写固定宽度（跳过内容估算）；
+    ``wide_cols`` 中的列上限用 ``wide_max`` 而非 ``max_width``，
+    兼顾备注等长文本列。
     """
+    fixed_cols = fixed_cols or {}
+    wide_cols = wide_cols or set()
     for col_idx in range(1, max_col + 1):
         letter = get_column_letter(col_idx)
+        if col_idx in fixed_cols:
+            ws.column_dimensions[letter].width = fixed_cols[col_idx]
+            continue
         max_len = 0
         for row in ws.iter_rows(min_col=col_idx, max_col=col_idx, values_only=False):
             for cell in row:
@@ -508,7 +527,8 @@ def _autosize_columns(ws, max_col: int, min_width: int = 8, max_width: int = 40)
                 if w > max_len:
                     max_len = w
         if max_len > 0:
-            ws.column_dimensions[letter].width = max(min_width, min(max_len + 2, max_width))
+            upper = wide_max if col_idx in wide_cols else max_width
+            ws.column_dimensions[letter].width = max(min_width, min(max_len + 2, upper))
 
 
 def _set_data_row_heights(ws, start_row: int, row_count: int, height: float = 25) -> None:

@@ -340,10 +340,11 @@ const treeLineItems = computed<AssemblyTreeRow[]>(() => {
       assembly_serial_no: li.assembly_serial_no,
       assembly_drawing_no: li.assembly_drawing_no,
       assembly_name: li.assembly_name,
+      assembly_order_no: li.assembly_order_no,
       // 父行各列展示值（沿用 line_item 列字段，让 el-table 排序/模板不分支）
       serial_no: li.assembly_serial_no ?? '',
       drawing_no: li.assembly_drawing_no ?? '',
-      order_no: '',
+      order_no: li.assembly_order_no ?? '',
       name: li.assembly_name ?? '',
       applicant_name: children[0]?.applicant_name ?? '',
       customer_name: children[0]?.customer_name ?? '',

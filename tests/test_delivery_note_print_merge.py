@@ -416,14 +416,27 @@ async def test_print_xlsx_excel_layout(clean_db):
             f"row {r} height 应为 25，实际 {ws.row_dimensions[r].height}"
         )
 
-    # 列宽全部 > 5 且 ≤ 40（10 列：法拉模板 bindings）
+    # 序号列 col A 固定 5 字符宽
+    assert ws.column_dimensions["A"].width == 5, (
+        f"序号列应为固定 5 字符，实际 {ws.column_dimensions['A'].width}"
+    )
+
+    # 列宽约束：序号 col A=5；其他 8 ≤ width ≤ 40（备注 col J 宽上限 60）
     from openpyxl.utils import get_column_letter
     for col_idx in range(1, 11):
         letter = get_column_letter(col_idx)
         w = ws.column_dimensions[letter].width
-        assert 5 < w <= 40, (
-            f"col {letter} width={w} 不在 (5, 40] 合理范围"
-        )
+        if col_idx == 1:
+            assert w == 5, f"col A 应为 5，实际 {w}"
+        elif col_idx == 10:
+            # 备注列为 wide_cols → wide_max=60（内容短时仍 ≥ 8）
+            assert 8 <= w <= 60, (
+                f"备注 col J width={w} 不在 [8, 60] 合理范围"
+            )
+        else:
+            assert 8 <= w <= 40, (
+                f"col {letter} width={w} 不在 [8, 40] 合理范围"
+            )
 
 
 # ============================================================
@@ -466,3 +479,55 @@ async def test_print_xlsx_merge_assemblies_via_api_request(clean_db):
     ws = wb["Sheet1"]
     assert ws.cell(row=3, column=7).value == 5
     assert ws.cell(row=3, column=8).value == "套"
+
+
+# ============================================================
+# T-merge-8: 装配体合并行 order_no 取 TAssembly.order_no
+#            + get_with_parts 返回的 LineItem 带 assembly_order_no
+# ============================================================
+async def test_print_xlsx_assembly_order_no(clean_db):
+    """装配体合并行打印 order_no 取 TAssembly.order_no（非空），
+    且 getNote 返回的 detail.line_items 带 assembly_order_no 字段。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A8001", drawing_no="DA-8001", name="装配体D",
+    )
+    asm.order_no = "ON-ASM-008"
+    await clean_db.flush()
+    child1 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9E01", drawing_no="D-F9E01",
+    )
+    child2 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9E02", drawing_no="D-F9E02",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child1), _item(child2)],
+        version=note.version,
+    )
+
+    # 验证 get_with_parts 返回的 LineItem 带 assembly_order_no
+    detail = await svc.get_with_parts(str(note.id))
+    assert detail.line_items[0].assembly_order_no == "ON-ASM-008", (
+        f"LineItem.assembly_order_no 应为 'ON-ASM-008'，"
+        f"实际 {detail.line_items[0].assembly_order_no!r}"
+    )
+
+    # 验证合并打印 order_no 列
+    xlsx_bytes, _ = await svc.print_xlsx(
+        note_id=str(note.id),
+        merge_assemblies=True,
+    )
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    # 装配体合并行 1 行，col 2 = order_no
+    assert ws.cell(row=3, column=2).value == "ON-ASM-008", (
+        f"装配体合并行 order_no 应为 'ON-ASM-008'，"
+        f"实际 {ws.cell(row=3, column=2).value!r}"
+    )

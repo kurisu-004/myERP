@@ -91,7 +91,7 @@ const previewRows = computed<PreviewRow[]>(() => {
       id: `ASM_${li.assembly_id}`,
       is_asm_row: true,
       assembly_id: li.assembly_id,
-      order_no: '',
+      order_no: siblings[0]?.assembly_order_no ?? '',
       customer_name: siblings[0]?.customer_name ?? '',
       applicant_name: siblings[0]?.applicant_name ?? '',
       drawing_no: li.assembly_drawing_no ?? '',

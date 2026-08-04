@@ -1296,6 +1296,7 @@ class DeliveryNoteService:
                 assembly_serial_no=asm.serial_no if asm else None,
                 assembly_drawing_no=asm.drawing_no if asm else None,
                 assembly_name=asm.name if asm else None,
+            assembly_order_no=asm.order_no if asm else None,
             ))
         return DeliveryNoteDetailOut(
             **head.model_dump(),

@@ -74,6 +74,7 @@ export interface DeliveryNoteLineItem {
   assembly_serial_no: string | null
   assembly_drawing_no: string | null
   assembly_name: string | null
+  assembly_order_no: string | null
 }
 
 export interface DeliveryNoteOut {
