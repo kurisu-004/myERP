@@ -596,6 +596,26 @@ export async function listRepairingBatches(params: {
   return resp.data
 }
 
+/** PR-M 2026-08-04 续：一步式返修下发（DELIVERED → REPAIRING → ON_SHELF/INSPECTION）。 */
+export interface RepairDispatchPayload {
+  shelf_id: string
+  /** 下一道工序（可选；缺省沿用 REPAIRING 携带的下一工序，PRODUCTION 区会校验映射） */
+  next_process_id?: string | null
+  batch_id?: string | null
+  /** 部分数量（可选；缺省 = 批次全量） */
+  quantity?: number | null
+}
+export async function repairDispatch(
+  id: string,
+  payload: RepairDispatchPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/repair-dispatch`,
+    payload,
+  )
+  return resp.data
+}
+
 export async function cancelPart(id: string): Promise<PartItem> {
   const resp = await api.post<PartItem>(`/parts/${id}/cancel`)
   return resp.data

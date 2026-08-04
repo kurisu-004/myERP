@@ -3364,6 +3364,92 @@ class PartService:
         items = await self._to_out([part])
         return items[0]
 
+    async def repair_dispatch(
+        self, part_id: int, shelf_id: int, *,
+        batch_id: int | None = None,
+        quantity: int | None = None,
+        next_process_id: int | None = None,
+    ) -> PartOut:
+        """PR-M 2026-08-04 续：一步式返修下发（DELIVERED → REPAIRING → ON_SHELF/INSPECTION）。
+
+        单 session 单 commit；保留两条 PartEvent（REPAIR_STARTED + REPAIR_COMPLETED）；
+        入口白名单与现有 start_repair 一致（INSPECTION / READY_TO_SHIP / DELIVERED）；
+        shelf.zone-aware 分流（PRODUCTION → ON_SHELF；INSPECTION → INSPECTION）。
+
+        复用既有 helper；不再走 start_repair + complete_repair 两次 commit，
+        因此 part 不会卡在 REPAIRING 中间状态。
+        """
+        part = await self.parts.get_by_id(part_id)
+        if part is None:
+            raise BizError(
+                code=ErrCode.BIZ_PART_NOT_FOUND,
+                message=f"part {part_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        shelf = await self.shelves.get_by_id(shelf_id)
+        if shelf is None or shelf.deleted_at is not None:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_NOT_FOUND,
+                message=f"shelf {shelf_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not shelf.is_active:
+            raise BizError(
+                code=ErrCode.BIZ_SHELF_IN_USE,
+                message=f"shelf {shelf.code!r} is inactive",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if shelf.zone not in (
+            ShelfZone.PRODUCTION.value,
+            ShelfZone.INSPECTION.value,
+        ):
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=(
+                    f"shelf {shelf.code!r} zone={shelf.zone!r}; "
+                    "repair_dispatch requires PRODUCTION or INSPECTION"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        batch = await self._resolve_target_batch(
+            part, batch_id,
+            expect=lambda b: b.status in ("INSPECTION", "READY_TO_SHIP", "DELIVERED"),
+            action="返修下发",
+        )
+        target = await self._maybe_split(part, batch, quantity)
+        # PR-M 2026-08-04：标记返修件（工单 + 当前批次）
+        target.has_been_repaired = True
+        part.has_been_repaired = True
+        # step 1: start_repair 状态机（任意入口 → REPAIRING）
+        target.sm.start_repair(
+            event_repo=self.events, created_by=self._user_id,
+        )
+        target.updated_by = self._user_id
+        part.updated_by = self._user_id
+        # step 2: complete_repair 状态机（REPAIRING → ON_SHELF 或 INSPECTION）
+        effective_next_pid = next_process_id or target.next_process_id
+        if shelf.zone == ShelfZone.PRODUCTION.value:
+            if effective_next_pid is not None:
+                carried_process = await self._get_process(effective_next_pid)
+                await self._assert_shelf_maps_process(shelf, carried_process)
+            target.next_process_id = effective_next_pid
+            target.sm.complete_repair(
+                shelf=shelf, event_repo=self.events,
+                created_by=self._user_id,
+            )
+        else:
+            # INSPECTION 走新 transition，无需 process 校验
+            target.sm.complete_repair_to_inspection(
+                target_shelf=shelf, event_repo=self.events,
+                created_by=self._user_id,
+            )
+        target.updated_by = self._user_id
+        await self.parts.update(part)
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
+        items = await self._to_out([part])
+        return items[0]
+
     async def fail_inspection(
         self, part_id: int, data: FailInspectionRequest,
     ) -> PartOut:

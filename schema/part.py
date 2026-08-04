@@ -253,6 +253,22 @@ class PartBatchActionRequest(BaseModel):
     )
 
 
+class RepairDispatchRequest(BaseModel):
+    """PR-M 2026-08-04 续：一步式返修下发（DELIVERED → REPAIRING → ON_SHELF/INSPECTION）。
+
+    - shelf_id 必填；zone 必须 PRODUCTION 或 INSPECTION（其它 zone 拒绝）。
+    - next_process_id 可选；缺省沿用 start_repair 携带的下一道工序（PRODUCTION 区校验映射）。
+    - batch_id / quantity 可选；部分量走 _maybe_split 拆批。
+    """
+
+    shelf_id: int = Field(..., description="目标货架 id（PRODUCTION 或 INSPECTION）")
+    next_process_id: int | None = Field(
+        default=None, description="下一道工序 id（可选；缺省沿用 REPAIRING 携带的下一工序）",
+    )
+    batch_id: IdStr = Field(default=None, description="目标批次 id（可选；缺省按状态唯一批次解析）")
+    quantity: int | None = Field(default=None, gt=0, description="部分数量（可选；缺省 = 批次全量")
+
+
 class InspectionBatchListOut(BaseModel):
     """品检待办（批次级）分页出参。"""
 

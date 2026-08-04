@@ -49,6 +49,7 @@ from schema.part import (
     PartUpdateRequest,
     PlaceOnShelfRequest,
     ReceiveToInspectionRequest,
+    RepairDispatchRequest,
     SendToOutsourceRequest,
 )
 from service import PartService, OutsourceQuoteService
@@ -475,6 +476,30 @@ async def list_repairing_batches(
         limit=limit, offset=offset,
     )
     return InspectionBatchListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+# PR-M 2026-08-04 续：一步式返修下发（DELIVERED → REPAIRING → ON_SHELF/INSPECTION）
+# 注册顺序：必须在 /{part_id} catch-all 之前, 否则被截胡
+@router.post(
+    "/{part_id}/repair-dispatch",
+    response_model=PartOut,
+    summary=(
+        "PR-M 2026-08-04 续：一步式返修下发 → REPAIRING → ON_SHELF/INSPECTION "
+        "（DELIVERED / INSPECTION / READY_TO_SHIP 入口；MANAGER+CLERK+INSPECTOR）"
+    ),
+    dependencies=_repair_dep,
+)
+async def repair_dispatch_part(
+    part_id: int,
+    payload: RepairDispatchRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.repair_dispatch(
+        part_id, payload.shelf_id,
+        batch_id=payload.batch_id or None,
+        quantity=payload.quantity,
+        next_process_id=payload.next_process_id,
+    )
 
 
 @router.get(

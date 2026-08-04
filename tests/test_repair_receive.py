@@ -370,3 +370,81 @@ async def test_list_repairing_batches_returns_only_repairing(clean_db):
     assert total == 2
     assert all(it.status == PartStatus.REPAIRING for it in items)
     assert all(it.has_been_repaired is True for it in items)
+
+
+# ============================================================
+# 一站式 repair_dispatch（PR-M 2026-08-04 续）
+# ============================================================
+async def test_repair_dispatch_to_production(clean_db):
+    """DELIVERED → REPAIRING → ON_SHELF 一站式：has_been_repaired 同步置 true，事件流含 2 条"""
+    world = await _make_world(clean_db)
+    part = await _make_part(
+        clean_db, world["customer"], serial="R0701", status="DELIVERED",
+        next_process_id=world["proc_a"].id,
+    )
+    svc = _make_service(clean_db)
+
+    out = await svc.repair_dispatch(
+        part.id, shelf_id=world["prod_shelf"].id,
+    )
+    assert out.status == PartStatus.IN_PROCESS
+    assert out.has_been_repaired is True
+
+    # 工单级 has_been_repaired 持久化
+    refreshed = await PartRepository(clean_db).get_by_id(part.id)
+    assert refreshed.has_been_repaired is True
+
+    # 事件流含 REPAIR_STARTED + REPAIR_COMPLETED 两条
+    events = await _events(clean_db, part.id)
+    types = {e.event_type for e in events}
+    assert PartEventType.REPAIR_STARTED.value in types
+    assert PartEventType.REPAIR_COMPLETED.value in types
+
+
+async def test_repair_dispatch_to_inspection(clean_db):
+    """DELIVERED → REPAIRING → INSPECTION 一站式：走新 transition，无需 process 校验"""
+    world = await _make_world(clean_db)
+    part = await _make_part(
+        clean_db, world["customer"], serial="R0702", status="DELIVERED",
+    )
+    svc = _make_service(clean_db)
+
+    out = await svc.repair_dispatch(
+        part.id, shelf_id=world["insp_shelf"].id,
+    )
+    assert out.status == PartStatus.INSPECTION
+
+    batches = await _batches(clean_db, part.id)
+    assert batches[0].status == "INSPECTION"
+    assert batches[0].location == "INSPECTION_SHELF"
+    assert batches[0].current_holder_id == world["insp_shelf"].id
+    assert batches[0].has_been_repaired is True
+
+
+async def test_repair_dispatch_partial_quantity(clean_db):
+    """部分量 quantity<batch.quantity：_maybe_split 拆批，新批标 has_been_repaired=True"""
+    world = await _make_world(clean_db)
+    part = await _make_part(
+        clean_db, world["customer"], qty=10, serial="R0703", status="DELIVERED",
+    )
+    svc = _make_service(clean_db)
+
+    out = await svc.repair_dispatch(
+        part.id, shelf_id=world["prod_shelf"].id,
+        next_process_id=world["proc_a"].id,
+        quantity=3,
+    )
+    assert out.status == PartStatus.IN_PROCESS
+
+    refreshed = await PartRepository(clean_db).get_by_id(part.id)
+    assert refreshed.has_been_repaired is True
+
+    # 源批 7 仍 DELIVERED（未标记返修）；新批 3 REPAIRING → ON_SHELF（已标记）
+    batches = await _batches(clean_db, part.id)
+    by_no = {b.batch_no: b for b in batches}
+    assert by_no[1].status == "DELIVERED"
+    assert by_no[1].quantity == 7
+    assert by_no[1].has_been_repaired is False
+    assert by_no[2].status == "IN_PROCESS"
+    assert by_no[2].quantity == 3
+    assert by_no[2].has_been_repaired is True
