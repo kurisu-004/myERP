@@ -19,6 +19,24 @@ export function findAllByCode(rows: PartItem[], code: string): PartItem[] {
 }
 
 /**
+ * 仅按 serial_no 严格匹配（送货单 picker 用：barcode = serial_no）。
+ * 与 `findAllByCode` 不同，这里不匹配 drawing_no——picker 的候选行已按
+ * INSPECTION / READY_TO_SHIP 过滤，扫码命中即代表「这个工单的某个批次在候选里」；
+ * 0 命中直接调 `findPartBySerialAndPrompt` 显示当前位置。
+ *
+ * 泛型 `T extends { serial_no: string | null }`：兼容 `PartItem` 和
+ * `DeliveryNoteCandidatePart`（后者也有 `serial_no` 字段）。
+ */
+export function findBySerialNo<T extends { serial_no: string | null }>(
+  rows: T[],
+  code: string,
+): T[] {
+  const want = code.trim()
+  if (!want) return []
+  return rows.filter((r) => r.serial_no === want)
+}
+
+/**
  * 调 `GET /parts/by-serial/{serial_no}`；成功时阻塞弹窗（`ElMessageBox.alert`）
  * 显示该零件的当前位置/持有人/状态/下一工序，提示工人「可能不在本工序」；
  * 找不到（404 等）→ `ElMessage.warning` 一行。
