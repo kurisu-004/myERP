@@ -200,6 +200,7 @@ async def _postgres_test_lifecycle():
 # 业务表清单（按"先子后父"顺序 truncate，避免 FK 冲突；本项目无物理 FK，
 # 但仍按依赖顺序保持稳定）。
 _BUSINESS_TABLES = (
+    "t_pickup_skip_event",  # 2026-08-05：跳序事件（append-only，按 created_at 依赖 part/worker）
     "t_outsource_quote_event",
     "t_outsource_quote",
     "t_part_event",

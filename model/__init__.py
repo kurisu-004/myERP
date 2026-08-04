@@ -35,6 +35,7 @@ from .part import TPart
 from .part_batch import TPartBatch
 from .part_event import TPartEvent
 from .part_file import TPartFile
+from .pickup_skip_event import TPickupSkipEvent
 from .process import TProcess
 from .serial_counter import TSerialCounter
 from .shelf import TShelf
@@ -65,6 +66,7 @@ __all__ = [
     "TPartBatch",
     "TPartEvent",
     "TPartFile",
+    "TPickupSkipEvent",
     "TProcess",
     "TRoleMenu",
     "TSerialCounter",

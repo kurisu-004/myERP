@@ -23,6 +23,7 @@ from repository import (
     PartEventRepository,
     PartFileRepository,
     PartRepository,
+    PickupSkipEventRepository,
     ProcessRepository,
     SerialCounterRepository,
     ShelfProcessRepository,
@@ -318,6 +319,7 @@ def get_part_service(
         outsource_quotes=OutsourceQuoteRepository(session),
         quote_events=OutsourceQuoteEventRepository(session),
         outsource_shipments=OutsourceShipmentRepository(session),  # 2026-07-30：外协发货记录
+        pickup_skip_events=PickupSkipEventRepository(session),  # 2026-08-05：跳序取件事件
         broadcaster=_broadcaster,
         event_broadcaster=_event_broadcaster,
         current_user=user,

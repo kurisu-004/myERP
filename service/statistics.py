@@ -1,9 +1,11 @@
-"""生产统计 service（MANAGER-only；2026-08-03 新增）。
+"""生产统计 service（MANAGER-only；2026-08-03 新增；2026-08-05 增跳序取件）。
 
 三段：overview / worker_stats / worker_detail。
 - 日期统一转 `[date_from, date_to+1)` 半开区间做 created_at 比较；
 - 入参 `worker_id` 走 `parse_snowflake_id`（CLAUDE.md §3）；
 - 贡献度公式隔离在 ``_compute_contribution`` 单方法中，后续口径调整只改一处。
+
+2026-08-05：跳序取件两段（summary / detail）。
 """
 from __future__ import annotations
 
@@ -15,11 +17,21 @@ from fastapi import status as http_status
 from core.error_code import ErrCode
 from core.exception import BizError
 from core.time import now_naive
-from repository.statistics import StatisticsRepository, WorkerPartRow, WorkerPickupRow
+from repository.statistics import (
+    PickupSkipDetailRow,
+    PickupSkipSummaryRow,
+    StatisticsRepository,
+    WorkerPartRow,
+    WorkerPickupRow,
+)
 from schema.statistics import (
     DayCount,
     DeliveryPerformance,
     OverviewOut,
+    PickupSkipDetailItem,
+    PickupSkipDetailOut,
+    PickupSkipSummaryItem,
+    PickupSkipSummaryOut,
     StatusCount,
     WorkerBrief,
     WorkerDetailOut,
@@ -325,6 +337,66 @@ class StatisticsService:
     # ============================================================
     # (none required: worker_stats 直接调 WorkerRepository.list_with_filters)
 
+
+# ============================================================
+# tab4 跳序取件（2026-08-05 新增）
+# ============================================================
+    async def pickup_skip_summary(self) -> PickupSkipSummaryOut:
+        """按工人聚合的跳序次数一览。
+
+        无日期范围——跳序事件是 append-only 历史流；统计端点返回「全部历史」。
+        单条 SQL GROUP BY 已经在 repository 完成。
+        """
+        rows = await self.stats.pickup_skip_summary()
+        items = [
+            PickupSkipSummaryItem(
+                worker_id=r.worker_id,
+                worker_name=r.worker_name,
+                badge_code=r.badge_code,
+                work_type_name=r.work_type_name,
+                skip_count=r.skip_count,
+                last_skip_at=r.last_skip_at,
+            )
+            for r in rows
+        ]
+        return PickupSkipSummaryOut(items=items)
+
+    async def pickup_skip_detail(
+        self, worker_id: str, *, limit: int, offset: int,
+    ) -> PickupSkipDetailOut:
+        """单工人跳序事件明细分页。
+
+        `worker_id` 入参是雪花 ID 字符串（CLAUDE.md §3），service 层
+        `parse_snowflake_id` 转换；非法 → 400 BIZ_INVALID_VALUE。
+        """
+        wid_int = parse_snowflake_id(worker_id, field_name="worker_id")
+        if wid_int is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"worker_id 必须是数字字符串：{worker_id!r}",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        rows = await self.stats.pickup_skip_detail(
+            worker_id=wid_int, limit=limit, offset=offset,
+        )
+        total = await self.stats.pickup_skip_detail_count(worker_id=wid_int)
+        items = [
+            PickupSkipDetailItem(
+                id=r.id,
+                part_id=r.part_id,
+                serial_no=r.serial_no,
+                part_name=r.part_name,
+                batch_no=r.batch_no,
+                quantity=r.quantity,
+                part_planned_delivery_date=r.part_planned_delivery_date,
+                skipped_earliest_date=r.skipped_earliest_date,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+        return PickupSkipDetailOut(
+            items=items, total=total, limit=limit, offset=offset,
+        )
 
 # ============================================================
 # 零填充工具（与 dashboard._fetch_upcoming_delivery 同模式）

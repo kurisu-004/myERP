@@ -3,16 +3,18 @@
 
   生产统计总入口（/statistics），挂在 MainLayout 下。
 
-  三个 tab：
+  四个 tab：
     - overview      车间生产总览（KPI 卡 + 折线 + 饼图）
     - workers       工人报工总览（工种筛选 + 水平条形 + 工人表）
     - worker-detail 单工人详情（折线 + 参与工单表）
+    - pickup-skips  跳序取件统计（汇总表 + drawer 明细分页；2026-08-05）
 
   顶部筛选区为时间范围（快捷按钮 / 自定义日期对），传 dateFrom / dateTo
   两个 ISO 'YYYY-MM-DD' 给子组件，子组件各自 watch 拉数。
 
   activeTab 切换**不**重发请求——只有 dateFrom / dateTo 变化才推送给子组件。
   选中工人后切到 worker-detail tab，并通过 ref 传 workerId。
+  pickup-skips tab 不消费 dateFrom / dateTo（append-only 历史流）。
 -->
 
 <template>
@@ -77,6 +79,9 @@
           :worker-id="selectedWorkerId"
         />
       </el-tab-pane>
+      <el-tab-pane label="跳序取件" name="pickup-skips">
+        <PickupSkipTab />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -88,6 +93,7 @@ import { DataAnalysis } from '@element-plus/icons-vue'
 import OverviewTab from './OverviewTab.vue'
 import WorkerStatsTab from './WorkerStatsTab.vue'
 import WorkerDetailTab from './WorkerDetailTab.vue'
+import PickupSkipTab from './PickupSkipTab.vue'
 
 type RangePreset = 'this-month' | 'last-month' | 'this-year' | 'custom'
 
@@ -162,7 +168,7 @@ function onCustomRangeChange(v: [string, string] | null): void {
 // 当 dateRange 直接被改（preset 切换 / 初始值），推送给子组件由 watch 触发。
 // 这里不额外写 watch，因为 dateFrom/dateTo 是 computed，子组件 watch 已能响应。
 
-const activeTab = ref<'overview' | 'workers' | 'worker-detail'>('overview')
+const activeTab = ref<'overview' | 'workers' | 'worker-detail' | 'pickup-skips'>('overview')
 const selectedWorkerId = ref<string | null>(null)
 
 function onSelectWorker(workerId: string): void {

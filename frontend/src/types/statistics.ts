@@ -122,6 +122,53 @@ export interface WorkerDetailOut {
 }
 
 // ============================================================
+// ============================================================
+// GET /statistics/pickup-skips
+// ============================================================
+
+/** tab4 单个工人的跳序取件汇总。 */
+export interface PickupSkipSummaryItem {
+  worker_id: string
+  /** 工人姓名；工人被软删时回退 '(已删除)' 字符串 */
+  worker_name: string
+  badge_code: string
+  work_type_name: string | null
+  /** 该工人累计跳序次数 */
+  skip_count: number
+  /** 该工人最近一次跳序时间（ISO datetime；从未跳序则 null） */
+  last_skip_at: string | null
+}
+
+export interface PickupSkipSummaryOut {
+  items: PickupSkipSummaryItem[]
+}
+
+// ============================================================
+// GET /statistics/pickup-skips/{worker_id}
+// ============================================================
+
+/** tab4 单条跳序事件明细。 */
+export interface PickupSkipDetailItem {
+  id: string
+  part_id: string
+  /** 流水号快照（可能为 null = 该工单已 release serial） */
+  serial_no: string | null
+  part_name: string
+  batch_no: number
+  quantity: number
+  part_planned_delivery_date: string | null
+  skipped_earliest_date: string | null
+  created_at: string
+}
+
+export interface PickupSkipDetailOut {
+  items: PickupSkipDetailItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+// ============================================================
 // 公共查询参数
 // ============================================================
 
@@ -129,4 +176,10 @@ export interface WorkerDetailOut {
 export interface StatisticsQuery {
   date_from: string
   date_to: string
+}
+
+/** GET /statistics/pickup-skips/{worker_id} 的分页参数。 */
+export interface PickupSkipDetailQuery {
+  limit: number
+  offset: number
 }

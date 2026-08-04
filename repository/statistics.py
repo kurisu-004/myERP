@@ -1,4 +1,4 @@
-"""生产统计只读仓储（2026-08-03 新增）。
+"""生产统计只读仓储（2026-08-03 新增；2026-08-05 增跳序取件聚合）。
 
 所有方法都返回聚合 tuple / dict，**不**返回 ORM 实体，避免在 async
 session 中触发 lazy load（CLAUDE.md §13）。service 层做零填充 / 拼装。
@@ -14,7 +14,7 @@ from decimal import Decimal
 from sqlalchemy import and_, case, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model import TPart, TPartEvent, TWorker
+from model import TPart, TPartEvent, TPickupSkipEvent, TWorker, TWorkType
 from model.enums import PartEventType, PartStatus
 
 
@@ -40,6 +40,33 @@ class WorkerPartRow:
     status: str
     pickup_count: int
     last_pickup_at: datetime
+
+
+@dataclass
+class PickupSkipSummaryRow:
+    """pickup_skip_summary 的原始行（按工人聚合）。"""
+
+    worker_id: int
+    worker_name: str
+    badge_code: str
+    work_type_name: str | None
+    skip_count: int
+    last_skip_at: datetime | None
+
+
+@dataclass
+class PickupSkipDetailRow:
+    """pickup_skip_detail 的原始行（单工人跳序事件明细）。"""
+
+    id: int
+    part_id: int
+    serial_no: str | None
+    part_name: str
+    batch_no: int
+    quantity: int
+    part_planned_delivery_date: date | None
+    skipped_earliest_date: date | None
+    created_at: datetime
 
 
 class StatisticsRepository:
@@ -441,3 +468,115 @@ class StatisticsRepository:
             )
             for r in rows
         ]  # type: ignore[misc]
+
+    # ============================================================
+    # tab4 跳序取件（2026-08-05 新增）
+    # ============================================================
+    async def pickup_skip_summary(self) -> list[PickupSkipSummaryRow]:
+        """按工人聚合的跳序次数 + 最近跳序时间。
+
+        LEFT JOIN t_worker / t_work_type 拿名称；工人被软删 → 名称兜底 '(已删除)'，
+        工牌回退空串（典型情况：worker 已停用但事件仍存在）。
+        GROUP BY worker_id + worker_name + badge_code + work_type_name。
+        排序：skip_count DESC, last_skip_at DESC（最"活跃"跳序工人在前）。
+        """
+        stmt = (
+            select(
+                TPickupSkipEvent.worker_id.label("worker_id"),
+                func.coalesce(TWorker.name, "(已删除)").label("worker_name"),
+                func.coalesce(TWorker.badge_code, "").label("badge_code"),
+                TWorkType.name.label("work_type_name"),
+                func.count(TPickupSkipEvent.id).label("skip_count"),
+                func.max(TPickupSkipEvent.created_at).label("last_skip_at"),
+            )
+            .select_from(TPickupSkipEvent)
+            .outerjoin(
+                TWorker,
+                TWorker.id == TPickupSkipEvent.worker_id,
+            )
+            .outerjoin(
+                TWorkType,
+                TWorkType.id == TPickupSkipEvent.work_type_id,
+            )
+            .group_by(
+                TPickupSkipEvent.worker_id,
+                TWorker.name,
+                TWorker.badge_code,
+                TWorkType.name,
+            )
+            .order_by(
+                func.count(TPickupSkipEvent.id).desc(),
+                func.max(TPickupSkipEvent.created_at).desc(),
+            )
+        )
+
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            PickupSkipSummaryRow(
+                worker_id=int(r.worker_id),
+                worker_name=r.worker_name or "(已删除)",
+                badge_code=r.badge_code or "",
+                work_type_name=r.work_type_name,
+                skip_count=int(r.skip_count or 0),
+                last_skip_at=r.last_skip_at,
+            )
+            for r in rows
+        ]
+
+    async def pickup_skip_detail(
+        self, *, worker_id: int, limit: int, offset: int,
+    ) -> list[PickupSkipDetailRow]:
+        """单工人跳序事件明细分页（按 created_at desc）。"""
+        stmt = (
+            select(
+                TPickupSkipEvent.id.label("id"),
+                TPickupSkipEvent.part_id.label("part_id"),
+                TPickupSkipEvent.part_serial_no.label("serial_no"),
+                func.coalesce(TPart.name, "(已删除)").label("part_name"),
+                TPickupSkipEvent.batch_no.label("batch_no"),
+                TPickupSkipEvent.quantity.label("quantity"),
+                TPickupSkipEvent.part_planned_delivery_date.label(
+                    "part_planned_delivery_date"
+                ),
+                TPickupSkipEvent.skipped_earliest_date.label(
+                    "skipped_earliest_date"
+                ),
+                TPickupSkipEvent.created_at.label("created_at"),
+            )
+            .select_from(TPickupSkipEvent)
+            .outerjoin(
+                TPart,
+                TPart.id == TPickupSkipEvent.part_id,
+            )
+            .where(TPickupSkipEvent.worker_id == worker_id)
+            .order_by(
+                TPickupSkipEvent.created_at.desc(),
+                TPickupSkipEvent.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            PickupSkipDetailRow(
+                id=int(r.id),
+                part_id=int(r.part_id),
+                serial_no=r.serial_no,
+                part_name=r.part_name or "(已删除)",
+                batch_no=int(r.batch_no or 0),
+                quantity=int(r.quantity or 0),
+                part_planned_delivery_date=r.part_planned_delivery_date,
+                skipped_earliest_date=r.skipped_earliest_date,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+
+    async def pickup_skip_detail_count(self, *, worker_id: int) -> int:
+        """单工人跳序事件总数（同 pickup_skip_detail 的 worker_id 谓词）。"""
+        stmt = (
+            select(func.count(TPickupSkipEvent.id))
+            .where(TPickupSkipEvent.worker_id == worker_id)
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one() or 0)

@@ -173,3 +173,56 @@ class WorkerDetailOut(BaseModel):
     parts: list[WorkerPartItem] = Field(
         description="该工人参与工单一览（按 last_pickup_at desc，仅未软删件）",
     )
+
+
+# ============================================================
+# tab4 跳序取件（2026-08-05 新增）
+# ============================================================
+class PickupSkipSummaryItem(BaseModel):
+    """单个工人的跳序取件汇总。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    worker_id: IdStrNonNull
+    worker_name: str = Field(
+        description="工人姓名；工人被软删时回退 '(已删除)' 字符串",
+    )
+    badge_code: str
+    work_type_name: str | None = None
+    skip_count: int = Field(ge=0, description="该工人累计跳序次数")
+    last_skip_at: datetime | None = Field(
+        default=None,
+        description="该工人最近一次跳序时间（ISO datetime）",
+    )
+
+
+class PickupSkipSummaryOut(BaseModel):
+    """tab4 汇总：所有发生过跳序的工人一览（按 skip_count desc, last_skip_at desc）。"""
+
+    items: list[PickupSkipSummaryItem]
+
+
+class PickupSkipDetailItem(BaseModel):
+    """单个跳序事件明细。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStrNonNull
+    part_id: IdStrNonNull
+    # 流水号快照（可能为 NULL = 该工单已 release serial）
+    serial_no: str | None = None
+    part_name: str
+    batch_no: int = Field(ge=1)
+    quantity: int = Field(ge=1)
+    part_planned_delivery_date: date | None = None
+    skipped_earliest_date: date | None = None
+    created_at: datetime
+
+
+class PickupSkipDetailOut(BaseModel):
+    """tab4 明细分页：单工人的全部跳序事件。"""
+
+    items: list[PickupSkipDetailItem]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)

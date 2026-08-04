@@ -23,9 +23,9 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.permission import CurrentUser
 from core.serial import resolve_root_prefix
-from model import TAssembly, TCustomer, TPart, TPartBatch, TPartEvent, TProcess, TShelf, TWorker, TWorkType
+from model import TAssembly, TCustomer, TPart, TPartBatch, TPartEvent, TPickupSkipEvent, TProcess, TShelf, TWorker, TWorkType
 from model.enums import (
-    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, PartSortKey, ProcessCategory, ShelfZone, SortDir,
+    OutsourceQuoteStatus, PartEventType, PartLocation, PartStatus, PartSortKey, ProcessCategory, ShelfZone, SortDir, UserRole,
 )
 from repository.applicant import ApplicantRepository
 from repository.assembly import AssemblyRepository
@@ -38,6 +38,7 @@ from repository.outsource_quote_event import OutsourceQuoteEventRepository
 from repository.outsource_shipment import OutsourceShipmentRepository
 from repository.part_file import PartFileRepository
 from repository.part import PartRepository
+from repository.pickup_skip_event import PickupSkipEventRepository
 from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
 from repository.process import ProcessRepository
@@ -204,6 +205,7 @@ class PartService:
         quote_events: OutsourceQuoteEventRepository | None = None,
         outsource_shipments: "OutsourceShipmentRepository | None" = None,  # 2026-07-30：外协发货记录
         part_batches: PartBatchRepository | None = None,  # 2026-07-29：批次化
+        pickup_skip_events: PickupSkipEventRepository | None = None,  # 2026-08-05：跳序取件事件
         broadcaster: Broadcaster | None = None,
         event_broadcaster: EventBroadcaster | None = None,
         *,
@@ -211,6 +213,7 @@ class PartService:
     ) -> None:
         self.parts = parts
         self.part_batches = part_batches
+        self.pickup_skip_events = pickup_skip_events
         self.customers = customers
         self.workers = workers
         self.events = events
@@ -784,6 +787,129 @@ class PartService:
         root.updated_by = self._user_id
         await self._batches().create(root)
         return root
+
+    # ============================================================
+    # 跳序取件检测（2026-08-05）
+    # ============================================================
+    async def _detect_pickup_skip(
+        self,
+        part: TPart,
+        batch: TPartBatch,
+        worker: TWorker,
+        shelf: TShelf,
+    ) -> date | None:
+        """判定本次领取是否属于「跳序」：被跳过的候选件最早交期。
+
+        返回 ``date`` 时表示检测到跳序；返回 ``None`` 时表示无需记录。
+
+        判定口径（CLAUDE.md §13 衍生）：
+        1. ``part.is_urgent=True`` → 不记录（加急件优先，永不算跳序）；
+        2. ``worker.work_type_id`` 为空 / ``self.work_type_process is None``
+           → 不记录（无法推导候选范围）；
+        3. 工种映射工序为空 → 不记录；
+        4. 货架范围与 HMI 端点 ``api/v1/part.py:list_pickable_parts_by_work_type_all_shelves``
+           同源（CLAUDE.md §扫码台约定）：MANAGER→全架；SHELF_ACCOUNT 按
+           scope/wildcard；其他角色 → 空（短路）；
+        5. 候选 = 跨架「工种可领」批次（复用 ``PartBatchRepository
+           .list_for_work_type_all_shelves``；与 HMI PICK_UP 列表同 SQL）；
+        6. 取其他候选中 ``planned_delivery_date IS NOT NULL`` 的日期集合 →
+           ``earliest = min(...)``；
+        7. ``picked = part.planned_delivery_date``：
+           - NULL 且有日期候选 → 视为跳序（NULL 视为最晚），返回 earliest；
+           - 非 NULL 且 ``picked > earliest`` → 返回 earliest；
+           - 否则（并列或最早）→ None。
+        """
+        if part.is_urgent:
+            return None
+        if worker.work_type_id is None:
+            return None
+        if self.work_type_process is None:
+            return None
+        process_ids = await self.work_type_process.list_process_ids_by_work_type(
+            worker.work_type_id, include_deleted=False,
+        )
+        if not process_ids:
+            return None
+
+        # 货架范围推导（与 HMI 端点同源）
+        shelf_ids: list[int] | None
+        user = self._current_user
+        if user is not None:
+            if user.has_role(UserRole.MANAGER):
+                shelf_ids = None
+            elif user.has_role(UserRole.SHELF_ACCOUNT):
+                shelf_ids = None if user.shelf_wildcard else list(user.shelf_ids)
+            else:
+                shelf_ids = []
+        else:
+            # 无 current_user（测试 fixture 直接构造 service）→ 默认全架，
+            # 与 HMI 端点对未登录场景的语义保持一致（不过前端不会真未登录调领取）。
+            shelf_ids = None
+        if shelf_ids is not None and not shelf_ids:
+            return None
+
+        # MANAGER 全架 / SHELF_ACCOUNT wildcard = shelf_ids=None：repository
+        # 在 shelf_ids=None/falsy 路径下短路返回 []，故对全架场景展开为「全部
+        # active PRODUCTION 架 id」再传入。worker_scope=None 时保守放行全部 PRODUCTION 架。
+        if shelf_ids is None:
+            shelf_ids = await self._all_production_shelf_ids()
+
+        candidates = await self._batches().list_for_work_type_all_shelves(
+            mapped_process_ids=process_ids,
+            shelf_ids=shelf_ids,
+        )
+        other_dates: list[date] = [
+            p.planned_delivery_date
+            for _b, p in candidates
+            if _b.id != batch.id and p.planned_delivery_date is not None
+        ]
+        if not other_dates:
+            return None
+        earliest = min(other_dates)
+        picked = part.planned_delivery_date
+        if picked is None:
+            return earliest
+        if picked > earliest:
+            return earliest
+        return None
+
+    async def _all_production_shelf_ids(self) -> list[int]:
+        """列出全部 active PRODUCTION 架 id（用于全架模式跳序候选范围）。"""
+        rows = await self.shelves.list_active_by_zone(ShelfZone.PRODUCTION.value)
+        return [int(s.id) for s in rows]
+
+    async def _record_pickup_skip(
+        self,
+        *,
+        part: TPart,
+        target_batch: TPartBatch,
+        worker: TWorker,
+        shelf: TShelf,
+        skipped_earliest_date: date,
+    ) -> None:
+        """落库一条 ``t_pickup_skip_event`` 记录（同事务提交）。
+
+        字段全部用本次领取快照（领取时流水号 / 数量 / 交期都还是有效的）：
+        - ``part_serial_no`` = part.serial_no（流水中）；
+        - ``batch_no`` / ``quantity`` = target 批次（拆分后的实际领取批次）；
+        - ``work_type_id`` = worker.work_type_id 快照。
+        """
+        if self.pickup_skip_events is None:
+            return  # 可选依赖：未注入则跳过（service 仍可工作）
+        event = TPickupSkipEvent(
+            id=new_id(),
+            worker_id=worker.id,
+            part_id=part.id,
+            batch_id=target_batch.id,
+            batch_no=target_batch.batch_no,
+            part_serial_no=part.serial_no,
+            shelf_id=shelf.id,
+            work_type_id=worker.work_type_id,
+            quantity=target_batch.quantity,
+            part_planned_delivery_date=part.planned_delivery_date,
+            skipped_earliest_date=skipped_earliest_date,
+        )
+        await self.pickup_skip_events.create(event)
 
     # ============================================================
     # 写操作
@@ -2419,6 +2545,13 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        # 2026-08-05：跳序取件检测（在拆分前用源批次的 part/batch 状态判定；
+        # 拆分仅切数量不改 part 字段，候选范围基于「工种可领列表」与本批无关，
+        # 因此在 _maybe_split 前后判定结果一致）。
+        skipped_earliest_date = await self._detect_pickup_skip(
+            part, batch, worker, shelf,
+        )
+
         target = await self._maybe_split(
             part, batch, getattr(data, "quantity", None),
         )
@@ -2430,6 +2563,17 @@ class PartService:
         target.updated_by = self._user_id
         await self._batches().update(target)
         await self._after_batch_transition(part)
+
+        # 2026-08-05：若检测到跳序，写 t_pickup_skip_event（同事务提交）。
+        if skipped_earliest_date is not None:
+            await self._record_pickup_skip(
+                part=part,
+                target_batch=target,
+                worker=worker,
+                shelf=shelf,
+                skipped_earliest_date=skipped_earliest_date,
+            )
+
         items = await self._to_out([part])
         await self._broadcast_event(
             "PICKED_UP",

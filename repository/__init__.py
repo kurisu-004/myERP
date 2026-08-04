@@ -16,6 +16,7 @@ from .part import PartRepository
 from .part_batch import PartBatchRepository
 from .part_event import PartEventRepository
 from .part_file import PartFileRepository
+from .pickup_skip_event import PickupSkipEventRepository
 from .process import ProcessRepository
 from .serial_counter import SerialCounterRepository
 from .shelf import ShelfRepository
@@ -43,6 +44,7 @@ __all__ = [
     "PartEventRepository",
     "PartFileRepository",
     "PartRepository",
+    "PickupSkipEventRepository",
     "ProcessRepository",
     "SerialCounterRepository",
     "ShelfProcessRepository",

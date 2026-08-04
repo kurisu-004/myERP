@@ -1,8 +1,10 @@
-"""生产统计 API（MANAGER-only；2026-08-03 新增）。
+"""生产统计 API（MANAGER-only；2026-08-03 新增；2026-08-05 增跳序取件）。
 
 - GET /statistics/overview              tab1：基础统计 + 图表
 - GET /statistics/workers               tab2：所有未软删工人的贡献度一览
 - GET /statistics/workers/{worker_id}   tab3：单工人详情（pickup / return / 参与工单）
+- GET /statistics/pickup-skips          tab4：跳序取件汇总（按工人）
+- GET /statistics/pickup-skips/{worker_id}  tab4：单工人跳序事件明细分页
 
 权限：router 级别 `dependencies=[Depends(require_role(UserRole.MANAGER))]`；
 manager 才能访问。
@@ -10,7 +12,8 @@ manager 才能访问。
 查询参数：
 - `date_from` / `date_to` 是 date 类型（闭区间）；
 - `worker_id` 是雪花 ID 字符串（service 层 parse_snowflake_id）；
-- `date_from > date_to` 由 service 层抛 BIZ_INVALID_VALUE 400。
+- `date_from > date_to` 由 service 层抛 BIZ_INVALID_VALUE 400；
+- 跳序端点无日期范围（append-only 历史流）。
 """
 from __future__ import annotations
 
@@ -24,6 +27,8 @@ from core.permission import require_role
 from model.enums import UserRole
 from schema.statistics import (
     OverviewOut,
+    PickupSkipDetailOut,
+    PickupSkipSummaryOut,
     WorkerDetailOut,
     WorkerStatsListOut,
 )
@@ -81,4 +86,50 @@ async def get_worker_detail(
     404 BIZ_WORKER_NOT_FOUND。"""
     return await svc.worker_detail(
         worker_id=worker_id, date_from=date_from, date_to=date_to,
+    )
+
+
+# ============================================================
+# tab4 跳序取件（2026-08-05 新增）
+# ============================================================
+@router.get(
+    "/pickup-skips",
+    response_model=PickupSkipSummaryOut,
+    summary="跳序取件汇总（MANAGER）：按工人聚合跳序次数",
+    description=(
+        "append-only 历史流——无日期范围；单条 SQL GROUP BY worker_id 完成。"
+        "排序：skip_count desc, last_skip_at desc。"
+        "工人已被软删：worker_name 兜底 '(已删除)'，badge_code 兜底空串。"
+    ),
+)
+async def get_pickup_skip_summary(
+    svc: StatisticsService = Depends(get_statistics_service),
+) -> PickupSkipSummaryOut:
+    return await svc.pickup_skip_summary()
+
+
+@router.get(
+    "/pickup-skips/{worker_id}",
+    response_model=PickupSkipDetailOut,
+    summary="跳序取件明细（MANAGER）：单工人跳序事件分页",
+    description=(
+        "按 created_at desc 排序，limit/offset 分页。"
+        "worker_id 是雪花 ID 字符串（CLAUDE.md §3），service 层 parse；"
+        "非法 → 400 BIZ_INVALID_VALUE。"
+    ),
+)
+async def get_pickup_skip_detail(
+    worker_id: Annotated[
+        str, Path(description="工人雪花 ID（字符串）"),
+    ],
+    limit: Annotated[
+        int, Query(ge=1, le=200, description="每页条数（1-200）"),
+    ] = 50,
+    offset: Annotated[
+        int, Query(ge=0, description="分页偏移"),
+    ] = 0,
+    svc: StatisticsService = Depends(get_statistics_service),
+) -> PickupSkipDetailOut:
+    return await svc.pickup_skip_detail(
+        worker_id=worker_id, limit=limit, offset=offset,
     )
