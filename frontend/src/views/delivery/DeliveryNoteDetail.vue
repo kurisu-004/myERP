@@ -211,6 +211,10 @@ function partStatusTagType(
   return (ORDER_STATUS_TAG_TYPE as Record<string, 'primary' | 'success' | 'warning' | 'info' | 'danger'>)[s] ?? 'info'
 }
 
+function deliveryLineRowClassName({ row }: { row: DeliveryNoteLineItem }): string {
+  return row.is_urgent ? 'row-urgent' : ''
+}
+
 // ============================================================
 // 移除选定零件
 // ============================================================
@@ -376,6 +380,7 @@ const columnVisibility = useColumnVisibility(columnDefs, {
         </template>
         <el-table
           :data="note.line_items"
+          :row-class-name="deliveryLineRowClassName"
           stripe
           border
           height="500"
@@ -542,6 +547,14 @@ const columnVisibility = useColumnVisibility(columnDefs, {
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .event-note { font-size: 13px; color: #666; margin-top: 4px; }
+
+:deep(.el-table__row.row-urgent) > td.el-table__cell {
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
+}
+
 .dl-tray {
   position: fixed;
   top: 16px;

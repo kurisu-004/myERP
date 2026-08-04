@@ -2970,7 +2970,10 @@ async function confirmManualAssembly(): Promise<void> {
 }
 
 :deep(.row-urgent) {
-  background-color: #fdf6ec !important;
+  background-color: #fde2e2 !important;
+}
+:deep(.el-table__row.row-urgent:hover > td.el-table__cell) {
+  background-color: #fbcaca !important;
 }
 
 /* PR-H 2026-07-28：sortable.js 拖拽视觉 */

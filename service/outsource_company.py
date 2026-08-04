@@ -228,6 +228,8 @@ class OutsourceCompanyService:
                 received_at=s.received_at,
                 status=s.status,
                 is_billed=bool(getattr(s, "is_billed", False)),
+                # 2026-08-04 新增：part_map 是 list_by_ids 批量查的 TPart，零额外查询
+                is_urgent=bool(p.is_urgent) if p else False,
             ))
         return OutsourceSentPartListOut(
             items=items, total=total,
