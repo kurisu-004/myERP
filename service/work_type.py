@@ -73,6 +73,7 @@ class WorkTypeService:
             name=data.name,
             description=data.description,
             sort_order=data.sort_order,
+            max_held_batches=data.max_held_batches,
         )
         wt.created_by = self._user_id
         wt.updated_by = self._user_id
@@ -95,6 +96,9 @@ class WorkTypeService:
             wt.description = data.description
         if data.sort_order is not None:
             wt.sort_order = data.sort_order
+        # 2026-08-05：max_held_batches 显式传 null 清空上限；字段缺失 = 不改
+        if "max_held_batches" in data.model_fields_set:
+            wt.max_held_batches = data.max_held_batches
         wt.updated_by = self._user_id
         await self.work_types.update(wt)
         # flush 后 onupdate=func.now() 会让 updated_at 过期；显式 refresh
@@ -154,6 +158,7 @@ def _work_type_to_out(wt: TWorkType) -> WorkTypeOut:
         name=wt.name,
         description=wt.description,
         sort_order=wt.sort_order,
+        max_held_batches=wt.max_held_batches,
         created_at=wt.created_at,
         updated_at=wt.updated_at,
     )

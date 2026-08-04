@@ -46,6 +46,10 @@
         v-if="columnVisibility.isVisible('sort_order')"
         prop="sort_order" label="排序" min-width="80" align="center"
       />
+      <el-table-column
+        v-if="columnVisibility.isVisible('max_held_batches')"
+        prop="max_held_batches" label="可领取上限" min-width="100" align="center"
+      />
       <el-table-column label="操作" min-width="180" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="onEdit(row as WorkType)">编辑</el-button>
@@ -62,6 +66,10 @@
           <div class="rl-kv__item">
             <span class="rl-kv__key">排序</span>
             <span class="rl-kv__val">{{ row.sort_order }}</span>
+          </div>
+          <div class="rl-kv__item" v-if="columnVisibility.isVisible('max_held_batches')">
+            <span class="rl-kv__key">可领取上限</span>
+            <span class="rl-kv__val">{{ row.max_held_batches ?? '不限' }}</span>
           </div>
           <div class="rl-kv__item rl-kv__item--full">
             <span class="rl-kv__key">描述</span>
@@ -95,6 +103,14 @@
         </el-form-item>
         <el-form-item label="排序">
           <el-input-number v-model="form.sort_order" :min="0" />
+        </el-form-item>
+        <el-form-item label="可领取上限">
+          <el-input-number
+            v-model="form.max_held_batches"
+            :min="1"
+            :value-on-clear="null"
+            placeholder="留空不限"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -145,14 +161,21 @@ const columnDefs = [
   { key: 'name', label: '名称' },
   { key: 'description', label: '描述' },
   { key: 'sort_order', label: '排序' },
+  { key: 'max_held_batches', label: '可领取上限' },
 ] as const
 const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'work_type_list' })
 
 const dialogVisible = ref(false)
 const editing = ref<WorkType | null>(null)
 const dialogTitle = computed(() => (editing.value ? '编辑工种' : '新增工种'))
-const form = reactive<{ code: string; name: string; description: string; sort_order: number }>({
-  code: '', name: '', description: '', sort_order: 0,
+const form = reactive<{
+  code: string
+  name: string
+  description: string
+  sort_order: number
+  max_held_batches: number | null
+}>({
+  code: '', name: '', description: '', sort_order: 0, max_held_batches: null,
 })
 
 async function fetchList(): Promise<void> {
@@ -171,12 +194,14 @@ function onReset(): void { search.code_like = ''; fetchList() }
 function onNew(): void {
   editing.value = null
   form.code = ''; form.name = ''; form.description = ''; form.sort_order = 0
+  form.max_held_batches = null
   dialogVisible.value = true
 }
 function onEdit(row: WorkType): void {
   editing.value = row
   form.code = row.code; form.name = row.name
   form.description = row.description ?? ''; form.sort_order = row.sort_order
+  form.max_held_batches = row.max_held_batches ?? null
   dialogVisible.value = true
 }
 
@@ -192,6 +217,7 @@ async function onSave(): Promise<void> {
         name: form.name.trim(),
         description: form.description.trim() || null,
         sort_order: form.sort_order,
+        max_held_batches: form.max_held_batches,
       })
       ElMessage.success('已保存')
     } else {
@@ -200,6 +226,7 @@ async function onSave(): Promise<void> {
         name: form.name.trim(),
         description: form.description.trim() || null,
         sort_order: form.sort_order,
+        max_held_batches: form.max_held_batches,
       })
       ElMessage.success('已新增')
     }
@@ -215,6 +242,7 @@ async function onSave(): Promise<void> {
 function onDialogClosed(): void {
   editing.value = null
   form.code = ''; form.name = ''; form.description = ''; form.sort_order = 0
+  form.max_held_batches = null
 }
 
 async function onDelete(row: WorkType): Promise<void> {

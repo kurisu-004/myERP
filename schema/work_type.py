@@ -13,6 +13,8 @@ class WorkTypeCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     description: str | None = Field(default=None, max_length=200)
     sort_order: int = Field(default=0, ge=0)
+    # 2026-08-05：工种可领取上限（持有批次数）。NULL=不限；ge=1 防止 0/负数。
+    max_held_batches: int | None = Field(default=None, ge=1)
 
     @field_validator("code", "name")
     @classmethod
@@ -26,6 +28,8 @@ class WorkTypeUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=50)
     description: str | None = Field(default=None, max_length=200)
     sort_order: int | None = Field(default=None, ge=0)
+    # 2026-08-05：工种可领取上限。None 表示不修改；显式 null 清空 = 不限。
+    max_held_batches: int | None = Field(default=None, ge=1)
 
     @field_validator("name")
     @classmethod
@@ -44,6 +48,7 @@ class WorkTypeOut(BaseModel):
     name: str
     description: str | None = None
     sort_order: int
+    max_held_batches: int | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -2510,6 +2510,24 @@ class PartService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        # 2026-08-05：工种可领取上限（持有批次数）拦截。worker 未挂工种 / 工种
+        # 未设上限 → 跳过；设了上限且当前持有 >= 上限 → 422。
+        if worker.work_type_id is not None and self.work_types is not None:
+            wt = await self.work_types.get_by_id(worker.work_type_id)
+            if wt is not None and wt.max_held_batches is not None:
+                held_count = await self._batches().count_held_by_worker(
+                    worker_id=worker.id
+                )
+                if held_count >= wt.max_held_batches:
+                    raise BizError(
+                        code=ErrCode.BIZ_WORKER_HOLD_LIMIT_EXCEEDED,
+                        message=(
+                            f"已达到工种可领取上限（{wt.max_held_batches}），"
+                            "请先放回或送检"
+                        ),
+                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    )
+
         part = await self.parts.get_by_serial(data.serial_no)
         if part is None:
             raise BizError(

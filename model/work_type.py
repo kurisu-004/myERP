@@ -6,6 +6,8 @@
   软删 / 重名校验由 service 层处理。
 - 审计字段由 `AuditMixin` 提供。
 - `code` 是工种代码（如 "车床"），业务层不可变；改名通过删除 + 重建实现。
+- 2026-08-05：`max_held_batches` 列（迁移 029）—— 工人持有批次数上限，
+  NULL=不限；service 层在 `pick_up_by_scan` 中校验。
 """
 from sqlalchemy import BigInteger, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -24,6 +26,7 @@ class TWorkType(Base, AuditMixin):
         name (String 50): 工种显示名，如 "车床工"
         description (String 200, nullable): 备注
         sort_order (Integer): 列表排序
+        max_held_batches (Integer, nullable): 该工种工人最多可同时持有批次数；NULL=不限
         (audit 5 fields via AuditMixin)
     """
 
@@ -48,6 +51,10 @@ class TWorkType(Base, AuditMixin):
     sort_order: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0"),
         comment="显示顺序",
+    )
+    max_held_batches: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+        comment="该工种工人最多可同时持有批次数；NULL=不限",
     )
 
     __table_args__ = (

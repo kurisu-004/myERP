@@ -186,6 +186,26 @@ class PartBatchRepository:
         result = await self.session.execute(stmt)
         return [(row[0], row[1]) for row in result.all()]
 
+    async def count_held_by_worker(self, *, worker_id: int) -> int:
+        """2026-08-05：工种可领取上限校验用 — 工人当前持有的活跃批次数。
+
+        条件同 `list_held_by_worker`（status=IN_PROCESS + location=WORKER +
+        holder=worker_id + 未删）。worker_id 缺失返回 0。
+        """
+        if not worker_id:
+            return 0
+        stmt = (
+            select(func.count(TPartBatch.id))
+            .where(
+                TPartBatch.status == "IN_PROCESS",
+                TPartBatch.location == "WORKER",
+                TPartBatch.current_holder_id == worker_id,
+                TPartBatch.deleted_at.is_(None),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one() or 0)
+
     async def list_batches_with_part(
         self,
         *,
