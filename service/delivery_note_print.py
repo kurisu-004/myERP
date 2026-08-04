@@ -41,6 +41,7 @@ from typing import Any
 
 from fastapi import status as http_status
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from core.config import settings
 from core.error_code import ErrCode
@@ -170,13 +171,15 @@ class DeliveryNotePrintService:
         custom_order: list[str] | None = None,
         merge_assemblies: bool = False,  # 2026-08-04 新增
         assembly_map: dict[int, TAssembly] | None = None,  # 2026-08-04：service 层预查
+        merge_quantities: dict[int, int] | None = None,  # 2026-08-04 扩展：每套 override
     ) -> tuple[bytes, str]:
         """填模板并返回字节流 + 模板 prefix。
 
         - ``custom_order`` 为 None / 空 → 按 ``TPartBatch.id ASC``（旧行为）
         - ``custom_order`` 提供 → 按其列表顺序投影；含非法 batch id 或漏行 → 422
-        - ``merge_assemblies`` 为 True → 同装配体的子件合并为一行（数量 1，单位套）；
-          散件逐行不变；组位置 = 组内最早出现的 batch 在 ``custom_order`` 中的位次
+        - ``merge_assemblies`` 为 True → 同装配体的子件合并为一行（数量 = merge_quantities
+          或默认 1，单位套）；散件逐行不变；组位置 = 组内最早出现的 batch 在
+          ``custom_order`` 中的位次
         """
         custom_order_list: list[str] = list(custom_order) if custom_order else []
         assembly_map = assembly_map or {}
@@ -313,6 +316,7 @@ class DeliveryNotePrintService:
             parent_map=parent_map,
             assembly_map=assembly_map,
             merge_assemblies=merge_assemblies,
+            merge_quantities=merge_quantities,
         )
 
         # 5) 分页填表
@@ -348,6 +352,9 @@ class DeliveryNotePrintService:
                 for idx, pr in enumerate(page_rows, start=1):
                     _fill_row(sheet, idx, pr, pr.customer_name)
                 _write_footer(sheet, note=note, prefix=prefix)
+                # 2026-08-04 扩展：数据行统一 25 磅 + 列宽按内容自适配（保证不溢出）
+                _set_data_row_heights(sheet, cfg.start_row, len(page_rows))
+                _autosize_columns(sheet, max_col=max(b.col for b in cfg.bindings))
 
             buf = io.BytesIO()
             wb.save(buf)
@@ -363,11 +370,13 @@ class DeliveryNotePrintService:
         parent_map: dict[int, TCustomer],
         assembly_map: dict[int, TAssembly],
         merge_assemblies: bool,
+        merge_quantities: dict[int, int] | None = None,
     ) -> list[PrintRow]:
         """把 (batch, part) 列表转成 ``PrintRow``；merge_assemblies 时同装配体子件合并一行。
 
         返回的列表保留 ``rows`` 的原始顺序（custom_order 已应用）；合并行位置 = 组内
-        最早出现的 batch 位次；散件行照常。
+        最早出现的 batch 位次；散件行照常。``merge_quantities`` 按 assembly_id override
+        装配体合并行的数量（默认 1）。
         """
         # 先逐 (batch, part) 生成 PrintRow（散件逻辑）
         leaf_name_of_part: dict[int, str] = {}
@@ -419,7 +428,8 @@ class DeliveryNotePrintService:
                     applicant_name=asm.applicant_name or "",
                     drawing_no=asm.drawing_no or "",
                     name=asm.name or "",
-                    quantity=1,
+                    # 2026-08-04 扩展：merge_quantities 按 assembly_id override 套数
+                    quantity=(merge_quantities or {}).get(asm_id, 1),
                     unit="套",
                     planned_delivery_date=asm.planned_delivery_date,
                     note="",
@@ -472,6 +482,41 @@ def _resolve_cell(binding: CellBinding, ctx: dict[str, Any]) -> Any:
 # ============================================================
 # 内部：模板级 footer / header 日期同步（2026-07-23 新增）
 # ============================================================
+def _estimate_cell_width(s: Any) -> int:
+    """估算字符串显示宽度（Excel 字符宽单位）。
+
+    ASCII 字符宽 1，中文 / 全角宽 2。用于 openpyxl 列宽自适配。
+    """
+    if s is None:
+        return 0
+    text = str(s)
+    cn = sum(1 for c in text if ord(c) > 127)
+    return cn * 2 + (len(text) - cn)
+
+
+def _autosize_columns(ws, max_col: int, min_width: int = 8, max_width: int = 40) -> None:
+    """按当前 sheet 已写内容估算每列宽度并写入 column_dimensions。
+
+    限制 [min_width, max_width] 防极端值（长备注 / 空列）。
+    """
+    for col_idx in range(1, max_col + 1):
+        letter = get_column_letter(col_idx)
+        max_len = 0
+        for row in ws.iter_rows(min_col=col_idx, max_col=col_idx, values_only=False):
+            for cell in row:
+                w = _estimate_cell_width(cell.value)
+                if w > max_len:
+                    max_len = w
+        if max_len > 0:
+            ws.column_dimensions[letter].width = max(min_width, min(max_len + 2, max_width))
+
+
+def _set_data_row_heights(ws, start_row: int, row_count: int, height: float = 25) -> None:
+    """数据行统一 25 磅（Excel 高度单位=磅）。"""
+    for i in range(row_count):
+        ws.row_dimensions[start_row + i].height = height
+
+
 def _format_fala_date(d: date) -> str:
     """法拉模板右下角日期文案：「送货日期：YYYY年M月D日》。
 

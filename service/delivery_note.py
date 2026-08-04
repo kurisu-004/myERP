@@ -1066,14 +1066,15 @@ class DeliveryNoteService:
         note_id: str,
         custom_order: list[str] | None = None,  # 2026-08-02 新增：预览组件拖动后的 batch id 顺序
         merge_assemblies: bool = False,  # 2026-08-04 新增：装配件子件合并为一行
+        merge_quantities: dict[str, int] | None = None,  # 2026-08-04 扩展：每套 override
     ) -> tuple[bytes, str]:
         """按 L1 客户前缀分发模板（template/delivery_note_{prefix}.xlsx），
         返回 (bytes, prefix)；状态不限（DRAFT/SUBMITTED/PICKED_UP/ARCHIVED 都可）。
 
         - ``custom_order`` 为 None / 空 → 按 ``TPartBatch.id ASC``（旧行为）
         - ``custom_order`` 提供 → 按其顺序投影；非法 batch id 或漏行 → 422
-        - ``merge_assemblies`` 为 True → 同一装配体的子件合并为一行（数量 1，单位套，
-          显示总装图号/装配体序列号/名称）；散件逐行保持不变
+        - ``merge_assemblies`` 为 True → 同一装配体的子件合并为一行（数量 = merge_quantities
+          或默认 1，单位套，显示总装图号/装配体序列号/名称）；散件逐行保持不变
 
         真正的填表逻辑在 `service/delivery_note_print.py::DeliveryNotePrintService`；
         这里只负责 note 加载 + 薄包装。
@@ -1100,6 +1101,19 @@ class DeliveryNoteService:
             )
             assembly_map = {a.id: a for a in res.scalars().all()}
 
+        # 2026-08-04 扩展：merge_quantities str→int 转换（雪花 ID 字符串 → int 主键）
+        merge_quantities_int: dict[int, int] = {}
+        if merge_assemblies and merge_quantities:
+            for k, v in merge_quantities.items():
+                asm_int = parse_snowflake_id(k, field_name="assembly_id")
+                if v < 1:
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message=f"merge_quantities[{k}] 必须 ≥ 1，实际 {v}",
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                merge_quantities_int[asm_int] = v
+
         printer = DeliveryNotePrintService(
             notes=self.notes,
             parts=self.parts,
@@ -1111,6 +1125,7 @@ class DeliveryNoteService:
             custom_order=custom_order,
             merge_assemblies=merge_assemblies,
             assembly_map=assembly_map,
+            merge_quantities=merge_quantities_int,
         )
 
     # ============================================================

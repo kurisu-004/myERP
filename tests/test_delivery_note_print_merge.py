@@ -339,3 +339,130 @@ async def test_print_xlsx_merge_assemblies_group_position_respects_custom_order(
     assert ws.cell(row=4, column=1).value == 2
     assert ws.cell(row=4, column=5).value == "D-F9001"
     assert ws.cell(row=4, column=8).value == "件"
+
+
+# ============================================================
+# T-merge-5: merge_quantities override 装配体行数量
+# ============================================================
+async def test_print_xlsx_merge_quantities_override(clean_db):
+    """merge_assemblies=True + merge_quantities → 装配体行数量取 override，非默认 1。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A9001", drawing_no="DA-9001", name="装配体B",
+    )
+    child1 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9C01", drawing_no="D-F9C01",
+    )
+    child2 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9C02", drawing_no="D-F9C02",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child1), _item(child2)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(
+        note_id=str(note.id),
+        merge_assemblies=True,
+        merge_quantities={str(asm.id): 3},
+    )
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    # 装配体合并行 1 行，数量=3
+    assert ws.cell(row=3, column=7).value == 3, (
+        f"merge_quantities override 应为 3，实际 {ws.cell(row=3, column=7).value}"
+    )
+    assert ws.cell(row=3, column=8).value == "套"
+
+
+# ============================================================
+# T-merge-6: Excel 数据行高 25 磅 + 列宽自适配（法拉模板）
+# ============================================================
+async def test_print_xlsx_excel_layout(clean_db):
+    """数据行全部 25 磅；列宽 non-zero 且 ≤ 40。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9101", drawing_no="D-F9101",
+    )
+    p2 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9102", drawing_no="D-F9102",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+
+    # 数据行 R3-R4 行高 25
+    for r in (3, 4):
+        assert ws.row_dimensions[r].height == 25, (
+            f"row {r} height 应为 25，实际 {ws.row_dimensions[r].height}"
+        )
+
+    # 列宽全部 > 5 且 ≤ 40（10 列：法拉模板 bindings）
+    from openpyxl.utils import get_column_letter
+    for col_idx in range(1, 11):
+        letter = get_column_letter(col_idx)
+        w = ws.column_dimensions[letter].width
+        assert 5 < w <= 40, (
+            f"col {letter} width={w} 不在 (5, 40] 合理范围"
+        )
+
+
+# ============================================================
+# T-merge-7: merge_assemblies API 透传回归（构造 PrintDeliveryNoteRequest）2026-08-04 fix
+# ============================================================
+async def test_print_xlsx_merge_assemblies_via_api_request(clean_db):
+    """通过 service.print_xlsx 用真实 merge_quantities payload 构造，确认全链路。
+
+    等价于构造一个 PrintDeliveryNoteRequest 的键值对：
+    { custom_order: [], merge_assemblies: True,
+      merge_quantities: {str(asm.id): 5} }
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A9101", drawing_no="DA-9101", name="装配件C",
+    )
+    child1 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9D01", drawing_no="D-F9D01",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child1)],
+        version=note.version,
+    )
+
+    # 模拟前端 merge_quantities payload（dict[str, int]）
+    merge_qty = {str(asm.id): 5}
+    xlsx_bytes, _ = await svc.print_xlsx(
+        note_id=str(note.id),
+        merge_assemblies=True,
+        merge_quantities=merge_qty,
+    )
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    assert ws.cell(row=3, column=7).value == 5
+    assert ws.cell(row=3, column=8).value == "套"

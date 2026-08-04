@@ -55,7 +55,7 @@ const hasAssemblies = computed(
   () => props.note?.line_items.some((li) => li.assembly_id) ?? false,
 )
 // 默认「分开打印所有子件」（安全默认；现状行为）
-const mergeAssemblies = ref(false)
+const mergeMode = ref<'separate' | 'merge'>('separate')
 
 interface PreviewAssemblyRow {
   id: string
@@ -75,7 +75,7 @@ type PreviewRow = DeliveryNoteLineItem | PreviewAssemblyRow
 const previewRows = computed<PreviewRow[]>(() => {
   if (!props.note) return []
   const flat = props.note.line_items
-  if (!mergeAssemblies.value) {
+  if (!mergeMode.value || mergeMode.value === 'separate') {
     return [...flat]
   }
   const result: PreviewRow[] = []
@@ -105,7 +105,7 @@ const previewRows = computed<PreviewRow[]>(() => {
 })
 
 watch(
-  () => [props.modelValue, mergeAssemblies.value],
+  () => [props.modelValue, mergeMode.value],
   async ([open]) => {
     if (open && props.note) {
       // 拷贝当前内存顺序作为预览初始顺序（不污染详情页）
@@ -169,12 +169,15 @@ async function onConfirm(): Promise<void> {
   try {
     let custom_order: string[]
     let mergeFlag = false
-    if (mergeAssemblies.value) {
+    let merge_quantities: Record<string, number> | undefined
+    if (mergeMode.value === 'merge') {
       // 合并模式：父行 → 组内 batch id 连续；散件行原样
       custom_order = []
+      merge_quantities = {}
       const flat = props.note.line_items
       rows.value.forEach((r) => {
         if (isAsmRow(r)) {
+          merge_quantities![r.assembly_id] = r.quantity
           flat
             .filter((li) => li.assembly_id === r.assembly_id)
             .forEach((c) => custom_order.push(String(c.id)))
@@ -188,7 +191,7 @@ async function onConfirm(): Promise<void> {
     }
     const { blob, filename } = await printNote(
       props.note.id,
-      { custom_order, merge_assemblies: mergeFlag },
+      { custom_order, merge_assemblies: mergeFlag, merge_quantities },
       (p: PrintNoteProgress) => {
         void p
       },
@@ -217,15 +220,15 @@ async function onConfirm(): Promise<void> {
   >
     <div class="preview-tip">
       <span>预览共 {{ rows.length }} 行；导出顺序 = 当前预览顺序。</span>
-      <!-- 2026-08-04：仅当单上含装配件子件时显示 -->
+      <!-- 2026-08-04：仅当单上含装配件子件时显示（el-radio-button 更醒目） -->
       <el-radio-group
         v-if="hasAssemblies"
-        v-model="mergeAssemblies"
+        v-model="mergeMode"
         size="small"
         class="merge-toggle"
       >
-        <el-radio :value="false">装配件分开打印所有子件</el-radio>
-        <el-radio :value="true">装配件合并为一套打印</el-radio>
+        <el-radio-button value="separate">分开打子件</el-radio-button>
+        <el-radio-button value="merge">合并一套</el-radio-button>
       </el-radio-group>
     </div>
     <el-table
@@ -267,12 +270,16 @@ async function onConfirm(): Promise<void> {
         </template>
       </el-table-column>
       <el-table-column
-        label="数量" min-width="90" align="right">
+        label="数量" min-width="120" align="right">
         <template #default="{ row }">
-          <template v-if="isAsmRow(row)">
-            <strong>1</strong> 套
-          </template>
-          <template v-else>{{ row.quantity }}</template>
+          <el-input-number
+            v-if="isAsmRow(row)"
+            v-model="row.quantity"
+            :min="1" :max="999" :precision="0"
+            size="small" controls-position="right"
+            style="width: 110px"
+          />
+          <span v-else>{{ row.quantity }}</span>
         </template>
       </el-table-column>
     </el-table>
