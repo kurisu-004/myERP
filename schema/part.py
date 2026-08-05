@@ -402,6 +402,17 @@ class PartListItem(BaseModel):
         default=False,
         description="是否经历过返修；为 true 时列表行展示「返修」el-tag（PR-M）",
     )
+    # —— 2026-08-05 C2：装配件携带的「命中子件」 ——
+    # 仅当 next_process_ids / locations / holder_ids 筛选激活时填充；
+    # 装配件下属子件中满足筛选的子零件全集（按当前排序）。其余情况为 null。
+    # 前端 loadChildren 优先消费本字段，避免每次展开都触发 /assemblies/{id} 详情查询。
+    matched_children: list["PartListItem"] | None = Field(
+        default=None,
+        description=(
+            "仅当 next_process_ids / locations / holder_ids 筛选激活时填充；"
+            "装配件下属子件中满足筛选的子零件全集（按当前排序）。其余情况为 null。"
+        ),
+    )
 
 
 class PartListOut(BaseModel):
@@ -1007,6 +1018,10 @@ class LocationTreeNode(BaseModel):
 
 
 LocationTreeNode.model_rebuild()
+
+
+# 2026-08-05 C2：PartListItem.matched_children 自引用（forward ref），模块底部 rebuild。
+PartListItem.model_rebuild()
 
 
 class LocationTreeOut(BaseModel):

@@ -1485,6 +1485,8 @@ function rowKey(row: PartListItem): string {
 }
 
 // 2026-07-30：懒加载装配件子件
+// 2026-08-05 C2：优先消费 row.matched_children（位置类筛选激活时后端已带出
+// 命中子件全集），避免每次展开都触发 /assemblies/{id} 详情查询。
 async function loadChildren(
   row: PartListItem,
   _treeNode: unknown,
@@ -1492,6 +1494,17 @@ async function loadChildren(
 ): Promise<void> {
   if (row.row_type !== 'ASSEMBLY') {
     resolve([])
+    return
+  }
+  if (row.matched_children) {
+    resolve(
+      row.matched_children.map((c) => ({
+        ...c,
+        __is_child: true,
+        row_type: 'PART' as const,
+        has_children: false,
+      })),
+    )
     return
   }
   try {

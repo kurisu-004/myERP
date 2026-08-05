@@ -133,6 +133,9 @@ export interface PartListItem {
   created_at?: string | null
   /** PR-M 2026-08-04：是否经历过返修（用于列表行展示「返修」el-tag） */
   has_been_repaired?: boolean
+  /** C2 2026-08-05：装配件携带的「命中子件」；仅当 next_process_ids / locations /
+   *  holder_ids 筛选激活时填充。其余情况为 null。前端 loadChildren 优先消费。 */
+  matched_children?: PartListItem[] | null
 }
 
 /** 零件一览「所在位置」树节点（GET /parts/location-tree）。 */

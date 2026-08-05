@@ -92,6 +92,11 @@ class AssemblyRepository:
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-05：装配件本身不带 next_process_id / location / current_holder_id；
+        # 这三个参数通过子件 EXISTS 作用于装配件行（C2）。
+        child_next_process_ids: list[int] | None = None,
+        child_locations: list[str] | None = None,
+        child_holder_ids: list[int] | None = None,
         sort_by: AssemblySortKey = AssemblySortKey.PLANNED_DELIVERY_DATE,
         sort_dir: AssemblySortDir = "asc",
         include_deleted: bool = False,
@@ -115,6 +120,9 @@ class AssemblyRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            child_next_process_ids=child_next_process_ids,
+            child_locations=child_locations,
+            child_holder_ids=child_holder_ids,
             include_deleted=include_deleted,
         )
         sort_col = {
@@ -157,6 +165,10 @@ class AssemblyRepository:
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-05：装配件通过子件 EXISTS 接受 next_process / location / holder 筛选（C2）。
+        child_next_process_ids: list[int] | None = None,
+        child_locations: list[str] | None = None,
+        child_holder_ids: list[int] | None = None,
         include_deleted: bool = False,
     ) -> int:
         stmt = self._build_filter_stmt(
@@ -176,6 +188,9 @@ class AssemblyRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            child_next_process_ids=child_next_process_ids,
+            child_locations=child_locations,
+            child_holder_ids=child_holder_ids,
             include_deleted=include_deleted,
         ).with_only_columns(func.count(TAssembly.id))
         result = await self.session.execute(stmt)
@@ -212,6 +227,13 @@ class AssemblyRepository:
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-05：装配件本身不带 next_process_id / location / current_holder_id。
+        # 通过子件 EXISTS 命中装配件；与 PartRepository 语义一致：
+        # child_locations / child_holder_ids 之间 OR，二者皆空时不加 OR 段；
+        # child_next_process_ids 与 (loc OR holder) 之间 AND；皆空时整段 EXISTS 不加。
+        child_next_process_ids: list[int] | None = None,
+        child_locations: list[str] | None = None,
+        child_holder_ids: list[int] | None = None,
         include_deleted: bool,
     ):
         stmt = select(TAssembly)
@@ -293,4 +315,44 @@ class AssemblyRepository:
                     TAssembly.system_delivery_date <= system_delivery_date_to,
                 )
             )
+        # 2026-08-05：子件 EXISTS 形态的「下一道工序 / 物理位置 / holder」筛选（C2）。
+        # 三个参数独立判断；任意一个非空时整体加 EXISTS 子查询。
+        if child_next_process_ids or child_locations or child_holder_ids:
+            from sqlalchemy import bindparam
+
+            child_conds = [TPart.assembly_id == TAssembly.id, TPart.deleted_at.is_(None)]
+            if child_next_process_ids:
+                child_conds.append(
+                    TPart.next_process_id.in_(
+                        bindparam("child_next_process_ids", expanding=True)
+                    )
+                )
+            _loc_terms: list = []
+            if child_locations:
+                _loc_terms.append(
+                    TPart.location.in_(
+                        bindparam("child_locations", expanding=True)
+                    )
+                )
+            if child_holder_ids:
+                _loc_terms.append(
+                    TPart.current_holder_id.in_(
+                        bindparam("child_holder_ids", expanding=True)
+                    )
+                )
+            if len(_loc_terms) == 1:
+                child_conds.append(_loc_terms[0])
+            elif len(_loc_terms) > 1:
+                child_conds.append(or_(*_loc_terms))
+            stmt = stmt.where(
+                select(TPart.id).where(*child_conds).exists()
+            )
+            params: dict = {}
+            if child_next_process_ids:
+                params["child_next_process_ids"] = list(child_next_process_ids)
+            if child_locations:
+                params["child_locations"] = list(child_locations)
+            if child_holder_ids:
+                params["child_holder_ids"] = list(child_holder_ids)
+            stmt = stmt.params(**params)
         return stmt

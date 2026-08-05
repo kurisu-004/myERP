@@ -364,17 +364,18 @@ class PartService:
         # 2. 装配件（statuses 取交集）
         # 2026-07-31：装配件本身不外协（外协走 t_part），所以 has_outsource_history
         # 开启时直接跳过整个装配体查询块。
-        # 2026-08-01/05：装配件没有 next_process_id / part.location /
-        # current_holder_id，故这些筛选任一非空时直接跳过 asm_rows；PART 行类型同理。
+        # 2026-08-05 C2：next_process_ids / locations / holder_ids 通过子件 EXISTS
+        # 作用于装配件，不再直接短路整个装配体查询块；PART 行类型仍走短路。
         asm_rows: list[TAssembly] = []
         asm_total = 0
+        # 2026-08-05 C2：标记是否要查「命中子件」（仅当位置类筛选激活时装配件可能命中）。
+        _child_filter_active = bool(
+            query.next_process_ids or query.locations or query.holder_ids
+        )
         if (
             self.assemblies is not None
             and query.row_type != PartRowTypeFilter.PART
             and not query.has_outsource_history
-            and not query.next_process_ids
-            and not query.locations
-            and not query.holder_ids
         ):
             assembly_statuses = None
             if query.statuses is not None:
@@ -413,6 +414,12 @@ class PartService:
                     planned_delivery_date_to=query.planned_delivery_date_to,
                     system_delivery_date_from=query.system_delivery_date_from,
                     system_delivery_date_to=query.system_delivery_date_to,
+                    # 2026-08-05 C2：子件 EXISTS 形态的位置类筛选透传给装配体仓储。
+                    child_next_process_ids=query.next_process_ids,
+                    child_locations=(
+                        [loc.value for loc in query.locations] if query.locations else None
+                    ),
+                    child_holder_ids=query.holder_ids,
                     sort_by=asm_sort_by,
                     sort_dir=query.sort_dir.value,
                     limit=query.limit + query.offset,
@@ -431,13 +438,69 @@ class PartService:
                     planned_delivery_date_to=query.planned_delivery_date_to,
                     system_delivery_date_from=query.system_delivery_date_from,
                     system_delivery_date_to=query.system_delivery_date_to,
+                    # 2026-08-05 C2：count 也带子件 EXISTS 参数（与 list 谓词保持一致）。
+                    child_next_process_ids=query.next_process_ids,
+                    child_locations=(
+                        [loc.value for loc in query.locations] if query.locations else None
+                    ),
+                    child_holder_ids=query.holder_ids,
                 )
 
         # 3. 转换并合并
+        # 2026-08-05 C2：装配件携带「命中子件」（按位置类筛选收敛到所属装配件的子件集）。
+        # _child_filter_active 时，对 asm_rows 的 id 集合发一次额外查（不带分页），
+        # 用同样的位置类参数收敛到「真正命中筛选」的子件；按 assembly_id 分组挂到
+        # 对应装配件的 matched_children（每条子件标 row_type="PART"）。
         part_items = await self._to_list_out(part_rows)
         for item in part_items:
             item.row_type = "PART"
         asm_items = await self._assemblies_to_list_items(asm_rows)
+        if _child_filter_active and asm_items:
+            # 2026-08-05 C2：把位置类参数透传给零件仓储（不带分页、限定 asm_ids_in）。
+            # 顶层筛选（customer/keyword/statuses/dates/加急/order_no/serial_no）也透传，
+            # 保证只返回「真正命中筛选」的子件。
+            matched = await self.parts.list_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                serial_no=query.serial_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,
+                locations=query.locations,
+                holder_ids=query.holder_ids,
+                sort_by=query.sort_by,
+                sort_dir=query.sort_dir,
+                assembly_ids_in=[a.id for a in asm_rows],
+                limit=500,  # 装配件下属子件工厂级数百行，给个足够大的上限
+                offset=0,
+            )
+            matched_items = await self._to_list_out(matched)
+            for item in matched_items:
+                item.row_type = "PART"
+            # 按 assembly_id 分组
+            grouped: dict[int, list[PartListItem]] = {}
+            for item in matched_items:
+                # item.id 是 TPart.id；直接用 TPart 行的 assembly_id 字段做分组。
+                # _to_list_out 不会丢失 assembly_id（schema 没暴露，但 ORM 行本身仍带）。
+                # 为了不依赖 ORM 内部状态，这里用 matched 上 TPart 行的 assembly_id。
+                src = next(
+                    (p for p in matched if p.id == item.id and p.assembly_id is not None),
+                    None,
+                )
+                if src is None:
+                    continue
+                grouped.setdefault(src.assembly_id, []).append(item)
+            for asm_item in asm_items:
+                children = grouped.get(asm_item.id) or []
+                asm_item.matched_children = children if children else None
         merged = part_items + asm_items
 
         # 4. 统一排序（Python 内存）
