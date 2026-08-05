@@ -1128,6 +1128,70 @@ class DeliveryNoteService:
             merge_quantities=merge_quantities_int,
         )
 
+    async def print_labels_xlsx(
+        self,
+        note_id: str,
+        custom_order: list[str] | None = None,
+        merge_assemblies: bool = False,
+        merge_quantities: dict[str, int] | None = None,
+    ) -> tuple[bytes, str]:
+        """打印标签 Excel（2026-08-05 PR-C5）——送货单打印的伴随产物。
+
+        复用 ``print_xlsx`` 的 note 加载 + 装配件预查 + ``merge_quantities`` 转换，
+        走 ``DeliveryNotePrintService.render_labels``（无模板、表头 客户/申请人/
+        名称/图号/数量/单位）。行口径与送货单一致——``merge_assemblies`` 自动反映
+        装配体合并行的「套」单位。前端在一键打印时串联调本方法 + ``print_xlsx``，
+        触发浏览器两次下载。
+
+        刻意与 ``print_xlsx`` 镜像（不复用公共 helper）以最小化对已测试路径的改动。
+        """
+        from service.delivery_note_print import DeliveryNotePrintService
+        nid_int = parse_snowflake_id(note_id, field_name="id")
+        obj = await self.notes.get_by_id(nid_int)
+        if obj is None:
+            raise BizError(
+                code=ErrCode.BIZ_DELIVERY_NOTE_NOT_FOUND,
+                message=f"delivery note {note_id} not found",
+                http_status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        note_batches = await self._note_batches(obj.id)
+        asm_ids = list({p.assembly_id for _b, p in note_batches if p.assembly_id})
+        assembly_map: dict[int, Any] = {}
+        if asm_ids:
+            from sqlalchemy import select
+            from model.assembly import TAssembly
+            res = await self.session.execute(
+                select(TAssembly).where(TAssembly.id.in_(asm_ids)),
+            )
+            assembly_map = {a.id: a for a in res.scalars().all()}
+
+        merge_quantities_int: dict[int, int] = {}
+        if merge_assemblies and merge_quantities:
+            for k, v in merge_quantities.items():
+                asm_int = parse_snowflake_id(k, field_name="assembly_id")
+                if v < 1:
+                    raise BizError(
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message=f"merge_quantities[{k}] 必须 ≥ 1，实际 {v}",
+                        http_status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                merge_quantities_int[asm_int] = v
+
+        printer = DeliveryNotePrintService(
+            notes=self.notes,
+            parts=self.parts,
+            customers=self.customers,
+            part_batches=self._batches(),
+        )
+        return await printer.render_labels(
+            obj,
+            custom_order=custom_order,
+            merge_assemblies=merge_assemblies,
+            assembly_map=assembly_map,
+            merge_quantities=merge_quantities_int,
+        )
+
     # ============================================================
     # 内部 helpers
     # ============================================================

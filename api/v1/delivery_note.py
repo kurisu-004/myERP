@@ -395,3 +395,41 @@ async def print_delivery_note(
             "Cache-Control": "no-store",
         },
     )
+
+
+# 2026-08-05 PR-C5：打印标签 Excel（独立文件），与 /print 共用
+# PrintDeliveryNoteRequest body，行口径一致（merge_assemblies 自动反映套/件）。
+@router.post(
+    "/{note_id}/print-labels",
+    summary=(
+        "导出打印标签 XLSX（2026-08-05 新增；与 /print 配对触发两次下载，"
+        "表头 客户/申请人/名称/图号/数量/单位；行口径与送货单完全一致）"
+    ),
+    dependencies=_OFFICE_DEP,
+)
+async def print_delivery_note_labels(
+    note_id: str,
+    payload: PrintDeliveryNoteRequest = Body(default=PrintDeliveryNoteRequest()),
+    svc: DeliveryNoteService = Depends(get_delivery_note_service),
+) -> StreamingResponse:
+    xlsx_bytes, prefix = await svc.print_labels_xlsx(
+        note_id,
+        custom_order=payload.custom_order or None,
+        merge_assemblies=payload.merge_assemblies,
+        merge_quantities=payload.merge_quantities,
+    )
+    filename = f"delivery_labels_{prefix}_{note_id}.xlsx"
+
+    async def stream_chunks():
+        for i in range(0, len(xlsx_bytes), CHUNK_SIZE):
+            yield xlsx_bytes[i : i + CHUNK_SIZE]
+
+    return StreamingResponse(
+        stream_chunks(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(xlsx_bytes)),
+            "Cache-Control": "no-store",
+        },
+    )
