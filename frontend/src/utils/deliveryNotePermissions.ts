@@ -4,7 +4,8 @@
 // 这里只放「状态/角色矩阵」的纯函数；视图层把 user.roles 传进来即可。
 //
 // 角色矩阵（与 api/v1/delivery_note.py 对齐）：
-//   - CLERK + MANAGER：list / detail / events / add / remove / submit / recall / soft-delete
+//   - CLERK + MANAGER + INSPECTOR：list / detail / events / add / remove / submit /
+//     recall / soft-delete / print
 //   - 任意已登录（含 SHELF_ACCOUNT）：pickup-pending list / detail / events / scan / pickup
 //     （service 层再做 driver.work_type.code == '送货司机' 校验）
 
@@ -13,10 +14,11 @@ import type { DeliveryNoteStatus } from '@/types/deliveryNote'
 export interface RoleMapLike {
   MANAGER?: boolean
   CLERK?: boolean
+  INSPECTOR?: boolean
 }
 
 export function hasManageNoteRole(role: RoleMapLike): boolean {
-  return Boolean(role.MANAGER || role.CLERK)
+  return Boolean(role.MANAGER || role.CLERK || role.INSPECTOR)
 }
 
 export function canAddRemoveParts(

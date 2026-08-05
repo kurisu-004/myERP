@@ -1,11 +1,10 @@
 /**
  * 计划交期缓冲天数。
  *
- * 真实 planned_delivery_date 在「图纸打印背面 / 扫码台三页 / 大屏 Dashboard」
- * 这四个面向车间现场的位置需要减去该缓冲天数再显示，给车间预留加工周期。
- * 管理端（零件一览、详情等）仍按真实交期显示，不动。
+ * 2026-08-05 起前端不再减缓冲，直接显示真实计划交期，与后端打印背面
+ *（service/printing.py 已无 buffer）对齐；常量保留为 0，以便将来需要时恢复。
  */
-export const DELIVERY_DATE_BUFFER_DAYS = 3
+export const DELIVERY_DATE_BUFFER_DAYS = 0
 
 type DeliveryDate = string | null | undefined
 

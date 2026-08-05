@@ -10,9 +10,11 @@ import type {
   OutsourceSendableListResult,
 } from '@/types/outsource'
 import type {
+  LocationTreeNode,
   OrderStatus,
   PartEventType,
   PartListItem,
+  PartRowTypeFilter,
   PartSortKey,
   SortDir,
 } from '@/types/parts'
@@ -106,10 +108,21 @@ export interface ListPartsParams {
   /** 2026-07-21 PR-F：系统交期区间（含端点；任一端点为空表示半开；NULL 字段视为落在区间内） */
   system_delivery_date_from?: string
   system_delivery_date_to?: string
-  /** 2026-08-01：下一道工序多选（雪花 ID 转 int 后传给后端；空=全部；NULL 工序自然被排除） */
-  next_process_ids?: number[]
+  /** 2026-08-01：下一道工序多选（雪花 ID 字符串，禁止 Number() 转换——会丢精度；空=全部；NULL 工序自然被排除） */
+  next_process_ids?: string[]
   /** 2026-08-01：物理位置多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空=全部） */
   locations?: string[]
+  /**
+   * 2026-08-05：具体 holder 多选（货架/工人/外协公司，雪花 ID 字符串）。
+   * 与 `locations` 是 OR 关系——命中 `locations` 大类 OR 任一 `holder_ids` 都算中。
+   * 用于「所在位置」树形筛选收窄到具体 holder。
+   */
+  holder_ids?: string[]
+  /**
+   * 2026-08-05：行类型筛选（ALL/PART/ASSEMBLY），默认 ALL。
+   * 后端 list_with_filters 默认行为兼容；ALL 时含装配件。
+   */
+  row_type?: PartRowTypeFilter
   sort_by?: PartSortKey
   sort_dir?: SortDir
   limit?: number
@@ -239,6 +252,18 @@ export async function listParts(
   params: ListPartsParams = {},
 ): Promise<PartListResult> {
   const resp = await api.get<PartListResult>('/parts', { params: cleanParams(params) })
+  return resp.data
+}
+
+/**
+ * 零件一览「所在位置」树（GET /parts/location-tree）。
+ *
+ * 父节点 5 个固定大类（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY），
+ * 叶节点是具体的货架/工人/外协公司（`id` 为雪花 ID 字符串，`location=null`）；
+ * OFFICE 无叶子。后端只返当前可见（active + 未软删）的 holder。
+ */
+export async function getPartLocationTree(): Promise<{ items: LocationTreeNode[] }> {
+  const resp = await api.get<{ items: LocationTreeNode[] }>('/parts/location-tree')
   return resp.data
 }
 

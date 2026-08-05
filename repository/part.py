@@ -88,10 +88,18 @@ class PartRepository:
         system_delivery_date_to=None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
+        # 2026-08-05：位置筛选细化到具体 holder。
+        # locations = PartLocation 大类；holder_ids = 具体货架/工人/外协公司雪花 ID。
+        # 两者为 OR 关系（前端勾「生产货架」父节点 + 某工人 → 并集）。
+        holder_ids: list[int] | None = None,
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
         assembly_id_is_null: bool | None = None,
+        # 2026-08-05：把结果收敛到指定装配件的子件集合（C2 命中子件回显用）。
+        # 与 `assembly_id_is_null` 互斥：本参数显式指定子件所属装配件 id 集合；
+        # 调用方传本参数时不要再设 assembly_id_is_null。
+        assembly_ids_in: list[int] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[TPart]:
@@ -112,8 +120,10 @@ class PartRepository:
             system_delivery_date_to=system_delivery_date_to,
             next_process_ids=next_process_ids,
             locations=locations,
+            holder_ids=holder_ids,
             include_deleted=include_deleted,
             assembly_id_is_null=assembly_id_is_null,
+            assembly_ids_in=assembly_ids_in,
         )
         sort_col = {
             PartSortKey.PLANNED_DELIVERY_DATE: TPart.planned_delivery_date,
@@ -166,8 +176,12 @@ class PartRepository:
         system_delivery_date_to=None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
+        # 2026-08-05：位置筛选细化到具体 holder。
+        holder_ids: list[int] | None = None,
         include_deleted: bool = False,
         assembly_id_is_null: bool | None = None,
+        # 2026-08-05：把 count 收敛到指定装配件的子件集合（C2 命中子件回显用）。
+        assembly_ids_in: list[int] | None = None,
     ) -> int:
         stmt = self._build_filter_stmt(
             customer_id=customer_id,
@@ -186,8 +200,10 @@ class PartRepository:
             system_delivery_date_to=system_delivery_date_to,
             next_process_ids=next_process_ids,
             locations=locations,
+            holder_ids=holder_ids,
             include_deleted=include_deleted,
             assembly_id_is_null=assembly_id_is_null,
+            assembly_ids_in=assembly_ids_in,
         ).with_only_columns(func.count(TPart.id))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
@@ -543,8 +559,12 @@ class PartRepository:
         system_delivery_date_to=None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
+        # 2026-08-05：位置筛选细化到具体 holder。
+        holder_ids: list[int] | None = None,
         include_deleted: bool,
         assembly_id_is_null: bool | None = None,
+        # 2026-08-05：把结果收敛到指定装配件的子件集合（C2 命中子件回显用）。
+        assembly_ids_in: list[int] | None = None,
     ):
         stmt = select(TPart)
         if not include_deleted:
@@ -632,15 +652,34 @@ class PartRepository:
         # 2026-07-30：装配体并入零件一览——排除装配件子件
         if assembly_id_is_null:
             stmt = stmt.where(TPart.assembly_id.is_(None))
+        # 2026-08-05：把结果收敛到指定装配件的子件集合（C2 命中子件回显用）。
+        # 与 `assembly_id_is_null` 互斥：调用方二选一。
+        if assembly_ids_in:
+            from sqlalchemy import bindparam
+
+            stmt = stmt.where(
+                TPart.assembly_id.in_(
+                    bindparam("assembly_ids_in", expanding=True)
+                )
+            )
+            stmt = stmt.params(assembly_ids_in=list(assembly_ids_in))
         # 2026-08-01：下一道工序 / 物理位置多选筛选。
         # 与 `statuses` 语义一致：None / 空列表 = 无筛选；非空列表走 IN 谓词。
         # `next_process_id IS NULL` 的零件会被 SQL `IN` 排除，符合「未指派下一道工序 = 不参与筛选」。
         if next_process_ids:
             stmt = stmt.where(TPart.next_process_id.in_(next_process_ids))
+        # 2026-08-05：位置筛选细化到具体 holder。
+        # locations = PartLocation 大类；holder_ids = 具体货架/工人/外协公司雪花 ID。
+        # 两者为 OR 关系（前端勾「生产货架」父节点 + 某工人 → 并集）。
+        _loc_terms = []
         if locations:
-            stmt = stmt.where(
-                TPart.location.in_([loc.value for loc in locations])
-            )
+            _loc_terms.append(TPart.location.in_([loc.value for loc in locations]))
+        if holder_ids:
+            _loc_terms.append(TPart.current_holder_id.in_(holder_ids))
+        if len(_loc_terms) == 1:
+            stmt = stmt.where(_loc_terms[0])
+        elif len(_loc_terms) > 1:
+            stmt = stmt.where(or_(*_loc_terms))
         return stmt
 
     # ============================================================

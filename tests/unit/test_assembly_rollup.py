@@ -313,14 +313,14 @@ class TestStateMachineRecompute:
         # 但 current_state 赋值会进入 on_enter_CANCELLED
         # 我们的实现里「current_state in {COMPLETED, CANCELLED}」是检查源不是目标
         assert result is True
-        assert sm.current_state.value == "CANCELLED"
+        assert sm.current_state_value == "CANCELLED"
 
     def test_terminal_source_refuses_any_target(self) -> None:
         from statemachines.assembly import AssemblyStateMachine
         sm = AssemblyStateMachine(start_value="COMPLETED")
         result = sm.recompute("INSPECTION")
         assert result is False
-        assert sm.current_state.value == "COMPLETED"
+        assert sm.current_state_value == "COMPLETED"
 
     def test_noop_when_target_equals_current(self) -> None:
         from statemachines.assembly import AssemblyStateMachine
@@ -333,11 +333,11 @@ class TestStateMachineRecompute:
         sm = AssemblyStateMachine(start_value="INSPECTION")
         result = sm.recompute("IN_PROCESS")
         assert result is True
-        assert sm.current_state.value == "IN_PROCESS"
+        assert sm.current_state_value == "IN_PROCESS"
 
     def test_forward_inspection_to_ready_to_ship(self) -> None:
         from statemachines.assembly import AssemblyStateMachine
         sm = AssemblyStateMachine(start_value="INSPECTION")
         result = sm.recompute("READY_TO_SHIP")
         assert result is True
-        assert sm.current_state.value == "READY_TO_SHIP"
+        assert sm.current_state_value == "READY_TO_SHIP"

@@ -65,6 +65,18 @@
             </template>
           </el-input>
 
+          <!-- 行类型筛选（2026-08-05）：全部 / 仅零件 / 仅装配件 -->
+          <el-select
+            v-model="search.rowType"
+            placeholder="类型"
+            style="width: 120px"
+            @change="onRowTypeChange"
+          >
+            <el-option label="全部" value="ALL" />
+            <el-option label="仅零件" value="PART" />
+            <el-option label="仅装配件" value="ASSEMBLY" />
+          </el-select>
+
           <el-button @click="onReset">
             <el-icon><RefreshLeft /></el-icon>
             <span>重置</span>
@@ -612,12 +624,12 @@
           <span class="header-cell" :class="{ 'is-active': locationFilterActive }">
             <span>{{ locationFilterActive ? `所在位置(${locationSelectedCount})` : '所在位置' }}</span>
             <el-popover
-              :width="220"
+              :width="260"
               placement="bottom-start"
               trigger="click"
               :show-arrow="false"
               v-model:visible="locationPopoverVisible"
-              @show="syncLocationDraft"
+              @show="onLocationPopoverShow"
             >
               <template #reference>
                 <el-icon
@@ -628,16 +640,24 @@
                 </el-icon>
               </template>
               <div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 12px">
-                多选物理位置
+                选大类命中该类全部；选叶子精确到货架/工人/外协公司
               </div>
-              <el-checkbox-group v-model="locationDraft">
-                <el-checkbox
-                  v-for="opt in LOCATION_OPTIONS"
-                  :key="opt.value"
-                  :value="opt.value"
-                  :label="opt.label"
-                />
-              </el-checkbox-group>
+              <el-tree-select
+                v-model="locationDraft"
+                :data="locationTree"
+                node-key="id"
+                :props="{ label: 'name', children: 'children' }"
+                multiple
+                show-checkbox
+                check-strictly
+                check-on-click-node
+                clearable
+                filterable
+                :teleported="false"
+                placeholder="选择位置"
+                style="width: 100%"
+                @clear="locationDraft = []"
+              />
               <div class="filter-actions">
                 <el-button size="small" link @click="resetLocationDraft">重置</el-button>
                 <el-button
@@ -658,6 +678,9 @@
           </span>
           <span v-else-if="row.location === 'WORKER' && row.worker_name">
             {{ row.worker_name }}
+          </span>
+          <span v-else-if="row.location === 'OUTSOURCE_COMPANY' && row.outsource_company_name">
+            外协 {{ row.outsource_company_name }}
           </span>
           <span v-else class="muted">—</span>
         </template>
@@ -1115,7 +1138,7 @@ import {
   type PartUpdatePayload,
 } from '@/api/parts'
 import { getAssembly, updateAssembly } from '@/api/assembly'
-import type { PartListItem, PartSortKey, SortDir } from '@/types/parts'
+import type { PartListItem, PartRowTypeFilter, PartSortKey, SortDir } from '@/types/parts'
 import { listShelves } from '@/api/shelves'
 import type { Shelf } from '@/types/shelf'
 import { listProcesses } from '@/api/process'
@@ -1130,6 +1153,10 @@ import {
 import { useAuthSession } from '@/composables/useAuthSession'
 import { usePermissions } from '@/composables/usePermissions'
 import { useCustomerTree } from '@/composables/useCustomerTree'
+import {
+  splitLocationSelection,
+  usePartLocationTree,
+} from '@/composables/usePartLocationTree'
 import { useListFilterPersist } from '@/composables/useListFilterPersist'
 import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
@@ -1187,8 +1214,12 @@ interface SearchState {
   systemDeliveryDateTo: string
   /** 2026-08-01：下一道工序 id 多选（雪花 ID 字符串；空数组=全部） */
   nextProcessIds: string[]
-  /** 2026-08-01：物理位置多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空数组=全部） */
+  /** 2026-08-01：物理位置大类多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空数组=全部） */
   locations: string[]
+  /** 2026-08-05：物理位置具体 holder 多选（货架/工人/外协公司 雪花 ID 字符串；与 `locations` 是 OR 关系；空数组=全部） */
+  holderIds: string[]
+  /** 2026-08-05：行类型筛选（ALL=全部/PART=仅零件/ASSEMBLY=仅装配件） */
+  rowType: PartRowTypeFilter
 }
 function initialSearch(): SearchState {
   return {
@@ -1208,6 +1239,8 @@ function initialSearch(): SearchState {
     systemDeliveryDateTo: '',
     nextProcessIds: [],
     locations: [],
+    holderIds: [],
+    rowType: 'ALL',
   }
 }
 const search = reactive<SearchState>(initialSearch())
@@ -1340,39 +1373,49 @@ function confirmNextProcessFilter(): void {
 const nextProcessFilterActive = computed(() => search.nextProcessIds.length > 0)
 const nextProcessSelectedCount = computed(() => search.nextProcessIds.length)
 
-// ============ 2026-08-01：所在位置列头 popover ============
-// 硬编码 5 项与 model.enums.PartLocation 保持一致；增删位置需同步。
-const LOCATION_OPTIONS: { value: string; label: string }[] = [
-  { value: 'OFFICE', label: '办公室' },
-  { value: 'PRODUCTION_SHELF', label: '生产货架' },
-  { value: 'WORKER', label: '工人' },
-  { value: 'INSPECTION_SHELF', label: '品检货架' },
-  { value: 'OUTSOURCE_COMPANY', label: '外协公司' },
-]
+// ============ 2026-08-05：所在位置列头 popover（el-tree-select 多选树）============
+// 树数据由 usePartLocationTree 提供（5 个 PartLocation 大类 + 具体 holder 叶子）。
+// 懒加载：仅在打开 popover 时调 loadLocationTree()，避免每次进页面无谓请求。
+// 选中值同时包含父（PartLocation）与叶（雪花 ID），由 splitLocationSelection 拆开。
+const { tree: locationTree, load: loadLocationTree } = usePartLocationTree()
 
 const locationPopoverVisible = ref(false)
 const locationDraft = ref<string[]>([])
 
+function onLocationPopoverShow(): void {
+  // 1. 懒加载（幂等：模块级 Promise 缓存）
+  void loadLocationTree()
+  // 2. draft 回写已确认筛选（大类 + holder 叶子合并），确保再次打开看到原状
+  locationDraft.value = [...search.locations, ...search.holderIds]
+}
+
 function syncLocationDraft(): void {
-  locationDraft.value = [...search.locations]
+  locationDraft.value = [...search.locations, ...search.holderIds]
 }
 
 function resetLocationDraft(): void {
   locationDraft.value = []
   search.locations = []
+  search.holderIds = []
   locationPopoverVisible.value = false
   onSearch()
 }
 
 function confirmLocationFilter(): void {
-  search.locations = [...locationDraft.value]
+  const split = splitLocationSelection(locationDraft.value)
+  search.locations = split.locations
+  search.holderIds = split.holderIds
   locationPopoverVisible.value = false
   if (batchMode.value) clearAllSelection()
   onSearch()
 }
 
-const locationFilterActive = computed(() => search.locations.length > 0)
-const locationSelectedCount = computed(() => search.locations.length)
+const locationFilterActive = computed(
+  () => search.locations.length > 0 || search.holderIds.length > 0,
+)
+const locationSelectedCount = computed(
+  () => search.locations.length + search.holderIds.length,
+)
 
 // ============ 客户列头 popover（draft + 确定/重置） ============
 const customerPopoverVisible = ref(false)
@@ -1429,6 +1472,8 @@ function locationText(row: PartListItem): string {
   if (row.location === 'PRODUCTION_SHELF' && row.shelf_code) return `货架 ${row.shelf_code}`
   if (row.location === 'INSPECTION_SHELF' && row.shelf_code) return `品检 ${row.shelf_code}`
   if (row.location === 'WORKER' && row.worker_name) return row.worker_name
+  if (row.location === 'OUTSOURCE_COMPANY' && row.outsource_company_name)
+    return `外协 ${row.outsource_company_name}`
   return '—'
 }
 
@@ -1440,6 +1485,8 @@ function rowKey(row: PartListItem): string {
 }
 
 // 2026-07-30：懒加载装配件子件
+// 2026-08-05 C2：优先消费 row.matched_children（位置类筛选激活时后端已带出
+// 命中子件全集），避免每次展开都触发 /assemblies/{id} 详情查询。
 async function loadChildren(
   row: PartListItem,
   _treeNode: unknown,
@@ -1447,6 +1494,17 @@ async function loadChildren(
 ): Promise<void> {
   if (row.row_type !== 'ASSEMBLY') {
     resolve([])
+    return
+  }
+  if (row.matched_children) {
+    resolve(
+      row.matched_children.map((c) => ({
+        ...c,
+        __is_child: true,
+        row_type: 'PART' as const,
+        has_children: false,
+      })),
+    )
     return
   }
   try {
@@ -1828,13 +1886,15 @@ function buildParams(): ListPartsParams {
     planned_delivery_date_to: search.plannedDeliveryDateTo || undefined,
     system_delivery_date_from: search.systemDeliveryDateFrom || undefined,
     system_delivery_date_to: search.systemDeliveryDateTo || undefined,
-    // 2026-08-01：下一道工序 / 物理位置多选筛选。
-    // 雪花 ID 转 int 后传后端；空数组 = undefined（不发参数，保留现有清空过滤行为）。
+    // 2026-08-05：下一道工序 / 物理位置多选筛选。
+    // 雪花 ID 一律以字符串直接传给后端（CLAUDE.md §3）——禁止 Number()，
+    // 否则 19 位 ID 在 JS Number（MAX_SAFE_INTEGER≈9.007e15）丢精度，IN 永不命中。
+    // 空数组 = undefined（不发参数，保留现有清空过滤行为）。
     next_process_ids:
-      search.nextProcessIds.length > 0
-        ? search.nextProcessIds.map((id) => Number(id))
-        : undefined,
+      search.nextProcessIds.length > 0 ? search.nextProcessIds : undefined,
     locations: search.locations.length > 0 ? search.locations : undefined,
+    holder_ids: search.holderIds.length > 0 ? search.holderIds : undefined,
+    row_type: search.rowType !== 'ALL' ? search.rowType : undefined,
     sort_by: sortBy.value,
     sort_dir: sortDir.value,
     limit: pageSize.value,
@@ -1874,6 +1934,12 @@ const onSearch = (): void => {
   void fetchList()
 }
 
+// 2026-08-05：行类型切换——ALL↔PART/ASSEMBLY 视为筛选条件变化，复用 onSearch 入口
+// （清空批量选择 + fetchList）。
+function onRowTypeChange(): void {
+  onSearch()
+}
+
 // 2026-08-04：扫码直接按序列号搜索——清空其它筛选条件（用户决定），只保留 serialNo 搜索。
 // 用户在 serialNo 输入框聚焦时由 useBarcodeScanner 的 isInTextField 守卫自动跳过；
 // 行内编辑中也不要打断，所以 editingId 非空时静默返回。
@@ -1897,6 +1963,7 @@ function onSerialNoScan(rawCode: string): void {
   search.systemDeliveryDateTo = ''
   search.nextProcessIds = []
   search.locations = []
+  search.holderIds = []
   // 同步刷新 popover 内 draft 状态（避免下次打开还看到旧的）。
   statusDraft.value = []
   statusUrgentDraft.value = false
@@ -2019,6 +2086,15 @@ onMounted(async () => {
       search.locations = Array.isArray(persisted.search.locations)
         ? persisted.search.locations
         : []
+      // 2026-08-05：holder 叶子多选恢复（lenient：旧快照缺字段=空数组）
+      search.holderIds = Array.isArray(persisted.search.holderIds)
+        ? persisted.search.holderIds
+        : []
+      // 2026-08-05：行类型筛选恢复（合法值收敛，默认 ALL）
+      search.rowType =
+        persisted.search?.rowType === 'PART' || persisted.search?.rowType === 'ASSEMBLY'
+          ? persisted.search.rowType
+          : 'ALL'
       // localStorage 存的是 string，恢复时按合法值收敛（默认值兜底）
       sortBy.value = (SORT_PROP_MAP[persisted.sortBy]
         ? persisted.sortBy as PartSortKey

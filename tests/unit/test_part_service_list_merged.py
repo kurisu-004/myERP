@@ -623,25 +623,24 @@ class TestListPartsIncludeAssemblies:
             PartLocation.WORKER,
         ]
 
-    async def test_next_process_ids_excludes_assemblies(
+    async def test_next_process_ids_includes_assemblies_via_children(
         self, service, mock_parts, mock_customers, mock_assemblies
     ):
-        """include_assemblies=True 且 next_process_ids 非空时，装配件段整体跳过。"""
+        """include_assemblies=True 且 next_process_ids 非空时，装配件通过子件 EXISTS 参与筛选。"""
         cust = _make_customer(id=10, name="ChildCorp")
         mock_customers.get_by_id.return_value = cust
         mock_customers.list_by_ids.return_value = [cust]
 
-        part = _make_part(id=1, customer_id=10)
-        mock_parts.list_with_filters.return_value = [part]
+        part = _make_part(id=1, customer_id=10, assembly_id=None)
+        mock_parts.list_with_filters.side_effect = [[part], []]
         mock_parts.count_with_filters.return_value = 1
 
-        mock_assemblies.list_with_filters.return_value = [
-            _make_assembly(id=100, customer_id=10)
-        ]
+        asm = _make_assembly(id=100, customer_id=10)
+        mock_assemblies.list_with_filters.return_value = [asm]
         mock_assemblies.count_with_filters.return_value = 1
 
         result_mock = MagicMock()
-        result_mock.all.return_value = []
+        result_mock.all.return_value = [(100, 1)]
         mock_parts.session.execute.return_value = result_mock
 
         query = PartListQuery(
@@ -650,32 +649,48 @@ class TestListPartsIncludeAssemblies:
         )
         result = await service.list_parts(query)
 
-        # 装配件仓储不被调用
-        mock_assemblies.list_with_filters.assert_not_awaited()
-        mock_assemblies.count_with_filters.assert_not_awaited()
-        # 行全部是 PART
-        assert all(i.row_type == "PART" for i in result.items)
-        assert result.total == 1
+        # 装配件仓储被调用，且 child_next_process_ids 透传
+        mock_assemblies.list_with_filters.assert_awaited_once()
+        mock_assemblies.count_with_filters.assert_awaited_once()
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["child_next_process_ids"] == [101]
+        assert count_kwargs["child_next_process_ids"] == [101]
+        assert list_kwargs.get("child_locations") is None
+        assert count_kwargs.get("child_locations") is None
+        assert list_kwargs.get("child_holder_ids") is None
+        assert count_kwargs.get("child_holder_ids") is None
 
-    async def test_locations_excludes_assemblies(
+        # 零件仓储被调用两次：第一次独立查询，第二次命中子件
+        assert mock_parts.list_with_filters.await_count == 2
+        second_call_kwargs = mock_parts.list_with_filters.await_args_list[1].kwargs
+        assert second_call_kwargs["assembly_ids_in"] == [100]
+        assert second_call_kwargs["next_process_ids"] == [101]
+        assert second_call_kwargs["limit"] == 500
+
+        # 合并结果同时含 PART 和 ASSEMBLY
+        assert result.total == 2
+        types = {item.row_type for item in result.items}
+        assert types == {"PART", "ASSEMBLY"}
+
+    async def test_locations_includes_assemblies_via_children(
         self, service, mock_parts, mock_customers, mock_assemblies
     ):
-        """include_assemblies=True 且 locations 非空时，装配件段整体跳过。"""
+        """include_assemblies=True 且 locations 非空时，装配件通过子件 EXISTS 参与筛选。"""
         cust = _make_customer(id=10, name="ChildCorp")
         mock_customers.get_by_id.return_value = cust
         mock_customers.list_by_ids.return_value = [cust]
 
-        part = _make_part(id=1, customer_id=10)
-        mock_parts.list_with_filters.return_value = [part]
+        part = _make_part(id=1, customer_id=10, assembly_id=None)
+        mock_parts.list_with_filters.side_effect = [[part], []]
         mock_parts.count_with_filters.return_value = 1
 
-        mock_assemblies.list_with_filters.return_value = [
-            _make_assembly(id=100, customer_id=10)
-        ]
+        asm = _make_assembly(id=100, customer_id=10)
+        mock_assemblies.list_with_filters.return_value = [asm]
         mock_assemblies.count_with_filters.return_value = 1
 
         result_mock = MagicMock()
-        result_mock.all.return_value = []
+        result_mock.all.return_value = [(100, 1)]
         mock_parts.session.execute.return_value = result_mock
 
         query = PartListQuery(
@@ -684,10 +699,27 @@ class TestListPartsIncludeAssemblies:
         )
         result = await service.list_parts(query)
 
-        mock_assemblies.list_with_filters.assert_not_awaited()
-        mock_assemblies.count_with_filters.assert_not_awaited()
-        assert all(i.row_type == "PART" for i in result.items)
-        assert result.total == 1
+        # 装配件仓储被调用，且 child_locations 透传
+        mock_assemblies.list_with_filters.assert_awaited_once()
+        mock_assemblies.count_with_filters.assert_awaited_once()
+        list_kwargs = mock_assemblies.list_with_filters.await_args.kwargs
+        count_kwargs = mock_assemblies.count_with_filters.await_args.kwargs
+        assert list_kwargs["child_locations"] == ["PRODUCTION_SHELF"]
+        assert count_kwargs["child_locations"] == ["PRODUCTION_SHELF"]
+        assert list_kwargs.get("child_next_process_ids") is None
+        assert count_kwargs.get("child_next_process_ids") is None
+
+        # 零件仓储被调用两次
+        assert mock_parts.list_with_filters.await_count == 2
+        second_call_kwargs = mock_parts.list_with_filters.await_args_list[1].kwargs
+        assert second_call_kwargs["assembly_ids_in"] == [100]
+        assert second_call_kwargs["locations"] == [PartLocation.PRODUCTION_SHELF]
+        assert second_call_kwargs["limit"] == 500
+
+        # 合并结果同时含 PART 和 ASSEMBLY
+        assert result.total == 2
+        types = {item.row_type for item in result.items}
+        assert types == {"PART", "ASSEMBLY"}
 
     # ===== 2026-08-01：数量 / 单价 / 总价排序 =====
 

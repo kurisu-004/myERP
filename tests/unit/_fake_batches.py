@@ -211,6 +211,10 @@ class FakePartBatchRepository:
     async def list_held_by_worker(self, **_):
         return []
 
+    async def count_held_by_worker(self, *, worker_id: int) -> int:
+        """2026-08-05：工种可领取上限校验用 mock（默认返回 0=无持有/不限）。"""
+        return 0
+
     async def list_batches_with_part(self, **_):
         return []
 

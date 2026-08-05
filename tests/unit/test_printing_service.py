@@ -21,8 +21,6 @@ from service.printing import _fit_pdf_page_to_a4, build_part_print_pdf
 from datetime import date
 
 
-pytestmark = pytest.mark.asyncio
-
 
 def _png_bytes(w: int = 800, h: int = 600) -> bytes:
     """生成最小 PNG 字节（landscape）。"""
@@ -74,6 +72,7 @@ def _make_drawing_row(file_type: str, ext: str, object_key: str) -> TPartFile:
 
 class TestBuildPartPrintPdfImageFormats:
     """2026-07-14：DRAWING 扩 9 种图片格式，每种都能正确生成双面 PDF。"""
+    pytestmark = pytest.mark.asyncio
 
     @pytest.mark.parametrize("ext,file_type,mime_factory", [
         ("png", "PNG", lambda: _png_bytes(800, 600)),
@@ -114,6 +113,7 @@ class TestBuildPartPrintPdfImageFormats:
 
 class TestBuildPartPrintPdfPdfFallback:
     """PDF 格式：原始 PDF 直接合并 + 条码页追加。"""
+    pytestmark = pytest.mark.asyncio
 
     async def test_pdf_2page_pdf(self, monkeypatch, fake_parts_repo):
         import service.printing as printing_mod
@@ -135,6 +135,7 @@ class TestBuildPartPrintPdfPdfFallback:
 
 class TestBuildPartPrintPdfNoDrawing:
     """无图纸 fallback：page 1 = 信息卡 + page 2 = 条码。"""
+    pytestmark = pytest.mark.asyncio
 
     async def test_info_card_2page_pdf(self, fake_parts_repo):
         files_repo = MagicMock()
@@ -152,6 +153,7 @@ class TestBuildPartPrintPdfNoDrawing:
 
 class TestBuildPartPrintPdfOrientation:
     """朝向：图纸页跟随上传图纸；条形码页强制 landscape（2026-07-24 解耦）。"""
+    pytestmark = pytest.mark.asyncio
 
     async def test_portrait_drawing_barcode_page_always_landscape(
         self, monkeypatch, fake_parts_repo,
@@ -347,6 +349,7 @@ class TestBuildPartsPrintPdfBatchAssembly:
     2026-07-31 适配：装配体总装图走规格化（默认 rasterize），子件同理；
     仍断言页面总数 6（总装图 2 页 + 子件1 2 页 + 子件2 2 页）。
     """
+    pytestmark = pytest.mark.asyncio
 
     @pytest.fixture
     def fake_assembly(self):
@@ -528,6 +531,7 @@ class TestBuildPartsPrintPdfBatchAssembly:
 
 class TestBatchPreservesOrder:
     """2026-07-30：批量打印两阶段流水线保持入参顺序。"""
+    pytestmark = pytest.mark.asyncio
 
     async def test_three_standalone_parts_kept_input_order(
         self, monkeypatch, fake_parts_repo,
@@ -598,6 +602,7 @@ class TestBatchPreservesOrder:
 
 class TestBatchSkipsFailedItems:
     """2026-07-30：单件渲染失败仅跳过，不阻断整批。"""
+    pytestmark = pytest.mark.asyncio
 
     async def test_one_render_failure_skipped_others_remain(
         self, monkeypatch, fake_parts_repo,
@@ -728,6 +733,7 @@ class TestVectorEscape:
 
     注：信息卡占位页通过 _image_to_pdf_bytes 仍走 PIL mediabox 推算路径。
     """
+    pytestmark = pytest.mark.asyncio
 
     async def test_vector_returns_original_pdf_bytes(
         self, monkeypatch, fake_parts_repo,
@@ -835,6 +841,7 @@ class TestPreparePartPrintDataDeliveryDate:
 
 class TestAssemblyMasterBackPageQuantity:
     """2026-08-04：总装图背面也要打 `Q:`（= 装配体套数），此前恒为 None 漏打。"""
+    pytestmark = pytest.mark.asyncio
 
     async def test_master_back_page_receives_assembly_quantity(
         self, monkeypatch,

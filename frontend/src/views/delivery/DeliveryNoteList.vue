@@ -21,6 +21,7 @@ import {
   createNote as createNoteApi,
   listNotes,
   printNote,
+  printNoteLabels,
   recallNote,
   softDeleteNote,
   submitNote,
@@ -323,6 +324,16 @@ async function onPrint(n: DeliveryNoteOut) {
       dlMap[n.id] = { ...dlMap[n.id], ...p }
     })
     triggerBrowserDownload(blob, filename)
+    // 2026-08-05 PR-C5：紧接着下载标签 Excel（独立文件）。
+    // 失败仅 warning —— 送货单已成功，不撤销；标签可单独重打。
+    try {
+      const labels = await printNoteLabels(n.id, {})
+      triggerBrowserDownload(labels.blob, labels.filename)
+    } catch (le) {
+      ElMessage.warning(
+        `送货单已导出，但标签 Excel 失败：${(le as Error).message ?? '未知错误'}`,
+      )
+    }
     dlMap[n.id] = { ...dlMap[n.id], state: 'success' }
     setTimeout(() => {
       delete dlMap[n.id]

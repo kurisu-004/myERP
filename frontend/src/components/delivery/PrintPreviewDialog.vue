@@ -25,6 +25,7 @@ import Sortable from 'sortablejs'
 
 import {
   printNote,
+  printNoteLabels,
   type PrintNoteProgress,
 } from '@/api/deliveryNote'
 import { useDialogSize } from '@/composables/useDialogSize'
@@ -197,6 +198,20 @@ async function onConfirm(): Promise<void> {
       },
     )
     triggerBrowserDownload(blob, filename)
+    // 2026-08-05 PR-C5：紧接着下载标签 Excel（独立文件）。失败仅 warning，
+    // 送货单已成功不撤销；标签可单独重打。
+    try {
+      const labels = await printNoteLabels(props.note.id, {
+        custom_order,
+        merge_assemblies: mergeFlag,
+        merge_quantities,
+      })
+      triggerBrowserDownload(labels.blob, labels.filename)
+    } catch (le) {
+      ElMessage.warning(
+        `送货单已导出，但标签 Excel 失败：${(le as Error).message ?? '未知错误'}`,
+      )
+    }
     ElMessage.success('已导出')
     emit('update:modelValue', false)
   } catch (e) {

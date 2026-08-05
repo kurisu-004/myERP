@@ -28,6 +28,7 @@ export interface DashboardShelfGroup {
   shelf_id: string
   shelf_code: string
   shelf_name: string
+  total_count: number
   items: DashboardPartItem[]
 }
 

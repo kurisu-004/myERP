@@ -301,6 +301,29 @@ export async function printNote(
   return { blob: resp.data, filename }
 }
 
+/** 2026-08-05 PR-C5：打印标签 Excel（与 printNote 配对，触发浏览器二次下载）。
+ * 同一 payload 保证行口径与送货单完全一致；失败不影响送货单下载。 */
+export async function printNoteLabels(
+  noteId: string,
+  payload: PrintNotePayload = {},
+  onProgress?: (p: PrintNoteProgress) => void,
+): Promise<PrintNoteResult> {
+  const resp = await api.post<Blob>(
+    `/delivery-notes/${encodeURIComponent(noteId)}/print-labels`,
+    payload,
+    {
+      responseType: 'blob',
+      onDownloadProgress: (event) => {
+        onProgress?.({ loaded: event.loaded, total: event.total ?? 0 })
+      },
+    },
+  )
+  const filename =
+    parseFilename(resp.headers['content-disposition']) ??
+    `delivery_labels_${noteId}.xlsx`
+  return { blob: resp.data, filename }
+}
+
 /** 解析 `attachment; filename="delivery_note_F_123.xlsx"`。 */
 function parseFilename(header: string | undefined): string | null {
   if (!header) return null

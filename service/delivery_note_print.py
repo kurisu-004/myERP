@@ -40,7 +40,9 @@ from datetime import date
 from typing import Any
 
 from fastapi import status as http_status
+import openpyxl
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from core.config import settings
@@ -240,82 +242,13 @@ class DeliveryNotePrintService:
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             ) from e
 
-        # 2) 拉 note 关联的批次行
-        if self.part_batches is None:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message="server missing part batch repository",
-                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        linked = await self.part_batches.list_by_delivery_note(note.id)
-        if custom_order_list:
-            pairs_by_id: dict[str, tuple[Any, TPart]] = {
-                str(b.id): (b, p) for b, p in linked
-            }
-            ordered: list[tuple[Any, TPart]] = []
-            seen: set[str] = set()
-            for bid in custom_order_list:
-                if bid not in pairs_by_id:
-                    raise BizError(
-                        code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
-                        message=(
-                            f"custom_order 含不属于本单的 batch id: {bid}"
-                        ),
-                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    )
-                ordered.append(pairs_by_id[bid])
-                seen.add(bid)
-            missing = set(pairs_by_id) - seen
-            if missing:
-                raise BizError(
-                    code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
-                    message=(
-                        f"custom_order 漏掉 {len(missing)} 行；"
-                        "不允许静默丢弃（请确保预览包含全部行）"
-                    ),
-                    http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                )
-            linked = ordered
-        # 过滤缺 serial/drawing 的行（warning + 跳过）
-        rows: list[tuple[Any, TPart]] = []  # (batch, part) 保留的
-        for b, p in linked:
-            if not p.serial_no or not p.drawing_no:
-                logger.warning(
-                    "delivery_note_print: skip part id=%s (serial_no=%r drawing_no=%r)",
-                    p.id, p.serial_no, p.drawing_no,
-                )
-                continue
-            rows.append((b, p))
-        if not rows:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message="所选零件均不可用（缺流水号或图号）",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-
-        # 3) 一次性查 leaf_map（散件 / 装配体行的 customer_name 都用）
-        leaf_ids: set[int] = set()
-        for _b, p in rows:
-            leaf_ids.add(p.customer_id)
-        for a in assembly_map.values():
-            if a.customer_id:
-                leaf_ids.add(a.customer_id)
-        leaf_list = await self.customers.list_by_ids(list(leaf_ids)) if leaf_ids else []
-        leaf_map: dict[int, TCustomer] = {c.id: c for c in leaf_list}
-        parent_ids = [c.parent_id for c in leaf_list if c.parent_id]
-        parent_list = (
-            await self.customers.list_by_ids(list(set(parent_ids)))
-            if parent_ids else []
-        )
-        parent_map: dict[int, TCustomer] = {c.id: c for c in parent_list}
-
-        # 4) 构造 PrintRow 列表（散件 + 装配体合并）
-        print_rows = self._build_print_rows(
-            rows=rows,
-            leaf_map=leaf_map,
-            parent_map=parent_map,
-            assembly_map=assembly_map,
+        # 2-4) 准备 PrintRow 列表（与 render_labels 共享：拉批次 → 过滤 → 客户
+        # map → 构造 PrintRow）。prefix / 模板加载留在本方法内；labels 不需要。
+        print_rows = await self._prepare_print_rows(
+            note=note,
+            custom_order=custom_order_list,
             merge_assemblies=merge_assemblies,
+            assembly_map=assembly_map,
             merge_quantities=merge_quantities,
         )
 
@@ -364,6 +297,155 @@ class DeliveryNotePrintService:
             return buf.getvalue()
 
         xlsx_bytes = await asyncio.to_thread(_fill)
+        return xlsx_bytes, prefix
+
+    async def _prepare_print_rows(
+        self,
+        note: TDeliveryNote,
+        custom_order: list[str],
+        merge_assemblies: bool,
+        assembly_map: dict[int, TAssembly],
+        merge_quantities: dict[int, int] | None,
+    ) -> list[PrintRow]:
+        """render 与 render_labels 共享的行构建：拉批次 → 过滤 → 客户 map → 构造 PrintRow。
+
+        - ``custom_order`` 为空走 ``TPartBatch.id ASC``（与旧行为一致）；
+        - 非法 batch id 或漏行 → 422 BIZ_DELIVERY_PRINT_BAD_ORDER；
+        - 缺 ``serial_no`` / ``drawing_no`` 的零件 warning + 跳过；
+        - 全部行都不可用 → 400 BIZ_INVALID_VALUE。
+        """
+        # 2) 拉 note 关联的批次行
+        if self.part_batches is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing part batch repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        linked = await self.part_batches.list_by_delivery_note(note.id)
+        if custom_order:
+            pairs_by_id: dict[str, tuple[Any, TPart]] = {
+                str(b.id): (b, p) for b, p in linked
+            }
+            ordered: list[tuple[Any, TPart]] = []
+            seen: set[str] = set()
+            for bid in custom_order:
+                if bid not in pairs_by_id:
+                    raise BizError(
+                        code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                        message=f"custom_order 含不属于本单的 batch id: {bid}",
+                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    )
+                ordered.append(pairs_by_id[bid])
+                seen.add(bid)
+            missing = set(pairs_by_id) - seen
+            if missing:
+                raise BizError(
+                    code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                    message=(
+                        f"custom_order 漏掉 {len(missing)} 行；"
+                        "不允许静默丢弃（请确保预览包含全部行）"
+                    ),
+                    http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            linked = ordered
+        # 过滤缺 serial/drawing 的行（warning + 跳过）
+        rows: list[tuple[Any, TPart]] = []
+        for b, p in linked:
+            if not p.serial_no or not p.drawing_no:
+                logger.warning(
+                    "delivery_note_print: skip part id=%s (serial_no=%r drawing_no=%r)",
+                    p.id, p.serial_no, p.drawing_no,
+                )
+                continue
+            rows.append((b, p))
+        if not rows:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="所选零件均不可用（缺流水号或图号）",
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3) 一次性查 leaf_map（散件 / 装配体行的 customer_name 都用）
+        leaf_ids: set[int] = set()
+        for _b, p in rows:
+            leaf_ids.add(p.customer_id)
+        for a in assembly_map.values():
+            if a.customer_id:
+                leaf_ids.add(a.customer_id)
+        leaf_list = await self.customers.list_by_ids(list(leaf_ids)) if leaf_ids else []
+        leaf_map: dict[int, TCustomer] = {c.id: c for c in leaf_list}
+        parent_ids = [c.parent_id for c in leaf_list if c.parent_id]
+        parent_list = (
+            await self.customers.list_by_ids(list(set(parent_ids)))
+            if parent_ids else []
+        )
+        parent_map: dict[int, TCustomer] = {c.id: c for c in parent_list}
+
+        # 4) 构造 PrintRow 列表（散件 + 装配体合并）
+        return self._build_print_rows(
+            rows=rows,
+            leaf_map=leaf_map,
+            parent_map=parent_map,
+            assembly_map=assembly_map,
+            merge_assemblies=merge_assemblies,
+            merge_quantities=merge_quantities,
+        )
+
+    async def render_labels(
+        self,
+        note: TDeliveryNote,
+        custom_order: list[str] | None = None,
+        merge_assemblies: bool = False,
+        assembly_map: dict[int, TAssembly] | None = None,
+        merge_quantities: dict[int, int] | None = None,
+    ) -> tuple[bytes, str]:
+        """打印标签用的 Excel（无模板，沿用 PrintRow 口径）。
+
+        表头：客户 | 申请人 | 名称 | 图号 | 数量 | 单位
+        数据行：与送货单完全一致——``merge_assemblies`` 选项自动反映（合并行
+        ``unit`` =「套」，散件行 =「件」），行顺序与 ``custom_order`` 一致。
+        ``prefix`` 仅用于文件名前缀（``delivery_labels_{prefix}_{note_id}.xlsx``）。
+        """
+        custom_order_list: list[str] = list(custom_order) if custom_order else []
+        assembly_map = assembly_map or {}
+        print_rows = await self._prepare_print_rows(
+            note=note,
+            custom_order=custom_order_list,
+            merge_assemblies=merge_assemblies,
+            assembly_map=assembly_map,
+            merge_quantities=merge_quantities,
+        )
+        # prefix 走 L1 客户（service 层已保证 note.customer_id 是 L1 root）
+        cust = await self.customers.get_by_id(note.customer_id)
+        prefix = cust.serial_prefix if cust and cust.serial_prefix else "X"
+
+        def _build() -> bytes:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "标签"
+            headers = ["客户", "申请人", "名称", "图号", "数量", "单位"]
+            for c, h in enumerate(headers, start=1):
+                ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+            for r, pr in enumerate(print_rows, start=2):
+                ws.cell(row=r, column=1, value=pr.customer_name)
+                ws.cell(row=r, column=2, value=pr.applicant_name)
+                ws.cell(row=r, column=3, value=pr.name)
+                ws.cell(row=r, column=4, value=pr.drawing_no)
+                ws.cell(row=r, column=5, value=pr.quantity)
+                ws.cell(row=r, column=6, value=pr.unit)
+            # 列宽：客户/名称/图号/申请人留宽；数量/单位固定窄列
+            _autosize_columns(
+                ws,
+                max_col=6,
+                fixed_cols={5: 8, 6: 8},
+                wide_cols={1, 2, 3, 4},
+                wide_max=60,
+            )
+            buf = io.BytesIO()
+            wb.save(buf)
+            return buf.getvalue()
+
+        xlsx_bytes = await asyncio.to_thread(_build)
         return xlsx_bytes, prefix
 
     def _build_print_rows(

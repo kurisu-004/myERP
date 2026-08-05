@@ -1,11 +1,19 @@
 from datetime import date, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from model.enums import PartEventType, PartLocation, PartSortKey, PartStatus, SortDir
 from schema._types import IdStr, IdStrNonNull
+
+
+# 2026-08-05：零件一览行类型筛选。ALL=零件+装配件；PART=仅零件；ASSEMBLY=仅装配件。
+class PartRowTypeFilter(str, Enum):
+    ALL = "ALL"
+    PART = "PART"
+    ASSEMBLY = "ASSEMBLY"
 
 # 仅为 Pydantic 类型注解（TYPE_CHECKING 守卫）做静态类型提示；
 # 真正的运行时前向引用通过 model_rebuild() 配合 module globals 解析。
@@ -72,6 +80,15 @@ class PartListQuery(BaseModel):
             "物理位置多选（OFFICE / PRODUCTION_SHELF / WORKER / "
             "INSPECTION_SHELF / OUTSOURCE_COMPANY；空=全部）"
         ),
+    )
+    # —— 2026-08-05：位置筛选细化到具体 holder ——
+    holder_ids: list[int] | None = Field(
+        default=None,
+        description="具体 holder（货架/工人/外协公司）ID 多选；与 locations 为 OR 关系。API 层已由雪花字符串转 int。",
+    )
+    row_type: PartRowTypeFilter = Field(
+        default=PartRowTypeFilter.ALL,
+        description="行类型筛选：ALL=零件+装配件 / PART=仅零件 / ASSEMBLY=仅装配件",
     )
 
 
@@ -338,6 +355,10 @@ class PartListItem(BaseModel):
     worker_name: str | None = Field(
         default=None, description="holder 为工人时的姓名"
     )
+    # 2026-08-05：外协公司名（location=OUTSOURCE_COMPANY 时填充；前端展示用）
+    outsource_company_name: str | None = Field(
+        default=None, description="外协公司名（location=OUTSOURCE_COMPANY 时）"
+    )
     current_holder_display: str | None = Field(
         default=None,
         description=(
@@ -380,6 +401,17 @@ class PartListItem(BaseModel):
     has_been_repaired: bool = Field(
         default=False,
         description="是否经历过返修；为 true 时列表行展示「返修」el-tag（PR-M）",
+    )
+    # —— 2026-08-05 C2：装配件携带的「命中子件」 ——
+    # 仅当 next_process_ids / locations / holder_ids 筛选激活时填充；
+    # 装配件下属子件中满足筛选的子零件全集（按当前排序）。其余情况为 null。
+    # 前端 loadChildren 优先消费本字段，避免每次展开都触发 /assemblies/{id} 详情查询。
+    matched_children: list["PartListItem"] | None = Field(
+        default=None,
+        description=(
+            "仅当 next_process_ids / locations / holder_ids 筛选激活时填充；"
+            "装配件下属子件中满足筛选的子零件全集（按当前排序）。其余情况为 null。"
+        ),
     )
 
 
@@ -970,3 +1002,27 @@ class PartEventOut(BaseModel):
         ),
     )
     created_at: datetime
+
+
+# 2026-08-05：零件一览位置树响应 schema，供 GET /parts/location-tree 用。
+# el-tree-select 节点：父节点 = PartLocation 大类；子节点 = 具体 holder（货架/工人/外协公司）。
+class LocationTreeNode(BaseModel):
+    """el-tree-select 节点。父节点 = PartLocation 大类；子节点 = 具体 holder。"""
+
+    id: str = Field(description="父节点=PartLocation 值；叶子=holder 雪花 ID 字符串")
+    name: str = Field(description="显示名")
+    location: PartLocation | None = Field(
+        default=None, description="父节点有值；叶子为 None"
+    )
+    children: list["LocationTreeNode"] = Field(default_factory=list)
+
+
+LocationTreeNode.model_rebuild()
+
+
+# 2026-08-05 C2：PartListItem.matched_children 自引用（forward ref），模块底部 rebuild。
+PartListItem.model_rebuild()
+
+
+class LocationTreeOut(BaseModel):
+    items: list[LocationTreeNode]

@@ -83,12 +83,20 @@ class AssemblyRepository:
         order_no_like: str | None = None,
         # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
         serial_no_like: str | None = None,
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。修复调用方把同一 keyword
+        # 同时传给 drawing_no_like + name_like 导致隐式 AND、装配件几乎搜不出。
+        keyword: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-05：装配件本身不带 next_process_id / location / current_holder_id；
+        # 这三个参数通过子件 EXISTS 作用于装配件行（C2）。
+        child_next_process_ids: list[int] | None = None,
+        child_locations: list[str] | None = None,
+        child_holder_ids: list[int] | None = None,
         sort_by: AssemblySortKey = AssemblySortKey.PLANNED_DELIVERY_DATE,
         sort_dir: AssemblySortDir = "asc",
         include_deleted: bool = False,
@@ -105,12 +113,16 @@ class AssemblyRepository:
             name_like=name_like,
             order_no_like=order_no_like,
             serial_no_like=serial_no_like,
+            keyword=keyword,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            child_next_process_ids=child_next_process_ids,
+            child_locations=child_locations,
+            child_holder_ids=child_holder_ids,
             include_deleted=include_deleted,
         )
         sort_col = {
@@ -145,12 +157,18 @@ class AssemblyRepository:
         order_no_like: str | None = None,
         # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
         serial_no_like: str | None = None,
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。
+        keyword: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-05：装配件通过子件 EXISTS 接受 next_process / location / holder 筛选（C2）。
+        child_next_process_ids: list[int] | None = None,
+        child_locations: list[str] | None = None,
+        child_holder_ids: list[int] | None = None,
         include_deleted: bool = False,
     ) -> int:
         stmt = self._build_filter_stmt(
@@ -163,12 +181,16 @@ class AssemblyRepository:
             name_like=name_like,
             order_no_like=order_no_like,
             serial_no_like=serial_no_like,
+            keyword=keyword,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            child_next_process_ids=child_next_process_ids,
+            child_locations=child_locations,
+            child_holder_ids=child_holder_ids,
             include_deleted=include_deleted,
         ).with_only_columns(func.count(TAssembly.id))
         result = await self.session.execute(stmt)
@@ -197,12 +219,21 @@ class AssemblyRepository:
         name_like: str | None,
         order_no_like: str | None = None,
         serial_no_like: str | None = None,  # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。
+        keyword: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-05：装配件本身不带 next_process_id / location / current_holder_id。
+        # 通过子件 EXISTS 命中装配件；与 PartRepository 语义一致：
+        # child_locations / child_holder_ids 之间 OR，二者皆空时不加 OR 段；
+        # child_next_process_ids 与 (loc OR holder) 之间 AND；皆空时整段 EXISTS 不加。
+        child_next_process_ids: list[int] | None = None,
+        child_locations: list[str] | None = None,
+        child_holder_ids: list[int] | None = None,
         include_deleted: bool,
     ):
         stmt = select(TAssembly)
@@ -224,6 +255,15 @@ class AssemblyRepository:
             )
         if name_like:
             stmt = stmt.where(TAssembly.name.ilike(f"%{name_like}%"))
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。此前调用方把同一 keyword
+        # 同时传给 drawing_no_like + name_like 导致隐式 AND，装配件几乎搜不出来。
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TAssembly.drawing_no.ilike(f"%{kw}%")
+                    | TAssembly.name.ilike(f"%{kw}%")
+                )
         # 2026-07-31：与 PartRepository 对齐——订单号 / 各类日期区间筛选
         if order_no_like:
             on = order_no_like.strip()
@@ -275,4 +315,44 @@ class AssemblyRepository:
                     TAssembly.system_delivery_date <= system_delivery_date_to,
                 )
             )
+        # 2026-08-05：子件 EXISTS 形态的「下一道工序 / 物理位置 / holder」筛选（C2）。
+        # 三个参数独立判断；任意一个非空时整体加 EXISTS 子查询。
+        if child_next_process_ids or child_locations or child_holder_ids:
+            from sqlalchemy import bindparam
+
+            child_conds = [TPart.assembly_id == TAssembly.id, TPart.deleted_at.is_(None)]
+            if child_next_process_ids:
+                child_conds.append(
+                    TPart.next_process_id.in_(
+                        bindparam("child_next_process_ids", expanding=True)
+                    )
+                )
+            _loc_terms: list = []
+            if child_locations:
+                _loc_terms.append(
+                    TPart.location.in_(
+                        bindparam("child_locations", expanding=True)
+                    )
+                )
+            if child_holder_ids:
+                _loc_terms.append(
+                    TPart.current_holder_id.in_(
+                        bindparam("child_holder_ids", expanding=True)
+                    )
+                )
+            if len(_loc_terms) == 1:
+                child_conds.append(_loc_terms[0])
+            elif len(_loc_terms) > 1:
+                child_conds.append(or_(*_loc_terms))
+            stmt = stmt.where(
+                select(TPart.id).where(*child_conds).exists()
+            )
+            params: dict = {}
+            if child_next_process_ids:
+                params["child_next_process_ids"] = list(child_next_process_ids)
+            if child_locations:
+                params["child_locations"] = list(child_locations)
+            if child_holder_ids:
+                params["child_holder_ids"] = list(child_holder_ids)
+            stmt = stmt.params(**params)
         return stmt
