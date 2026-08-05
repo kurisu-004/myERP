@@ -1,8 +1,8 @@
 """测试 fixtures。
 
 生命周期：
-1. pytest session 启动 → 自动 up 一个独立的 `postgres-test` 容器（5434 端口），
-   等待 healthy，跑 `alembic upgrade head` 把 schema 建好。
+1. pytest session 启动 → 自动 up 一个独立的 `postgres-test` 容器（5435 端口，
+   与主仓 5434 隔离），等待 healthy，跑 `alembic upgrade head` 把 schema 建好。
 2. 每个测试函数用 `clean_db` fixture 自取清空后的 DB；fixture 会 truncate 所有
    业务表 + 重置流水号。
 3. pytest session 结束 → `docker compose -f docker-compose.test.yml down -v`，
@@ -22,7 +22,7 @@ import os as _os
 
 _os.environ["DATABASE_URL"] = _os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://myerp_test:testpass@127.0.0.1:5434/myerp_test",
+    "postgresql+asyncpg://myerp_test:testpass@127.0.0.1:5435/myerp_test",
 )
 # JWT / COS 用安全的测试占位即可，fake_cos fixture 会替换真正的 SDK 调用。
 _os.environ.setdefault("JWT_SECRET", "test-secret-do-not-use-in-prod-32bytes-pad")
@@ -104,7 +104,7 @@ async def _probe_db_ready(timeout: float = 30.0) -> None:
         try:
             conn = await asyncpg.connect(
                 host="127.0.0.1",
-                port=5434,
+                port=5435,
                 user="myerp_test",
                 password="testpass",
                 database="myerp_test",
@@ -149,26 +149,46 @@ def _wipe_test_data_dir() -> None:
     连接认证失败。
 
     所以 pre-flight 必须把 bind mount 源目录整个删掉，让 PG initdb 全新跑一遍。
+
+    重试：Docker Desktop（virtiofs）在上一个容器 down 后可能短暂持有目录句柄，
+    rmtree 会撞 `OSError: [Errno 66] Directory not empty`（2026-08-05 实测：
+    上一批 pytest 刚 down -v、立刻起下一批时偶发，整批 ERROR）。最多重试 5 次。
     """
     import shutil
 
     test_data = PROJECT_ROOT / "data" / "postgres-test"
-    if test_data.exists():
-        shutil.rmtree(test_data)
-        print(f"[test-db] wiped stale {test_data}")
+    last_err: OSError | None = None
+    for attempt in range(5):
+        try:
+            if test_data.exists():
+                shutil.rmtree(test_data)
+                if attempt:
+                    print(f"[test-db] wiped stale {test_data} (attempt {attempt + 1})")
+                else:
+                    print(f"[test-db] wiped stale {test_data}")
+            break
+        except OSError as e:
+            last_err = e
+            time.sleep(1.0)
+    else:
+        raise RuntimeError(
+            f"failed to wipe {test_data} after 5 attempts"
+        ) from last_err
     test_data.mkdir(parents=True, exist_ok=True)
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _postgres_test_lifecycle():
-    """整场测试只跑一次：wipe bind mount → down -v → up -d → wait healthy → migrate → tests → down -v。"""
-    # 1. 清掉宿主机上残留的 PG 数据目录（bind mount 源）。这一步必须在 down -v 之前——
-    #    bind mount 在容器运行时是 busy 的，docker 不会清 bind mount 源目录，但
-    #    PG initdb 又会复用残留数据导致新 env 失效。所以我们自己删。
-    _wipe_test_data_dir()
-
-    # 2. 兜底：上次异常退出可能残留容器，先 down -v 清匿名 volume / 旧容器。幂等。
+    """整场测试只跑一次：down -v → wipe bind mount → up -d → wait healthy → migrate → tests → down -v。"""
+    # 1. 兜底：上次异常退出可能残留容器，先 down -v 停掉并清匿名 volume / 旧容器。幂等。
+    #    必须先于 wipe——若旧容器仍挂着 bind mount 运行，rmtree 会与 PG 写入竞态，
+    #    报 OSError: [Errno 66] Directory not empty（2026-08-05 实测踩坑）。
     _compose("down", "-v", check=False)
+
+    # 2. 清掉宿主机上残留的 PG 数据目录（bind mount 源）。
+    #    docker 不会清 bind mount 源目录，但 PG initdb 会复用残留数据导致新 env
+    #    （POSTGRES_USER/PASSWORD/DB）失效。所以 down 之后我们自己删。
+    _wipe_test_data_dir()
 
     # 3. 起新容器
     up = _compose("up", "-d")
