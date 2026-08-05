@@ -30,7 +30,11 @@
                     :key="item.batch_id || item.id"
                     :class="['shelf-item', { urgent: item.is_urgent }]"
                   >
-                    <span class="item-serial">{{ item.serial_no || '—' }}</span>
+                    <span
+                      :class="['item-serial', { 'is-clickable': canOpenPartDetail }]"
+                      :title="canOpenPartDetail ? '查看详情' : ''"
+                      @click="canOpenPartDetail && goPartDetail(item.id)"
+                    >{{ item.serial_no || '—' }}</span>
                     <span class="item-name" :title="item.name">{{ item.name }}</span>
                     <span class="item-process" :title="item.next_process_name || ''">
                       {{ item.next_process_name || '—' }}
@@ -65,7 +69,9 @@
                 <span
                   v-for="item in group.items"
                   :key="item.batch_id || item.id"
-                  :class="['worker-chip', { urgent: item.is_urgent }]"
+                  :class="['worker-chip', { urgent: item.is_urgent, 'is-clickable': canOpenPartDetail }]"
+                  :title="canOpenPartDetail ? '查看详情' : ''"
+                  @click="canOpenPartDetail && goPartDetail(item.id)"
                 >
                   {{ item.serial_no || '—' }}
                 </span>
@@ -81,14 +87,28 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { Tools } from '@element-plus/icons-vue'
 import { onDashboardSnapshot } from '@/api/dashboard'
+import { usePermissions } from '@/composables/usePermissions'
 import type {
   DashboardPartItem,
   DashboardShelfGroup,
   DashboardSnapshot,
 } from '@/types/dashboard'
 import { formatDashboardDeliveryDate } from '@/utils/deliveryDate'
+
+const router = useRouter()
+const { isManager, isClerk, isInspector, isCncProgrammer } = usePermissions()
+
+// 工控机账号（纯 SHELF_ACCOUNT）禁跳详情；与后端 GET /parts/{id} 读权限对齐
+const canOpenPartDetail = computed(
+  () => isManager.value || isClerk.value || isInspector.value || isCncProgrammer.value,
+)
+
+function goPartDetail(id: string): void {
+  router.push(`/parts/${id}`)
+}
 
 const shelfGroups = ref<DashboardShelfGroup[]>([])
 const workerParts = ref<DashboardSnapshot['data']['in_process']>([])
@@ -350,6 +370,16 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   font-size: 13px;
   padding: 20px 0;
+}
+
+// ============ 序列号可点态（仅非 SHELF_ACCOUNT 账号） ============
+.item-serial.is-clickable,
+.worker-chip.is-clickable {
+  cursor: pointer;
+}
+.item-serial.is-clickable:hover,
+.worker-chip.is-clickable:hover {
+  text-decoration: underline;
 }
 
 // ============ 通用 ============
