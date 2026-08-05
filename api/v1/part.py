@@ -25,7 +25,15 @@ from core.permission import (
     require_roles,
     require_shelf_account_from_body,
 )
-from model.enums import PartEventType, ShelfZone, UserRole
+from model.enums import (
+    PartEventType,
+    PartLocation,
+    PartSortKey,
+    PartStatus,
+    ShelfZone,
+    SortDir,
+    UserRole,
+)
 from repository.assembly import AssemblyRepository
 from repository.outsource_company import OutsourceCompanyRepository
 from repository.part import PartRepository
@@ -193,8 +201,6 @@ async def list_parts(
     offset: int = Query(default=0, ge=0),
     svc: PartService = Depends(get_part_service),
 ) -> PartListOut:
-    from model.enums import PartLocation, PartSortKey, PartStatus, SortDir
-
     try:
         _row_type = PartRowTypeFilter(row_type)
     except ValueError:
@@ -384,8 +390,6 @@ async def list_pending_programming_parts(
     offset: int = Query(default=0, ge=0),
     svc: PartService = Depends(get_part_service),
 ) -> PartListOut:
-    from model.enums import PartSortKey, PartStatus, SortDir
-
     return await svc.list_parts(
         PartListQuery(
             customer_id=customer_id,
