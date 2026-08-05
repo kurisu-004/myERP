@@ -41,8 +41,6 @@ from schema.outsource_quote import (
 )
 from service.outsource_quote import OutsourceQuoteService
 
-pytestmark = pytest.mark.asyncio
-
 
 # =============================================================================
 # Fixtures & factories
@@ -294,6 +292,8 @@ def svc(
 
 
 class TestCreateQuote:
+    pytestmark = pytest.mark.asyncio
+
     async def test_happy_path(self, svc, mock_quotes, mock_parts, mock_companies, mock_processes, mock_quote_events):
         mock_parts.get_by_id.return_value = _make_part()
         mock_companies.get_by_id.return_value = _make_company()
@@ -388,6 +388,8 @@ class TestCreateQuote:
 
 
 class TestGetQuote:
+    pytestmark = pytest.mark.asyncio
+
     async def test_get_happy_path(self, svc, mock_quotes):
         quote = _make_quote()
         quote.version = 3
@@ -415,6 +417,8 @@ class TestGetQuote:
 
 
 class TestUpdateQuote:
+    pytestmark = pytest.mark.asyncio
+
     async def test_happy_path(self, svc, mock_quotes):
         mock_quotes.get_by_id.return_value = _make_quote(version=2)
         svc.parts.get_by_id = AsyncMock(return_value=_make_part())
@@ -453,6 +457,8 @@ class TestUpdateQuote:
 
 
 class TestStateTransitions:
+    pytestmark = pytest.mark.asyncio
+
     async def test_submit_draft_to_submitted(self, svc, mock_quotes):
         q = _make_quote(status=OutsourceQuoteStatus.DRAFT.value)
         mock_quotes.get_by_id.return_value = q
@@ -512,6 +518,8 @@ class TestStateTransitions:
 
 
 class TestSoftDelete:
+    pytestmark = pytest.mark.asyncio
+
     async def test_delete_draft(self, svc, mock_quotes):
         mock_quotes.get_by_id.return_value = _make_quote(status=OutsourceQuoteStatus.DRAFT.value)
         await svc.soft_delete_quote("999")
@@ -583,6 +591,7 @@ class TestPartEventSyncWrites:
     """create_quote / approve_quote 必须同步写 TPartEvent 一行，
     让 PartDetail 历史时间线展示报价生命周期。
     """
+    pytestmark = pytest.mark.asyncio
 
     async def test_create_quote_writes_part_event_quote_created(
         self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
@@ -654,6 +663,8 @@ class TestPartEventSyncWrites:
 
 
 class TestListApprovedForSend:
+    pytestmark = pytest.mark.asyncio
+
     async def test_customer_path_is_string_not_coroutine(
         self, svc, mock_quotes, mock_companies, mock_processes, mock_customers,
     ):
@@ -756,6 +767,7 @@ class TestListQuotablePartsForPicker:
     本测试锁住 picker 的 batch-tuple 契约：rows 必须是 tuple，response 里 batch
     字段必须被填进 PartListItem。
     """
+    pytestmark = pytest.mark.asyncio
 
     async def test_picker_unpacks_batch_tuples(
         self, svc, mock_parts, mock_customers, mock_processes,
@@ -813,6 +825,8 @@ class TestListQuotablePartsForPicker:
 
 
 class TestListQuotesNoN1:
+    pytestmark = pytest.mark.asyncio
+
     async def test_list_quotes_uses_batch_not_get_by_id(
         self, svc, mock_quotes, mock_parts, mock_companies, mock_processes,
     ):
@@ -847,6 +861,8 @@ class TestListQuotesNoN1:
 
 
 class TestSearchQuotesStatusesMulti:
+    pytestmark = pytest.mark.asyncio
+
     async def test_keyword_passed_through_to_part_repo(
         self, svc, mock_quotes, mock_parts,
     ):

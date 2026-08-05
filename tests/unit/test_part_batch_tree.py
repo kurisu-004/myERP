@@ -44,8 +44,6 @@ from schema.part import (
 from service.part import PartService
 from tests.unit._fake_batches import FakePartBatchRepository
 
-pytestmark = pytest.mark.asyncio
-
 
 # ======================
 # Fixtures
@@ -193,6 +191,8 @@ def _item(
 # ======================
 
 class TestCreatePartsTreeSinglePage:
+    pytestmark = pytest.mark.asyncio
+
     async def test_single_page_pdf_creates_standalone_part(
         self,
         service: PartService,
@@ -271,6 +271,8 @@ class TestCreatePartsTreeSinglePage:
 
 
 class TestCreatePartsTreeMultiPage:
+    pytestmark = pytest.mark.asyncio
+
     async def test_multi_page_pdf_creates_assembly_with_children(
         self,
         service: PartService,
@@ -469,6 +471,8 @@ class TestCreatePartsTreeMultiPage:
 
 
 class TestCreatePartsTreePRFFields:
+    pytestmark = pytest.mark.asyncio
+
     async def test_tree_item_carries_order_no_system_delivery_note(
         self,
         service: PartService,
@@ -561,6 +565,8 @@ class TestCreatePartsTreePRFFields:
 
 
 class TestCreatePartsTreeCustomerNotFound:
+    pytestmark = pytest.mark.asyncio
+
     async def test_customer_not_found_returns_failed(
         self,
         service: PartService,
@@ -589,6 +595,8 @@ class TestCreatePartsTreeCustomerNotFound:
 
 
 class TestCreatePartsTreeApplicantFallback:
+    pytestmark = pytest.mark.asyncio
+
     async def test_bulk_applicant_called_when_applicant_name_set(
         self,
         service: PartService,
