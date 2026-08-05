@@ -108,6 +108,8 @@ export interface PartListItem {
   location: string | null
   shelf_code: string | null
   worker_name: string | null
+  /** holder 是外协公司时的公司名（OUTSOURCE_COMPANY 位置带出） */
+  outsource_company_name?: string | null
   /** 所在位置（2026-07-11 接入）：装配体子件表用，PRODUCTION_SHELF→'货架 A-01'；
    * INSPECTION_SHELF→'品检 A-01'；WORKER→'工人 张三'；OFFICE→'编程员持有'。 */
   current_holder_display?: string | null
@@ -132,6 +134,16 @@ export interface PartListItem {
   /** PR-M 2026-08-04：是否经历过返修（用于列表行展示「返修」el-tag） */
   has_been_repaired?: boolean
 }
+
+/** 零件一览「所在位置」树节点（GET /parts/location-tree）。 */
+export interface LocationTreeNode {
+  id: string            // 父节点=PartLocation 值；叶子=holder 雪花 ID 字符串
+  name: string
+  location: string | null
+  children: LocationTreeNode[]
+}
+/** 行类型筛选：全部 / 仅零件 / 仅装配件 */
+export type PartRowTypeFilter = 'ALL' | 'PART' | 'ASSEMBLY'
 
 /** 后端 PartEventType 枚举 */
 export type PartEventType =
