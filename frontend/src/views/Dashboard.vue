@@ -21,7 +21,7 @@
               <div class="shelf-card-head">
                 <span class="shelf-code">{{ g.shelf_code }}</span>
                 <span class="shelf-name">{{ g.shelf_name }}</span>
-                <span class="shelf-count">{{ g.items.length }} 件</span>
+                <span class="shelf-count">{{ g.total_count ?? g.items.length }} 件</span>
               </div>
               <div class="shelf-card-body">
                 <template v-if="g.items.length > 0">

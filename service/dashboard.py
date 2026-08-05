@@ -146,11 +146,15 @@ async def build_snapshot(
 
     on_prod_groups: list[dict[str, Any]] = []
     for s in all_prod_shelves:
-        items = rows_by_shelf.get(s.id, [])[:10]
+        shelf_rows = rows_by_shelf.get(s.id, [])
+        total_count = len(shelf_rows)
+        items = shelf_rows[:10]
         on_prod_groups.append({
             "shelf_id": str(s.id),
             "shelf_code": s.code,
             "shelf_name": s.name,
+            # items 为展示用前 10 条，total_count 是该货架实际在架总数
+            "total_count": total_count,
             "items": [
                 _to_dict(
                     p,
