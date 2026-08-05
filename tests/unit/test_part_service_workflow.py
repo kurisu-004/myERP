@@ -132,6 +132,7 @@ def _make_worker(
     worker.badge_code = badge_code
     worker.name = name
     worker.is_active = is_active
+    worker.work_type_id = None  # 避免 MagicMock 默认值触发工种上限校验
     return worker
 
 
@@ -530,6 +531,7 @@ class TestPickUpByScan:
         part = self._default_part()
         shelf = _make_shelf()
         worker = _make_worker()
+        worker.work_type_id = None  # 避免 MagicMock 默认值触发工种上限校验
         mock_shelves.get_by_id.return_value = shelf
         mock_workers.get_by_badge_code.return_value = worker
         mock_parts.get_by_serial.return_value = part
