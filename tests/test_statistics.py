@@ -3,7 +3,7 @@
 按项目约定（CLAUDE.md + tests/test_outsource_quote_lifecycle.py 范式）：
 - 直接构造 service 实例，不走 HTTP TestClient；
 - DB 由 ``tests/conftest.py::clean_db`` fixture 提供（per-function 表数据隔离）；
-- docker 5435 容器由 session 级 fixture 自动 up → migrate → down。
+- docker 5434 容器由 session 级 fixture 自动 up → migrate → down。
 
 覆盖：
 1. overview 各字段口径（created/completed/in_process/delivered/orange/red/

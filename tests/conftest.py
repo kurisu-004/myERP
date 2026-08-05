@@ -1,8 +1,8 @@
 """测试 fixtures。
 
 生命周期：
-1. pytest session 启动 → 自动 up 一个独立的 `postgres-test` 容器（5435 端口，
-   与主仓 5434 隔离），等待 healthy，跑 `alembic upgrade head` 把 schema 建好。
+1. pytest session 启动 → 自动 up 一个独立的 `postgres-test` 容器（5434 端口），
+   等待 healthy，跑 `alembic upgrade head` 把 schema 建好。
 2. 每个测试函数用 `clean_db` fixture 自取清空后的 DB；fixture 会 truncate 所有
    业务表 + 重置流水号。
 3. pytest session 结束 → `docker compose -f docker-compose.test.yml down -v`，
@@ -22,7 +22,7 @@ import os as _os
 
 _os.environ["DATABASE_URL"] = _os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://myerp_test:testpass@127.0.0.1:5435/myerp_test",
+    "postgresql+asyncpg://myerp_test:testpass@127.0.0.1:5434/myerp_test",
 )
 # JWT / COS 用安全的测试占位即可，fake_cos fixture 会替换真正的 SDK 调用。
 _os.environ.setdefault("JWT_SECRET", "test-secret-do-not-use-in-prod-32bytes-pad")
@@ -104,7 +104,7 @@ async def _probe_db_ready(timeout: float = 30.0) -> None:
         try:
             conn = await asyncpg.connect(
                 host="127.0.0.1",
-                port=5435,
+                port=5434,
                 user="myerp_test",
                 password="testpass",
                 database="myerp_test",
