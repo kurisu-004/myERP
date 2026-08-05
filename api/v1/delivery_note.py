@@ -4,8 +4,8 @@
 信封；只允许 GET / POST（CLAUDE.md §7）。
 
 权限策略：
-- 文员侧 (CLERK + MANAGER)：list / detail / events / create / add-parts /
-  remove-parts / submit / recall / soft-delete
+- 文员侧 (CLERK + MANAGER + INSPECTOR)：list / detail / events / create /
+  add-parts / remove-parts / submit / recall / soft-delete / print
 - 司机侧（任意已登录账号 + service 层校验 worker.work_type='送货司机'）：
   pickup-pending list / detail / pickup-scan / pickup
 
@@ -49,9 +49,15 @@ from service.delivery_note import DeliveryNoteService
 
 router = APIRouter(prefix="/delivery-notes", tags=["送货单"])
 
-_OFFICE_DEP = [Depends(require_roles(UserRole.MANAGER, UserRole.CLERK))]
+_OFFICE_DEP = [
+    Depends(
+        require_roles(
+            UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR,
+        )
+    )
+]
 
-_OFFICE_ROLES = (UserRole.MANAGER, UserRole.CLERK)
+_OFFICE_ROLES = (UserRole.MANAGER, UserRole.CLERK, UserRole.INSPECTOR)
 
 
 # ============================================================
