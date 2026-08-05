@@ -6,11 +6,14 @@ from pydantic import BaseModel, Field
 from api.deps import (
     get_applicant_service,
     get_assembly_repo,
+    get_outsource_company_repo,
     get_outsource_quote_service,
     get_part_file_service,
     get_part_file_repository,
     get_part_repository,
     get_part_service,
+    get_shelf_repo,
+    get_worker_repo,
 )
 from core.error_code import ErrCode
 from core.exception import BizError
@@ -22,16 +25,22 @@ from core.permission import (
     require_roles,
     require_shelf_account_from_body,
 )
-from model.enums import PartEventType, UserRole
+from model.enums import PartEventType, ShelfZone, UserRole
 from repository.assembly import AssemblyRepository
+from repository.outsource_company import OutsourceCompanyRepository
 from repository.part import PartRepository
 from repository.part_file import PartFileRepository
+from repository.shelf import ShelfRepository
+from repository.worker import WorkerRepository
+from model import TShelf
 from schema.outsource_quote import OutsourceInFlightItem
 from schema.part import (
     BatchSplitRequest,
     InspectionBatchListOut,
     DirectOutsourceCandidateListOut,
     FailInspectionRequest,
+    LocationTreeNode,
+    LocationTreeOut,
     OutsourceSendableListOut,
     PartBatchActionRequest,
     PartBatchCreateRequest,
@@ -45,6 +54,7 @@ from schema.part import (
     PartListQuery,
     PartOut,
     PartPickUpRequest,
+    PartRowTypeFilter,
     PartScanRequest,
     PartUpdateRequest,
     PlaceOnShelfRequest,
@@ -143,9 +153,12 @@ async def list_parts(
         ),
     ),
     # 2026-08-01：下一道工序 / 物理位置多选筛选。
-    next_process_ids: list[int] | None = Query(
+    next_process_ids: list[str] | None = Query(
         default=None,
-        description="下一道工序 id 多选（雪花 ID int；空=全部；NULL 工序的零件会被自然排除）",
+        description=(
+            "下一道工序 id 多选（雪花 ID 字符串；前端禁止 Number() 转换会丢精度；"
+            "空=全部；NULL 工序的零件会被自然排除）"
+        ),
     ),
     locations: list[str] | None = Query(
         default=None,
@@ -153,6 +166,17 @@ async def list_parts(
             "物理位置多选（OFFICE / PRODUCTION_SHELF / WORKER / "
             "INSPECTION_SHELF / OUTSOURCE_COMPANY；空=全部）"
         ),
+    ),
+    # 2026-08-05：具体 holder（货架/工人/外协公司）多选；与 locations 为 OR 关系。
+    holder_ids: list[str] | None = Query(
+        default=None,
+        description=(
+            "具体 holder（货架/工人/外协公司）雪花 ID 多选；与 locations 为 OR 关系"
+        ),
+    ),
+    row_type: str = Query(
+        default="ALL",
+        description="行类型筛选：ALL / PART / ASSEMBLY",
     ),
     request_date_from: date | None = Query(default=None, description="请购日期区间起点（含）"),
     request_date_to: date | None = Query(default=None, description="请购日期区间终点（含）"),
@@ -171,6 +195,15 @@ async def list_parts(
 ) -> PartListOut:
     from model.enums import PartLocation, PartSortKey, PartStatus, SortDir
 
+    try:
+        _row_type = PartRowTypeFilter(row_type)
+    except ValueError:
+        raise BizError(
+            code=ErrCode.BIZ_INVALID_VALUE,
+            message=f"invalid row_type: {row_type}",
+            http_status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
     return await svc.list_parts(
         PartListQuery(
             customer_id=customer_id,
@@ -180,8 +213,16 @@ async def list_parts(
             order_no=order_no,
             serial_no=serial_no,
             has_outsource_history=has_outsource_history,
-            next_process_ids=next_process_ids,  # 2026-08-01
+            next_process_ids=(
+                [parse_snowflake_id(s, field_name="next_process_ids[]") for s in next_process_ids]
+                if next_process_ids else None
+            ),
             locations=[PartLocation(loc) for loc in locations] if locations else None,  # 2026-08-01
+            holder_ids=(
+                [parse_snowflake_id(s, field_name="holder_ids[]") for s in holder_ids]
+                if holder_ids else None
+            ),
+            row_type=_row_type,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
@@ -501,6 +542,79 @@ async def repair_dispatch_part(
         quantity=payload.quantity,
         next_process_id=payload.next_process_id,
     )
+
+
+# 2026-08-05：零件一览 el-tree-select 数据源。父节点 = PartLocation 大类；
+# 子节点 = 当前 active 的具体 holder（货架/工人/外协公司）。
+# 注册顺序：必须在 /{part_id} catch-all 之前, 否则被截胡。
+@router.get(
+    "/location-tree",
+    response_model=LocationTreeOut,
+    summary=(
+        "零件一览位置树（MANAGER / CLERK / CNC_PROGRAMMER / INSPECTOR）；"
+        "父节点=PartLocation 大类；子节点=active 的具体 holder"
+    ),
+    dependencies=_read_part_dep,
+)
+async def get_parts_location_tree(
+    shelves: ShelfRepository = Depends(get_shelf_repo),
+    workers: WorkerRepository = Depends(get_worker_repo),
+    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
+) -> LocationTreeOut:
+    # 四个查询共用同一个 AsyncSession（FastAPI 依赖缓存），不能 asyncio.gather 并发，
+    # 否则 asyncpg 抛 "another operation is in progress"。顺序 await 即可（数据量小）。
+    production_shelves = await shelves.list_active_by_zone(ShelfZone.PRODUCTION.value)
+    inspection_shelves = await shelves.list_active_by_zone(ShelfZone.INSPECTION.value)
+    active_workers = await workers.list_with_filters(is_active=True, limit=500, offset=0)
+    active_companies = await companies.list_with_filters(is_active=True, limit=500, offset=0)
+
+    def _shelf_node(s: TShelf) -> LocationTreeNode:
+        label = s.code if not s.name else f"{s.code} {s.name}"
+        return LocationTreeNode(id=str(s.id), name=label, location=None, children=[])
+
+    items: list[LocationTreeNode] = [
+        LocationTreeNode(
+            id=PartLocation.OFFICE.value,
+            name="办公室",
+            location=PartLocation.OFFICE,
+            children=[],
+        ),
+        LocationTreeNode(
+            id=PartLocation.PRODUCTION_SHELF.value,
+            name="生产货架",
+            location=PartLocation.PRODUCTION_SHELF,
+            children=[_shelf_node(s) for s in production_shelves],
+        ),
+        LocationTreeNode(
+            id=PartLocation.WORKER.value,
+            name="工人",
+            location=PartLocation.WORKER,
+            children=[
+                LocationTreeNode(
+                    id=str(w.id), name=w.name, location=None, children=[],
+                )
+                for w in active_workers
+            ],
+        ),
+        LocationTreeNode(
+            id=PartLocation.INSPECTION_SHELF.value,
+            name="品检货架",
+            location=PartLocation.INSPECTION_SHELF,
+            children=[_shelf_node(s) for s in inspection_shelves],
+        ),
+        LocationTreeNode(
+            id=PartLocation.OUTSOURCE_COMPANY.value,
+            name="外协公司",
+            location=PartLocation.OUTSOURCE_COMPANY,
+            children=[
+                LocationTreeNode(
+                    id=str(c.id), name=c.name, location=None, children=[],
+                )
+                for c in active_companies
+            ],
+        ),
+    ]
+    return LocationTreeOut(items=items)
 
 
 @router.get(

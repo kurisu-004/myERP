@@ -69,6 +69,7 @@ from schema.part import (
     PartListItem,
     PartListOut,
     PartListQuery,
+    PartRowTypeFilter,
     PartOut,
     PartPickUpRequest,
     PartScanRequest,
@@ -282,6 +283,7 @@ class PartService:
                 system_delivery_date_to=query.system_delivery_date_to,
                 next_process_ids=query.next_process_ids,  # 2026-08-01
                 locations=query.locations,  # 2026-08-01
+                holder_ids=query.holder_ids,
                 sort_by=query.sort_by,
                 sort_dir=query.sort_dir,
                 limit=query.limit,
@@ -303,6 +305,7 @@ class PartService:
                 system_delivery_date_to=query.system_delivery_date_to,
                 next_process_ids=query.next_process_ids,  # 2026-08-01
                 locations=query.locations,  # 2026-08-01
+                holder_ids=query.holder_ids,
             )
             items = await self._to_list_out(rows)
             return PartListOut(
@@ -311,60 +314,67 @@ class PartService:
 
         # ===== 装配体并入零件一览（2026-07-30）=====
         # 数据量工厂级（数百行），Python 内存合并分页；增长后应改 SQL UNION。
-        # 1. 独立零件（排除装配件子件）
-        part_rows = await self.parts.list_with_filters(
-            customer_ids_in=customer_ids_in,
-            statuses=query.statuses,
-            is_urgent=query.is_urgent,
-            keyword=query.keyword,
-            order_no=query.order_no,
-            serial_no=query.serial_no,
-            has_outsource_history=query.has_outsource_history,
-            request_date_from=query.request_date_from,
-            request_date_to=query.request_date_to,
-            planned_delivery_date_from=query.planned_delivery_date_from,
-            planned_delivery_date_to=query.planned_delivery_date_to,
-            system_delivery_date_from=query.system_delivery_date_from,
-            system_delivery_date_to=query.system_delivery_date_to,
-            next_process_ids=query.next_process_ids,  # 2026-08-01
-            locations=query.locations,  # 2026-08-01
-            sort_by=query.sort_by,
-            sort_dir=query.sort_dir,
-            assembly_id_is_null=True,
-            limit=query.limit + query.offset,
-            offset=0,
-        )
-        part_total = await self.parts.count_with_filters(
-            customer_ids_in=customer_ids_in,
-            statuses=query.statuses,
-            is_urgent=query.is_urgent,
-            keyword=query.keyword,
-            order_no=query.order_no,
-            serial_no=query.serial_no,
-            has_outsource_history=query.has_outsource_history,
-            request_date_from=query.request_date_from,
-            request_date_to=query.request_date_to,
-            planned_delivery_date_from=query.planned_delivery_date_from,
-            planned_delivery_date_to=query.planned_delivery_date_to,
-            system_delivery_date_from=query.system_delivery_date_from,
-            system_delivery_date_to=query.system_delivery_date_to,
-            next_process_ids=query.next_process_ids,  # 2026-08-01
-            locations=query.locations,  # 2026-08-01
-            assembly_id_is_null=True,
-        )
+        # 1. 独立零件（排除装配件子件）；仅装配件筛选时不发零件 SQL。
+        part_rows: list[TPart] = []
+        part_total = 0
+        if query.row_type != PartRowTypeFilter.ASSEMBLY:
+            part_rows = await self.parts.list_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                serial_no=query.serial_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,  # 2026-08-01
+                locations=query.locations,  # 2026-08-01
+                holder_ids=query.holder_ids,
+                sort_by=query.sort_by,
+                sort_dir=query.sort_dir,
+                assembly_id_is_null=True,
+                limit=query.limit + query.offset,
+                offset=0,
+            )
+            part_total = await self.parts.count_with_filters(
+                customer_ids_in=customer_ids_in,
+                statuses=query.statuses,
+                is_urgent=query.is_urgent,
+                keyword=query.keyword,
+                order_no=query.order_no,
+                serial_no=query.serial_no,
+                has_outsource_history=query.has_outsource_history,
+                request_date_from=query.request_date_from,
+                request_date_to=query.request_date_to,
+                planned_delivery_date_from=query.planned_delivery_date_from,
+                planned_delivery_date_to=query.planned_delivery_date_to,
+                system_delivery_date_from=query.system_delivery_date_from,
+                system_delivery_date_to=query.system_delivery_date_to,
+                next_process_ids=query.next_process_ids,  # 2026-08-01
+                locations=query.locations,  # 2026-08-01
+                holder_ids=query.holder_ids,
+                assembly_id_is_null=True,
+            )
 
         # 2. 装配件（statuses 取交集）
         # 2026-07-31：装配件本身不外协（外协走 t_part），所以 has_outsource_history
         # 开启时直接跳过整个装配体查询块。
-        # 2026-08-01：装配件没有 next_process_id / part.location，故 next_process_ids /
-        # locations 任一非空时也直接跳过 asm_rows（合并结果里不出现装配行）。
+        # 2026-08-01/05：装配件没有 next_process_id / part.location /
+        # current_holder_id，故这些筛选任一非空时直接跳过 asm_rows；PART 行类型同理。
         asm_rows: list[TAssembly] = []
         asm_total = 0
         if (
             self.assemblies is not None
+            and query.row_type != PartRowTypeFilter.PART
             and not query.has_outsource_history
             and not query.next_process_ids
             and not query.locations
+            and not query.holder_ids
         ):
             assembly_statuses = None
             if query.statuses is not None:
@@ -394,8 +404,7 @@ class PartService:
                     customer_ids_in=customer_ids_in,
                     statuses=assembly_statuses,
                     is_urgent=query.is_urgent,
-                    drawing_no_like=query.keyword,
-                    name_like=query.keyword,
+                    keyword=query.keyword,
                     order_no_like=query.order_no,
                     serial_no_like=query.serial_no,
                     request_date_from=query.request_date_from,
@@ -413,8 +422,7 @@ class PartService:
                     customer_ids_in=customer_ids_in,
                     statuses=assembly_statuses,
                     is_urgent=query.is_urgent,
-                    drawing_no_like=query.keyword,
-                    name_like=query.keyword,
+                    keyword=query.keyword,
                     order_no_like=query.order_no,
                     serial_no_like=query.serial_no,
                     request_date_from=query.request_date_from,
@@ -4273,6 +4281,18 @@ class PartService:
             workers = await self.workers.list_by_ids(worker_ids)
             worker_map = {w.id: w.name for w in workers}
 
+        outsource_company_ids = [
+            int(p.current_holder_id)
+            for p in rows
+            if p.location == "OUTSOURCE_COMPANY" and p.current_holder_id
+        ]
+        outsource_company_map: dict[int, str] = {}
+        if outsource_company_ids and self.outsource_companies is not None:
+            companies = await self.outsource_companies.list_by_ids(
+                outsource_company_ids,
+            )
+            outsource_company_map = {c.id: c.name for c in companies}
+
         # 一次性批查所有需要查货架 code 的 id
         shelf_ids = [
             int(p.current_holder_id)
@@ -4314,10 +4334,15 @@ class PartService:
 
             shelf_code: str | None = None
             worker_name: str | None = None
+            outsource_company_name: str | None = None
             if p.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF") and p.current_holder_id:
                 shelf_code = shelf_map.get(int(p.current_holder_id))
             elif p.location == "WORKER" and p.current_holder_id:
                 worker_name = worker_map.get(int(p.current_holder_id))
+            elif p.location == "OUTSOURCE_COMPANY" and p.current_holder_id:
+                outsource_company_name = outsource_company_map.get(
+                    int(p.current_holder_id),
+                )
 
             # 所在位置的人类可读描述
             holder_display: str | None = None
@@ -4326,6 +4351,8 @@ class PartService:
                 holder_display = f"货架 {prefix}{shelf_code}"
             elif worker_name is not None:
                 holder_display = f"工人 {worker_name}"
+            elif outsource_company_name is not None:
+                holder_display = f"外协 {outsource_company_name}"
             elif p.location == "OFFICE":
                 holder_display = "编程员持有"
 
@@ -4354,6 +4381,7 @@ class PartService:
                     location=p.location,
                     shelf_code=shelf_code,
                     worker_name=worker_name,
+                    outsource_company_name=outsource_company_name,
                     current_holder_display=holder_display,
                     # 2026-07-28 PR-H：picker 自动填工序
                     next_process_id=p.next_process_id,

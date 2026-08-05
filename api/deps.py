@@ -180,6 +180,12 @@ def get_shelf_repo(
     return ShelfRepository(session)
 
 
+def get_worker_repo(
+    session: AsyncSession = Depends(get_session),
+) -> WorkerRepository:
+    return WorkerRepository(session)
+
+
 def get_menu_repo(
     session: AsyncSession = Depends(get_session),
 ) -> MenuRepository:

@@ -83,6 +83,9 @@ class AssemblyRepository:
         order_no_like: str | None = None,
         # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
         serial_no_like: str | None = None,
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。修复调用方把同一 keyword
+        # 同时传给 drawing_no_like + name_like 导致隐式 AND、装配件几乎搜不出。
+        keyword: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
@@ -105,6 +108,7 @@ class AssemblyRepository:
             name_like=name_like,
             order_no_like=order_no_like,
             serial_no_like=serial_no_like,
+            keyword=keyword,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
@@ -145,6 +149,8 @@ class AssemblyRepository:
         order_no_like: str | None = None,
         # 2026-07-31：序列号搜索（ILIKE 包含；装配件本身 OR EXISTS 子件匹配）。
         serial_no_like: str | None = None,
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。
+        keyword: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
@@ -163,6 +169,7 @@ class AssemblyRepository:
             name_like=name_like,
             order_no_like=order_no_like,
             serial_no_like=serial_no_like,
+            keyword=keyword,
             request_date_from=request_date_from,
             request_date_to=request_date_to,
             planned_delivery_date_from=planned_delivery_date_from,
@@ -197,6 +204,8 @@ class AssemblyRepository:
         name_like: str | None,
         order_no_like: str | None = None,
         serial_no_like: str | None = None,  # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。
+        keyword: str | None = None,
         request_date_from: date | None = None,
         request_date_to: date | None = None,
         planned_delivery_date_from: date | None = None,
@@ -224,6 +233,15 @@ class AssemblyRepository:
             )
         if name_like:
             stmt = stmt.where(TAssembly.name.ilike(f"%{name_like}%"))
+        # 2026-08-05：图号/名称统一关键词搜索（OR）。此前调用方把同一 keyword
+        # 同时传给 drawing_no_like + name_like 导致隐式 AND，装配件几乎搜不出来。
+        if keyword:
+            kw = keyword.strip()
+            if kw:
+                stmt = stmt.where(
+                    TAssembly.drawing_no.ilike(f"%{kw}%")
+                    | TAssembly.name.ilike(f"%{kw}%")
+                )
         # 2026-07-31：与 PartRepository 对齐——订单号 / 各类日期区间筛选
         if order_no_like:
             on = order_no_like.strip()
