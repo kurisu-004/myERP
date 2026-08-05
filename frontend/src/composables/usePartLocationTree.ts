@@ -10,7 +10,7 @@
 //
 // 错误提示沿用项目惯例：Element Plus 全局 ElMessage。
 
-import { onMounted, ref, type Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getPartLocationTree } from '@/api/parts'
 import type { LocationTreeNode } from '@/types/parts'
@@ -80,10 +80,6 @@ export function usePartLocationTree(): {
       loading.value = false
     }
   }
-
-  onMounted(() => {
-    void load()
-  })
 
   return { tree, loading, load }
 }
