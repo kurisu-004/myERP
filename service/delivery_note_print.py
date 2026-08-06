@@ -19,6 +19,18 @@
   行用同一套 `_fill_row` / 分页逻辑；法拉模板 col 8 改按行取 ``PrintRow.unit``
   （散件「件」/装配体「套」）。
 
+2026-08-06「打开即打印」：
+- 页面设置（纸张 / 方向 / 缩放适配 / 页边距 / 打印区域）在渲染期由 ``_apply_page_setup``
+  写进 xlsx，**模板文件本身不改**。法拉 = A5 横向且宽高都锁一页；路达维持 A4 横向、
+  只锁横向。用户打开 Excel 直接 Ctrl+P 即可，无需手工调页面布局。
+- 列宽改由 ``_apply_budgeted_widths`` 以「模板原始列宽为下限 + 预算内按需加宽」的方式
+  计算，取代原先每页调用 ``_autosize_columns`` 覆盖模板列宽的做法（后者会把 min_width=8
+  强加到模板刻意做窄的列上、把页脚长文本算进估算、并允许备注列涨到 60 字符，从而撑爆
+  纸张宽度分成两页）。``_autosize_columns`` 现仅供 ``render_labels`` 使用。
+- 路达模板 ``print_area`` 原本是空字符串（Excel 会连 J-Q 的悬空空列一起打印），现显式
+  钉死到 A1:I31；其数据行高也从被强制的 25 磅改回模板原生 18 磅（25 行满页 254mm 会
+  超出 A4 横向可打印高度 210mm）。
+
 模板字段含义（service 层不读，但供维护参考）：
 - 法拉（`template/delivery_note_fala.xlsx`，Sheet 'Sheet1'）：
   2026-07-24 换新模板（洪升宏 26.7.24），单份最多 10 行。
@@ -35,15 +47,19 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-from dataclasses import dataclass
+import math
+from copy import copy
+from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import status as http_status
 import openpyxl
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.properties import PageSetupProperties
 
 from core.config import settings
 from core.error_code import ErrCode
@@ -97,6 +113,26 @@ class CellBinding:
 
 
 @dataclass(frozen=True)
+class PageSetupSpec:
+    """一张纸的页面设置（2026-08-06 新增）。
+
+    这些值在渲染期写进 xlsx，用户打开 Excel 直接 Ctrl+P 即可，无需手工调页面布局。
+    模板文件本身不改动——页面设置全部由代码接管，便于统一维护 + 覆盖模板遗漏
+    （如路达模板的 ``print_area`` 原本是空的）。
+    """
+
+    paper_size: int  # openpyxl PaperSize：9=A4, 11=A5
+    orientation: str  # "landscape" | "portrait"
+    # ⚠️ Excel 仅当 sheet_properties.pageSetUpPr.fitToPage 为 True 时才采纳
+    # fit_to_width / fit_to_height；否则这两个值被静默忽略。
+    fit_to_page: bool
+    fit_to_width: int  # 横向页数上限；1 = 永不横向断页
+    fit_to_height: int  # 纵向页数上限；0 = 不限（纵向可自然翻页）
+    margins: tuple[float, float, float, float, float, float]  # L,R,T,B,header,footer（英寸）
+    print_area: str  # 纯范围如 "A1:J17"；openpyxl 存盘时自动补 sheet 前缀
+
+
+@dataclass(frozen=True)
 class TemplateConfig:
     """一份送货单模板的完整布局元信息（per prefix）。"""
 
@@ -105,10 +141,24 @@ class TemplateConfig:
     max_rows: int  # 数据区最大行数；超出 → BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS
     barcode_col: int | None  # 条码列号；None 表示该模板不带条码
     bindings: tuple[CellBinding, ...]
+    # ---- 2026-08-06「打开即打印」新增 ----
+    page_setup: PageSetupSpec
+    width_cols: tuple[int, ...]  # 参与列宽预算的列（= print_area 覆盖的列）
+    header_rows: tuple[int, ...]  # 列宽测量纳入的表头行（**不含**页脚/签字/说明行）
+    growable_cols: frozenset[int]  # 允许在预算内加宽的列；其余列锁死在模板基线
+    shrink_fit_cols: frozenset[int]  # 超长文本靠 shrinkToFit 缩字号显示完整的列
+    grow_cap: Mapping[int, float] = field(default_factory=dict)  # 单列加宽上限覆盖
+    width_budget_ratio: float = 1.15  # 预算 = Σ模板基线列宽 × 本比例
+    data_row_height: float = 25.0  # 数据行统一行高（磅）
+
+
+DEFAULT_GROW_CAP = 12.0  # 单列默认最多比模板基线宽 12 个字符单位
 
 
 TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
     # 法拉：Sheet 'Sheet1'，数据 R3-R12（10 行），R13-R17 为签字栏；超 10 行自动分页
+    # 模板原生就是 A5 横向，且天然放得下（内容高 128.0mm + 上下边距 12.0mm = 139.9mm
+    # ≤ 148mm；列宽合计 94.25 单位 ≈ 175-200mm ≤ 210mm，左右边距为 0）。
     "F": TemplateConfig(
         sheet_name="Sheet1",
         start_row=3,
@@ -127,8 +177,25 @@ TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
             CellBinding(9, "row.planned_delivery_date"),
             CellBinding(10, "row.note"),
         ),
+        page_setup=PageSetupSpec(
+            paper_size=11,  # A5
+            orientation="landscape",
+            fit_to_page=True,
+            fit_to_width=1,
+            fit_to_height=1,  # 宽高都锁一页
+            margins=(0.0, 0.0, 0.1965, 0.275, 0.0785, 0.1181),  # 沿用模板实测值
+            print_area="A1:J17",
+        ),
+        width_cols=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+        header_rows=(2,),  # 单行表头
+        # 序号 / 数量 / 单位 / 预估交期 是模板刻意做窄的定宽列，不参与加宽
+        growable_cols=frozenset({2, 3, 4, 5, 6, 10}),
+        shrink_fit_cols=frozenset({5, 6, 10}),  # 编码 / 名称 / 备注
+        width_budget_ratio=1.15,  # 预算 ≈ 108.4（基线 94.25）；最差 Excel 缩到 ~87%
+        data_row_height=25.0,
     ),
-    # 路达：Sheet '杏南'，数据 R5-R29（25 行）
+    # 路达：Sheet '杏南'，数据 R5-R29（25 行），R30-R31 为填写说明
+    # 维持模板原生的 A4 横向；只锁横向不断页，纵向允许自然翻页。
     "L": TemplateConfig(
         sheet_name="杏南",
         start_row=5,
@@ -145,6 +212,25 @@ TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
             CellBinding(8, "const", const_value=""),
             CellBinding(9, "row.planned_delivery_date"),
         ),
+        page_setup=PageSetupSpec(
+            paper_size=9,  # A4（保持模板原纸张）
+            orientation="landscape",
+            fit_to_page=True,
+            fit_to_width=1,
+            fit_to_height=0,  # 只锁横向；纵向可翻页
+            margins=(0.2715, 0.2715, 0.0, 0.0, 0.0, 0.0),  # 沿用模板实测值
+            # 模板 print_area 原本是空字符串 → Excel 会把 J-Q 的悬空空列一起打出来。
+            # 这里显式钉死到 A-I，是本次的关键修复之一。
+            print_area="A1:I31",
+        ),
+        width_cols=(1, 2, 3, 4, 5, 6, 7, 8, 9),
+        header_rows=(3, 4),  # 双行表头
+        growable_cols=frozenset({2, 3, 4, 5}),
+        shrink_fit_cols=frozenset({3, 5}),  # 申请部门/人、检具名称
+        width_budget_ratio=1.0,  # 总宽 147.2 已接近 A4 横向极限，不给加宽额度
+        # 模板原生 18 磅；此前被强制成 25 磅，25 行满页后整页 254mm 超出 A4
+        # 横向可打印高度 210mm，被迫翻到第 2 页。
+        data_row_height=18.0,
     ),
 }
 
@@ -271,12 +357,19 @@ class DeliveryNotePrintService:
                 print_rows[i : i + cfg.max_rows]
                 for i in range(0, len(print_rows), cfg.max_rows)
             ]
+            # 2026-08-06：模板基线列宽必须在任何写入 / copy_worksheet 之前快照
+            baseline = _snapshot_baseline_widths(ws, cfg.width_cols)
+            # 页面设置也要赶在 copy_worksheet 之前——副本会自动继承
+            # page_setup / pageSetUpPr / page_margins（print_area 除外，见下）
+            _apply_page_setup(ws, cfg)
+
             base_pa = ws.print_area if isinstance(ws.print_area, str) else None
             local_pa = base_pa.split("!")[-1] if base_pa else None
             sheets = [ws]
             for n in range(1, len(pages)):
                 cp = wb.copy_worksheet(ws)
                 cp.title = f"{cfg.sheet_name} ({n + 1})"
+                # WorksheetCopy 不复制 print_area，必须手工补
                 if local_pa:
                     cp.print_area = local_pa
                 sheets.append(cp)
@@ -285,12 +378,12 @@ class DeliveryNotePrintService:
                 for idx, pr in enumerate(page_rows, start=1):
                     _fill_row(sheet, idx, pr, pr.customer_name)
                 _write_footer(sheet, note=note, prefix=prefix)
-                # 2026-08-04 扩展：数据行统一 25 磅 + 列宽按内容自适配（保证不溢出）
-                _set_data_row_heights(sheet, cfg.start_row, len(page_rows))
-                if prefix == "F":
-                    _autosize_columns(sheet, max_col=10, fixed_cols={1: 5}, wide_cols={10}, wide_max=60)
-                else:
-                    _autosize_columns(sheet, max_col=9, fixed_cols={1: 5}, wide_cols={9}, wide_max=60)
+                # 2026-08-06：行高按模板配置 + 列宽以模板为基线在 A5/A4 预算内微调
+                _set_data_row_heights(
+                    sheet, cfg.start_row, len(page_rows), cfg.data_row_height
+                )
+                _apply_budgeted_widths(sheet, baseline, cfg, len(page_rows))
+                _apply_shrink_to_fit(sheet, cfg, len(page_rows))
 
             buf = io.BytesIO()
             wb.save(buf)
@@ -594,6 +687,11 @@ def _autosize_columns(
     ``fixed_cols`` 中的列直接写固定宽度（跳过内容估算）；
     ``wide_cols`` 中的列上限用 ``wide_max`` 而非 ``max_width``，
     兼顾备注等长文本列。
+
+    ⚠️ 2026-08-06 起**仅供 ``render_labels`` 使用**（标签是 openpyxl 新建的空白
+    工作簿，没有模板列宽要保护，扫全表 + min_width 下限的行为在那边是合适的）。
+    送货单走 ``_apply_budgeted_widths``——本函数会覆盖模板手工调好的列宽，且把
+    页脚/签字栏长文本算进估算，用在模板上会撑爆纸张宽度。
     """
     fixed_cols = fixed_cols or {}
     wide_cols = wide_cols or set()
@@ -614,9 +712,129 @@ def _autosize_columns(
 
 
 def _set_data_row_heights(ws, start_row: int, row_count: int, height: float = 25) -> None:
-    """数据行统一 25 磅（Excel 高度单位=磅）。"""
+    """数据行统一行高（Excel 高度单位=磅）。
+
+    默认 25 磅（法拉）；路达传 18 磅——模板原生值，强制 25 会让满页 25 行溢出
+    A4 横向可打印高度。
+    """
     for i in range(row_count):
         ws.row_dimensions[start_row + i].height = height
+
+
+# ============================================================
+# 内部：A5/A4「打开即打印」页面设置 + 列宽预算（2026-08-06 新增）
+# ============================================================
+def _apply_page_setup(ws, cfg: TemplateConfig) -> None:
+    """把纸张 / 方向 / 缩放适配 / 页边距 / 打印区域写进 sheet。
+
+    调用点必须在 ``wb.copy_worksheet`` **之前**：openpyxl 的 ``WorksheetCopy``
+    会连同 ``page_setup`` / ``sheet_properties`` / ``page_margins`` 一起复制给副本，
+    因此第 2、3 页无需重复设置（``print_area`` 是唯一的例外，见 ``render``）。
+
+    两个易踩的坑：
+    - ``fitToWidth`` / ``fitToHeight`` 只有在 ``pageSetUpPr.fitToPage`` 为 True 时
+      才被 Excel 采纳，否则静默失效；
+    - fit 模式下 ``page_setup.scale`` 必须清成 None，否则 Excel 按 scale 出图。
+    """
+    spec = cfg.page_setup
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=spec.fit_to_page)
+    ws.page_setup.paperSize = spec.paper_size
+    ws.page_setup.orientation = spec.orientation
+    if spec.fit_to_page:
+        ws.page_setup.fitToWidth = spec.fit_to_width
+        ws.page_setup.fitToHeight = spec.fit_to_height
+        ws.page_setup.scale = None
+    left, right, top, bottom, header, footer = spec.margins
+    ws.page_margins = PageMargins(
+        left=left, right=right, top=top, bottom=bottom, header=header, footer=footer
+    )
+    # 纯范围字符串即可，openpyxl 存盘时自动补成 'SheetName'!$A$1:$J$17
+    ws.print_area = spec.print_area
+
+
+def _snapshot_baseline_widths(ws, cols: tuple[int, ...]) -> dict[int, float]:
+    """快照模板原始列宽，作为后续列宽预算的基线 + 下限。
+
+    必须在任何写入 / ``_apply_budgeted_widths`` / ``copy_worksheet`` 之前调用，
+    否则拿到的是被改写过的宽度而非模板设计值。模板没显式设宽的列回退到
+    ``sheet_format.defaultColWidth``（缺省 9.0）。
+    """
+    default = ws.sheet_format.defaultColWidth or 9.0
+    baseline: dict[int, float] = {}
+    for col in cols:
+        width = ws.column_dimensions[get_column_letter(col)].width
+        baseline[col] = float(width) if width is not None else float(default)
+    return baseline
+
+
+def _apply_budgeted_widths(
+    ws,
+    baseline: dict[int, float],
+    cfg: TemplateConfig,
+    page_row_count: int,
+) -> None:
+    """模板基线列宽 + 预算内按需加宽 → 写回 column_dimensions。
+
+    与旧的 ``_autosize_columns`` 的本质区别：
+    - 模板列宽是**下限**，任何列都不会比模板更窄（不会破坏手工调好的版式）；
+    - 只有 ``cfg.growable_cols`` 能申请加宽额度，额度总量 = 基线总宽 ×
+      ``width_budget_ratio`` - 基线总宽，僧多粥少时按需求比例分配；
+    - 测量范围只含表头行 + 本页实际填了数据的行，**不含**页脚 / 签字栏 /
+      填写说明那些长文本（旧实现扫全表，正是列宽被撑爆的主因之一）。
+
+    数学上 ``Σ width ≤ 预算`` 恒成立，不需要事后回压。
+    """
+    budget = sum(baseline.values()) * cfg.width_budget_ratio
+    headroom = max(0.0, budget - sum(baseline.values()))
+
+    scan_rows = list(cfg.header_rows) + list(
+        range(cfg.start_row, cfg.start_row + page_row_count)
+    )
+
+    # 每个可增宽列「想要」多出多少（相对模板基线）
+    want: dict[int, float] = {}
+    for col in cfg.width_cols:
+        if col not in cfg.growable_cols:
+            continue
+        content = 0
+        for row in scan_rows:
+            w = _estimate_cell_width(ws.cell(row=row, column=col).value)
+            if w > content:
+                content = w
+        extra = (content + 2) - baseline[col]
+        if extra > 0:
+            want[col] = min(extra, cfg.grow_cap.get(col, DEFAULT_GROW_CAP))
+
+    total_want = sum(want.values())
+    if total_want > headroom and total_want > 0:
+        ratio = headroom / total_want
+        want = {col: w * ratio for col, w in want.items()}
+
+    for col in cfg.width_cols:
+        width = baseline[col] + want.get(col, 0.0)
+        # 逐列向下取整到 3 位小数：四舍五入会让每列各涨最多 0.0005，
+        # 累加后把总宽顶出预算。floor 只减不增，保证 Σ width ≤ 预算严格成立。
+        # 外层 max() 再兜住「floor 把宽度压到基线之下」的边角情况
+        # （如路达 col 8 基线 17.9423076923077），维持「模板列宽是下限」不变量。
+        ws.column_dimensions[get_column_letter(col)].width = max(
+            baseline[col], math.floor(width * 1000) / 1000
+        )
+
+
+def _apply_shrink_to_fit(ws, cfg: TemplateConfig, page_row_count: int) -> None:
+    """给长文本列开 shrinkToFit，让 Excel 自动缩字号把内容显示完整。
+
+    列宽被预算约束后，超长的 名称 / 备注 会显示不全（旧实现靠把列撑到 60 字符
+    来显示，代价就是跑版）。``shrinkToFit`` 把「显示不下」的问题局部化到单元格，
+    不影响整张纸的版式。保留模板原有的对齐方式，只加这一个开关。
+    """
+    for col in cfg.shrink_fit_cols:
+        for row in range(cfg.start_row, cfg.start_row + page_row_count):
+            cell = ws.cell(row=row, column=col)
+            alignment = copy(cell.alignment)
+            alignment.shrinkToFit = True
+            cell.alignment = alignment
+
 
 
 def _format_fala_date(d: date) -> str:
