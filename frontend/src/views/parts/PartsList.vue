@@ -183,6 +183,7 @@
 
     <ResponsiveList
       ref="partsListRef"
+      :key="tableKey"
       :items="items"
       :loading="loading"
       :row-key="rowKey"
@@ -1258,6 +1259,22 @@ const customerFilterActive = computed(() => search.customerId !== '')
 // 2026-07-31：表头「状态(N)」计数同步于已确认的搜索条件（与 statusFilterActive 共享来源）；
 // draft（statusDraft）是 popover 内未提交状态，不计入
 const statusSelectedCount = computed(() => search.statuses.length)
+
+// 2026-08-06 bugfix：装配件位置类筛选切换时 el-table remount key。
+// Element Plus 2.14 el-table 的 lazy tree 把「已加载子件」按 row-key 缓存在内部
+// lazyTreeNodeMap；items 整体替换（filter 切换）不会清空该缓存，导致已展开装配件
+// 仍展示上一次筛选的命中子件。给 ResponsiveList 加 :key 让这四个影响子件显示的
+// 筛选变化时整体 remount，强制走 loadChildren 拿到当前 matched_children。
+// 不含 keyword/排序/状态/日期等不影响子件显示的筛选 —— 保留滚动位置与排序高亮。
+const tableKey = computed(
+  () =>
+    [
+      search.locations.join(','),
+      search.holderIds.join(','),
+      search.nextProcessIds.join(','),
+      search.rowType,
+    ].join('|'),
+)
 
 // ============ 三个日期区间筛选（2026-07-22：内联 daterange） ============
 // daterange 的 v-model 绑定 [start, end]；清空时 el 抛 null，getter/setter 兜底。
