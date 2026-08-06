@@ -345,10 +345,12 @@ class PrintDeliveryNoteRequest(BaseModel):
         description="批次 id 列表（雪花 ID 字符串）；与详情页 line_items.id 一一对应",
     )
     merge_assemblies: bool = Field(
-        default=False,
+        # 2026-08-07 改默认：单上含装配件子件时直接合并为一套打印，避免散件打印
+        default=True,
         description=(
             "True → 同一装配体的子件在送货单上合并为一行（数量 1，单位套，"
-            "显示总装图号/装配体序列号/名称）；False → 散件逐行（默认）。"
+            "显示总装图号/装配体序列号/名称）；False → 散件逐行打印。"
+            "默认 True；前端预览对话框也默认「合并一套」。"
         ),
     )
     merge_quantities: dict[str, int] | None = Field(

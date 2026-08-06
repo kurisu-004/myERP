@@ -492,16 +492,17 @@ class DeliveryNotePrintService:
         self,
         note: TDeliveryNote,
         custom_order: list[str] | None = None,
-        merge_assemblies: bool = False,
+        merge_assemblies: bool = True,  # 2026-08-07 改默认：与送货单保持一致
         assembly_map: dict[int, TAssembly] | None = None,
         merge_quantities: dict[int, int] | None = None,
     ) -> tuple[bytes, str]:
         """打印标签用的 Excel（无模板，沿用 PrintRow 口径）。
 
         表头：客户 | 申请人 | 名称 | 图号 | 数量 | 单位
-        数据行：与送货单完全一致——``merge_assemblies`` 选项自动反映（合并行
-        ``unit`` =「套」，散件行 =「件」），行顺序与 ``custom_order`` 一致。
-        ``prefix`` 仅用于文件名前缀（``delivery_labels_{prefix}_{note_id}.xlsx``）。
+        数据行：与送货单完全一致——``merge_assemblies`` 默认 True（与 ``render``
+        对齐），自动反映（合并行 ``unit`` =「套」，散件行 =「件」），
+        行顺序与 ``custom_order`` 一致。``prefix`` 仅用于文件名前缀
+        （``delivery_labels_{prefix}_{note_id}.xlsx``）。
         """
         custom_order_list: list[str] = list(custom_order) if custom_order else []
         assembly_map = assembly_map or {}

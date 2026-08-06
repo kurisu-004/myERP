@@ -147,10 +147,14 @@ def _item(part, qty=None):
 
 
 # ============================================================
-# T-merge-1: merge=False 默认 — 装配件子件逐行输出（散件无变化）
+# T-merge-1: 显式 merge_assemblies=False — 装配件子件逐行输出（散件无变化）
 # ============================================================
-async def test_print_xlsx_merge_assemblies_default_unmerged(clean_db):
-    """merge_assemblies=False 默认行为：装配件子件与散件都逐行填表。"""
+async def test_print_xlsx_explicit_merge_false_unmerged(clean_db):
+    """merge_assemblies=False（显式传）→ 装配件子件与散件都逐行填表。
+
+    2026-08-07 起默认值翻转为 True；本测试是「显式 False 走散件逐行」路径的
+    回归护栏，确保在默认翻转后这条路径仍工作。
+    """
     customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
     asm = await _make_assembly(clean_db, customer_id=customer.id)
     child1 = await _make_part_with_assembly(
@@ -174,7 +178,9 @@ async def test_print_xlsx_merge_assemblies_default_unmerged(clean_db):
         version=note.version,
     )
 
-    xlsx_bytes, prefix = await svc.print_xlsx(note_id=str(note.id))
+    xlsx_bytes, prefix = await svc.print_xlsx(
+        note_id=str(note.id), merge_assemblies=False,
+    )
     assert prefix == "F"
 
     wb = load_workbook(io.BytesIO(xlsx_bytes))
@@ -189,6 +195,40 @@ async def test_print_xlsx_merge_assemblies_default_unmerged(clean_db):
     assert ws.cell(row=3, column=5).value == "D-F9001"
     assert ws.cell(row=4, column=5).value == "D-F9002"
     assert ws.cell(row=5, column=5).value == "D-F9003"
+
+
+# ============================================================
+# T-default-merge-1: 2026-08-07 — 默认 merge_assemblies=True
+# ============================================================
+async def test_print_xlsx_default_merges_assemblies(clean_db):
+    """不传 merge_assemblies → 默认 True → 装配件子件合并为一行。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(clean_db, customer_id=customer.id)
+    child1 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9101", drawing_no="D-F9101",
+    )
+    child2 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9102", drawing_no="D-F9102",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child1), _item(child2)],
+        version=note.version,
+    )
+
+    # 不传 merge_assemblies — 默认应为 True
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    # 只 1 行：装配体合并行（数量 1，单位套）
+    assert ws.cell(row=3, column=7).value == 1
+    assert ws.cell(row=3, column=8).value == "套"
+    assert ws.cell(row=4, column=1).value is None, "不应有第 2 行"
 
 
 # ============================================================

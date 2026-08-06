@@ -1065,7 +1065,7 @@ class DeliveryNoteService:
         self,
         note_id: str,
         custom_order: list[str] | None = None,  # 2026-08-02 新增：预览组件拖动后的 batch id 顺序
-        merge_assemblies: bool = False,  # 2026-08-04 新增：装配件子件合并为一行
+        merge_assemblies: bool = True,  # 2026-08-07 改默认：装配件子件合并为一行
         merge_quantities: dict[str, int] | None = None,  # 2026-08-04 扩展：每套 override
     ) -> tuple[bytes, str]:
         """按 L1 客户前缀分发模板（template/delivery_note_{prefix}.xlsx），
@@ -1073,8 +1073,10 @@ class DeliveryNoteService:
 
         - ``custom_order`` 为 None / 空 → 按 ``TPartBatch.id ASC``（旧行为）
         - ``custom_order`` 提供 → 按其顺序投影；非法 batch id 或漏行 → 422
-        - ``merge_assemblies`` 为 True → 同一装配体的子件合并为一行（数量 = merge_quantities
-          或默认 1，单位套，显示总装图号/装配体序列号/名称）；散件逐行保持不变
+        - ``merge_assemblies`` 为 True（默认）→ 同一装配体的子件合并为一行
+          （数量 = merge_quantities 或默认 1，单位套，显示总装图号/装配体序列号/
+          名称）；散件逐行保持不变。前端预览对话框默认「合并一套」；若需散件逐行，
+          显式传 ``False``
 
         真正的填表逻辑在 `service/delivery_note_print.py::DeliveryNotePrintService`；
         这里只负责 note 加载 + 薄包装。
@@ -1132,16 +1134,16 @@ class DeliveryNoteService:
         self,
         note_id: str,
         custom_order: list[str] | None = None,
-        merge_assemblies: bool = False,
+        merge_assemblies: bool = True,  # 2026-08-07 改默认：与送货单保持一致
         merge_quantities: dict[str, int] | None = None,
     ) -> tuple[bytes, str]:
         """打印标签 Excel（2026-08-05 PR-C5）——送货单打印的伴随产物。
 
         复用 ``print_xlsx`` 的 note 加载 + 装配件预查 + ``merge_quantities`` 转换，
         走 ``DeliveryNotePrintService.render_labels``（无模板、表头 客户/申请人/
-        名称/图号/数量/单位）。行口径与送货单一致——``merge_assemblies`` 自动反映
-        装配体合并行的「套」单位。前端在一键打印时串联调本方法 + ``print_xlsx``，
-        触发浏览器两次下载。
+        名称/图号/数量/单位）。行口径与送货单一致——``merge_assemblies`` 默认 True
+        （与 ``print_xlsx`` 对齐），自动反映装配体合并行的「套」单位。前端在一键
+        打印时串联调本方法 + ``print_xlsx``，触发浏览器两次下载。
 
         刻意与 ``print_xlsx`` 镜像（不复用公共 helper）以最小化对已测试路径的改动。
         """

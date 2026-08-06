@@ -55,8 +55,8 @@ const loading = ref(false)
 const hasAssemblies = computed(
   () => props.note?.line_items.some((li) => li.assembly_id) ?? false,
 )
-// 默认「分开打印所有子件」（安全默认；现状行为）
-const mergeMode = ref<'separate' | 'merge'>('separate')
+// 2026-08-07 改默认：单上含装配件子件时直接合并为一套打印（与后端 merge_assemblies 默认一致）
+const mergeMode = ref<'separate' | 'merge'>('merge')
 
 interface PreviewAssemblyRow {
   id: string
