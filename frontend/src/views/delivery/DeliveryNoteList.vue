@@ -35,10 +35,12 @@ import {
   type DeliveryNoteStatus,
 } from '@/types/deliveryNote'
 import {
+  canPrint,
   canRecall,
   canSoftDelete,
   canSubmit,
   defaultStatusesForRole,
+  hasManageNoteRole,
 } from '@/utils/deliveryNotePermissions'
 import { listCustomers } from '@/api/customer'
 import { useAuthSession } from '@/composables/useAuthSession'
@@ -53,6 +55,7 @@ const { hasRole } = useAuthSession()
 const role = computed(() => ({
   MANAGER: hasRole('MANAGER'),
   CLERK: hasRole('CLERK'),
+  INSPECTOR: hasRole('INSPECTOR'),
 }))
 
 // ============================================================
@@ -396,7 +399,7 @@ function noteNoOf(id: string): string {
           </div>
           
           <div>
-            <el-button v-if="role.MANAGER || role.CLERK" type="success" @click="openCreate">
+            <el-button v-if="hasManageNoteRole(role)" type="success" @click="openCreate">
               <el-icon><Van /></el-icon>
               新建草稿
             </el-button>
@@ -516,7 +519,7 @@ function noteNoOf(id: string): string {
               撤回
             </el-button>
             <el-button
-              v-if="(role.MANAGER || role.CLERK)"
+              v-if="canPrint(role, (scope.row as DeliveryNoteOut).part_count)"
               link
               type="success"
               :loading="dlMap[(scope.row as DeliveryNoteOut).id]?.state === 'downloading'"

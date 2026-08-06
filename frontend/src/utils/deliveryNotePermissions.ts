@@ -50,6 +50,11 @@ export function canSoftDelete(
   return hasManageNoteRole(role) && status === 'DRAFT'
 }
 
+// 打印按钮：管理角色 + 至少 1 个零件；不限 status（草稿可预览打印）。
+export function canPrint(role: RoleMapLike, partCount: number): boolean {
+  return hasManageNoteRole(role) && partCount > 0
+}
+
 // 司机领取：状态 = SUBMITTED 且 count == 0（driver 无角色要求，前端只显示按钮）
 // 实际 driver 校验在 service 层。
 export function canPickup(status: DeliveryNoteStatus): boolean {
@@ -72,5 +77,6 @@ export function defaultStatusesForRole(
 ): DeliveryNoteStatus[] {
   if (role.MANAGER) return ['DRAFT', 'SUBMITTED', 'PICKED_UP', 'ARCHIVED']
   if (role.CLERK) return ['DRAFT', 'SUBMITTED']
+  if (role.INSPECTOR) return ['DRAFT', 'SUBMITTED', 'PICKED_UP', 'ARCHIVED']
   return ['SUBMITTED', 'PICKED_UP']  // 司机扫码台默认只关心待送货/已领
 }

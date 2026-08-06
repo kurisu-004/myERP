@@ -38,9 +38,11 @@ import {
 } from '@/types/parts'
 import {
   canAddRemoveParts,
+  canPrint,
   canRecall,
   canSoftDelete,
   canSubmit,
+  hasManageNoteRole,
 } from '@/utils/deliveryNotePermissions'
 import { useAuthSession } from '@/composables/useAuthSession'
 import { useColumnVisibility } from '@/composables/useColumnVisibility'  // 2026-08-02
@@ -55,6 +57,7 @@ const { hasRole } = useAuthSession()
 const role = computed(() => ({
   MANAGER: hasRole('MANAGER'),
   CLERK: hasRole('CLERK'),
+  INSPECTOR: hasRole('INSPECTOR'),
 }))
 
 const note = ref<DeliveryNoteDetailOut | null>(null)
@@ -585,21 +588,21 @@ type DeliveryTreeNode = DeliveryNoteLineItem
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
           <el-space wrap>
             <el-button
-              v-if="note.status === 'DRAFT' && (role.MANAGER || role.CLERK)"
+              v-if="canSubmit(note.status, role)"
               type="primary"
               @click="onSubmit"
             >
               提交
             </el-button>
             <el-button
-              v-if="note.status === 'SUBMITTED' && (role.MANAGER || role.CLERK)"
+              v-if="canRecall(note.status, role)"
               type="warning"
               @click="onRecall"
             >
               撤回
             </el-button>
             <el-button
-              v-if="(role.MANAGER || role.CLERK) && note.part_count > 0"
+              v-if="canPrint(role, note.part_count)"
               type="success"
               @click="onPrint"
             >
