@@ -103,6 +103,7 @@ async def _make_loose_part(
     customer_id: int,
     serial_no: str,
     drawing_no: str,
+    note: str | None = None,
 ) -> TPart:
     """无装配体的散件 part。"""
     p = TPart(
@@ -117,6 +118,7 @@ async def _make_loose_part(
         customer_id=customer_id,
         status=PartStatus.READY_TO_SHIP.value,
         location="INSPECTION_SHELF",
+        note=note,
     )
     session.add(p)
     await session.flush()
@@ -384,10 +386,32 @@ async def test_print_xlsx_merge_quantities_override(clean_db):
 
 
 # ============================================================
-# T-merge-6: Excel 数据行高 25 磅 + 列宽自适配（法拉模板）
+# T-merge-6: Excel 数据行高 + 列宽以模板为基线（法拉模板）
 # ============================================================
+# 法拉模板 Sheet1 的 A-J 原始列宽（openpyxl 实测，作为独立 oracle 硬编码在测试里：
+# 若有人改模板或改 TemplateConfig，这里应当先红）
+FALA_BASELINE_WIDTHS = {
+    "A": 3.375,   # 序号（定宽）
+    "B": 10.875,  # 订单号
+    "C": 4.875,   # 分厂
+    "D": 7.625,   # 申请人
+    "E": 16.25,   # 编码
+    "F": 29.125,  # 名称
+    "G": 3.875,   # 数量（定宽）
+    "H": 4.0,     # 单位（定宽）
+    "I": 6.625,   # 预估交期（定宽）
+    "J": 7.625,   # 备注
+}
+FALA_BASELINE_TOTAL = 94.25
+FALA_WIDTH_BUDGET = FALA_BASELINE_TOTAL * 1.15  # = 108.3875
+
+
+def _total_width(ws, letters: str) -> float:
+    return sum(ws.column_dimensions[c].width or 0 for c in letters)
+
+
 async def test_print_xlsx_excel_layout(clean_db):
-    """数据行全部 25 磅；列宽 non-zero 且 ≤ 40。"""
+    """数据行 25 磅；列宽以模板为下限、总宽不超 A5 预算；定宽列锁死。"""
     customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
     p1 = await _make_loose_part(
         clean_db, customer_id=customer.id,
@@ -416,27 +440,229 @@ async def test_print_xlsx_excel_layout(clean_db):
             f"row {r} height 应为 25，实际 {ws.row_dimensions[r].height}"
         )
 
-    # 序号列 col A 固定 5 字符宽
-    assert ws.column_dimensions["A"].width == 5, (
-        f"序号列应为固定 5 字符，实际 {ws.column_dimensions['A'].width}"
+    # 定宽列（序号 / 数量 / 单位）必须锁死在模板基线，
+    # 不能再被旧的 min_width=8 撑大；col I（预估交期）可微增至容纳日期
+    for letter in ("A", "G", "H"):
+        assert ws.column_dimensions[letter].width == FALA_BASELINE_WIDTHS[letter], (
+            f"定宽列 {letter} 应锁死在模板基线 {FALA_BASELINE_WIDTHS[letter]}，"
+            f"实际 {ws.column_dimensions[letter].width}"
+        )
+
+    # 模板列宽是下限：任何列都不得比模板更窄
+    for letter, baseline in FALA_BASELINE_WIDTHS.items():
+        w = ws.column_dimensions[letter].width
+        assert w >= baseline, f"col {letter} width={w} 窄于模板基线 {baseline}"
+
+    # 总宽受 A5 预算约束（这是防止横向跑到第 2 页的核心不变量）
+    total = _total_width(ws, "ABCDEFGHIJ")
+    assert total <= FALA_WIDTH_BUDGET + 1e-6, (
+        f"总列宽 {total} 超出 A5 预算 {FALA_WIDTH_BUDGET}"
     )
 
-    # 列宽约束：序号 col A=5；其他 8 ≤ width ≤ 40（备注 col J 宽上限 60）
-    from openpyxl.utils import get_column_letter
-    for col_idx in range(1, 11):
-        letter = get_column_letter(col_idx)
-        w = ws.column_dimensions[letter].width
-        if col_idx == 1:
-            assert w == 5, f"col A 应为 5，实际 {w}"
-        elif col_idx == 10:
-            # 备注列为 wide_cols → wide_max=60（内容短时仍 ≥ 8）
-            assert 8 <= w <= 60, (
-                f"备注 col J width={w} 不在 [8, 60] 合理范围"
-            )
-        else:
-            assert 8 <= w <= 40, (
-                f"col {letter} width={w} 不在 [8, 40] 合理范围"
-            )
+
+# ============================================================
+# T-print-A5-1: 法拉 = A5 横向 + 宽高锁一页（打开即打印）
+# ============================================================
+async def test_print_xlsx_page_setup_a5_landscape(clean_db):
+    """法拉送货单必须自带 A5 横向 + fitToPage，用户无需手工调页面布局。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9201", drawing_no="D-F9201",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id), items=[_item(p)], version=note.version,
+    )
+
+    xlsx_bytes, prefix = await svc.print_xlsx(note_id=str(note.id))
+    assert prefix == "F"
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+
+    assert ws.page_setup.paperSize == 11, (
+        f"paperSize 应为 11 (A5)，实际 {ws.page_setup.paperSize}"
+    )
+    assert ws.page_setup.orientation == "landscape"
+    # ⚠️ 没有这个开关，Excel 会静默忽略 fitToWidth / fitToHeight
+    assert ws.sheet_properties.pageSetUpPr is not None
+    assert ws.sheet_properties.pageSetUpPr.fitToPage is True, (
+        "pageSetUpPr.fitToPage 必须为 True，否则 fitToWidth/Height 不生效"
+    )
+    assert ws.page_setup.fitToWidth == 1
+    assert ws.page_setup.fitToHeight == 1
+    assert ws.page_setup.scale is None, "fit 模式下 scale 必须清空，否则 Excel 按 scale 出图"
+    assert ws.print_area and ws.print_area.endswith("$A$1:$J$17"), (
+        f"print_area 应锁定 A1:J17，实际 {ws.print_area!r}"
+    )
+
+
+# ============================================================
+# T-print-A5-2: 分页后第 2 页同样带页面设置（copy_worksheet 不带 print_area）
+# ============================================================
+async def test_print_xlsx_page_setup_propagates_to_page2(clean_db):
+    """11 行强制分页；第 2 页必须与第 1 页有相同的打印配置。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    parts = []
+    for i in range(1, 12):  # 11 > max_rows=10
+        parts.append(await _make_loose_part(
+            clean_db, customer_id=customer.id,
+            serial_no=f"F93{i:02d}", drawing_no=f"D-F93{i:02d}",
+        ))
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p) for p in parts],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    assert "Sheet1 (2)" in wb.sheetnames, f"应分成 2 页，实际 {wb.sheetnames}"
+
+    for name in ("Sheet1", "Sheet1 (2)"):
+        ws = wb[name]
+        assert ws.page_setup.paperSize == 11, f"{name} paperSize"
+        assert ws.page_setup.orientation == "landscape", f"{name} orientation"
+        assert ws.sheet_properties.pageSetUpPr.fitToPage is True, f"{name} fitToPage"
+        assert ws.page_setup.fitToWidth == 1, f"{name} fitToWidth"
+        assert ws.page_setup.fitToHeight == 1, f"{name} fitToHeight"
+        # WorksheetCopy 不复制 print_area — 这条是该坑的回归护栏
+        assert ws.print_area and ws.print_area.endswith("$A$1:$J$17"), (
+            f"{name} print_area 缺失/错误：{ws.print_area!r}"
+        )
+        assert _total_width(ws, "ABCDEFGHIJ") <= FALA_WIDTH_BUDGET + 1e-6, (
+            f"{name} 总列宽超预算"
+        )
+
+
+# ============================================================
+# T-print-A5-3: 超长备注不得撑爆列宽预算（旧实现会涨到 60 字符→跑版）
+# ============================================================
+async def test_print_xlsx_long_note_respects_width_budget(clean_db):
+    """一条超长备注不能把总宽顶出 A5；靠 shrinkToFit 保证内容仍可读。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9401", drawing_no="D-F9401",
+        note="极长备注内容" * 30,  # 远超旧实现的 wide_max=60
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id), items=[_item(p)], version=note.version,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+
+    total = _total_width(ws, "ABCDEFGHIJ")
+    assert total <= FALA_WIDTH_BUDGET + 1e-6, (
+        f"超长备注把总列宽顶到 {total}，超出预算 {FALA_WIDTH_BUDGET}"
+    )
+    # 备注列仍不得窄于模板基线
+    assert ws.column_dimensions["J"].width >= FALA_BASELINE_WIDTHS["J"]
+    # 显示不下的部分交给 shrinkToFit，而不是把列撑宽
+    assert ws.cell(row=3, column=10).alignment.shrink_to_fit is True, (
+        "备注列数据单元格应开启 shrinkToFit"
+    )
+
+
+# ============================================================
+# T-print-A5-4: 路达模板补上缺失的 print_area + 恢复模板原生行高
+# ============================================================
+async def test_print_xlsx_luda_print_area_and_row_height(clean_db):
+    """路达模板 print_area 原本为空 → Excel 会连 J-Q 空列一起打印。"""
+    customer = await _make_l1_root(clean_db, name="路达", prefix="L")
+    p = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="L9501", drawing_no="D-L9501",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id), items=[_item(p)], version=note.version,
+    )
+
+    xlsx_bytes, prefix = await svc.print_xlsx(note_id=str(note.id))
+    assert prefix == "L"
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["杏南"]
+
+    assert ws.print_area and ws.print_area.endswith("$A$1:$I$31"), (
+        f"路达 print_area 应钉死 A1:I31（否则打印 J-Q 空列），实际 {ws.print_area!r}"
+    )
+    assert ws.page_setup.paperSize == 9, "路达保持 A4"
+    assert ws.page_setup.orientation == "landscape"
+    assert ws.sheet_properties.pageSetUpPr.fitToPage is True
+    assert ws.page_setup.fitToWidth == 1
+    assert ws.page_setup.fitToHeight == 0, "路达纵向允许自然翻页"
+    # 模板原生 18 磅；强制 25 磅会让满页 25 行超出 A4 横向可打印高度
+    assert ws.row_dimensions[5].height == 18, (
+        f"路达数据行高应为模板原生 18 磅，实际 {ws.row_dimensions[5].height}"
+    )
+
+
+# ============================================================
+# T-print-A5-4b: 预估交期日期不能显示为 "####"（列宽必须容纳 "2026/10/15"）
+# ============================================================
+async def test_print_xlsx_planned_delivery_date_fits(clean_db):
+    """col I (预估交期) 存的是 date 对象；Excel 渲染最长 "2026/10/15"。
+
+    模板基线 6.625 字符容纳不下 10 字符的日期字符串，会显示为 "####"。
+    修复：把 col 9 加入 growable_cols，加宽上限 10 字符。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    # 故意挑月份 / 日期都是两位数（最长宽度 10）的日期
+    p = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9701", drawing_no="D-F9701",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id), items=[_item(p)], version=note.version,
+    )
+
+    xlsx_bytes, _ = await svc.print_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+
+    col_i = ws.column_dimensions["I"].width
+    # Excel 渲染 "2026/10/15" 需要约 10 字符 + 边距
+    assert col_i >= 10.0, (
+        f"col I (预估交期) width={col_i} 不够容纳 2026/10/15，"
+        f"Excel 会显示为 ####"
+    )
+    assert col_i <= 12.0, (
+        f"col I width={col_i} 不应涨过 grow_cap 上限 12"
+    )
+    assert _total_width(ws, "ABCDEFGHIJ") <= FALA_WIDTH_BUDGET + 1e-6
+
+
+async def test_print_labels_xlsx_layout_unchanged(clean_db):
+    """render_labels 仍走旧的 _autosize_columns；不应被送货单的新逻辑波及。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9601", drawing_no="D-F9601",
+    )
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id), items=[_item(p)], version=note.version,
+    )
+
+    labels_bytes, _ = await svc.print_labels_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+
+    # 旧行为：数量 / 单位列固定 8 字符宽
+    assert ws.column_dimensions["E"].width == 8
+    assert ws.column_dimensions["F"].width == 8
+    # 标签表不做页面设置（明确不在本次范围内）
+    assert ws.sheet_properties.pageSetUpPr is None or (
+        ws.sheet_properties.pageSetUpPr.fitToPage is None
+    )
 
 
 # ============================================================
