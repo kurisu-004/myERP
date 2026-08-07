@@ -52,6 +52,10 @@ from service import (
     WorkTypeProcessService,
     WorkTypeService,
 )
+from service.part import (
+    Broadcaster,
+    EventBroadcaster,
+)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -539,6 +543,8 @@ def get_assembly_service(
 
 def get_delivery_note_service(
     session: AsyncSession = Depends(get_session),
+    broadcaster: Broadcaster | None = None,
+    event_broadcaster: EventBroadcaster | None = None,
     user: CurrentUser = Depends(get_current_user),
 ) -> DeliveryNoteService:
     """送货单管理 service 工厂（PR-G 2026-07-22 替代 PR-B 老 XLSX 导出）。
@@ -549,13 +555,8 @@ def get_delivery_note_service(
     - customers：建单校验存在
     - workers：pickup() 校验司机工种 / 活跃
     - broadcaster / event_broadcaster：pickup() 影响多个 part 状态，触发整张
-      dashboard snapshot 与业务事件（DELIVERY_NOTE_PICKED_UP）；通过内部闭包传，
+      dashboard snapshot 与业务事件（DELIVERY_NOTE_PICKED_UP）；通过闭包传，
       不复用请求 session。
-
-    注意：broadcaster / event_broadcaster 之前曾作为「可选 Depends 参数」暴露在外，
-    但 `Callable` 没有 JSON 表示，会让 FastAPI 为这两个查询参数生成 schema 时抛
-    `PydanticInvalidForJsonSchema: core_schema.CallableSchema`，连带把整套
-    `/openapi.json` 拉崩（2026-08-08 修复）。改为纯内部闭包，行为完全等价。
 
     调用方 API 层用 require_roles 守权限（MANAGER/CLERK 编辑；pickup 任意已登录）。
     """
@@ -582,8 +583,11 @@ def get_delivery_note_service(
         work_types=WorkTypeRepository(session),
         part_events=PartEventRepository(session),
         assemblies=AssemblyRepository(session),  # 2026-08-03：pickup 触发装配件 rollup
-        broadcaster=_broadcaster,
-        event_broadcaster=_event_broadcaster,
+        broadcaster=_broadcaster if broadcaster is None else broadcaster,
+        event_broadcaster=(
+            _event_broadcaster if event_broadcaster is None
+            else event_broadcaster
+        ),
         current_user=user,
     )
 
