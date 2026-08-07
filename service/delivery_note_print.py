@@ -31,6 +31,15 @@
   钉死到 A1:I31；其数据行高也从被强制的 25 磅改回模板原生 18 磅（25 行满页 254mm 会
   超出 A4 横向可打印高度 210mm）。
 
+2026-08-08 法拉版式微调：
+- 数据行 col 2（订单号）/ 5（图号）/ 6（名称）左对齐（统一覆盖模板里 R3-R8 col 5
+  仍为中心、R9-R12 才是 left 的不一致）；表头 R2 全居中保持模板原值。详见
+  ``_apply_data_alignments`` 与 ``TemplateConfig.data_alignments``。
+- col 9 预估交期 ``grow_cap`` 从 10.0 收到 1.5（commit ``afc089a`` 改写
+  ``M月D日`` 字符串而非 date 对象后，``grow_cap=10.0`` 已经过保）。最终列宽
+  ≈ 8.1 单位，覆盖实测最长 ``12月31日`` 8 单位内容；列宽 <8 单位时走 Excel
+  默认截断（col 9 未列入 ``shrink_fit_cols``）。
+
 模板字段含义（service 层不读，但供维护参考）：
 - 法拉（`template/delivery_note_fala.xlsx`，Sheet 'Sheet1'）：
   2026-07-24 换新模板（洪升宏 26.7.24），单份最多 10 行。
@@ -150,6 +159,12 @@ class TemplateConfig:
     grow_cap: Mapping[int, float] = field(default_factory=dict)  # 单列加宽上限覆盖
     width_budget_ratio: float = 1.15  # 预算 = Σ模板基线列宽 × 本比例
     data_row_height: float = 25.0  # 数据行统一行高（磅）
+    # ---- 2026-08-08 列对齐 ----
+    # 数据行 horizontal 对齐覆盖：列号 → "left" / "center" / "right"。
+    # 仅作用于 R[start_row] ~ R[start_row+page_row_count-1]，表头 R2 保持模板自带。
+    # 实现走 copy(cell.alignment) + 改 horizontal，**不要**整对象替换否则会清掉
+    # vertical / wrapText / shrinkToFit 等其他字段。
+    data_alignments: Mapping[int, str] = field(default_factory=dict)
 
 
 DEFAULT_GROW_CAP = 12.0  # 单列默认最多比模板基线宽 12 个字符单位
@@ -188,15 +203,22 @@ TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
         ),
         width_cols=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
         header_rows=(2,),  # 单行表头
-        # 序号 / 数量 / 单位 是模板刻意做窄的定宽列；预估交期存的是 date 对象，
-        # Excel 渲染成 "2026/10/15"（最长 10 字符），超过模板基线 6.625 → 显示
-        # 为 "####"，因此允许在预算内小幅加宽
+        # 序号 / 数量 / 单位 是模板刻意做窄的定宽列；预估交期实际是 "M月D日"
+        # 字符串（commit afc089a 后），最长 "12月31日" ≈ 8 单位，模板基线 6.625
+        # 偏窄但加宽额度已收紧
         growable_cols=frozenset({2, 3, 4, 5, 6, 9, 10}),
         shrink_fit_cols=frozenset({5, 6, 10}),  # 编码 / 名称 / 备注
-        # 预估交期最长 10 字符（"2026/10/15"），加宽上限刚好够显示
-        grow_cap={9: 10.0},
+        # 2026-08-08：预估交期 grow_cap 从 10.0 收到 1.5 → 最终列宽 ≈ 8.1 单位，
+        # 覆盖 "12月31日" 8 单位内容；超出走 shrinkToFit（虽然 col 9 不在
+        # shrink_fit_cols，但 col 8 走的是 _apply_budgeted_widths 后的预算约束，
+        # Excel 在列宽不够时默认也会截断，不会爆）
+        grow_cap={9: 1.5},
         width_budget_ratio=1.15,  # 预算 ≈ 108.4（基线 94.25）；最差 Excel 缩到 ~87%
         data_row_height=25.0,
+        # 2026-08-08：数据行 col 2/5/6（订单号 / 图号 / 名称）左对齐；表头 R2
+        # 保持模板居中；其余列（序号 / 分厂 / 申请人 / 数量 / 单位 / 交期 / 备注）
+        # 仍走模板原值（一般居中）
+        data_alignments={2: "left", 5: "left", 6: "left"},
     ),
     # 路达：Sheet '杏南'，数据 R5-R29（25 行），R30-R31 为填写说明
     # 维持模板原生的 A4 横向；只锁横向不断页，纵向允许自然翻页。
@@ -386,6 +408,8 @@ class DeliveryNotePrintService:
                 _set_data_row_heights(
                     sheet, cfg.start_row, len(page_rows), cfg.data_row_height
                 )
+                # 2026-08-08：数据行列对齐（订单号/图号/名称 left；表头保持模板原值）
+                _apply_data_alignments(sheet, cfg, len(page_rows))
                 _apply_budgeted_widths(sheet, baseline, cfg, len(page_rows))
                 _apply_shrink_to_fit(sheet, cfg, len(page_rows))
 
@@ -910,6 +934,25 @@ def _apply_budgeted_widths(
         ws.column_dimensions[get_column_letter(col)].width = max(
             baseline[col], math.floor(width * 1000) / 1000
         )
+
+
+def _apply_data_alignments(ws, cfg: TemplateConfig, page_row_count: int) -> None:
+    """按 ``cfg.data_alignments`` 把数据行的 ``horizontal`` 对齐写到 cell。
+
+    仅作用于 R[start_row] ~ R[start_row+page_row_count-1]，表头 R2 保持模板自带。
+    复用 ``_apply_shrink_to_fit`` 的 copy+modify 模式：``copy(cell.alignment)`` 后
+    仅设 ``horizontal``，**不能** ``cell.alignment = Alignment(horizontal=...)`` 整对象
+    替换——那样会把 vertical / wrapText / shrinkToFit 等其他字段一并清零。
+
+    调用顺序：必须在 ``_apply_shrink_to_fit`` **之前**，让 shrink_to_fit 后续
+    ``copy()`` 时能看到这里写入的新 horizontal。
+    """
+    for col, align in cfg.data_alignments.items():
+        for r in range(cfg.start_row, cfg.start_row + page_row_count):
+            cell = ws.cell(row=r, column=col)
+            alignment = copy(cell.alignment)
+            alignment.horizontal = align
+            cell.alignment = alignment
 
 
 def _apply_shrink_to_fit(ws, cfg: TemplateConfig, page_row_count: int) -> None:

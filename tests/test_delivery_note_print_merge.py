@@ -652,16 +652,20 @@ async def test_print_xlsx_luda_print_area_and_row_height(clean_db):
 
 
 # ============================================================
-# T-print-A5-4b: 预估交期日期不能显示为 "####"（列宽必须容纳 "2026/10/15"）
+# T-print-A5-4b: 预估交期列不能显示为 "####"
 # ============================================================
 async def test_print_xlsx_planned_delivery_date_fits(clean_db):
-    """col I (预估交期) 存的是 date 对象；Excel 渲染最长 "2026/10/15"。
+    """col I (预估交期) 写 ``M月D日`` 字符串（commit afc089a 后）。
 
-    模板基线 6.625 字符容纳不下 10 字符的日期字符串，会显示为 "####"。
-    修复：把 col 9 加入 growable_cols，加宽上限 10 字符。
+    模板基线 6.625 单位 < 实测最长 ``12月31日`` 8 单位，会显示为 ``####``。
+    修复：把 col 9 加入 growable_cols，``grow_cap[9]=1.5`` → 列宽 ≈ 8.125 单位，
+    能装下 ``12月31日``；超出走 shrink_to_fit / Excel 默认截断兜底。
+
+    2026-08-08 改：旧测试假设 date 对象渲染 ``2026/10/15``，col I ≥ 10.0；
+    新规范要求 ``grow_cap=1.5`` 紧凑（col I 停在 ≤ 9.0 单位）。
     """
     customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
-    # 故意挑月份 / 日期都是两位数（最长宽度 10）的日期
+    # 故意挑月份 / 日期都是两位数（M月D日 实测最宽 8 单位）
     p = await _make_loose_part(
         clean_db, customer_id=customer.id,
         serial_no="F9701", drawing_no="D-F9701",
@@ -676,13 +680,14 @@ async def test_print_xlsx_planned_delivery_date_fits(clean_db):
     ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
 
     col_i = ws.column_dimensions["I"].width
-    # Excel 渲染 "2026/10/15" 需要约 10 字符 + 边距
-    assert col_i >= 10.0, (
-        f"col I (预估交期) width={col_i} 不够容纳 2026/10/15，"
+    # M月D日 字符串最长 "12月31日" ≈ 8 单位；列宽 ≥ 7 单位才能装下
+    assert col_i >= 7.0, (
+        f"col I (预估交期) width={col_i} 不够容纳 '12月31日'，"
         f"Excel 会显示为 ####"
     )
-    assert col_i <= 12.0, (
-        f"col I width={col_i} 不应涨过 grow_cap 上限 12"
+    # 2026-08-08：grow_cap[9]=1.5 → col I 实测稳定 8.125，不应涨过 9
+    assert col_i <= 9.0, (
+        f"col I width={col_i} 不应涨过 grow_cap 上限 1.5 + baseline 6.625"
     )
     assert _total_width(ws, "ABCDEFGHIJ") <= FALA_WIDTH_BUDGET + 1e-6
 
