@@ -1013,6 +1013,11 @@ class DeliveryNoteService:
         # L1 根下所有 active 子客户 (L2) + L1 自身
         children = await self.customers.list_children(cid_int, include_deleted=False)
         customer_ids = [c.id for c in children] + [cid_int]
+        # 2026-08-07 picker 富化：建 L2/L1 name_map 复用现有 children（不增 SQL）。
+        # L1 自己也可能在 customer_ids（自指），把根名也纳入。
+        name_by_id: dict[int, str] = {c.id: c.name for c in children}
+        name_by_id[cid_int] = cust.name
+        root_name = cust.name
 
         rows = await self._batches().list_batches_with_part(
             statuses=[PartStatus.INSPECTION.value, PartStatus.READY_TO_SHIP.value],
@@ -1042,6 +1047,13 @@ class DeliveryNoteService:
         for b, p in rows:
             if b.delivery_note_id is not None and b.delivery_note_id in active_note_ids:
                 continue  # 在 active 单上，跳过
+            leaf_name = name_by_id.get(p.customer_id)
+            # L1 root 自指场景（leaf 与 parent 同名）退化为单段；与 _to_detail 同款。
+            path = (
+                f"{root_name} / {leaf_name}"
+                if (root_name and leaf_name and root_name != leaf_name)
+                else leaf_name
+            )
             result.append(DeliveryNoteCandidatePart(
                 id=str(p.id),
                 batch_id=str(b.id),
@@ -1058,6 +1070,9 @@ class DeliveryNoteService:
                 status=b.status,
                 planned_delivery_date=p.planned_delivery_date,
                 order_no=p.order_no,  # 2026-08-01 picker 新增
+                customer_name=leaf_name,
+                parent_customer_name=root_name,
+                customer_path=path,
             ))
         return result
 

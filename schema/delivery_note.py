@@ -188,6 +188,7 @@ class DeliveryNoteCandidatePart(BaseModel):
     """候选入单零件（批次级：INSPECTION + READY_TO_SHIP 批次）。
 
     2026-07-29 批次化：行=批次；quantity 为批次量（可改小，服务端入单时自动拆）。
+    2026-08-07 picker 富化：增 L2 / L1 客户字段供工具栏多选筛选与扫描拦截用。
     """
 
     id: IdStrNonNull = Field(description="工单 id（展示 / 反查用）")
@@ -202,6 +203,16 @@ class DeliveryNoteCandidatePart(BaseModel):
     status: PartStatus = Field(description="批次状态")
     planned_delivery_date: date | None = None
     order_no: str | None = Field(default=None, description="订单号（2026-08-01 picker 新增）")
+    # —— 2026-08-07 picker 富化 ——
+    customer_name: str | None = Field(
+        default=None, description="零件所属二级（L2）客户名",
+    )
+    parent_customer_name: str | None = Field(
+        default=None, description="所属一级（L1 root）客户名",
+    )
+    customer_path: str | None = Field(
+        default=None, description="L1 / L2 路径（与 note.customer_path 同格式）",
+    )
 
 
 class DeliveryNoteCandidatePartsOut(BaseModel):

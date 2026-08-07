@@ -84,10 +84,32 @@ interface PreviewAssemblyRow {
 }
 type PreviewRow = DeliveryNoteLineItem | PreviewAssemblyRow
 
+// 2026-08-07：同 part 多批次折叠（_split 产生同 part 同送货单）。
+// 永远开启，先于装配体折叠：每 part 仅产出一行，quantity 求和；
+// 行 id = 首个出现的 batch id（= 后端代表批次 id 约定）。
+// 与 DeliveryNoteLineItem 1:1 → DeliveryNoteLineItem（保留原 part_id 用于 asm 折叠判断）。
+function foldSamePart(items: DeliveryNoteLineItem[]): DeliveryNoteLineItem[] {
+  const qty = new Map<string, number>()
+  const rep = new Map<string, DeliveryNoteLineItem>()
+  const order: string[] = []
+  for (const li of items) {
+    const pid = String(li.part_id)
+    if (qty.has(pid)) {
+      qty.set(pid, qty.get(pid)! + li.quantity)
+      continue
+    }
+    qty.set(pid, li.quantity)
+    rep.set(pid, li)
+    order.push(pid)
+  }
+  return order.map((pid) => ({ ...rep.get(pid)!, quantity: qty.get(pid)! }))
+}
+
 // 预览表格行：合并模式构造父行 + 散件；非合并模式 = line_items 拷贝
 const previewRows = computed<PreviewRow[]>(() => {
   if (!props.note) return []
-  const flat = props.note.line_items
+  // 2026-08-07：先做同 part 折叠，再做装配体折叠。装配体折叠对折叠后的 part 唯一行生效。
+  const flat = foldSamePart(props.note.line_items)
   if (!mergeMode.value || mergeMode.value === 'separate') {
     return [...flat]
   }
@@ -211,7 +233,10 @@ async function onConfirm(): Promise<void> {
       // 合并模式：父行 → 组内 batch id 连续；散件行原样
       custom_order = []
       merge_quantities = {}
-      const flat = props.note.line_items
+      // 2026-08-07 bugfix：装配件子件被 _split 拆成多批时，未折叠的 line_items 会枚举到
+      // 非代表 batch id，触发后端 custom_order rep-id 校验 422。改用 foldSamePart 后，
+      // 每个 part 只产出一行（id = 代表 batch id），与后端 rep_by_part 一致。
+      const flat = foldSamePart(props.note.line_items)
       rows.value.forEach((r) => {
         if (isAsmRow(r)) {
           merge_quantities![r.assembly_id] = r.quantity
@@ -229,7 +254,8 @@ async function onConfirm(): Promise<void> {
 
     if (isLabelMode.value) {
       // 2026-08-07：label 模式 → 展开勾选行成子件 batch id（与 custom_order 同一口径）
-      const flat = props.note.line_items
+      // 同上 bugfix：折叠后每个 asm 子件 part 仅 1 个代表 batch id。
+      const flat = foldSamePart(props.note.line_items)
       const line_item_ids: string[] = []
       selectedRows.value.forEach((r) => {
         if (isAsmRow(r)) {

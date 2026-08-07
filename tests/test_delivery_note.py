@@ -975,3 +975,69 @@ async def test_pickup_after_recall_fails_state_machine(clean_db):
             driver_worker_id=str(driver.id),
             version=recalled.version,
         )
+
+
+# ============================================================
+# 2026-08-07：candidate-parts 富化 L2/L1 客户字段（picker 筛选 + 扫码拦截用）
+# ============================================================
+async def test_list_candidate_parts_includes_l2_customer(clean_db):
+    """L1 + 2 个 L2 子客户，各 1 个 READY_TO_SHIP 批次 → 候选每行带 customer_name /
+    parent_customer_name / customer_path。
+
+    验证 service.list_candidate_parts 在不增 SQL 的前提下（复用 list_children）
+    富化 L2 客户展示字段，供前端 picker 多选筛选 + ElMessage 拦截使用。
+    """
+    l1 = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    l2_a = await _make_l2_leaf(clean_db, name="一厂", l1_id=l1.id)
+    l2_b = await _make_l2_leaf(clean_db, name="二厂", l1_id=l1.id)
+
+    # 一厂 1 件 INSPECTION（不入 candidate；INSPECTION 也算候选，下面再补 INSPECTION）
+    p_a = await _make_part(
+        clean_db, customer_id=l2_a.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="FA001", drawing_no="D-FA001",
+    )
+    p_b = await _make_part(
+        clean_db, customer_id=l2_b.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="FB001", drawing_no="D-FB001",
+    )
+
+    svc = _make_service(clean_db)
+    items = await svc.list_candidate_parts(str(l1.id))
+    assert len(items) == 2
+
+    by_serial = {it.serial_no: it for it in items}
+    assert by_serial["FA001"].customer_name == "一厂"
+    assert by_serial["FA001"].parent_customer_name == "法拉"
+    assert by_serial["FA001"].customer_path == "法拉 / 一厂"
+
+    assert by_serial["FB001"].customer_name == "二厂"
+    assert by_serial["FB001"].parent_customer_name == "法拉"
+    assert by_serial["FB001"].customer_path == "法拉 / 二厂"
+
+
+async def test_list_candidate_parts_l2_filter_to_single_child(clean_db):
+    """L1 多个 L2 时，候选混合来自所有 L2（前端按 customer_name 多选筛选的数据源）。"""
+    l1 = await _make_l1_root(clean_db, name="路达", prefix="L")
+    l2_x = await _make_l2_leaf(clean_db, name="七厂", l1_id=l1.id)
+    l2_y = await _make_l2_leaf(clean_db, name="八厂", l1_id=l1.id)
+
+    await _make_part(
+        clean_db, customer_id=l2_x.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="LX001", drawing_no="D-LX001",
+    )
+    await _make_part(
+        clean_db, customer_id=l2_y.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        serial_no="LY001", drawing_no="D-LY001",
+    )
+
+    svc = _make_service(clean_db)
+    items = await svc.list_candidate_parts(str(l1.id))
+    names = {it.customer_name for it in items}
+    # 两条候选：七厂 + 八厂
+    assert names == {"七厂", "八厂"}
+    # 每条都有 L1 父名
+    assert all(it.parent_customer_name == "路达" for it in items)

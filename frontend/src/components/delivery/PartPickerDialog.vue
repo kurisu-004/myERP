@@ -26,6 +26,11 @@ import type { PartItem } from '@/api/parts'
 import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
 import { useColumnVisibility } from '@/composables/useColumnVisibility'
 import ColumnVisibilityPopover from '@/components/ColumnVisibilityPopover.vue'
+// 2026-08-07 picker 富化：L2 客户列 / 全屏 / 多选筛选 / 扫码拦截
+//   - el-dialog fullscreen：references/feedback.md §ElDialog
+//   - el-select multiple + collapse-tags + max-collapse-tags：form.md §el-select
+//   - el-table-column sortable + prop：references/table.md §1
+//   - ElMessage.warning：references/feedback.md §ElMessage
 
 const props = defineProps<{
   /** v-model 兼容（标准命名 modelValue + update:modelValue 来自 el-dialog 习惯） */
@@ -77,11 +82,41 @@ const columnDefs = [
   { key: 'name', label: '名称' },
   { key: 'order_no', label: '订单号' },
   { key: 'quantity', label: '批次量' },
+  { key: 'customer_name', label: '二级客户' },  // 2026-08-07 picker 富化
   { key: 'applicant_name', label: '申请人' },
   { key: 'status', label: '状态' },
   { key: 'planned_delivery_date', label: '交期' },
 ] as const
 const columnVisibility = useColumnVisibility(columnDefs, { listKey: 'delivery_part_picker' })
+
+// ============ 2026-08-07：二级客户多选筛选 ============
+/** 多选集合（每个元素是 customer_name 字符串）。空数组 = 不过滤。 */
+const customerFilter = ref<string[]>([])
+
+/** 工具栏下拉的选项：从已加载 rows 派生去重的 customer_name 列表。 */
+const customerFilterOptions = computed(() => {
+  const s = new Set<string>()
+  for (const r of rows.value) {
+    if (r.customer_name) s.add(r.customer_name)
+  }
+  return [...s].sort()
+})
+
+/** 筛选后的表格数据源（保留 selectedRows 在筛内外的合并逻辑见 onSelectionChange）。 */
+const filteredRows = computed(() => {
+  if (!customerFilter.value || customerFilter.value.length === 0) return rows.value
+  const set = new Set(customerFilter.value)
+  return rows.value.filter((r) => r.customer_name && set.has(r.customer_name))
+})
+
+/** 工具栏筛外已勾批次的数量（用于角标提示，避免用户被「勾了又看不到」困惑）。 */
+const hiddenSelectedCount = computed(() => {
+  if (!customerFilter.value || customerFilter.value.length === 0) return 0
+  const set = new Set(customerFilter.value)
+  return selectedRows.value.filter(
+    (r) => !r.customer_name || !set.has(r.customer_name),
+  ).length
+})
 
 // 监听 customerId / 打开 → 拉候选
 watch(
@@ -93,6 +128,8 @@ watch(
       unsubPickerScan.value = null
       return
     }
+    // 2026-08-07：重新打开弹框时清掉上一轮的 L2 筛选，避免陈旧状态误伤扫码。
+    customerFilter.value = []
     loading.value = true
     try {
       rows.value = await listCandidateParts(cid)
@@ -111,15 +148,24 @@ watch(
   { immediate: true },
 )
 
+/** 2026-08-07 全屏表格高度：留出 toolbar + footer + dialog header 的空间。 */
+const tableHeight = computed(() => 'calc(100vh - 240px)')
+
 function rowSelectable(row: DeliveryNoteCandidatePart): boolean {
   return !existingSet.value.has(row.batch_id)
 }
 
 function onSelectionChange(rowsSel: DeliveryNoteCandidatePart[]) {
-  selectedRows.value = rowsSel
+  // 2026-08-07：@selection-change 只反映当前可见行；保留之前被筛外勾上的批次，
+  // 否则切筛选就会丢掉用户已选的勾（el-table 的 :data 切换会重置其内部 selection）。
+  const visibleIds = new Set(rowsSel.map((r) => r.batch_id))
+  const hiddenPrev = selectedRows.value.filter(
+    (r) => !visibleIds.has(r.batch_id),
+  )
+  selectedRows.value = [...hiddenPrev, ...rowsSel]
   // 新勾选的行默认全量；取消勾选的行清掉数量
   const next: Record<string, number> = {}
-  for (const r of rowsSel) {
+  for (const r of selectedRows.value) {
     next[r.batch_id] = qtyMap.value[r.batch_id] ?? r.quantity
   }
   qtyMap.value = next
@@ -208,17 +254,38 @@ async function onPickerScan(rawCode: string): Promise<void> {
     await findPartBySerialAndPrompt(code)
     return
   }
-  if (selectable.length > 1) {
-    // 同一 serial 多批次 — 复用报工台 BatchPickerDialog
-    pickerBatchCode.value = code
-    pickerBatchRows.value = selectable as unknown as PartItem[]
-    showPickerBatchPicker.value = true
-    return
+  // 2026-08-07：二级客户筛选拦截 — 筛外的 serial 不勾选，ElMessage.warning 提示。
+  // 仅在「全集中能命中 + 筛内 0 命中 + 用户确实设了筛选」时触发，避免无筛选时误报。
+  const filterSet = new Set(customerFilter.value ?? [])
+  if (filterSet.size > 0) {
+    const inFilter = selectable.filter(
+      (r) => r.customer_name != null && filterSet.has(r.customer_name),
+    )
+    if (inFilter.length === 0) {
+      const actual = selectable[0]?.customer_name ?? '未知'
+      ElMessage.warning(
+        `扫取的图纸属于【${actual}】，不在筛选范围【${[...filterSet].join('、')}】内，未勾选`,
+      )
+      return
+    }
+    // 用筛内命中继续原流程
+    return proceedSelect(inFilter)
   }
-  // 单条命中 → 切换勾选 + 行闪烁
-  const target = selectable[0]
-  toggleRowByBatchId(target.batch_id)
-  flashRow(target.batch_id)
+  return proceedSelect(selectable)
+
+  function proceedSelect(list: DeliveryNoteCandidatePart[]) {
+    if (list.length > 1) {
+      // 同一 serial 多批次 — 复用报工台 BatchPickerDialog
+      pickerBatchCode.value = code
+      pickerBatchRows.value = list as unknown as PartItem[]
+      showPickerBatchPicker.value = true
+      return
+    }
+    // 单条命中 → 切换勾选 + 行闪烁
+    const target = list[0]
+    toggleRowByBatchId(target.batch_id)
+    flashRow(target.batch_id)
+  }
 }
 
 function onPickerBatchPicked(p: PartItem): void {
@@ -240,7 +307,7 @@ onBeforeUnmount(() => {
   <el-dialog
     :model-value="modelValue"
     :title="title ?? '选择零件'"
-    width="980"
+    fullscreen
     :close-on-click-modal="false"
     @update:model-value="(v) => emit('update:modelValue', v)"
   >
@@ -251,7 +318,30 @@ onBeforeUnmount(() => {
       <div class="picker-toolbar-right">
         <span class="picker-count">
           已勾 {{ selectedRows.length }} 批
+          <span v-if="hiddenSelectedCount > 0" class="picker-count-hidden">
+            （筛外 {{ hiddenSelectedCount }}）
+          </span>
         </span>
+        <!-- 2026-08-07：二级客户多选筛选 — 从已加载 rows 派生唯一 customer_name -->
+        <el-select
+          v-model="customerFilter"
+          multiple
+          filterable
+          collapse-tags
+          collapse-tags-tooltip
+          :max-collapse-tags="2"
+          clearable
+          placeholder="筛选二级客户"
+          style="width: 240px"
+          class="picker-filter-select"
+        >
+          <el-option
+            v-for="opt in customerFilterOptions"
+            :key="opt"
+            :label="opt"
+            :value="opt"
+          />
+        </el-select>
         <ColumnVisibilityPopover
           :defs="columnDefs"
           :model-value="columnVisibility.currentMap"
@@ -264,9 +354,9 @@ onBeforeUnmount(() => {
     <el-table
       ref="tableRef"
       v-loading="loading"
-      :data="rows"
+      :data="filteredRows"
       row-key="batch_id"
-      height="500"
+      :height="tableHeight"
       empty-text="该一级客户下暂无可入单的批次（INSPECTION / READY_TO_SHIP）"
       :row-class-name="rowClass"
       @selection-change="onSelectionChange"
@@ -288,6 +378,20 @@ onBeforeUnmount(() => {
       </el-table-column>
       <el-table-column v-if="columnVisibility.isVisible('quantity')" label="批次量" width="80" align="right">
         <template #default="{ row }">{{ row.quantity }}</template>
+      </el-table-column>
+      <!-- 2026-08-07 picker 富化：二级客户列（prop 用于排序 / 筛选 / 显隐） -->
+      <el-table-column
+        v-if="columnVisibility.isVisible('customer_name')"
+        prop="customer_name"
+        label="二级客户"
+        min-width="130"
+        show-overflow-tooltip
+        sortable
+        align="center"
+      >
+        <template #default="{ row }">
+          <span :class="{ muted: !row.customer_name }">{{ row.customer_name || '—' }}</span>
+        </template>
       </el-table-column>
       <el-table-column label="入单数量" width="150" align="center">
         <template #default="{ row }">
@@ -366,6 +470,14 @@ onBeforeUnmount(() => {
 .picker-count {
   font-weight: 600;
   color: var(--el-color-primary);
+}
+.picker-count-hidden {
+  margin-left: 4px;
+  font-weight: 400;
+  color: var(--el-color-warning);
+}
+.picker-filter-select {
+  margin-right: 12px;
 }
 .batch-label {
   font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;

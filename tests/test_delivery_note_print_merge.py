@@ -147,6 +147,12 @@ def _item(part, qty=None):
     return DeliveryNoteAddPartsItem(batch_id=str(part.root_batch.id), quantity=qty)
 
 
+def _item_batch(batch, qty=None):
+    """直接用 batch 对象（绕过 part.root_batch），供拆分后多个批次入单用。"""
+    from schema.delivery_note import DeliveryNoteAddPartsItem
+    return DeliveryNoteAddPartsItem(batch_id=str(batch.id), quantity=qty)
+
+
 # ============================================================
 # T-merge-1: 显式 merge_assemblies=False — 装配件子件逐行输出（散件无变化）
 # ============================================================
@@ -1013,3 +1019,491 @@ async def test_print_labels_line_item_ids_none_legacy_behavior(clean_db):
     # 2 散件全打
     assert ws.max_row == 3
     assert ws.column_dimensions["E"].width == 8  # 旧行为：数量列固定 8
+
+
+# ============================================================
+# 2026-08-07：同 part 多批次折叠（_split 产生同 part 同送货单）
+# 永远开启；与 merge_assemblies 正交。
+# ============================================================
+async def _make_part_service(session) -> "PartService":  # type: ignore[name-defined]
+    """构造 PartService（拆分批次用）。"""
+    from repository.part import PartRepository
+    from repository.part_batch import PartBatchRepository
+    from repository.part_event import PartEventRepository
+    from repository.process import ProcessRepository
+    from repository.serial_counter import SerialCounterRepository
+    from repository.shelf import ShelfRepository
+    from repository.shelf_process import ShelfProcessRepository
+    from repository.work_type import WorkTypeRepository
+    from repository.work_type_process import WorkTypeProcessRepository
+    from repository.customer import CustomerRepository
+    from repository.worker import WorkerRepository
+    from service.part import PartService
+    return PartService(
+        parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),
+        customers=CustomerRepository(session),
+        workers=WorkerRepository(session),
+        events=PartEventRepository(session),
+        serial_counters=SerialCounterRepository(session),
+        shelves=ShelfRepository(session),
+        processes=ProcessRepository(session),
+        work_types=WorkTypeRepository(session),
+        work_type_process=WorkTypeProcessRepository(session),
+        shelf_process_repo=ShelfProcessRepository(session),
+        broadcaster=None,
+        event_broadcaster=None,
+    )
+
+
+async def _split_root_into(
+    session, *, part, root_batch, splits: list[int],
+) -> list:
+    """把 root_batch 按 splits 列表顺序拆成 N 个新批次（依次扣减 root）。
+
+    例如 splits=[2,3] 把 qty=6 的 root 拆成：root→1, new1→2, new2→3。
+    返回 [root, new1, new2]。
+    """
+    part_svc = await _make_part_service(session)
+    batches = [root_batch]
+    for q in splits:
+        new_batches = await part_svc.split_batch(part.id, batch_id=root_batch.id, quantity=q)
+        # new_batches 是最新批次列表（按 batch_no 升序）；root 还在但 qty 已减
+        for nb in new_batches:
+            if nb.id not in (b.id for b in batches):
+                batches.append(nb)
+        # 找到 root 的最新对象
+        for nb in new_batches:
+            if nb.batch_no == 1:
+                root_batch = nb
+                break
+    return batches
+
+
+async def test_print_xlsx_same_part_split_batches_merge(clean_db):
+    """同 part 的 2 批次在同送货单 → 打印 1 行（quantity = sum，unit = "件"）。
+
+    2026-08-07 同 part 折叠：永远开启，与 merge_assemblies 无关。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9501", drawing_no="D-F9501",
+    )
+    # 拆出 1 个 qty=1 批次（root 变 qty=1）
+    split_batches = await _split_root_into(
+        clean_db, part=part, root_batch=part.root_batch, splits=[1],
+    )
+    assert len(split_batches) == 2
+    root_b, new_b = split_batches[0], split_batches[1]
+    # 两个批次分别入单（用 _item_batch 避免重复 root_batch.id）
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(root_b, qty=1),
+               _item_batch(new_b, qty=1)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(note_id=str(note.id))
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Sheet1"]
+    # 折叠后只剩 1 行；起始 row=3（法拉模板 start_row=3）
+    assert ws.cell(row=3, column=1).value == 1  # row_index=1
+    assert ws.cell(row=3, column=5).value == "D-F9501"  # drawing_no
+    assert ws.cell(row=3, column=6).value == "散件-D-F9501"  # name
+    assert ws.cell(row=3, column=7).value == 2  # quantity = 1+1 求和
+    assert ws.cell(row=3, column=8).value == "件"
+    # 不应有第 2 行（row 4 col 1 应为 None）
+    assert ws.cell(row=4, column=1).value is None, "应折叠为 1 行"
+
+
+async def test_print_xlsx_same_part_mixed_with_unrelated_loose(clean_db):
+    """同 part 2 批（折叠）+ 1 散件 = 2 行。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    split_part = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9601", drawing_no="D-F9601",
+    )
+    loose = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9602", drawing_no="D-F9602",
+    )
+    split_batches = await _split_root_into(
+        clean_db, part=split_part, root_batch=split_part.root_batch, splits=[1],
+    )
+    root_b, new_b = split_batches[0], split_batches[1]
+
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    # split_part root + new 各 qty=1；loose 整批入单
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(root_b, qty=1),
+               _item_batch(new_b, qty=1),
+               _item(loose)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 2 行：折叠后的 split_part + loose
+    assert ws.cell(row=4, column=1).value is not None, "应有第 2 行"
+    # 折叠行的 quantity = 2（split_part 两批之和）
+    split_rows = [r for r in range(3, 5) if ws.cell(row=r, column=5).value == "D-F9601"]
+    assert len(split_rows) == 1
+    assert ws.cell(row=split_rows[0], column=7).value == 2
+    # loose 行 quantity = 2
+    loose_rows = [r for r in range(3, 5) if ws.cell(row=r, column=5).value == "D-F9602"]
+    assert len(loose_rows) == 1
+    assert ws.cell(row=loose_rows[0], column=7).value == 2
+
+
+async def test_print_xlsx_same_part_with_assembly_merge(clean_db):
+    """折叠在装配合并之前：装配体子件被拆 2 批，merge=True → 1 行（套）。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A7002", drawing_no="DA-7002", name="装配件B",
+    )
+    child = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9701", drawing_no="D-F9701",
+    )
+    # 拆出 1 个新批次（child qty=2 → root qty=1, new qty=1）
+    split_batches = await _split_root_into(
+        clean_db, part=child, root_batch=child.root_batch, splits=[1],
+    )
+    root_b, new_b = split_batches[0], split_batches[1]
+
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(root_b, qty=1),
+               _item_batch(new_b, qty=1)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(
+        note_id=str(note.id), merge_assemblies=True,
+    )
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 1 行：装配体合并行；折叠后子件只 1 行，assembly merge 把它转成"套"行
+    assert ws.cell(row=3, column=5).value == "DA-7002"
+    assert ws.cell(row=3, column=6).value == "装配件B"
+    assert ws.cell(row=3, column=7).value == 1  # quantity=1 套（默认 override）
+    assert ws.cell(row=3, column=8).value == "套"
+    assert ws.cell(row=4, column=1).value is None, "折叠 + 装配合并 = 1 行"
+
+
+async def test_print_xlsx_custom_order_with_asm_merge_same_part_split(clean_db):
+    """2026-08-07 bugfix：合并一套 + 装配件子件拆批 → custom_order 用代表 id 应通过。
+
+    前端 PrintPreviewDialog.onConfirm 在 asm-merge 分支枚举装配件子件时用未折叠的
+    line_items，会把同 part 的非代表 batch id 也推入 custom_order；后端 rep-id 校验 422。
+    修复后前端应只用 foldSamePart 的折叠结果（每 part 仅代表 id）。本测试模拟修复后前端
+    的 custom_order 形态（仅 rep id），确认后端接受并产出正确的 asm 合并行。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A7101", drawing_no="DA-7101", name="装配件C",
+    )
+    # 装配件下 2 子件
+    child_a = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9801", drawing_no="D-F9801",
+    )
+    child_b = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9802", drawing_no="D-F9802",
+    )
+    # 拆 child_a：qty=2 → root(qty=1) + new(qty=1)
+    split_a = await _split_root_into(
+        clean_db, part=child_a, root_batch=child_a.root_batch, splits=[1],
+    )
+    a_root, a_new = split_a[0], split_a[1]
+    # child_a 两批 + child_b 一批都入单
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(a_root, qty=1),
+               _item_batch(a_new, qty=1),
+               _item_batch(child_b.root_batch)],
+        version=note.version,
+    )
+
+    # 模拟修复后前端：custom_order = [a 的代表 id, b 的代表 id]
+    # a 的代表 id = a_root.id (batch_no=1，最小 b.id)
+    # b 的代表 id = child_b.root_batch.id (唯一一批)
+    custom_order = [str(a_root.id), str(child_b.root_batch.id)]
+    xlsx_bytes, _ = await note_svc.print_xlsx(
+        note_id=str(note.id),
+        custom_order=custom_order,
+        merge_assemblies=True,
+    )
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 折叠 + 装配合并 → 1 行 asm（quantity 默认 1，unit 套）
+    assert ws.cell(row=3, column=5).value == "DA-7101"
+    assert ws.cell(row=3, column=6).value == "装配件C"
+    assert ws.cell(row=3, column=7).value == 1
+    assert ws.cell(row=3, column=8).value == "套"
+    assert ws.cell(row=4, column=1).value is None, "折叠 + 装配合并 = 1 行"
+
+
+async def test_print_xlsx_custom_order_asm_merge_non_rep_id_rejected(clean_db):
+    """反例：custom_order 含同 part 非代表 batch id → 422。
+
+    这是前端 bug 触发的错误形态；锁定后端行为作为回归护栏，防止后续改动放松校验。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A7102", drawing_no="DA-7102", name="装配件D",
+    )
+    child = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F9901", drawing_no="D-F9901",
+    )
+    split = await _split_root_into(
+        clean_db, part=child, root_batch=child.root_batch, splits=[1],
+    )
+    a_root, a_new = split[0], split[1]
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(a_root, qty=1),
+               _item_batch(a_new, qty=1)],
+        version=note.version,
+    )
+    # 发非代表 id → 422
+    from core.exception import BizError
+    from core.error_code import ErrCode
+    with pytest.raises(BizError) as ei:
+        await note_svc.print_xlsx(
+            note_id=str(note.id),
+            custom_order=[str(a_new.id)],  # 非代表
+            merge_assemblies=True,
+        )
+    assert ei.value.code == ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER
+    assert "已合并" in ei.value.message or "代表" in ei.value.message
+
+
+async def test_print_xlsx_same_part_split_merge_quantity_sum_correctness(clean_db):
+    """3 批 quantity 各 1/2/3 → 合并后 quantity = 6。
+
+    显式验证求和正确性，避免 off-by-one / 漏批 bug。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    # 直接构造 qty=6 的 part（绕过 _make_loose_part 的 qty=2 默认值）
+    part = TPart(
+        serial_no="F9801", drawing_no="D-F9801",
+        name="sum-correctness", applicant_name="测试申请人",
+        quantity=6,
+        request_date=date(2026, 7, 1),
+        planned_delivery_date=date(2026, 7, 30),
+        order_no="ON-2026-SUM",
+        customer_id=customer.id,
+        status=PartStatus.READY_TO_SHIP.value,
+        location="INSPECTION_SHELF",
+    )
+    clean_db.add(part)
+    await clean_db.flush()
+    from tests.conftest import seed_root_batch
+    root_batch = await seed_root_batch(clean_db, part)
+    assert root_batch.quantity == 6
+
+    # 把 qty=6 的 root_batch 拆成 3 个：root(qty=1) + new1(qty=2) + new2(qty=3)
+    split_batches = await _split_root_into(
+        clean_db, part=part, root_batch=root_batch, splits=[2, 3],
+    )
+    quantities = sorted(b.quantity for b in split_batches)
+    assert quantities == [1, 2, 3], f"拆批结果 {quantities} 不等于 [1,2,3]"
+    root_b, new1_b, new2_b = split_batches[0], split_batches[1], split_batches[2]
+
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[
+            _item_batch(root_b, qty=1),
+            _item_batch(new1_b, qty=2),
+            _item_batch(new2_b, qty=3),
+        ],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 折叠后 1 行，quantity = 1+2+3 = 6
+    assert ws.cell(row=3, column=5).value == "D-F9801"
+    assert ws.cell(row=3, column=7).value == 6, (
+        f"求和应为 6，实际 {ws.cell(row=3, column=7).value!r}"
+    )
+    assert ws.cell(row=3, column=8).value == "件"
+    assert ws.cell(row=4, column=1).value is None
+
+
+async def test_print_xlsx_custom_order_with_non_representative_id_rejected(clean_db):
+    """custom_order 含同 part 的非代表 batch id → 422 + "已合并" 提示。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9901", drawing_no="D-F9901",
+    )
+    split_batches = await _split_root_into(
+        clean_db, part=part, root_batch=part.root_batch, splits=[1],
+    )
+    root_b, new_b = split_batches[0], split_batches[1]
+
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(root_b, qty=1),
+               _item_batch(new_b, qty=1)],
+        version=note.version,
+    )
+
+    # 找出"非代表 batch id"（即 batch_no != 1 的那个）
+    detail = await note_svc.get_with_parts(str(note.id))
+    non_rep = [li for li in detail.line_items if li.batch_no != 1][0]
+    from core.exception import BizError
+    from core.error_code import ErrCode
+    with pytest.raises(BizError) as ei:
+        await note_svc.print_xlsx(
+            note_id=str(note.id),
+            custom_order=[str(non_rep.id)],  # 雪花 ID 入参须 str（CLAUDE.md §3）
+        )
+    assert ei.value.code == ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER
+    assert "已合并" in ei.value.message or "代表" in ei.value.message
+
+
+async def test_print_xlsx_custom_order_missing_representative_raises(clean_db):
+    """custom_order 漏掉代表 batch id → 422 + "漏掉" 提示。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9001", drawing_no="D-F9001",
+    )
+    p2 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F9002", drawing_no="D-F9002",
+    )
+
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2)],
+        version=note.version,
+    )
+    detail = await note_svc.get_with_parts(str(note.id))
+    # IdStrNonNull 在 Python 里仍是 int（CLAUDE.md §3），不要 str() 转换比较
+    p1_rep = [li for li in detail.line_items if int(li.part_id) == p1.id][0]
+    # 只发 p1 的代表 id（漏掉 p2）→ 422
+    from core.exception import BizError
+    from core.error_code import ErrCode
+    with pytest.raises(BizError) as ei:
+        await note_svc.print_xlsx(
+            note_id=str(note.id),
+            custom_order=[str(p1_rep.id)],  # 雪花 ID 入参须 str
+        )
+    assert ei.value.code == ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER
+    assert "漏掉" in ei.value.message
+
+
+async def test_print_labels_xlsx_same_part_split_batches_merge(clean_db):
+    """标签路径同样折叠：同 part 2 批 → 1 行，quantity 求和。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    part = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FA001", drawing_no="D-FA001",
+    )
+    split_batches = await _split_root_into(
+        clean_db, part=part, root_batch=part.root_batch, splits=[1],
+    )
+    root_b, new_b = split_batches[0], split_batches[1]
+
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item_batch(root_b, qty=1),
+               _item_batch(new_b, qty=1)],
+        version=note.version,
+    )
+
+    labels_bytes, _ = await note_svc.print_labels_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+    # 表头 + 1 行折叠 = max_row=2
+    assert ws.max_row == 2, (
+        f"折叠后应 1 数据行（max_row=2），实际 max_row={ws.max_row}"
+    )
+    # 数量列 (col 5) = 2
+    assert ws.cell(row=2, column=5).value == 2
+    # 单位列 (col 6) = "件"
+    assert ws.cell(row=2, column=6).value == "件"
+
+
+# ============================================================
+# 2026-08-07：打印交期列格式「M月D日」（无前导零）
+# ============================================================
+async def test_print_xlsx_loose_part_planned_delivery_date_format(clean_db):
+    """散件行的预估交期列应为「M月D日」格式（无前导零）。
+
+    _make_loose_part 设的日期是 date(2026, 7, 30) → 期望 "7月30日"。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    loose = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F7001", drawing_no="D-F7001",
+    )
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(loose)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 法拉模板 col 9 = 交期
+    assert ws.cell(row=3, column=9).value == "7月30日", (
+        f"交期列应为 '7月30日'，实际 {ws.cell(row=3, column=9).value!r}"
+    )
+
+
+async def test_print_xlsx_assembly_merge_planned_delivery_date_format(clean_db):
+    """装配件合并行的交期列同样应用「M月D日」格式。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A7201", drawing_no="DA-7201", name="装配件E",
+        planned_delivery_date=date(2026, 8, 12),
+    )
+    child = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F7201", drawing_no="D-F7201",
+    )
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(
+        note_id=str(note.id), merge_assemblies=True,
+    )
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 装配件合并行：交期取自 asm.planned_delivery_date（8月12日）
+    assert ws.cell(row=3, column=9).value == "8月12日", (
+        f"合并行交期应为 '8月12日'，实际 {ws.cell(row=3, column=9).value!r}"
+    )

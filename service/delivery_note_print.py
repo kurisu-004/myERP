@@ -423,31 +423,67 @@ class DeliveryNotePrintService:
                 http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         linked = await self.part_batches.list_by_delivery_note(note.id)
+        # 2026-08-07：同 part 多批次折叠 — 每个 part 派一个代表 batch id（最小 b.id）。
+        # 折叠后 _build_print_rows 会按 part_id 求和；custom_order 校验改为"每个 part
+        # 仅承认其代表 id"。
+        rep_by_part: dict[int, int] = {}
+        for _b, p in linked:
+            cur = rep_by_part.get(p.id)
+            if cur is None or _b.id < cur:
+                rep_by_part[p.id] = _b.id
         if custom_order:
             pairs_by_id: dict[str, tuple[Any, TPart]] = {
                 str(b.id): (b, p) for b, p in linked
             }
-            ordered: list[tuple[Any, TPart]] = []
-            seen: set[str] = set()
-            for bid in custom_order:
-                if bid not in pairs_by_id:
-                    raise BizError(
-                        code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
-                        message=f"custom_order 含不属于本单的 batch id: {bid}",
-                        http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    )
-                ordered.append(pairs_by_id[bid])
-                seen.add(bid)
-            missing = set(pairs_by_id) - seen
-            if missing:
+            note_batch_ids = set(pairs_by_id)
+            custom_set = set(custom_order)
+            # 1) 完全不在本单的 batch id
+            unknown = custom_set - note_batch_ids
+            if unknown:
+                raise BizError(
+                    code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                    message=f"custom_order 含不属于本单的 batch id: {sorted(unknown)}",
+                    http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            # 2) 非代表 id（同 part 但不是该组的最小 b.id）
+            expected_reps = {str(rep) for rep in rep_by_part.values()}
+            non_rep = custom_set - expected_reps
+            if non_rep:
+                sample = sorted(non_rep)[0]
+                # 用 list 推导式避免 generator-next 在 async 上下文抛 StopIteration
+                sample_match = [
+                    p.id for b, p in linked if str(b.id) == sample
+                ]
+                sample_part_id = sample_match[0]
+                rep = rep_by_part[sample_part_id]
                 raise BizError(
                     code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
                     message=(
-                        f"custom_order 漏掉 {len(missing)} 行；"
-                        "不允许静默丢弃（请确保预览包含全部行）"
+                        f"custom_order 含已合并的批次 id（{sample}）；"
+                        f"请发代表批次 id {rep}（part {sample_part_id} 的代表）"
                     ),
                     http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
                 )
+            # 3) 漏掉某些 part 的代表 id
+            missing = expected_reps - custom_set
+            if missing:
+                sample_missing = sorted(missing)[0]
+                pid_match = [
+                    p.id for b, p in linked if str(b.id) == sample_missing
+                ]
+                sample_pid = pid_match[0]
+                raise BizError(
+                    code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                    message=(
+                        f"custom_order 漏掉 {len(missing)} 个代表批次 id，"
+                        f"例如 {sample_missing}（part {sample_pid} 的代表）；"
+                        "请确保预览包含全部 part"
+                    ),
+                    http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            ordered: list[tuple[Any, TPart]] = [
+                pairs_by_id[bid] for bid in custom_order
+            ]
             linked = ordered
         # 2026-08-07：line_item_ids 子集过滤（仅标签导出用）
         if line_item_ids is not None:
@@ -590,7 +626,27 @@ class DeliveryNotePrintService:
         返回的列表保留 ``rows`` 的原始顺序（custom_order 已应用）；合并行位置 = 组内
         最早出现的 batch 位次；散件行照常。``merge_quantities`` 按 assembly_id override
         装配体合并行的数量（默认 1）。
+
+        2026-08-07：同 part 多批次折叠（_split 产生）— 每 part 仅产出一行，
+        ``quantity = Σ(批次.quantity)``。其余字段取该 part 首次出现的 batch。
+        分组键用 ``p.id`` 而非 ``serial_no``：后者可空、可重号（COMPLETED 后回池），
+        ``p.id`` 是雪花主键永不回收。同序列号多批次只能从 ``_split`` 产生，必然同 part。
         """
+        # 1) 同 part 折叠：每 part 仅产出一行；quantity 求和
+        qty_by_part: dict[int, int] = {}
+        rep_idx_by_part: dict[int, int] = {}
+        order_part_ids: list[int] = []
+        for idx, (b, p) in enumerate(rows):
+            if p.id in qty_by_part:
+                qty_by_part[p.id] += b.quantity
+            else:
+                qty_by_part[p.id] = b.quantity
+                rep_idx_by_part[p.id] = idx
+                order_part_ids.append(p.id)
+        if len(qty_by_part) < len(rows):
+            # 至少一个 part 被折叠 → 重排 rows 让每个 part 仅出现一次
+            rows = [rows[rep_idx_by_part[pid]] for pid in order_part_ids]
+
         # 先逐 (batch, part) 生成 PrintRow（散件逻辑）
         leaf_name_of_part: dict[int, str] = {}
         for _b, p in rows:
@@ -606,9 +662,9 @@ class DeliveryNotePrintService:
                     applicant_name=p.applicant_name or "",
                     drawing_no=p.drawing_no or "",
                     name=p.name or "",
-                    quantity=b.quantity,
+                    quantity=qty_by_part[p.id],  # 折叠后即求和；未折叠时等于 b.quantity
                     unit="件",
-                    planned_delivery_date=p.planned_delivery_date,
+                    planned_delivery_date=_format_print_date(p.planned_delivery_date),
                     note=p.note or "",
                     customer_name=leaf_name_of_part.get(p.id, ""),
                 ),
@@ -644,7 +700,7 @@ class DeliveryNotePrintService:
                     # 2026-08-04 扩展：merge_quantities 按 assembly_id override 套数
                     quantity=(merge_quantities or {}).get(asm_id, 1),
                     unit="套",
-                    planned_delivery_date=asm.planned_delivery_date,
+                    planned_delivery_date=_format_print_date(asm.planned_delivery_date),
                     note="",
                     customer_name=cust_name,
                 ),
@@ -878,6 +934,16 @@ def _format_fala_date(d: date) -> str:
     与原模板字面量格式对齐（不去前导零；原模板写的是「2026年7月14日」）。
     """
     return f"送货日期：{d.year}年{d.month}月{d.day}日"
+
+
+def _format_print_date(d: date | None) -> str | None:
+    """2026-08-07：打印 XLSX 交期列用「M月D日」（无前导零）。
+
+    例：date(2026, 8, 12) → "8月12日"。None 透传。
+    """
+    if d is None:
+        return None
+    return f"{d.month}月{d.day}日"
 
 
 def _resolve_footer_date(note: TDeliveryNote) -> date:

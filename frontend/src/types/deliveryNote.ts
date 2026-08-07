@@ -126,6 +126,13 @@ export interface DeliveryNoteCandidatePart {
   planned_delivery_date: string | null
   /** 2026-08-01：订单号（picker 新增列与排序） */
   order_no: string | null
+  // —— 2026-08-07 picker 富化 ——
+  /** 零件所属二级（L2）客户名 */
+  customer_name: string | null
+  /** 所属一级（L1 root）客户名 */
+  parent_customer_name: string | null
+  /** L1 / L2 路径（与 note.customer_path 同格式） */
+  customer_path: string | null
 }
 
 // 2026-07-23 Bug 4：精简为 4 类事件 + RECALLED（历史只读）

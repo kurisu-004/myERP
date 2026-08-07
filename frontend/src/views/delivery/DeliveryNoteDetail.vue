@@ -529,7 +529,8 @@ type DeliveryTreeNode = DeliveryNoteLineItem
           </el-table-column>
           <el-table-column
             v-if="columnVisibility.isVisible('customer')"
-            label="客户（二级）" min-width="160" show-overflow-tooltip align="center">
+            prop="customer_name"
+            label="客户（二级）" min-width="160" show-overflow-tooltip sortable align="center">
             <template #default="{ row }">
               <span>{{ row.customer_path ?? row.customer_name ?? '—' }}</span>
             </template>
