@@ -162,11 +162,19 @@ async function onSoftDelete() {
 // ============================================================
 // 2026-08-02：打印改为「预览 → 拖动 → 确认导出」两段式。
 // 真实下载触发挪到 PrintPreviewDialog.onConfirm。
+// 2026-08-07：拆为「打印送货单」「打印标签」两个按钮，共用同一个 dialog，
+// 靠 previewMode 切换行为。下载触发仍在 dialog.onConfirm。
 // ============================================================
 const previewVisible = ref(false)
+const previewMode = ref<'note' | 'label'>('note')
 
-async function onPrint() {
-  // 2026-08-02：仅打开预览对话框；下载在确认时触发
+function onPrint() {
+  previewMode.value = 'note'
+  previewVisible.value = true
+}
+
+function onPrintLabels() {
+  previewMode.value = 'label'
   previewVisible.value = true
 }
 
@@ -608,6 +616,14 @@ type DeliveryTreeNode = DeliveryNoteLineItem
             >
               打印送货单
             </el-button>
+            <el-button
+              v-if="canPrint(role, note.part_count)"
+              type="success"
+              plain
+              @click="onPrintLabels"
+            >
+              打印标签
+            </el-button>
           </el-space>
           <el-button
             v-if="canSoftDelete(note.status, role)"
@@ -647,10 +663,12 @@ type DeliveryTreeNode = DeliveryNoteLineItem
       @submit="onPickerSubmit"
     />
 
-    <!-- 2026-08-02：打印预览对话框（拖动行可调整顺序，确认后导出 XLSX） -->
+    <!-- 2026-08-02：打印预览对话框（拖动行可调整顺序，确认后导出 XLSX）
+         2026-08-07：mode 决定「只导送货单」/「只导标签（可勾选）」 -->
     <PrintPreviewDialog
       v-model="previewVisible"
       :note="note"
+      :mode="previewMode"
     />
   </div>
 </template>

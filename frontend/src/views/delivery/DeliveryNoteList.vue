@@ -12,7 +12,7 @@
   形态对齐 frontend/src/views/outsource/OutsourceQuoteList.vue
 -->
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Van } from '@element-plus/icons-vue'
@@ -20,13 +20,8 @@ import { Van } from '@element-plus/icons-vue'
 import {
   createNote as createNoteApi,
   listNotes,
-  printNote,
-  printNoteLabels,
-  recallNote,
   softDeleteNote,
-  submitNote,
   type AddPartsItem,
-  type PrintNoteProgress,
 } from '@/api/deliveryNote'
 import {
   DELIVERY_NOTE_STATUS_LABEL,
@@ -35,10 +30,7 @@ import {
   type DeliveryNoteStatus,
 } from '@/types/deliveryNote'
 import {
-  canPrint,
-  canRecall,
   canSoftDelete,
-  canSubmit,
   defaultStatusesForRole,
   hasManageNoteRole,
 } from '@/utils/deliveryNotePermissions'
@@ -234,45 +226,11 @@ async function submitCreate() {
 
 // ============================================================
 // 行操作
+// 2026-08-07：操作栏瘦身——提交 / 撤回 / 打印（送货单 + 标签）按钮全部移除，
+// 全部操作统一在详情页（DeliveryNoteDetail.vue）里完成。本页只保留：
+//   · 详情（跳详情页）
+//   · 删除（仅 DRAFT；CLERK / MANAGER）
 // ============================================================
-async function onSubmit(n: DeliveryNoteOut) {
-  try {
-    await ElMessageBox.confirm(
-      `确认提交 ${n.delivery_note_no}？提交后只有所有零件均为「已通过品检」(READY_TO_SHIP) 才能提交。`,
-      '提交送货单',
-      { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  try {
-    await submitNote(n.id, { version: n.version })
-    ElMessage.success('已提交')
-    fetchList()
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '提交失败')
-  }
-}
-
-async function onRecall(n: DeliveryNoteOut) {
-  try {
-    await ElMessageBox.confirm(
-      `确认撤回 ${n.delivery_note_no}？撤回后回到草稿，可继续添加/移除零件。`,
-      '撤回送货单',
-      { type: 'warning', confirmButtonText: '确认撤回', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  try {
-    await recallNote(n.id, { version: n.version })
-    ElMessage.success('已撤回')
-    fetchList()
-  } catch (e) {
-    ElMessage.error((e as Error).message ?? '撤回失败')
-  }
-}
-
 async function onSoftDelete(n: DeliveryNoteOut) {
   try {
     await ElMessageBox.confirm(
@@ -290,70 +248,6 @@ async function onSoftDelete(n: DeliveryNoteOut) {
   } catch (e) {
     ElMessage.error((e as Error).message ?? '删除失败')
   }
-}
-
-// ============================================================
-// 打印下载进度（per-row reactive map；按钮右侧挂 <el-progress type="circle">）
-// ============================================================
-type DlState = {
-  loaded: number
-  total: number
-  state: 'downloading' | 'success' | 'error'
-}
-const dlMap = reactive<Record<string, DlState>>({})
-
-function pctOf(id: string): number {
-  const p = dlMap[id]
-  if (!p || !p.total) return p?.loaded ? 100 : 0
-  return Math.min(100, Math.round((p.loaded / p.total) * 100))
-}
-
-function triggerBrowserDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-async function onPrint(n: DeliveryNoteOut) {
-  if (dlMap[n.id]?.state === 'downloading') return
-  dlMap[n.id] = { loaded: 0, total: 0, state: 'downloading' }
-  try {
-    const { blob, filename } = await printNote(n.id, {}, (p: PrintNoteProgress) => {
-      dlMap[n.id] = { ...dlMap[n.id], ...p }
-    })
-    triggerBrowserDownload(blob, filename)
-    // 2026-08-05 PR-C5：紧接着下载标签 Excel（独立文件）。
-    // 失败仅 warning —— 送货单已成功，不撤销；标签可单独重打。
-    try {
-      const labels = await printNoteLabels(n.id, {})
-      triggerBrowserDownload(labels.blob, labels.filename)
-    } catch (le) {
-      ElMessage.warning(
-        `送货单已导出，但标签 Excel 失败：${(le as Error).message ?? '未知错误'}`,
-      )
-    }
-    dlMap[n.id] = { ...dlMap[n.id], state: 'success' }
-    setTimeout(() => {
-      delete dlMap[n.id]
-    }, 1500)
-  } catch (e) {
-    dlMap[n.id] = { ...dlMap[n.id], state: 'error' }
-    ElMessage.error((e as Error).message ?? '打印失败')
-    setTimeout(() => {
-      delete dlMap[n.id]
-    }, 2000)
-  }
-}
-
-/** 拿 note 在 items 里的 delivery_note_no；找不到则 fallback id 字符串。 */
-function noteNoOf(id: string): string {
-  const n = items.value.find((x) => x.id === id)
-  return n?.delivery_note_no ?? id
 }
 </script>
 
@@ -496,36 +390,11 @@ function noteNoOf(id: string): string {
           {{ (scope.row as DeliveryNoteOut).driver_worker_name ?? '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" min-width="200" fixed="right" align="center">
+      <el-table-column label="操作" min-width="120" fixed="right" align="center">
         <template #default="scope">
           <div style="display: flex; align-items: center; gap: 0px;">
             <el-button link type="primary" @click="$router.push(`/delivery-notes/${(scope.row as DeliveryNoteOut).id}`)">
               详情
-            </el-button>
-            <el-button
-              v-if="canSubmit((scope.row as DeliveryNoteOut).status, role)"
-              link
-              type="primary"
-              @click="onSubmit(scope.row as DeliveryNoteOut)"
-            >
-              提交
-            </el-button>
-            <el-button
-              v-if="canRecall((scope.row as DeliveryNoteOut).status, role)"
-              link
-              type="warning"
-              @click="onRecall(scope.row as DeliveryNoteOut)"
-            >
-              撤回
-            </el-button>
-            <el-button
-              v-if="canPrint(role, (scope.row as DeliveryNoteOut).part_count)"
-              link
-              type="success"
-              :loading="dlMap[(scope.row as DeliveryNoteOut).id]?.state === 'downloading'"
-              @click="onPrint(scope.row as DeliveryNoteOut)"
-            >
-              打印
             </el-button>
             <el-button
               v-if="canSoftDelete((scope.row as DeliveryNoteOut).status, role)"
@@ -625,29 +494,6 @@ function noteNoOf(id: string): string {
         </el-button>
       </template>
     </el-dialog>
-
-    <!-- 右上角下载进度条堆叠区（fixed 定位，不随页面滚动） -->
-    <div class="dl-tray" aria-live="polite">
-      <div
-        v-for="(state, id) in dlMap"
-        :key="id"
-        class="dl-card"
-      >
-        <div class="dl-card-header">
-          <span class="dl-card-name">{{ noteNoOf(id) }}</span>
-          <span class="dl-card-pct">{{ pctOf(id) }}%</span>
-        </div>
-        <el-progress
-          type="line"
-          :percentage="pctOf(id)"
-          :status="state.state === 'success' ? 'success'
-                  : state.state === 'error' ? 'exception'
-                  : undefined"
-          :show-text="false"
-          :stroke-width="8"
-        />
-      </div>
-    </div>
   </div>
 </template>
 
@@ -663,43 +509,5 @@ function noteNoOf(id: string): string {
 .picker-summary {
   display: flex;
   align-items: center;
-}
-.dl-tray {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 2000;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 280px;
-  pointer-events: none;
-}
-.dl-card {
-  background: #fff;
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-  padding: 8px 12px;
-  pointer-events: auto;
-}
-.dl-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: #606266;
-  margin-bottom: 6px;
-}
-.dl-card-name {
-  font-weight: 500;
-  color: #303133;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-}
-.dl-card-pct {
-  font-variant-numeric: tabular-nums;
 }
 </style>

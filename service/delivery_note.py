@@ -1136,14 +1136,19 @@ class DeliveryNoteService:
         custom_order: list[str] | None = None,
         merge_assemblies: bool = True,  # 2026-08-07 改默认：与送货单保持一致
         merge_quantities: dict[str, int] | None = None,
+        line_item_ids: list[str] | None = None,  # 2026-08-07：标签勾选子集
     ) -> tuple[bytes, str]:
-        """打印标签 Excel（2026-08-05 PR-C5）——送货单打印的伴随产物。
+        """打印标签 Excel（2026-08-05 PR-C5）—— 2026-08-07 拆为独立端点。
 
         复用 ``print_xlsx`` 的 note 加载 + 装配件预查 + ``merge_quantities`` 转换，
         走 ``DeliveryNotePrintService.render_labels``（无模板、表头 客户/申请人/
         名称/图号/数量/单位）。行口径与送货单一致——``merge_assemblies`` 默认 True
-        （与 ``print_xlsx`` 对齐），自动反映装配体合并行的「套」单位。前端在一键
-        打印时串联调本方法 + ``print_xlsx``，触发浏览器两次下载。
+        （与 ``print_xlsx`` 对齐），自动反映装配体合并行的「套」单位。
+
+        ``line_item_ids``（2026-08-07 新增）：仅打印这些批次行；None = 全部。
+        装配件合并模式下前端需把父行展开为组内子件 id，与 ``custom_order`` 同一口径。
+        与 ``custom_order`` 语义正交：``custom_order`` 决定顺序（漏行 422），
+        ``line_item_ids`` 决定成员（None/[]/子集三种）。
 
         刻意与 ``print_xlsx`` 镜像（不复用公共 helper）以最小化对已测试路径的改动。
         """
@@ -1192,6 +1197,7 @@ class DeliveryNoteService:
             merge_assemblies=merge_assemblies,
             assembly_map=assembly_map,
             merge_quantities=merge_quantities_int,
+            line_item_ids=line_item_ids,
         )
 
     # ============================================================

@@ -24,6 +24,7 @@ from core.permission import (
     require_auth,
     require_roles,
 )
+from core.time import now_naive
 from model.enums import (
     DeliveryNoteSortKey,
     SortDir,
@@ -333,6 +334,12 @@ async def soft_delete_delivery_note(
 CHUNK_SIZE = 64 * 1024  # 64KB，与典型 TCP send buffer 同量级
 
 
+def _print_filename(prefix: str, kind: str) -> str:
+    # 2026-08-07：统一导出文件名 {prefix}-YYYY-MM-DD-(note|label).xlsx
+    # 同日同 prefix 同类型重名由浏览器自动加 (1)(2) 处理，后端不维护计数器
+    return f"{prefix}-{now_naive():%Y-%m-%d}-{kind}.xlsx"
+
+
 class PrintDeliveryNoteRequest(BaseModel):
     """2026-08-02 新增：预览确认后导出用；custom_order 为空走默认 DB 顺序。
 
@@ -362,6 +369,24 @@ class PrintDeliveryNoteRequest(BaseModel):
     )
 
 
+class PrintLabelsRequest(PrintDeliveryNoteRequest):
+    """2026-08-07：标签独立导出，支持只打勾选行。
+
+    line_item_ids 与 custom_order 语义正交：
+    - custom_order 决定顺序，仍须包含本单全部行（漏行 422，旧行为不变）
+    - line_item_ids 决定成员，是 custom_order 的子集；None = 全打
+    """
+
+    line_item_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "只打印这些批次行（雪花 ID 字符串，对应 line_items.id）；"
+            "None = 全部。装配件合并模式下前端需把父行展开为组内子件 id。"
+            "空数组 [] 视为非法（400）。"
+        ),
+    )
+
+
 @router.post(
     "/{note_id}/print",
     summary=(
@@ -382,7 +407,7 @@ async def print_delivery_note(
         merge_assemblies=payload.merge_assemblies,
         merge_quantities=payload.merge_quantities,
     )
-    filename = f"delivery_note_{prefix}_{note_id}.xlsx"
+    filename = _print_filename(prefix, "note")
 
     async def stream_chunks():
         for i in range(0, len(xlsx_bytes), CHUNK_SIZE):
@@ -411,7 +436,7 @@ async def print_delivery_note(
 )
 async def print_delivery_note_labels(
     note_id: str,
-    payload: PrintDeliveryNoteRequest = Body(default=PrintDeliveryNoteRequest()),
+    payload: PrintLabelsRequest = Body(default=PrintLabelsRequest()),
     svc: DeliveryNoteService = Depends(get_delivery_note_service),
 ) -> StreamingResponse:
     xlsx_bytes, prefix = await svc.print_labels_xlsx(
@@ -419,8 +444,9 @@ async def print_delivery_note_labels(
         custom_order=payload.custom_order or None,
         merge_assemblies=payload.merge_assemblies,
         merge_quantities=payload.merge_quantities,
+        line_item_ids=payload.line_item_ids,
     )
-    filename = f"delivery_labels_{prefix}_{note_id}.xlsx"
+    filename = _print_filename(prefix, "label")
 
     async def stream_chunks():
         for i in range(0, len(xlsx_bytes), CHUNK_SIZE):

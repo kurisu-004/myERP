@@ -312,3 +312,35 @@ async def test_e2e_header_only_full_path_for_manager(clean_db):
 
     assert final_user.id == u.id
     assert UserRole.MANAGER.value in final_user.roles
+
+
+# ============================================================
+# 2026-08-07：导出文件名统一格式
+# {prefix}-YYYY-MM-DD-(note|label).xlsx
+# ============================================================
+async def test_print_filename_format_note():
+    """_print_filename('F', 'note') → F-YYYY-MM-DD-note.xlsx（Shanghai TZ 日期）。"""
+    import re
+    from api.v1.delivery_note import _print_filename
+    from core.time import now_naive
+
+    expected_date = now_naive().strftime("%Y-%m-%d")
+    fn_note = _print_filename("F", "note")
+    fn_label = _print_filename("L", "label")
+    assert fn_note == f"F-{expected_date}-note.xlsx"
+    assert fn_label == f"L-{expected_date}-label.xlsx"
+    # 兜底正则（防格式漂移）
+    pat = re.compile(r"^[A-Z]-\d{4}-\d{2}-\d{2}-(note|label)\.xlsx$")
+    assert pat.match(fn_note)
+    assert pat.match(fn_label)
+
+
+async def test_print_filename_format_various_prefix():
+    """不同 prefix（任意 A-Z 单字符）都按规则生成。"""
+    from api.v1.delivery_note import _print_filename
+    from core.time import now_naive
+
+    for prefix in ("A", "F", "L", "Z"):
+        fn = _print_filename(prefix, "note")
+        assert fn.startswith(f"{prefix}-{now_naive().year:04d}-")
+        assert fn.endswith("-note.xlsx")

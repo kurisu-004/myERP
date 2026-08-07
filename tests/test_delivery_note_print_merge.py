@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 from datetime import date
 
+import pytest
 from openpyxl import load_workbook
 
 from model.assembly import TAssembly
@@ -797,3 +798,218 @@ async def test_print_xlsx_assembly_order_no(clean_db):
         f"装配体合并行 order_no 应为 'ON-ASM-008'，"
         f"实际 {ws.cell(row=3, column=2).value!r}"
     )
+
+
+# ============================================================
+# 2026-08-07：line_item_ids 标签勾选子集（标签独立导出支持部分行）
+# ============================================================
+async def test_print_labels_line_item_ids_subset(clean_db):
+    """2026-08-07：3 零件传 2 个 line_item_ids → 标签 sheet 只含 2 行 + 表头。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FA001", drawing_no="D-FA001",
+    )
+    p2 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FA002", drawing_no="D-FA002",
+    )
+    p3 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FA003", drawing_no="D-FA003",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2), _item(p3)],
+        version=note.version,
+    )
+
+    # 只勾 p1、p3
+    line_item_ids = [str(p1.root_batch.id), str(p3.root_batch.id)]
+    labels_bytes, _ = await svc.print_labels_xlsx(
+        note_id=str(note.id),
+        line_item_ids=line_item_ids,
+    )
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+    # max_row = 1 (表头) + 2 (数据) = 3
+    assert ws.max_row == 3, (
+        f"应只生成 2 行数据 + 1 表头 = 3，实际 {ws.max_row}"
+    )
+    drawing_values = [ws.cell(row=r, column=4).value for r in (2, 3)]
+    assert drawing_values == ["D-FA001", "D-FA003"], (
+        f"应只含 D-FA001 + D-FA003，实际 {drawing_values!r}"
+    )
+
+
+async def test_print_labels_line_item_ids_preserves_custom_order(clean_db):
+    """2026-08-07：line_item_ids 与 custom_order 正交——custom_order 定顺序（须全量），
+    line_item_ids 裁成员；裁后行顺序与 custom_order 一致。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FB001", drawing_no="D-FB001",
+    )
+    p2 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FB002", drawing_no="D-FB002",
+    )
+    p3 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FB003", drawing_no="D-FB003",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2), _item(p3)],
+        version=note.version,
+    )
+
+    # custom_order 倒序（仍全量），line_item_ids 子集含全部 → 行顺序 = 倒序
+    custom_order = [str(p3.root_batch.id), str(p2.root_batch.id), str(p1.root_batch.id)]
+    line_item_ids = [str(p1.root_batch.id), str(p2.root_batch.id), str(p3.root_batch.id)]
+    labels_bytes, _ = await svc.print_labels_xlsx(
+        note_id=str(note.id),
+        custom_order=custom_order,
+        line_item_ids=line_item_ids,
+    )
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+    # 行 2 = p3, 行 3 = p2, 行 4 = p1
+    assert ws.cell(row=2, column=4).value == "D-FB003"
+    assert ws.cell(row=3, column=4).value == "D-FB002"
+    assert ws.cell(row=4, column=4).value == "D-FB001"
+
+
+async def test_print_labels_line_item_ids_unknown_raises(clean_db):
+    """2026-08-07：line_item_ids 含非本单 batch id → 422 BIZ_DELIVERY_PRINT_BAD_ORDER。"""
+    from core.error_code import ErrCode
+    from core.exception import BizError
+
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FC001", drawing_no="D-FC001",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1)],
+        version=note.version,
+    )
+
+    # 999999999 不属于本单
+    with pytest.raises(BizError) as ei:
+        await svc.print_labels_xlsx(
+            note_id=str(note.id),
+            line_item_ids=["999999999"],
+        )
+    assert ei.value.code == ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER
+    assert "999999999" in ei.value.message
+
+
+async def test_print_labels_line_item_ids_empty_raises(clean_db):
+    """2026-08-07：line_item_ids=[] 视为非法（区分 None=全打）→ 400 BIZ_INVALID_VALUE。"""
+    from core.error_code import ErrCode
+    from core.exception import BizError
+
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FD001", drawing_no="D-FD001",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1)],
+        version=note.version,
+    )
+
+    with pytest.raises(BizError) as ei:
+        await svc.print_labels_xlsx(
+            note_id=str(note.id),
+            line_item_ids=[],
+        )
+    assert ei.value.code == ErrCode.BIZ_INVALID_VALUE
+
+
+async def test_print_labels_line_item_ids_merged_assembly(clean_db):
+    """2026-08-07：合并模式下传子件 batch id → 装配体合并为 1 行「套」。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="A8801", drawing_no="DA-8801", name="合并件X",
+    )
+    child1 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F8A01", drawing_no="D-F8A01",
+    )
+    child2 = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="F8A02", drawing_no="D-F8A02",
+    )
+    loose = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="F8A99", drawing_no="D-F8A99",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child1), _item(child2), _item(loose)],
+        version=note.version,
+    )
+
+    # 合并模式 + 只勾装配体两个子件（不勾散件）→ 标签 sheet 只剩 1 行「套」
+    line_item_ids = [str(child1.root_batch.id), str(child2.root_batch.id)]
+    labels_bytes, _ = await svc.print_labels_xlsx(
+        note_id=str(note.id),
+        merge_assemblies=True,
+        merge_quantities={str(asm.id): 1},
+        line_item_ids=line_item_ids,
+    )
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+    assert ws.max_row == 2, f"应 1 表头 + 1 合并行 = 2，实际 {ws.max_row}"
+    # 合并行 unit = "套"
+    assert ws.cell(row=2, column=6).value == "套"
+    # 合并行 drawing_no = 装配件 drawing_no
+    assert ws.cell(row=2, column=4).value == "DA-8801"
+
+
+async def test_print_labels_line_item_ids_none_legacy_behavior(clean_db):
+    """2026-08-07：line_item_ids=None（默认）→ 行为与旧版完全一致（回归护栏）。
+
+    本测试与 test_print_labels_xlsx_layout_unchanged 互证：默认 None 路径
+    不能因新参数破坏既有行为。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    p1 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FE001", drawing_no="D-FE001",
+    )
+    p2 = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FE002", drawing_no="D-FE002",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(p1), _item(p2)],
+        version=note.version,
+    )
+
+    labels_bytes, _ = await svc.print_labels_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+    # 2 散件全打
+    assert ws.max_row == 3
+    assert ws.column_dimensions["E"].width == 8  # 旧行为：数量列固定 8

@@ -1,14 +1,16 @@
 <!--
-  送货单打印预览对话框（2026-08-02 新增；2026-08-04 装配件合并）。
+  送货单打印预览对话框（2026-08-02 新增；2026-08-04 装配件合并；2026-08-07 拆双模式）。
 
   设计要点：
-  - 列：序号（拖动 handle + 数字）/ 订单号 / 分厂 / 申请人 / 图号 / 名称 / 数量
+  - 列：勾选（仅 label 模式）/ 序号（拖动 handle + 数字）/ 订单号 / 分厂 / 申请人 / 图号 / 名称 / 数量
   - 初始顺序 = 详情页当前 ``note.line_items`` 的内存顺序（含用户列头排序的结果）
   - 行可拖动：sortablejs 复用 ``PartBatchNew.vue`` 的低层 DOM API 模式
   - 用户拖动只影响预览副本；详情页 ``note.line_items`` 不变
   - 2026-08-04：单上有装配件子件时显示「合并为一套 / 分开打印所有子件」radio；
     合并模式预览折叠子件为父行；导出时把父行 round-trip 展开为组内 batch id 连续。
-  - 确认导出 → POST /delivery-notes/{id}/print body { custom_order, merge_assemblies }
+  - 2026-08-07：新增 ``mode`` prop：
+      · 'note'  = 只导送货单（不串联标签下载，旧 PR-C5 行为已剥离）
+      · 'label' = 只导标签，支持勾选部分行；列首加 el-table 原生 selection 列
   - 取消 → 关闭对话框
 -->
 <script setup lang="ts">
@@ -26,7 +28,6 @@ import Sortable from 'sortablejs'
 import {
   printNote,
   printNoteLabels,
-  type PrintNoteProgress,
 } from '@/api/deliveryNote'
 import { useDialogSize } from '@/composables/useDialogSize'
 import { triggerBrowserDownload } from '@/utils/download'
@@ -35,10 +36,15 @@ import type {
   DeliveryNoteLineItem,
 } from '@/types/deliveryNote'
 
-const props = defineProps<{
-  modelValue: boolean
-  note: DeliveryNoteDetailOut | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean
+    note: DeliveryNoteDetailOut | null
+    /** 2026-08-07：'note' = 只导送货单；'label' = 只导标签（可勾选行） */
+    mode?: 'note' | 'label'
+  }>(),
+  { mode: 'note' },
+)
 
 const emit = defineEmits<{
   'update:modelValue': [v: boolean]
@@ -51,12 +57,18 @@ const rows = ref<PreviewRow[]>([])
 let sortable: Sortable | null = null
 const loading = ref(false)
 
+// 2026-08-07：标签模式的勾选状态
+const selectedRows = ref<PreviewRow[]>([])
+
 // 2026-08-04：单上是否含有装配件子件
 const hasAssemblies = computed(
   () => props.note?.line_items.some((li) => li.assembly_id) ?? false,
 )
 // 2026-08-07 改默认：单上含装配件子件时直接合并为一套打印（与后端 merge_assemblies 默认一致）
 const mergeMode = ref<'separate' | 'merge'>('merge')
+
+// 2026-08-07：是否为标签导出模式
+const isLabelMode = computed(() => props.mode === 'label')
 
 interface PreviewAssemblyRow {
   id: string
@@ -113,20 +125,44 @@ watch(
       rows.value = previewRows.value
       await nextTick()
       initSortable()
+      // 2026-08-07：label 模式默认全选
+      if (isLabelMode.value) {
+        await selectAll()
+      }
     } else {
       destroySortable()
     }
   },
 )
 
-watch(previewRows, (next) => {
+watch(previewRows, async (next) => {
   rows.value = next
-  nextTick(initSortable)
+  await nextTick()
+  initSortable()
+  // 2026-08-07：合并模式切换后重置全选
+  if (isLabelMode.value) {
+    await selectAll()
+  }
 })
 
 function isAsmRow(r: unknown): r is PreviewAssemblyRow {
   return typeof r === 'object' && r !== null
     && (r as PreviewAssemblyRow).is_asm_row === true
+}
+
+// 2026-08-07：标签模式全选 / 反选
+async function selectAll(): Promise<void> {
+  await nextTick()
+  const t = previewTableRef.value
+  if (!t) return
+  // 逐行 toggle true（不用 toggleAllSelection：toggle 语义会全消）
+  rows.value.forEach((r) => t.toggleRowSelection(r, true))
+}
+function invertSelection(): void {
+  const t = previewTableRef.value
+  if (!t) return
+  const chosen = new Set(selectedRows.value)
+  rows.value.forEach((r) => t.toggleRowSelection(r, !chosen.has(r)))
 }
 
 function initSortable(): void {
@@ -190,27 +226,34 @@ async function onConfirm(): Promise<void> {
     } else {
       custom_order = rows.value.map((r) => String((r as DeliveryNoteLineItem).id))
     }
-    const { blob, filename } = await printNote(
-      props.note.id,
-      { custom_order, merge_assemblies: mergeFlag, merge_quantities },
-      (p: PrintNoteProgress) => {
-        void p
-      },
-    )
-    triggerBrowserDownload(blob, filename)
-    // 2026-08-05 PR-C5：紧接着下载标签 Excel（独立文件）。失败仅 warning，
-    // 送货单已成功不撤销；标签可单独重打。
-    try {
-      const labels = await printNoteLabels(props.note.id, {
+
+    if (isLabelMode.value) {
+      // 2026-08-07：label 模式 → 展开勾选行成子件 batch id（与 custom_order 同一口径）
+      const flat = props.note.line_items
+      const line_item_ids: string[] = []
+      selectedRows.value.forEach((r) => {
+        if (isAsmRow(r)) {
+          flat
+            .filter((li) => li.assembly_id === r.assembly_id)
+            .forEach((c) => line_item_ids.push(String(c.id)))
+        } else {
+          line_item_ids.push(String((r as DeliveryNoteLineItem).id))
+        }
+      })
+      const { blob, filename } = await printNoteLabels(props.note.id, {
         custom_order,
         merge_assemblies: mergeFlag,
         merge_quantities,
+        line_item_ids,
       })
-      triggerBrowserDownload(labels.blob, labels.filename)
-    } catch (le) {
-      ElMessage.warning(
-        `送货单已导出，但标签 Excel 失败：${(le as Error).message ?? '未知错误'}`,
+      triggerBrowserDownload(blob, filename)
+    } else {
+      // 2026-08-07：note 模式 → 仅导送货单，不再串联标签下载
+      const { blob, filename } = await printNote(
+        props.note.id,
+        { custom_order, merge_assemblies: mergeFlag, merge_quantities },
       )
+      triggerBrowserDownload(blob, filename)
     }
     ElMessage.success('已导出')
     emit('update:modelValue', false)
@@ -225,7 +268,9 @@ async function onConfirm(): Promise<void> {
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="打印预览（拖动行可调整顺序）"
+    :title="isLabelMode
+      ? '标签打印预览（勾选要打印的行，拖动可调顺序）'
+      : '打印预览（拖动行可调整顺序）'"
     :width="dlg.width.value"
     :top="dlg.top.value"
     :fullscreen="dlg.fullscreen.value"
@@ -234,7 +279,12 @@ async function onConfirm(): Promise<void> {
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <div class="preview-tip">
-      <span>预览共 {{ rows.length }} 行；导出顺序 = 当前预览顺序。</span>
+      <span v-if="!isLabelMode">预览共 {{ rows.length }} 行；导出顺序 = 当前预览顺序。</span>
+      <el-space v-if="isLabelMode" size="small">
+        <span>已选 {{ selectedRows.length }} / {{ rows.length }} 行</span>
+        <el-button size="small" @click="selectAll">全选</el-button>
+        <el-button size="small" @click="invertSelection">反选</el-button>
+      </el-space>
       <!-- 2026-08-04：仅当单上含装配件子件时显示（el-radio-button 更醒目） -->
       <el-radio-group
         v-if="hasAssemblies"
@@ -253,7 +303,10 @@ async function onConfirm(): Promise<void> {
       stripe
       border
       height="500"
+      @selection-change="(v: PreviewRow[]) => (selectedRows = v)"
     >
+      <!-- 2026-08-07：label 模式首列加 el-table 原生 selection 勾选列 -->
+      <el-table-column v-if="isLabelMode" type="selection" width="48" />
       <el-table-column width="72" align="center" label="序号">
         <template #default="{ $index }">
           <el-icon class="drag-handle" title="拖动排序"><Rank /></el-icon>
@@ -302,8 +355,10 @@ async function onConfirm(): Promise<void> {
     <template #footer>
       <el-button @click="onCancel">取消</el-button>
       <el-button
-        type="primary" :loading="loading" :disabled="!rows.length" @click="onConfirm">
-        导出 Excel
+        type="primary" :loading="loading"
+        :disabled="!rows.length || (isLabelMode && !selectedRows.length)"
+        @click="onConfirm">
+        {{ isLabelMode ? '导出标签' : '导出送货单' }}
       </el-button>
     </template>
   </el-dialog>

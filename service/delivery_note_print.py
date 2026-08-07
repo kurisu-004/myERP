@@ -403,11 +403,15 @@ class DeliveryNotePrintService:
         merge_assemblies: bool,
         assembly_map: dict[int, TAssembly],
         merge_quantities: dict[int, int] | None,
+        line_item_ids: list[str] | None = None,  # 2026-08-07：标签勾选子集
     ) -> list[PrintRow]:
         """render 与 render_labels 共享的行构建：拉批次 → 过滤 → 客户 map → 构造 PrintRow。
 
         - ``custom_order`` 为空走 ``TPartBatch.id ASC``（与旧行为一致）；
         - 非法 batch id 或漏行 → 422 BIZ_DELIVERY_PRINT_BAD_ORDER；
+        - ``line_item_ids``（2026-08-07 标签专用，None = 不过滤）→ 成员裁剪。
+          放在 custom_order 排序之后 → 天然保留用户拖动的顺序；
+          放在 serial/drawing 过滤之前 → 复用既有「全部不可用 → 400」兜底。
         - 缺 ``serial_no`` / ``drawing_no`` 的零件 warning + 跳过；
         - 全部行都不可用 → 400 BIZ_INVALID_VALUE。
         """
@@ -445,6 +449,23 @@ class DeliveryNotePrintService:
                     http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
                 )
             linked = ordered
+        # 2026-08-07：line_item_ids 子集过滤（仅标签导出用）
+        if line_item_ids is not None:
+            if not line_item_ids:
+                raise BizError(
+                    code=ErrCode.BIZ_INVALID_VALUE,
+                    message="line_item_ids 为空：未勾选任何行",
+                    http_status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            wanted = set(line_item_ids)
+            unknown = wanted - {str(b.id) for b, _p in linked}
+            if unknown:
+                raise BizError(
+                    code=ErrCode.BIZ_DELIVERY_PRINT_BAD_ORDER,
+                    message=f"line_item_ids 含不属于本单的 batch id: {sorted(unknown)}",
+                    http_status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            linked = [(b, p) for b, p in linked if str(b.id) in wanted]
         # 过滤缺 serial/drawing 的行（warning + 跳过）
         rows: list[tuple[Any, TPart]] = []
         for b, p in linked:
@@ -495,14 +516,22 @@ class DeliveryNotePrintService:
         merge_assemblies: bool = True,  # 2026-08-07 改默认：与送货单保持一致
         assembly_map: dict[int, TAssembly] | None = None,
         merge_quantities: dict[int, int] | None = None,
+        line_item_ids: list[str] | None = None,  # 2026-08-07：标签勾选子集
     ) -> tuple[bytes, str]:
         """打印标签用的 Excel（无模板，沿用 PrintRow 口径）。
 
         表头：客户 | 申请人 | 名称 | 图号 | 数量 | 单位
         数据行：与送货单完全一致——``merge_assemblies`` 默认 True（与 ``render``
         对齐），自动反映（合并行 ``unit`` =「套」，散件行 =「件」），
-        行顺序与 ``custom_order`` 一致。``prefix`` 仅用于文件名前缀
-        （``delivery_labels_{prefix}_{note_id}.xlsx``）。
+        行顺序与 ``custom_order`` 一致。
+
+        ``line_item_ids``（2026-08-07 新增）：只打勾选行；None = 全打。
+        与 ``custom_order`` 正交——``custom_order`` 仍须包含本单全部行（漏行 422），
+        ``line_item_ids`` 在排序后裁剪（顺序 × 成员，两个独立维度）。
+
+        合并模式下若用户只勾装配体*部分*子件（API 直调可能），合并行数量仍取
+        ``merge_quantities.get(asm_id, 1)``，不按存活子件缩放——以防合并行凭空
+        缩小。``prefix`` 仅用于文件名前缀兜底（缺省 "X"）。
         """
         custom_order_list: list[str] = list(custom_order) if custom_order else []
         assembly_map = assembly_map or {}
@@ -512,6 +541,7 @@ class DeliveryNotePrintService:
             merge_assemblies=merge_assemblies,
             assembly_map=assembly_map,
             merge_quantities=merge_quantities,
+            line_item_ids=line_item_ids,
         )
         # prefix 走 L1 客户（service 层已保证 note.customer_id 是 L1 root）
         cust = await self.customers.get_by_id(note.customer_id)

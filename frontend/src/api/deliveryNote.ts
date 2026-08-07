@@ -279,6 +279,13 @@ export interface PrintNotePayload {
   merge_quantities?: Record<string, number>
 }
 
+/** 2026-08-07：标签导出专用（送货单 /print 不支持部分导出）。 */
+export interface PrintLabelsPayload extends PrintNotePayload {
+  /** 只打这些批次行（line_items[].id）；省略 = 全部。
+   *  合并模式下需由调用方把装配件父行展开为组内子件 id。 */
+  line_item_ids?: string[]
+}
+
 export async function printNote(
   noteId: string,
   payload: PrintNotePayload = {},
@@ -297,15 +304,16 @@ export async function printNote(
   )
   const filename =
     parseFilename(resp.headers['content-disposition']) ??
-    `delivery_note_${noteId}.xlsx`
+    `note-${noteId}.xlsx`
   return { blob: resp.data, filename }
 }
 
 /** 2026-08-05 PR-C5：打印标签 Excel（与 printNote 配对，触发浏览器二次下载）。
- * 同一 payload 保证行口径与送货单完全一致；失败不影响送货单下载。 */
+ * 2026-08-07 升级：可传 ``line_item_ids`` 只打勾选行。
+ * 同一 payload 保证行口径与送货单完全一致。 */
 export async function printNoteLabels(
   noteId: string,
-  payload: PrintNotePayload = {},
+  payload: PrintLabelsPayload = {},
   onProgress?: (p: PrintNoteProgress) => void,
 ): Promise<PrintNoteResult> {
   const resp = await api.post<Blob>(
@@ -320,7 +328,7 @@ export async function printNoteLabels(
   )
   const filename =
     parseFilename(resp.headers['content-disposition']) ??
-    `delivery_labels_${noteId}.xlsx`
+    `label-${noteId}.xlsx`
   return { blob: resp.data, filename }
 }
 
