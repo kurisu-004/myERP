@@ -173,7 +173,7 @@ class TestBackPageGeometry:
 
     所有断言：image y 向下，1px ≈ 1pt（pypdfium2 scale=1.0）。
     条码类断言不许放宽（与字体无关）；文字类断言（font 度量受 macOS Arial /
-    Debian DejaVu 差异影响）必要时可放宽并注释说明。
+    alpine DejaVu 差异影响）必要时可放宽并注释说明。
     """
 
     def test_main_barcode_geometry(self) -> None:

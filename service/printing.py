@@ -82,20 +82,21 @@ def _a4_px(orientation: str) -> tuple[int, int]:
 def _load_cn_font(size: int) -> ImageFont.ImageFont:
     """尽量加载中文字体；找不到时 fallback 到默认（标签仍可显示）。
 
-    部署环境（Debian slim + fonts-wqy-microhei）默认带 CJK 字体；
-    Dockerfile 切到 Debian 后信息卡中文可正常渲染。候选路径覆盖 Debian /
-    Ubuntu / macOS 常见位置；alpine 路径已移除（runtime 不再走 alpine）。
+    部署环境（alpine）默认无任何字体；2026-07-31 Dockerfile 加装
+    font-wqy-microhei 后信息卡中文可正常渲染。候选路径覆盖 Alpine / Debian /
+    Ubuntu / macOS 常见位置。
     """
     candidates = [
-        # Debian/Ubuntu apt install fonts-wqy-microhei 安装位置
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        # Debian/Ubuntu apt install fonts-wqy-zenhei 安装位置
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        # Ubuntu 旧路径（部分打包版本可能仍在此）
+        # Alpine apk add font-wqy-microhei 安装位置（2026-07-31 新增）
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
-        # Debian/Ubuntu apt install fonts-noto-cjk 安装位置（备用）
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        # Debian/Ubuntu apt install fonts-dejavu 路径（仅 Latin，兜底）
+        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        # Alpine apk add font-noto-cjk 安装位置（备用）
+        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+        # Alpine apk add font-dejavu 安装位置（仅 Latin）
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        # Debian/Ubuntu apt install fonts-dejavu 路径
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         # macOS
         "/System/Library/Fonts/PingFang.ttc",

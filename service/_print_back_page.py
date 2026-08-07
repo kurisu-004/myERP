@@ -50,7 +50,8 @@ def _register_print_font() -> str:
     CJK 信息卡另走 `_load_cn_font`（PIL）路径，不在这里。
     """
     candidates = [
-        # Debian/Ubuntu apt install fonts-dejavu 安装位置（runtime 路径）
+        # Alpine apk add font-dejavu 安装位置
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         # 容器外开发机（macOS）
         "/System/Library/Fonts/Supplemental/Arial.ttf",
