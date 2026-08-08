@@ -52,10 +52,7 @@ from service import (
     WorkTypeProcessService,
     WorkTypeService,
 )
-from service.part import (
-    Broadcaster,
-    EventBroadcaster,
-)
+from service.mcp_query import McpQueryService
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -543,8 +540,6 @@ def get_assembly_service(
 
 def get_delivery_note_service(
     session: AsyncSession = Depends(get_session),
-    broadcaster: Broadcaster | None = None,
-    event_broadcaster: EventBroadcaster | None = None,
     user: CurrentUser = Depends(get_current_user),
 ) -> DeliveryNoteService:
     """送货单管理 service 工厂（PR-G 2026-07-22 替代 PR-B 老 XLSX 导出）。
@@ -558,7 +553,13 @@ def get_delivery_note_service(
       dashboard snapshot 与业务事件（DELIVERY_NOTE_PICKED_UP）；通过闭包传，
       不复用请求 session。
 
-    调用方 API 层用 require_roles 守权限（MANAGER/CLERK 编辑；pickup 任意已登录）。
+    2026-08-08：移除了 `broadcaster` / `event_broadcaster` 两个函数签名参数。
+    它们没有 `Depends()`，FastAPI 会当成 **query 参数**解析，而 `Broadcaster` 是
+    `Callable[...]` 别名 → `app.openapi()` 抛
+    `PydanticInvalidForJsonSchema: Cannot generate a JsonSchema for CallableSchema`，
+    连带 `/docs` 与 `/openapi.json` 全挂（且 HTTP 请求根本没法给 Callable 传值，
+    这俩参数在生产链路上始终是 None）。改用下面的局部闭包，行为不变。
+    要在测试里替换广播行为请走 `app.dependency_overrides`。
     """
     async def _broadcaster() -> None:
         # pickup() 影响多个 part.deliver → dashboard 卡片「待送货」消失，
@@ -583,11 +584,8 @@ def get_delivery_note_service(
         work_types=WorkTypeRepository(session),
         part_events=PartEventRepository(session),
         assemblies=AssemblyRepository(session),  # 2026-08-03：pickup 触发装配件 rollup
-        broadcaster=_broadcaster if broadcaster is None else broadcaster,
-        event_broadcaster=(
-            _event_broadcaster if event_broadcaster is None
-            else event_broadcaster
-        ),
+        broadcaster=_broadcaster,
+        event_broadcaster=_event_broadcaster,
         current_user=user,
     )
 
@@ -702,3 +700,34 @@ def get_outsource_quote_service(
         shipments=shipments,
         current_user=user,
     )
+
+
+# ===================== MCP 只读查询（免鉴权）=====================
+# ⚠️ 以下两个工厂**刻意不注入 `get_current_user`**——`/api/mcp/*` 是给 AI 用的
+# 免登录只读入口，注入了会让端点直接 401。安全性靠部署层（nginx / 安全组不暴露
+# `/api/mcp` 与 `/mcp` 前缀）保证，不要在这里加回 `Depends(get_current_user)`。
+
+
+def get_mcp_query_service(
+    session: AsyncSession = Depends(get_session),
+) -> McpQueryService:
+    """MCP 只读查询 service 工厂（无 current_user，无 broadcaster）。"""
+    return McpQueryService(
+        parts=PartRepository(session),
+        part_batches=PartBatchRepository(session),
+        customers=CustomerRepository(session),
+        workers=WorkerRepository(session),
+        shelves=ShelfRepository(session),
+        processes=ProcessRepository(session),
+        outsource_companies=OutsourceCompanyRepository(session),
+        assemblies=AssemblyRepository(session),
+        files=PartFileRepository(session),
+        events=PartEventRepository(session),
+    )
+
+
+def get_mcp_part_file_service(
+    session: AsyncSession = Depends(get_session),
+) -> PartFileService:
+    """MCP 图纸代理用的文件 service（`current_user=None`，仅走读路径）。"""
+    return PartFileService(files=PartFileRepository(session))
