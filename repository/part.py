@@ -86,6 +86,8 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        # 2026-08-08：True 时额外要求 system_delivery_date IS NOT NULL（MCP 到期查询用）。
+        system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
         # 2026-08-05：位置筛选细化到具体 holder。
@@ -118,6 +120,7 @@ class PartRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            system_delivery_date_not_null=system_delivery_date_not_null,
             next_process_ids=next_process_ids,
             locations=locations,
             holder_ids=holder_ids,
@@ -174,6 +177,8 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        # 2026-08-08：True 时额外要求 system_delivery_date IS NOT NULL（MCP 到期查询用）。
+        system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
         # 2026-08-05：位置筛选细化到具体 holder。
@@ -198,6 +203,7 @@ class PartRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            system_delivery_date_not_null=system_delivery_date_not_null,
             next_process_ids=next_process_ids,
             locations=locations,
             holder_ids=holder_ids,
@@ -557,6 +563,8 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        # 2026-08-08：True 时额外要求 system_delivery_date IS NOT NULL（MCP 到期查询用）。
+        system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
         # 2026-08-05：位置筛选细化到具体 holder。
@@ -628,6 +636,13 @@ class PartRepository:
                     TPart.system_delivery_date <= system_delivery_date_to,
                 )
             )
+        # 2026-08-08：MCP 只读查询用。上面两个区间条件是 NULL-inclusive 的
+        # （前端筛选要「未设交期也别被筛掉」），但「按交期查到期未送货」的语义里
+        # `system_delivery_date IS NULL` = 未排期，不该算作到期。
+        # 本参数与区间条件叠加使用：`_to=D` + `_not_null=True` ⇒ 严格 `col <= D`。
+        # 默认 None/False 时完全不加条件，现有调用点行为不变。
+        if system_delivery_date_not_null:
+            stmt = stmt.where(TPart.system_delivery_date.is_not(None))
         # 2026-07-20：外协接收历史页（曾外协过判定）与列表 SQL 合一。
         # EXISTS 子查询命中 `t_part_event` 复合索引 `(part_id, created_at)`，
         # list + count 共用同一谓词，行为完全对齐。

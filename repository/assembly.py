@@ -58,6 +58,18 @@ class AssemblyRepository:
             return None
         return a
 
+    async def list_by_ids(
+        self, ids: list[int], *, include_deleted: bool = False
+    ) -> list[TAssembly]:
+        """按 ID 批查（MCP 到期查询按 assembly_id 聚合子件时防 N+1）。"""
+        if not ids:
+            return []
+        stmt = select(TAssembly).where(TAssembly.id.in_(ids))
+        if not include_deleted:
+            stmt = stmt.where(TAssembly.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_by_drawing_no(
         self, drawing_no: str, *, include_deleted: bool = False
     ) -> TAssembly | None:
