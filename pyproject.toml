@@ -1,6 +1,6 @@
 [project]
 name = "myerp"
-version = "0.2.12"
+version = "0.3.0"
 description = "myERP backend"
 requires-python = ">=3.11"
 dependencies = [
