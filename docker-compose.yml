@@ -85,10 +85,18 @@ services:
       SSL_KEY_FILENAME: ${SSL_KEY_FILENAME:-hsh-erp.cloud.key}
     # frontend/nginx.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
 
-# 注：nanobot 服务已于 2026-07-11 暂时下线。
-# 原因：CVM 上没有 nanobot 源码目录（之前 docker-compose 用 build context: ../nanobot
-#       会构建失败），且业务未到启用 LLM 助手阶段。
-# 恢复方法：见 docs/deploy.md（待写）；需要重新加 build: ../nanobot 或独立 push nanobot 镜像。
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: myerp-hermes
+    restart: unless-stopped
+    volumes:
+      - /home/ubuntu/.hermes:/opt/data
+    ports:
+      - "${HERMES_PORT:-8642}:8642"
+
+    environment:
+      EMAIL_KEY: ${EMAIL_KEY:-TNVkC39EbenAqKUT}
+    command: gateway run
 
 volumes:
   pgdata:

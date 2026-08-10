@@ -37,9 +37,9 @@ services:
       # 想更严可以把 5432 换成 ssh 隧道，或加 firewall 限制。
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      # 父目录挂载：与 docker-compose.test.yml 一致（postgres 18 自己管 data/ 子目录；
-      # 挂到 /var/lib/postgresql/data 会与镜像自带的 init 流程冲突）。
-      - ./data/postgres-staging:/var/lib/postgresql
+      # 引用已存在的命名卷 myerp-pgdata（test server 上 docker volume ls 可见）。
+      # external: true 让 docker compose 不尝试创建同名卷；若卷不存在会直接报错。
+      - myerp-pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -110,5 +110,20 @@ services:
       SSL_KEY_FILENAME: ${SSL_KEY_FILENAME:-staging-dummy.key}
     # frontend/nginx.http-only.conf 已把 /api/ 反代到 backend:8000，service 名必须叫 backend
 
-# 不引入命名卷（postgres 用 bind mount ./data/postgres-staging）
-volumes: {}
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: myerp-hermes-staging
+    restart: unless-stopped
+    volumes:
+      - /home/ubuntu/.hermes:/opt/data
+    ports:
+      - "${HERMES_PORT:-8642}:8642"
+
+    command: gateway run
+
+# 声明 myerp-pgdata 是外部命名卷（test server 上已存在）。
+# external: true 让 docker compose 不自动管理这个卷（不会意外删除）。
+# 想换成 docker 自动管理（dev空 启动创建、空启动 创建空卷、down 时清理），去掉 external: true 即可。
+volumes:
+  myerp-pgdata:
+    external: true
