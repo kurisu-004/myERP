@@ -327,6 +327,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            order_no_is_null=None,  # 2026-08-11
+            system_delivery_date_is_null=None,  # 2026-08-11
             next_process_ids=None,
             locations=None,
             holder_ids=None,
@@ -349,6 +351,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            order_no_is_null=None,  # 2026-08-11
+            system_delivery_date_is_null=None,  # 2026-08-11
             next_process_ids=None,
             locations=None,
             holder_ids=None,
@@ -402,6 +406,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            order_no_is_null=None,  # 2026-08-11
+            system_delivery_date_is_null=None,  # 2026-08-11
             next_process_ids=None,
             locations=None,
             holder_ids=None,
@@ -448,6 +454,8 @@ class TestListParts:
             planned_delivery_date_to=None,
             system_delivery_date_from=None,
             system_delivery_date_to=None,
+            order_no_is_null=None,  # 2026-08-11
+            system_delivery_date_is_null=None,  # 2026-08-11
             next_process_ids=None,
             locations=None,
             holder_ids=None,

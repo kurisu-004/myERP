@@ -8,7 +8,7 @@ from __future__ import annotations
 import enum
 from datetime import date
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
@@ -104,6 +104,10 @@ class AssemblyRepository:
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-11 follow-up：可空列空白筛选（与 PartRepository 对齐）。
+        # 装配件层之前漏掉这两个开关，导致零件一览勾「仅空白」时非空白装配件仍出现。
+        order_no_is_null: bool | None = None,
+        system_delivery_date_is_null: bool | None = None,
         # 2026-08-05：装配件本身不带 next_process_id / location / current_holder_id；
         # 这三个参数通过子件 EXISTS 作用于装配件行（C2）。
         child_next_process_ids: list[int] | None = None,
@@ -132,6 +136,8 @@ class AssemblyRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            order_no_is_null=order_no_is_null,  # 2026-08-11 follow-up
+            system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11 follow-up
             child_next_process_ids=child_next_process_ids,
             child_locations=child_locations,
             child_holder_ids=child_holder_ids,
@@ -177,6 +183,9 @@ class AssemblyRepository:
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-11 follow-up：可空列空白筛选（与 PartRepository 对齐）。
+        order_no_is_null: bool | None = None,
+        system_delivery_date_is_null: bool | None = None,
         # 2026-08-05：装配件通过子件 EXISTS 接受 next_process / location / holder 筛选（C2）。
         child_next_process_ids: list[int] | None = None,
         child_locations: list[str] | None = None,
@@ -200,6 +209,8 @@ class AssemblyRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            order_no_is_null=order_no_is_null,  # 2026-08-11 follow-up
+            system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11 follow-up
             child_next_process_ids=child_next_process_ids,
             child_locations=child_locations,
             child_holder_ids=child_holder_ids,
@@ -239,6 +250,9 @@ class AssemblyRepository:
         planned_delivery_date_to: date | None = None,
         system_delivery_date_from: date | None = None,
         system_delivery_date_to: date | None = None,
+        # 2026-08-11 follow-up：可空列空白筛选（与 PartRepository 对齐）。
+        order_no_is_null: bool | None = None,
+        system_delivery_date_is_null: bool | None = None,
         # 2026-08-05：装配件本身不带 next_process_id / location / current_holder_id。
         # 通过子件 EXISTS 命中装配件；与 PartRepository 语义一致：
         # child_locations / child_holder_ids 之间 OR，二者皆空时不加 OR 段；
@@ -277,10 +291,17 @@ class AssemblyRepository:
                     | TAssembly.name.ilike(f"%{kw}%")
                 )
         # 2026-07-31：与 PartRepository 对齐——订单号 / 各类日期区间筛选
-        if order_no_like:
+        # 2026-08-11 follow-up：与 order_no_is_null 互斥——is_null 显式设值时覆盖 order_no_like。
+        if order_no_like and order_no_is_null is None:
             on = order_no_like.strip()
             if on:
                 stmt = stmt.where(TAssembly.order_no.ilike(f"%{on}%"))
+        # 2026-08-11 follow-up：订单号空白筛选（覆盖 order_no_like ILIKE）。
+        if order_no_is_null is True:
+            # "空白" = IS NULL OR == ''；空串与 NULL 共存于 order_no String(30) 列。
+            stmt = stmt.where(or_(TAssembly.order_no.is_(None), TAssembly.order_no == ""))
+        elif order_no_is_null is False:
+            stmt = stmt.where(and_(TAssembly.order_no.is_not(None), TAssembly.order_no != ""))
         # 2026-07-31：序列号（装配件 OR EXISTS 子件匹配）。
         # 子件 serial_no 形如 {父装配}-{i:02d}，所以搜子件序列号时，装配件
         # 本身没有匹配的 serial_no —— 需要 EXISTS 命中子件才能带出母装配件行。
@@ -311,22 +332,24 @@ class AssemblyRepository:
             stmt = stmt.where(
                 TAssembly.planned_delivery_date <= planned_delivery_date_to
             )
-        # system_delivery_date 沿用 PartRepository 的 NULL 兜底：可空字段
-        # 在区间内同样命中（PR-F 字段 NULL=未设置）。
-        if system_delivery_date_from is not None:
-            stmt = stmt.where(
-                or_(
-                    TAssembly.system_delivery_date.is_(None),
-                    TAssembly.system_delivery_date >= system_delivery_date_from,
+        # system_delivery_date 沿用 PartRepository 的 NULL 语义（2026-08-11 修复）：
+        # 区间条件不再 NULL 兜底，NULL 与日期比较返回 NULL → 不命中（标准 SQL）。
+        # 与 PartRepository._build_filter_stmt 保持一致，避免零件行与装配件行行为发散。
+        # 2026-08-11 follow-up：与 system_delivery_date_is_null 互斥——is_null=True 时区间失效。
+        if system_delivery_date_is_null is True:
+            stmt = stmt.where(TAssembly.system_delivery_date.is_(None))
+        else:
+            if system_delivery_date_from is not None:
+                stmt = stmt.where(
+                    TAssembly.system_delivery_date >= system_delivery_date_from
                 )
-            )
-        if system_delivery_date_to is not None:
-            stmt = stmt.where(
-                or_(
-                    TAssembly.system_delivery_date.is_(None),
-                    TAssembly.system_delivery_date <= system_delivery_date_to,
+            if system_delivery_date_to is not None:
+                stmt = stmt.where(
+                    TAssembly.system_delivery_date <= system_delivery_date_to
                 )
-            )
+            # False ⇒ 仅非 NULL（区间条件照常生效，仍排除 NULL）。
+            if system_delivery_date_is_null is False:
+                stmt = stmt.where(TAssembly.system_delivery_date.is_not(None))
         # 2026-08-05：子件 EXISTS 形态的「下一道工序 / 物理位置 / holder」筛选（C2）。
         # 三个参数独立判断；任意一个非空时整体加 EXISTS 子查询。
         if child_next_process_ids or child_locations or child_holder_ids:

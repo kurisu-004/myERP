@@ -25,7 +25,7 @@
         <div class="filter-group filter-group--search">
           <el-input
             v-model="search.keyword"
-            placeholder="图号（含子串）/ 名称（前缀）"
+            placeholder="图号 / 名称（全模糊）"
             clearable
             style="width: 260px"
             @keyup.enter="onSearch"
@@ -49,6 +49,17 @@
               <el-icon><Search /></el-icon>
             </template>
           </el-input>
+
+          <!-- 2026-08-11：订单号空白筛选（覆盖 order_no 子串搜索）。
+               el-checkbox v-model 仅支持 boolean；用 :model-value + @update:model-value
+               把 state (boolean | undefined) 与 UI (boolean) 解耦。 -->
+          <el-checkbox
+            :model-value="search.orderNoIsNull === true"
+            class="filter-blank"
+            @update:model-value="(v) => onOrderNoIsNullChange(v)"
+          >
+            仅空白
+          </el-checkbox>
 
           <!-- 序列号独立搜索框（2026-07-31） -->
           <el-input
@@ -129,6 +140,15 @@
               style="width: 240px"
               @change="onDateRangeChange"
             />
+            <!-- 2026-08-11：系统交期空白筛选（勾选时区间失效，仅返回 NULL）。
+                 同 orderNoIsNull：解耦 el-checkbox v-model 与 state（boolean | undefined）。 -->
+            <el-checkbox
+              :model-value="search.systemDeliveryDateIsNull === true"
+              class="filter-blank"
+              @update:model-value="(v) => onSystemDeliveryDateIsNullChange(v)"
+            >
+              仅空白
+            </el-checkbox>
           </div>
         </div>
 
@@ -1213,6 +1233,18 @@ interface SearchState {
   /** 2026-07-21 PR-F：系统交期区间（含端点；空串=无限制） */
   systemDeliveryDateFrom: string
   systemDeliveryDateTo: string
+  /**
+   * 2026-08-11：订单号空白筛选。
+   * - true  ⇒ 仅空白（NULL OR ''），覆盖 order_no 子串搜索
+   * - undefined ⇒ 任意（cleanParams 不发送该字段）
+   */
+  orderNoIsNull: boolean | undefined
+  /**
+   * 2026-08-11：系统交期空白筛选。
+   * - true  ⇒ 仅空白（NULL），区间失效
+   * - undefined ⇒ 任意（cleanParams 不发送该字段）
+   */
+  systemDeliveryDateIsNull: boolean | undefined
   /** 2026-08-01：下一道工序 id 多选（雪花 ID 字符串；空数组=全部） */
   nextProcessIds: string[]
   /** 2026-08-01：物理位置大类多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空数组=全部） */
@@ -1238,6 +1270,8 @@ function initialSearch(): SearchState {
     plannedDeliveryDateTo: '',
     systemDeliveryDateFrom: '',
     systemDeliveryDateTo: '',
+    orderNoIsNull: undefined,  // 2026-08-11
+    systemDeliveryDateIsNull: undefined,  // 2026-08-11
     nextProcessIds: [],
     locations: [],
     holderIds: [],
@@ -1903,6 +1937,11 @@ function buildParams(): ListPartsParams {
     planned_delivery_date_to: search.plannedDeliveryDateTo || undefined,
     system_delivery_date_from: search.systemDeliveryDateFrom || undefined,
     system_delivery_date_to: search.systemDeliveryDateTo || undefined,
+    // 2026-08-11：可空列空白筛选。`=== true` 守卫：未勾选（undefined）不发参数，
+    // 由 cleanParams 自然 strip；显式发送 true/false 仅在 UI 真勾选/显式 false 时。
+    order_no_is_null: search.orderNoIsNull === true ? true : undefined,
+    system_delivery_date_is_null:
+      search.systemDeliveryDateIsNull === true ? true : undefined,
     // 2026-08-05：下一道工序 / 物理位置多选筛选。
     // 雪花 ID 一律以字符串直接传给后端（CLAUDE.md §3）——禁止 Number()，
     // 否则 19 位 ID 在 JS Number（MAX_SAFE_INTEGER≈9.007e15）丢精度，IN 永不命中。
@@ -2057,6 +2096,9 @@ function onReset(): void {
   search.plannedDeliveryDateTo = ''
   search.systemDeliveryDateFrom = ''
   search.systemDeliveryDateTo = ''
+  // 2026-08-11：清空两个空白筛选 checkbox。
+  search.orderNoIsNull = undefined
+  search.systemDeliveryDateIsNull = undefined
   page.value = 1
   // 2026-07-31：重置按钮清空批量选择（与「改筛选即清空」语义一致）
   if (batchMode.value) clearAllSelection()
@@ -2064,6 +2106,17 @@ function onReset(): void {
   // 仅清空 keyword / orderNo / 三个日期区间。下次刷新页面恢复的就是这种"半清空"状态。
   snapshotPartsFilter()
   void fetchList()
+}
+
+// 2026-08-11：可空列空白筛选 checkbox change 桥接（state 是 boolean | undefined）。
+// `true` ⇒ 显式记录，buildParams 才发参数；`false` ⇒ 还原为 undefined（不发参数）。
+function onOrderNoIsNullChange(v: boolean | string | number): void {
+  search.orderNoIsNull = v ? true : undefined
+  onSearch()
+}
+function onSystemDeliveryDateIsNullChange(v: boolean | string | number): void {
+  search.systemDeliveryDateIsNull = v ? true : undefined
+  onSearch()
 }
 
 onMounted(async () => {
@@ -2618,6 +2671,14 @@ async function onBatchDispatchConfirm(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 2026-08-11：可空列空白筛选 checkbox（紧凑，与 el-input 同高）。 */
+.filter-blank {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .date-filter-label {

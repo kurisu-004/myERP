@@ -59,6 +59,21 @@ class PartListQuery(BaseModel):
     planned_delivery_date_to: date | None = Field(default=None, description="计划交期区间终点（含）")
     system_delivery_date_from: date | None = Field(default=None, description="系统交期区间起点（含）")
     system_delivery_date_to: date | None = Field(default=None, description="系统交期区间终点（含）")
+    # —— 2026-08-11：可空列空白筛选（前端 checkbox「仅空白」对应）——
+    order_no_is_null: bool | None = Field(
+        default=None,
+        description=(
+            "订单号空白筛选：True=仅空白（NULL OR ''），False=仅非空，None=任意。"
+            "True 时覆盖 order_no 子串搜索。"
+        ),
+    )
+    system_delivery_date_is_null: bool | None = Field(
+        default=None,
+        description=(
+            "系统交期空白筛选：True=仅空白（区间失效），False=仅非空（区间生效），"
+            "None=任意（区间默认排除 NULL，Bug 1 修复后）。"
+        ),
+    )
     sort_by: PartSortKey = Field(
         default=PartSortKey.PLANNED_DELIVERY_DATE, description="排序字段"
     )

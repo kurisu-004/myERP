@@ -192,6 +192,15 @@ async def list_parts(
     planned_delivery_date_to: date | None = Query(default=None, description="计划交期区间终点（含）"),
     system_delivery_date_from: date | None = Query(default=None, description="系统交期区间起点（含）"),
     system_delivery_date_to: date | None = Query(default=None, description="系统交期区间终点（含）"),
+    # 2026-08-11：可空列空白筛选（前端 checkbox「仅空白」对应）。
+    order_no_is_null: bool | None = Query(
+        default=None,
+        description="订单号空白筛选：True=仅空白，False=仅非空，None=任意",
+    ),
+    system_delivery_date_is_null: bool | None = Query(
+        default=None,
+        description="系统交期空白筛选：True=仅空白（区间失效），False=仅非空（区间生效），None=任意",
+    ),
     include_assemblies: bool = Query(
         default=False, description="是否合并返回装配件行（子件从顶层隐藏；2026-07-30 新增）"
     ),
@@ -235,6 +244,8 @@ async def list_parts(
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            order_no_is_null=order_no_is_null,  # 2026-08-11
+            system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11
             include_assemblies=include_assemblies,
             sort_by=PartSortKey(sort_by),
             sort_dir=SortDir(sort_dir),
