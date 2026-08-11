@@ -53,6 +53,10 @@ from schema.part import (
     PartBatchActionRequest,
     PartBatchCreateRequest,
     PartBatchCreateResult,
+    PartBatchOrderInfoMatchRequest,
+    PartBatchOrderInfoMatchResult,
+    PartBatchOrderInfoUpdateRequest,
+    PartBatchOrderInfoUpdateResult,
     PartBatchOut,
     PartBatchTreeRequest,
     PartBatchTreeResult,
@@ -366,6 +370,32 @@ async def create_parts_tree(
         part_files=part_file_svc,
         applicants=applicant_svc,
     )
+
+
+@router.post(
+    "/match-by-excel-items",
+    response_model=list[PartBatchOrderInfoMatchResult],
+    summary="采购订单 Excel 行匹配零件（MANAGER / CLERK）",
+    dependencies=_office_dep,
+)
+async def match_parts_by_excel_items(
+    payload: PartBatchOrderInfoMatchRequest,
+    svc: PartService = Depends(get_part_service),
+) -> list[PartBatchOrderInfoMatchResult]:
+    return await svc.batch_match_by_excel_items(payload)
+
+
+@router.post(
+    "/batch-update-order-info",
+    response_model=PartBatchOrderInfoUpdateResult,
+    summary="批量更新订单号与系统交期（MANAGER / CLERK）",
+    dependencies=_office_dep,
+)
+async def batch_update_order_info(
+    payload: PartBatchOrderInfoUpdateRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartBatchOrderInfoUpdateResult:
+    return await svc.batch_update_order_info(payload)
 
 
 @router.post(

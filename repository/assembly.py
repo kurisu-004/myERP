@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import enum
 from datetime import date
+from typing import Sequence
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,6 +80,31 @@ class AssemblyRepository:
         stmt = stmt.order_by(TAssembly.id.desc()).limit(1)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    # ===== 批量图号 / 名称预取（采购订单 Excel 导入匹配用，2026-08-11）=====
+    async def list_by_drawing_nos(
+        self, codes: Sequence[str], *, include_deleted: bool = False
+    ) -> list[TAssembly]:
+        """按图号 in_ 批量取装配件；空 codes → 返回空 list。"""
+        if not codes:
+            return []
+        stmt = select(TAssembly).where(TAssembly.drawing_no.in_(list(codes)))
+        if not include_deleted:
+            stmt = stmt.where(TAssembly.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_by_names(
+        self, names: Sequence[str], *, include_deleted: bool = False
+    ) -> list[TAssembly]:
+        """按 name in_ 批量取装配件；调用方负责传入归一化后的 name。"""
+        if not names:
+            return []
+        stmt = select(TAssembly).where(TAssembly.name.in_(list(names)))
+        if not include_deleted:
+            stmt = stmt.where(TAssembly.deleted_at.is_(None))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     # ===== 列表查询 =====
     async def list_with_filters(

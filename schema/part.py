@@ -728,6 +728,107 @@ class PartUpdateRequest(BaseModel):
     customer_id: str | None = Field(default=None, description="客户 id（雪花 ID 字符串）")
 
 
+# —— 2026-08-11：采购订单 Excel 导入（零件一览「解析系统交期和订单号」） ——
+# 匹配（只读）+ 批量更新（写）。两字段在 t_part 上已存在（PR-F 000000000005），
+# t_assembly 无此二列 → 装配体命中后展开到子零件。
+class PartBatchOrderInfoMatchItem(BaseModel):
+    """前端解析出的单条「采购订单明细」行（匹配阶段入参）。"""
+
+    row_no: int = Field(description="Excel 行号（前端回填预览用；不参与匹配）")
+    line_no: str | None = Field(default=None, description="A 采购订单行号")
+    drawing_no: str | None = Field(default=None, max_length=100, description="D 物料代码")
+    name: str | None = Field(default=None, max_length=200, description="E 订单物料描述")
+    delivery_date: date | None = Field(default=None, description="G 交货日期")
+    unit_price: Decimal | None = Field(default=None, ge=0, description="H 含税价")
+    quantity: Decimal | None = Field(default=None, ge=0, description="K 可出货数量")
+
+
+class PartMatchInfo(BaseModel):
+    """匹配命中的单个零件摘要（含当前值供预览对比）。"""
+
+    part_id: IdStrNonNull
+    version: int
+    drawing_no: str | None
+    name: str
+    unit_price: Decimal | None
+    quantity: int | None
+    order_no: str | None = Field(default=None, description="现订单号")
+    system_delivery_date: date | None = Field(default=None, description="现系统交期")
+    assembly_id: IdStr = Field(default=None, description="装配体展开来源（NULL=直接命中）")
+    assembly_name: str | None = Field(default=None, description="来源装配体名称（仅装配体展开）")
+
+
+class PartBatchOrderInfoMatchResult(BaseModel):
+    """每行 Excel 的匹配结果。"""
+
+    row_no: int
+    match_type: Literal[
+        "PART_CODE", "PART_NAME", "ASSEMBLY_CODE", "ASSEMBLY_NAME", "NONE"
+    ]
+    parts: list[PartMatchInfo] = Field(
+        default_factory=list,
+        description="匹配到的零件列表（PART_CODE/NAME=1 条；ASSEMBLY_*=子零件列表；NONE=空）",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="非阻塞警告：多匹配 / 单价不符 / 数量不符 / 同时命中零件与装配体",
+    )
+
+
+class PartBatchOrderInfoMatchRequest(BaseModel):
+    """匹配阶段入参：前端解析出的 Excel 内容。"""
+
+    doc_no: str = Field(
+        min_length=1, max_length=30, description="基本资料 B「单据编号」"
+    )
+    items: list[PartBatchOrderInfoMatchItem] = Field(
+        min_length=1, max_length=1000,
+        description="从「采购订单明细」解析出的行（最多 1000）",
+    )
+
+
+class PartBatchOrderInfoUpdateItem(BaseModel):
+    """批量更新阶段单条入参。"""
+
+    part_id: IdStrNonNull = Field(description="目标零件 id（雪花 ID 字符串）")
+    version: int = Field(description="零件当前 version（OCC 前置比对）")
+    order_no: str | None = Field(
+        default=None, max_length=30, description="新订单号；空字符串表示清空"
+    )
+    system_delivery_date: date | None = Field(
+        default=None, description="新系统交期；None 表示清空"
+    )
+    skip: bool = Field(default=False, description="True=跳过该条（不写入）")
+
+
+class PartBatchOrderInfoUpdateFailure(BaseModel):
+    """单条更新失败的记录。"""
+
+    part_id: IdStrNonNull
+    code: int = Field(description="错误码（沿用 ErrCode 数值，如 40901）")
+    message: str
+
+
+class PartBatchOrderInfoUpdateResult(BaseModel):
+    """批量更新结果。"""
+
+    updated: list[PartOut] = Field(
+        default_factory=list, description="成功更新的零件（含新 version）"
+    )
+    failed: list[PartBatchOrderInfoUpdateFailure] = Field(
+        default_factory=list, description="失败项（按 part_id 去重后保留首条）"
+    )
+    skipped_count: int = Field(default=0, description="被用户标记跳过的条目数")
+
+
+class PartBatchOrderInfoUpdateRequest(BaseModel):
+    """批量更新阶段入参（前端预览确认后提交）。"""
+
+    items: list[PartBatchOrderInfoUpdateItem] = Field(
+        min_length=1, max_length=1000, description="待更新条目（最多 1000）"
+    )
+
+
 class PartPickUpRequest(BaseModel):
     """工人扫码领取：serial_no + 当前货架 id + 工牌码。
 

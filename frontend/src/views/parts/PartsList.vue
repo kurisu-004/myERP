@@ -175,6 +175,15 @@
             <span>从 PDF/Excel 批量导入</span>
           </el-button>
 
+          <!-- 2026-08-12：采购订单 Excel 导入（解析系统交期和订单号；同 canEdit 闸门） -->
+          <el-button
+            v-if="canEdit"
+            @click="orderImportVisible = true"
+          >
+            <el-icon><Upload /></el-icon>
+            <span>解析系统交期和订单号</span>
+          </el-button>
+
           <!-- 批量打印 / 批量下发 toggle（2026-07-17 打印；2026-07-22 下发；INSPECTOR 不可见；手机隐藏） -->
           <template v-if="canEdit && !isMobile">
             <template v-if="!batchMode">
@@ -1125,6 +1134,12 @@
         <el-button type="primary" @click="confirmMobileFilter">确定</el-button>
       </template>
     </el-drawer>
+
+    <!-- 2026-08-12：采购订单 Excel 导入对话框（解析系统交期和订单号） -->
+    <PurchaseOrderImportDialog
+      v-model="orderImportVisible"
+      @success="fetchList"
+    />
   </div>
 </template>
 
@@ -1142,9 +1157,11 @@ import {
   Promotion,
   RefreshLeft,
   Search,
+  Upload,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import ResponsiveList from '@/components/ResponsiveList.vue'
+import PurchaseOrderImportDialog from './components/PurchaseOrderImportDialog.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useDialogSize } from '@/composables/useDialogSize'
 import {
@@ -1494,6 +1511,9 @@ function confirmCustomerFilter(): void {
 // ============ 手机筛选抽屉 ============
 const mobileFilterOpen = ref(false)
 const anyFilterActive = computed(() => statusFilterActive.value || customerFilterActive.value)
+
+// 2026-08-12：采购订单 Excel 导入对话框可见性
+const orderImportVisible = ref(false)
 
 function openMobileFilter(): void {
   syncStatusDraft()

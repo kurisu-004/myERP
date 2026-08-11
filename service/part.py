@@ -18,6 +18,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import status as http_status
+from sqlalchemy.orm.exc import StaleDataError
 
 from core.error_code import ErrCode
 from core.exception import BizError
@@ -58,6 +59,13 @@ from schema.part import (
     PartBatchCreateItemFailure,
     PartBatchCreateRequest,
     PartBatchCreateResult,
+    PartBatchOrderInfoMatchItem,
+    PartBatchOrderInfoMatchRequest,
+    PartBatchOrderInfoMatchResult,
+    PartBatchOrderInfoUpdateFailure,
+    PartBatchOrderInfoUpdateItem,
+    PartBatchOrderInfoUpdateRequest,
+    PartBatchOrderInfoUpdateResult,
     PartBatchTreeAssembly,
     PartBatchTreeAssemblyResult,
     PartBatchTreeItem,
@@ -69,6 +77,7 @@ from schema.part import (
     PartListItem,
     PartListOut,
     PartListQuery,
+    PartMatchInfo,
     PartRowTypeFilter,
     PartOut,
     PartPickUpRequest,
@@ -1725,6 +1734,306 @@ class PartService:
         await self.parts.update(part)
         items = await self._to_out([part])
         return items[0]
+
+    # ============================================================
+    # 采购订单 Excel 导入（零件一览「解析系统交期和订单号」，2026-08-11）
+    # ============================================================
+    @staticmethod
+    def _norm_text(s: str | None) -> str:
+        """归一化文本用于宽松等值匹配：去首尾空白、全角括号转半角、转小写。
+
+        仅做等值 in_ 匹配，不做相似度/子串；仓储层 `list_by_names` 一次性 in_ 取候选集，
+        避免全表 ILIKE 扫描。
+        """
+        if s is None:
+            return ""
+        return (
+            s.strip()
+            .replace("（", "(")
+            .replace("）", ")")
+            .replace("，", ",")
+            .lower()
+        )
+
+    async def batch_match_by_excel_items(
+        self, payload: PartBatchOrderInfoMatchRequest
+    ) -> list[PartBatchOrderInfoMatchResult]:
+        """根据前端解析出的 Excel 行批量匹配 ERP 零件 / 装配件。
+
+        策略（批量预取，零 N+1）：
+        1. 收集全部非空 drawing_no + 归一化 name。
+        2. 一次性 4 次 in_ 预取：parts by drawing_nos / parts by names /
+           assemblies by drawing_nos / assemblies by names。
+        3. 逐行匹配优先级：图号命中 Part → PART_CODE；同时命中 Assembly → warning + 仍取 Part；
+           仅命中 Assembly → ASSEMBLY_CODE，展开到 active 子件；图号无 → 名称归一化匹配；
+           均无 → NONE。
+        4. 单价/数量容差 warning（仅直接命中 Part，**不**校验装配体展开的子件）。
+
+        返回顺序与 payload.items 顺序一一对应（前端按 row_no 关联预览）。
+        """
+        # 1. 收集候选键
+        raw_codes: list[str] = []
+        raw_names_norm: list[str] = []
+        seen_codes: set[str] = set()
+        seen_names: set[str] = set()
+        for it in payload.items:
+            code = (it.drawing_no or "").strip()
+            if code and code not in seen_codes:
+                raw_codes.append(code)
+                seen_codes.add(code)
+            name_norm = self._norm_text(it.name)
+            if name_norm and name_norm not in seen_names:
+                raw_names_norm.append(name_norm)
+                seen_names.add(name_norm)
+
+        # 2. 批量预取
+        parts_by_code: dict[str, list[TPart]] = {}
+        for p in await self.parts.list_by_drawing_nos(raw_codes):
+            key = (p.drawing_no or "").strip()
+            parts_by_code.setdefault(key, []).append(p)
+
+        parts_by_name: dict[str, list[TPart]] = {}
+        for p in await self.parts.list_by_names(raw_names_norm):
+            parts_by_name.setdefault(self._norm_text(p.name), []).append(p)
+
+        asms_by_code: dict[str, list[TAssembly]] = {}
+        for a in await self.assemblies.list_by_drawing_nos(raw_codes):
+            key = (a.drawing_no or "").strip()
+            asms_by_code.setdefault(key, []).append(a)
+
+        asms_by_name: dict[str, list[TAssembly]] = {}
+        for a in await self.assemblies.list_by_names(raw_names_norm):
+            asms_by_name.setdefault(self._norm_text(a.name), []).append(a)
+
+        # 3. 逐行匹配
+        results: list[PartBatchOrderInfoMatchResult] = []
+        for item in payload.items:
+            warnings: list[str] = []
+            code = (item.drawing_no or "").strip()
+            name_norm = self._norm_text(item.name)
+
+            matched_parts: list[TPart] = []
+            matched_asm: TAssembly | None = None
+            match_type = "NONE"
+
+            if code:
+                ps = parts_by_code.get(code, [])
+                asm_list = asms_by_code.get(code, [])
+                if ps:
+                    matched_parts = ps
+                    match_type = "PART_CODE"
+                    if asm_list:
+                        warnings.append(
+                            f"图号 {code} 同时命中装配体 {asm_list[0].serial_no or asm_list[0].id}，仍取零件"
+                        )
+                elif asm_list:
+                    matched_asm = asm_list[0]
+                    match_type = "ASSEMBLY_CODE"
+                    if len(asm_list) > 1:
+                        warnings.append(
+                            f"图号 {code} 命中 {len(asm_list)} 个装配体，取最新一条"
+                        )
+            if not matched_parts and matched_asm is None and name_norm:
+                ps = parts_by_name.get(name_norm, [])
+                asm_list = asms_by_name.get(name_norm, [])
+                if ps:
+                    matched_parts = ps
+                    match_type = "PART_NAME"
+                elif asm_list:
+                    matched_asm = asm_list[0]
+                    match_type = "ASSEMBLY_NAME"
+                    if len(asm_list) > 1:
+                        warnings.append(
+                            f"名称「{item.name}」命中 {len(asm_list)} 个装配体，取最新一条"
+                        )
+
+            # 4. 装配体展开 → 取 active 子件
+            expanded: list[TPart] = []
+            if matched_asm is not None:
+                expanded = await self.parts.list_children(matched_asm.id)
+                if not expanded:
+                    warnings.append(
+                        f"装配体 {matched_asm.serial_no or matched_asm.id} 无 active 子零件"
+                    )
+                else:
+                    for child in expanded:
+                        warnings.extend(
+                            self._validate_price_qty(item, child, is_child=True)
+                        )
+
+            target_parts: list[TPart] = expanded if expanded else matched_parts
+            if not target_parts and matched_asm is None and match_type != "NONE":
+                # 图号/名称命中但 list_children 已报警 → 仍 NONE
+                match_type = "NONE"
+
+            # 多匹配 warning（仅直接命中 Part，不对展开子件）
+            if (
+                matched_asm is None
+                and len(matched_parts) > 1
+                and match_type in ("PART_CODE", "PART_NAME")
+            ):
+                warnings.append(
+                    f"{match_type} 命中 {len(matched_parts)} 条零件，请人工确认"
+                )
+
+            # 直接命中 Part 才做价/量校验
+            if matched_asm is None and len(matched_parts) == 1:
+                warnings.extend(self._validate_price_qty(item, matched_parts[0]))
+
+            results.append(
+                PartBatchOrderInfoMatchResult(
+                    row_no=item.row_no,
+                    match_type=match_type,  # type: ignore[arg-type]
+                    parts=[
+                        self._to_match_info(p, assembly=matched_asm)
+                        for p in target_parts
+                    ],
+                    warnings=warnings,
+                )
+            )
+
+        return results
+
+    @staticmethod
+    def _validate_price_qty(
+        item: PartBatchOrderInfoMatchItem, p: TPart, *, is_child: bool = False
+    ) -> list[str]:
+        """对直接命中 Part 做单价 / 数量容差校验（warning，不阻塞）。
+
+        子件（is_child=True）跳过——子件价/量通常与订单行不对应。
+        """
+        if is_child:
+            return []
+        warnings: list[str] = []
+        if item.unit_price is not None and p.unit_price is not None:
+            diff = abs(Decimal(item.unit_price) - p.unit_price)
+            tol = max(Decimal("0.01"), Decimal(item.unit_price) * Decimal("0.01"))
+            if diff > tol:
+                warnings.append(
+                    f"含税价 {item.unit_price} 与零件单价 {p.unit_price} 偏差超容差"
+                )
+        if item.quantity is not None and p.quantity is not None:
+            try:
+                qty_int = int(item.quantity)
+            except (ValueError, TypeError):
+                qty_int = 0
+            diff = abs(qty_int - p.quantity)
+            tol = max(1, int(Decimal(item.quantity) * Decimal("0.01")))
+            if diff > tol:
+                warnings.append(
+                    f"可出货数量 {qty_int} 与零件数量 {p.quantity} 偏差超容差"
+                )
+        return warnings
+
+    @staticmethod
+    def _to_match_info(p: TPart, *, assembly: TAssembly | None) -> PartMatchInfo:
+        return PartMatchInfo(
+            part_id=p.id,
+            version=p.version,
+            drawing_no=p.drawing_no,
+            name=p.name,
+            unit_price=p.unit_price,
+            quantity=p.quantity,
+            order_no=p.order_no,
+            system_delivery_date=p.system_delivery_date,
+            assembly_id=assembly.id if assembly is not None else None,
+            assembly_name=assembly.name if assembly is not None else None,
+        )
+
+    async def batch_update_order_info(
+        self, payload: PartBatchOrderInfoUpdateRequest
+    ) -> PartBatchOrderInfoUpdateResult:
+        """批量更新零件的 order_no + system_delivery_date。
+
+        - 同一 part_id 多次出现 → 保留首条，其余记 failure（BIZ_VERSION_CONFLICT 防自撞）。
+        - skip=True → skipped_count += 1，不写库。
+        - 单条 update 包在 `session.begin_nested()` savepoint；失败回滚只影响该条。
+        - 主动比对 part.version == item.version，避免依赖 SQLAlchemy flush 抛错后
+          savepoint 状态复杂化；OCC 失败 / BizError 都收集到 failed，不抛。
+
+        字段语义（与 `update_part` 不同）：
+        - order_no：None = 不动该字段；空字符串 = 清空。
+        - system_delivery_date：None = 清空（含显式传 date | None）。
+
+        事务最终提交由外层 `get_session` 的 commit-on-success 统一完成。
+        """
+        seen_ids: set[int] = set()
+        updated: list[TPart] = []
+        failed: list[PartBatchOrderInfoUpdateFailure] = []
+        skipped_count = 0
+
+        for item in payload.items:
+            pid = parse_snowflake_id(item.part_id, field_name="part_id")
+            if pid is None:
+                failed.append(
+                    PartBatchOrderInfoUpdateFailure(
+                        part_id=item.part_id,
+                        code=ErrCode.BIZ_INVALID_VALUE,
+                        message=f"无效的 part_id: {item.part_id!r}",
+                    )
+                )
+                continue
+            if pid in seen_ids:
+                failed.append(
+                    PartBatchOrderInfoUpdateFailure(
+                        part_id=item.part_id,
+                        code=ErrCode.BIZ_VERSION_CONFLICT,
+                        message="同一 part_id 在本批次中重复，保留首条",
+                    )
+                )
+                continue
+            seen_ids.add(pid)
+
+            if item.skip:
+                skipped_count += 1
+                continue
+
+            part: TPart | None = None
+            try:
+                async with self.parts.session.begin_nested():
+                    part = await self.parts.get_by_id(pid)
+                    if part is None:
+                        raise BizError(
+                            code=ErrCode.BIZ_PART_NOT_FOUND,
+                            message=f"part {pid} not found",
+                            http_status=http_status.HTTP_404_NOT_FOUND,
+                        )
+                    if part.version != item.version:
+                        raise BizError(
+                            code=ErrCode.BIZ_VERSION_CONFLICT,
+                            message="零件已被他人修改，请重新解析后重试",
+                            http_status=http_status.HTTP_409_CONFLICT,
+                        )
+                    # order_no：None = 不动该字段；空字符串 = 清空
+                    if item.order_no is not None:
+                        part.order_no = item.order_no.strip() or None
+                    # system_delivery_date：None = 显式清空
+                    part.system_delivery_date = item.system_delivery_date
+                    part.updated_by = self._user_id
+                    await self.parts.update(part)
+            except BizError as e:
+                failed.append(
+                    PartBatchOrderInfoUpdateFailure(
+                        part_id=item.part_id, code=int(e.code), message=e.message,
+                    )
+                )
+                continue
+            except StaleDataError:
+                # 主动比对已覆盖大部分情况；这里兜底 race（fetch 与 update 之间被改）
+                failed.append(
+                    PartBatchOrderInfoUpdateFailure(
+                        part_id=item.part_id,
+                        code=ErrCode.BIZ_VERSION_CONFLICT,
+                        message="零件已被他人修改，请重新解析后重试",
+                    )
+                )
+                continue
+            updated.append(part)  # 只有成功路径才 append
+
+        updated_out = await self._to_out(updated) if updated else []
+        return PartBatchOrderInfoUpdateResult(
+            updated=updated_out, failed=failed, skipped_count=skipped_count,
+        )
 
     async def soft_delete_part(self, part_id: int) -> None:
         part = await self.parts.get_by_id(part_id)
