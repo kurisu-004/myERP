@@ -96,7 +96,7 @@
 
         <div class="parts-list">
           <el-card
-            v-for="p in parts"
+            v-for="p in sortedParts"
             :key="p.batch_id || p.id"
             :data-batch-id="String(p.batch_id || p.id)"
             shadow="hover"
@@ -137,13 +137,10 @@
                   effect="dark"
                   class="urgent-pulse"
                 >加急</el-tag>
-                <span class="delivery-date" :class="deliveryUrgencyClass(p.planned_delivery_date)">
-                  <el-icon><Calendar /></el-icon>
-                  {{ formatDeliveryDate(p.planned_delivery_date) }}
-                  <span v-if="deliveryDaysLeftText(p.planned_delivery_date)" class="days-left">
-                    · {{ deliveryDaysLeftText(p.planned_delivery_date) }}
-                  </span>
-                </span>
+                <DeliveryDateChip
+                  :planned-delivery-date="p.planned_delivery_date"
+                  :system-delivery-date="p.system_delivery_date"
+                />
               </div>
 
               <!-- 2) 名称 + 客户 -->
@@ -269,7 +266,6 @@ import {
   Avatar,
   Back,
   Box,
-  Calendar,
   Download,
   Files,
   Loading,
@@ -285,13 +281,14 @@ import type { PartFileItem } from '@/types/part_file'
 import { useScanSession } from '@/composables/useScanSession'
 import { useBarcodeScanner } from '@/composables/useBarcodeScanner'
 import { useScanBus } from '@/composables/useScanBus'
+import { useScanPartsSort } from '@/composables/useScanPartsSort'
 import HeldPartsBadge from '@/views/scan/components/HeldPartsBadge.vue'
 import ScrollFabPair from '@/views/scan/components/ScrollFabPair.vue'
 import QuantityDialog from '@/views/scan/components/QuantityDialog.vue'
 import { listPartsHeldByWorker, scanPart, type PartItem } from '@/api/parts'
 import ShelfPickerDialog from '@/views/scan/components/ShelfPickerDialog.vue'
 import BatchPickerDialog from '@/views/scan/components/BatchPickerDialog.vue'
-import { formatDeliveryDate, deliveryDaysLeftText, deliveryUrgencyClass } from '@/utils/deliveryDate'
+import DeliveryDateChip from '@/views/scan/components/DeliveryDateChip.vue'
 import { findAllByCode, findPartBySerialAndPrompt } from '@/utils/scanHelpers'
 
 const router = useRouter()
@@ -300,6 +297,8 @@ const { onScan } = useBarcodeScanner()
 const { emitHeldChanged } = useScanBus()
 
 const parts = ref<PartItem[]>([])
+// 「系统交期」硬优先级 + 原 is_urgent / planned_delivery_date 排序；详见 composable 注释
+const sortedParts = useScanPartsSort(parts)
 const loadingList = ref(false)
 const selectedPart = ref<PartItem | null>(null)
 // 点选卡片后进入「待扫码确认」状态；扫到匹配条码才弹送检货架 picker
@@ -671,15 +670,7 @@ function backToBadge(): void {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
   font-size: 22px; font-weight: 700; color: #303133; letter-spacing: 0.5px;
 }
-.delivery-date {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 16px; font-weight: 600;
-  padding: 2px 10px; border-radius: 4px;
-  background: #f5f7fa; color: #606266;
-}
-.delivery-date.overdue { color: #f56c6c; background: #fef0f0; }
-.delivery-date.due-soon { color: #e6a23c; background: #fdf6ec; }
-.days-left { font-weight: 500; font-size: 13px; margin-left: 2px; }
+/* .delivery-date / .days-left / .overdue / .due-soon 已迁至 components/DeliveryDateChip.vue */
 
 .part-line-name { display: flex; align-items: center; gap: 10px; font-size: 15px; color: #303133; }
 .part-name { font-weight: 500; color: #303133; }
