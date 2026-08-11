@@ -86,7 +86,12 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        # 2026-08-11：订单号空白筛选。None=任意 / True=仅空白(NULL OR '') / False=仅非空。
+        order_no_is_null: bool | None = None,
+        # 2026-08-11：系统交期空白筛选。None=区间默认排除NULL / True=仅NULL(区间失效) / False=区间+仅非空。
+        system_delivery_date_is_null: bool | None = None,
         # 2026-08-08：True 时额外要求 system_delivery_date IS NOT NULL（MCP 到期查询用）。
+        # 2026-08-11：Bug 1 修复后区间条件已默认排除 NULL；本参数叠加作为防御性冗余保留。
         system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
@@ -120,6 +125,8 @@ class PartRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            order_no_is_null=order_no_is_null,  # 2026-08-11
+            system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11
             system_delivery_date_not_null=system_delivery_date_not_null,
             next_process_ids=next_process_ids,
             locations=locations,
@@ -177,7 +184,12 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        # 2026-08-11：订单号空白筛选。None=任意 / True=仅空白(NULL OR '') / False=仅非空。
+        order_no_is_null: bool | None = None,
+        # 2026-08-11：系统交期空白筛选。None=区间默认排除NULL / True=仅NULL(区间失效) / False=区间+仅非空。
+        system_delivery_date_is_null: bool | None = None,
         # 2026-08-08：True 时额外要求 system_delivery_date IS NOT NULL（MCP 到期查询用）。
+        # 2026-08-11：Bug 1 修复后区间条件已默认排除 NULL；本参数叠加作为防御性冗余保留。
         system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
@@ -203,6 +215,8 @@ class PartRepository:
             planned_delivery_date_to=planned_delivery_date_to,
             system_delivery_date_from=system_delivery_date_from,
             system_delivery_date_to=system_delivery_date_to,
+            order_no_is_null=order_no_is_null,  # 2026-08-11
+            system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11
             system_delivery_date_not_null=system_delivery_date_not_null,
             next_process_ids=next_process_ids,
             locations=locations,
@@ -563,7 +577,12 @@ class PartRepository:
         planned_delivery_date_to=None,
         system_delivery_date_from=None,
         system_delivery_date_to=None,
+        # 2026-08-11：订单号空白筛选。None=任意 / True=仅空白(NULL OR '') / False=仅非空。
+        order_no_is_null: bool | None = None,
+        # 2026-08-11：系统交期空白筛选。None=区间默认排除NULL / True=仅NULL(区间失效) / False=区间+仅非空。
+        system_delivery_date_is_null: bool | None = None,
         # 2026-08-08：True 时额外要求 system_delivery_date IS NOT NULL（MCP 到期查询用）。
+        # 2026-08-11：Bug 1 修复后区间条件已默认排除 NULL；本参数叠加作为防御性冗余保留。
         system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
         locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
@@ -592,17 +611,28 @@ class PartRepository:
         if keyword:
             kw = keyword.strip()
             if kw:
-                # drawing_no 走子串包含（ilike '%kw%'）；name 仍按前缀以减小回归面。
+                # 2026-08-11：drawing_no 与 name 都走子串包含（ilike '%kw%'），与前端
+                # "图号 / 名称（全模糊）" 一致。此前 name 用前缀是「减小回归面」的历史选择，
+                # 但实测用户经常输入名称片段搜中间字，导致搜不到——已无意义。
                 # TODO: 后续把 %/_ 通配符转义（参考 repository/applicant.py:131-133）
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
-                    | TPart.name.ilike(f"{kw}%")
+                    | TPart.name.ilike(f"%{kw}%")
                 )
         # 2026-07-22：订单号独立搜索框（ILIKE 子串包含）。
-        if order_no:
+        # 2026-08-11：与 order_no_is_null 互斥——is_null 显式设值时覆盖 order_no ILIKE。
+        if order_no and order_no_is_null is None:
             on = order_no.strip()
             if on:
                 stmt = stmt.where(TPart.order_no.ilike(f"%{on}%"))
+        # 2026-08-11：订单号空白筛选。覆盖 order_no 子串搜索：
+        # True  ⇒ 仅空白（NULL OR ''）；order_no 文本被忽略。
+        # False ⇒ 仅非空（NULL AND != '' 排除）；order_no 文本被忽略。
+        # None  ⇒ 不加条件（沿用 order_no ILIKE 子串搜索或不限）。
+        if order_no_is_null is True:
+            stmt = stmt.where(or_(TPart.order_no.is_(None), TPart.order_no == ""))
+        elif order_no_is_null is False:
+            stmt = stmt.where(and_(TPart.order_no.is_not(None), TPart.order_no != ""))
         # 2026-07-31：序列号独立搜索框（ILIKE 子串包含）。
         # 命中子件也算命中（子件 serial_no 形如 {父装配}-{i:02d}）。
         if serial_no:
@@ -611,8 +641,10 @@ class PartRepository:
                 stmt = stmt.where(TPart.serial_no.ilike(f"%{sn}%"))
         # 2026-07-21：PR-F 日期区间筛选（请购日期 / 系统交期）。
         # 仅端点非 None 时加条件；端点为 None 表示半开区间。
-        # 系统交期可空（PR-F 字段 NULL=未设置），区间包含 NULL 时也会命中。
-        # 用 BETWEEN（含端点）；如只要单向 < 或 >，传 None 即可。
+        # 系统交期可空（PR-F 字段 NULL=未设置），2026-08-11 起区间条件不再 NULL 兜底——
+        # 标准 SQL 语义：NULL 与任何日期比较都返回 NULL → 不命中。需包含 NULL 时调用方
+        # 单独传 `system_delivery_date_is_null=True`。用 BETWEEN（含端点）；如只要单向
+        # < 或 >，传 None 即可。
         if request_date_from is not None:
             stmt = stmt.where(TPart.request_date >= request_date_from)
         if request_date_to is not None:
@@ -622,25 +654,23 @@ class PartRepository:
             stmt = stmt.where(TPart.planned_delivery_date >= planned_delivery_date_from)
         if planned_delivery_date_to is not None:
             stmt = stmt.where(TPart.planned_delivery_date <= planned_delivery_date_to)
-        if system_delivery_date_from is not None:
-            stmt = stmt.where(
-                or_(
-                    TPart.system_delivery_date.is_(None),
-                    TPart.system_delivery_date >= system_delivery_date_from,
-                )
-            )
-        if system_delivery_date_to is not None:
-            stmt = stmt.where(
-                or_(
-                    TPart.system_delivery_date.is_(None),
-                    TPart.system_delivery_date <= system_delivery_date_to,
-                )
-            )
-        # 2026-08-08：MCP 只读查询用。上面两个区间条件是 NULL-inclusive 的
-        # （前端筛选要「未设交期也别被筛掉」），但「按交期查到期未送货」的语义里
-        # `system_delivery_date IS NULL` = 未排期，不该算作到期。
-        # 本参数与区间条件叠加使用：`_to=D` + `_not_null=True` ⇒ 严格 `col <= D`。
-        # 默认 None/False 时完全不加条件，现有调用点行为不变。
+        # 2026-08-11 Bug 1 修复：区间条件不再用 or_(is_(None), >= / <=) 包裹；
+        # NULL 的 system_delivery_date 因 SQL 比较返回 NULL 而被自然排除。
+        # 2026-08-11：与 system_delivery_date_is_null 互斥——is_null=True 时区间失效。
+        if system_delivery_date_is_null is True:
+            # 区间条件失效，仅返回 NULL。
+            stmt = stmt.where(TPart.system_delivery_date.is_(None))
+        else:
+            if system_delivery_date_from is not None:
+                stmt = stmt.where(TPart.system_delivery_date >= system_delivery_date_from)
+            if system_delivery_date_to is not None:
+                stmt = stmt.where(TPart.system_delivery_date <= system_delivery_date_to)
+            # False ⇒ 仅非 NULL（区间条件照常生效，仍排除 NULL）。
+            if system_delivery_date_is_null is False:
+                stmt = stmt.where(TPart.system_delivery_date.is_not(None))
+        # 2026-08-08：MCP 只读查询用。Bug 1 修复后区间条件已默认排除 NULL；本参数叠加
+        # 仅作为防御性冗余保留，行为不变（`True` ⇒ `IS NOT NULL`，与区间条件 AND）。
+        # 未来可在确认所有 MCP 调用方迁移到 `system_delivery_date_is_null=False` 后移除。
         if system_delivery_date_not_null:
             stmt = stmt.where(TPart.system_delivery_date.is_not(None))
         # 2026-07-20：外协接收历史页（曾外协过判定）与列表 SQL 合一。

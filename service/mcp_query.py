@@ -126,7 +126,9 @@ class McpQueryService:
             "customer_ids_in": customer_ids_in,
             "is_urgent": is_urgent,
             "system_delivery_date_to": due_date,
-            # 关键：区间条件本身是 NULL-inclusive 的，这个开关把「未设交期」排掉。
+            # 2026-08-11 Bug 1 修复后区间条件已默认排除 NULL；`not_null=True` 叠加
+            # 作为防御性冗余保留（与新谓词 AND），行为不变（仍是严格 `IS NOT NULL`）。
+            # 后续可迁移到 `system_delivery_date_is_null=False` 然后移除本字段。
             "system_delivery_date_not_null": True,
         }
         total = await self.parts.count_with_filters(**common)

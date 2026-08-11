@@ -108,6 +108,20 @@ export interface ListPartsParams {
   /** 2026-07-21 PR-F：系统交期区间（含端点；任一端点为空表示半开；NULL 字段视为落在区间内） */
   system_delivery_date_from?: string
   system_delivery_date_to?: string
+  /**
+   * 2026-08-11：订单号空白筛选（对应前端 checkbox「仅空白订单号」）。
+   * - true  ⇒ 仅空白（NULL OR ''），覆盖 order_no 子串搜索
+   * - false ⇒ 仅非空（NULL AND != '' 排除）
+   * - undefined / 不传 ⇒ 任意（沿用默认）
+   */
+  order_no_is_null?: boolean
+  /**
+   * 2026-08-11：系统交期空白筛选（对应前端 checkbox「仅空白系统交期」）。
+   * - true  ⇒ 仅 NULL，区间失效
+   * - false ⇒ 仅非 NULL，区间仍生效
+   * - undefined / 不传 ⇒ 任意（区间默认排除 NULL，Bug 1 修复后）
+   */
+  system_delivery_date_is_null?: boolean
   /** 2026-08-01：下一道工序多选（雪花 ID 字符串，禁止 Number() 转换——会丢精度；空=全部；NULL 工序自然被排除） */
   next_process_ids?: string[]
   /** 2026-08-01：物理位置多选（OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/OUTSOURCE_COMPANY；空=全部） */

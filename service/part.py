@@ -281,6 +281,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                order_no_is_null=query.order_no_is_null,  # 2026-08-11
+                system_delivery_date_is_null=query.system_delivery_date_is_null,  # 2026-08-11
                 next_process_ids=query.next_process_ids,  # 2026-08-01
                 locations=query.locations,  # 2026-08-01
                 holder_ids=query.holder_ids,
@@ -303,6 +305,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                order_no_is_null=query.order_no_is_null,  # 2026-08-11
+                system_delivery_date_is_null=query.system_delivery_date_is_null,  # 2026-08-11
                 next_process_ids=query.next_process_ids,  # 2026-08-01
                 locations=query.locations,  # 2026-08-01
                 holder_ids=query.holder_ids,
@@ -332,6 +336,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                order_no_is_null=query.order_no_is_null,  # 2026-08-11
+                system_delivery_date_is_null=query.system_delivery_date_is_null,  # 2026-08-11
                 next_process_ids=query.next_process_ids,  # 2026-08-01
                 locations=query.locations,  # 2026-08-01
                 holder_ids=query.holder_ids,
@@ -355,6 +361,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                order_no_is_null=query.order_no_is_null,  # 2026-08-11
+                system_delivery_date_is_null=query.system_delivery_date_is_null,  # 2026-08-11
                 next_process_ids=query.next_process_ids,  # 2026-08-01
                 locations=query.locations,  # 2026-08-01
                 holder_ids=query.holder_ids,
@@ -414,6 +422,9 @@ class PartService:
                     planned_delivery_date_to=query.planned_delivery_date_to,
                     system_delivery_date_from=query.system_delivery_date_from,
                     system_delivery_date_to=query.system_delivery_date_to,
+                    # 2026-08-11 follow-up：可空列空白筛选透传给装配件层。
+                    order_no_is_null=query.order_no_is_null,
+                    system_delivery_date_is_null=query.system_delivery_date_is_null,
                     # 2026-08-05 C2：子件 EXISTS 形态的位置类筛选透传给装配体仓储。
                     child_next_process_ids=query.next_process_ids,
                     child_locations=(
@@ -438,6 +449,9 @@ class PartService:
                     planned_delivery_date_to=query.planned_delivery_date_to,
                     system_delivery_date_from=query.system_delivery_date_from,
                     system_delivery_date_to=query.system_delivery_date_to,
+                    # 2026-08-11 follow-up：可空列空白筛选透传给装配件层（与 list 保持一致）。
+                    order_no_is_null=query.order_no_is_null,
+                    system_delivery_date_is_null=query.system_delivery_date_is_null,
                     # 2026-08-05 C2：count 也带子件 EXISTS 参数（与 list 谓词保持一致）。
                     child_next_process_ids=query.next_process_ids,
                     child_locations=(
@@ -473,6 +487,8 @@ class PartService:
                 planned_delivery_date_to=query.planned_delivery_date_to,
                 system_delivery_date_from=query.system_delivery_date_from,
                 system_delivery_date_to=query.system_delivery_date_to,
+                order_no_is_null=query.order_no_is_null,  # 2026-08-11
+                system_delivery_date_is_null=query.system_delivery_date_is_null,  # 2026-08-11
                 next_process_ids=query.next_process_ids,
                 locations=query.locations,
                 holder_ids=query.holder_ids,
