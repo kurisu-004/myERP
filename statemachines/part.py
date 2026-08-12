@@ -101,6 +101,16 @@ class PartStateMachine(StateChart):
     recall_to_pending = ON_SHELF.to(PENDING) | PROGRAMMING.to(PENDING)
     recall_to_programming = ON_SHELF.to(PROGRAMMING)
 
+    # 2026-08-12 PR-I-scan-inspect：扫码快捷品检（品检员/管理员在待品检页
+    # 一键把非 INSPECTION 工件搬到品检架）。复用 on_enter_INSPECTION(target_shelf=...)
+    # 副作用（status/location/holder）；service 层负责拒绝 IN_PROCESS+WORKER、
+    # READY_TO_SHIP/DELIVERED/REPAIRING/OUTSOURCE/INSPECTION（这些状态仍走原 pass/fail）。
+    inspect_direct = (
+        PENDING.to(INSPECTION)
+        | PROGRAMMING.to(INSPECTION)
+        | ON_SHELF.to(INSPECTION)
+    )
+
     # ============================================================
     # Init — restore state from model.status + model.location
     # ============================================================
@@ -777,4 +787,41 @@ class PartStateMachine(StateChart):
                 note=f"外协回收送检：{shelf_code}" if shelf_code else "外协回收送检",
                 created_by=created_by,
                 outsource_company_id=outsource_company_id,
+            )
+
+    def on_inspect_direct(
+        self,
+        target_shelf=None,
+        from_status: str | None = None,
+        event_repo=None,
+        *,
+        created_by: int | None = None,
+        **_,
+    ):
+        """2026-08-12 PR-I-scan-inspect：扫码快捷品检（任意非 INSPECTION 非
+        工人持有 → INSPECTION）。复用 INSPECTED 事件类型，note 区分来源
+        （待下发 / 编程中 / 生产架），from_status 字段记录原始状态便于历史追溯。
+        副作用（status/location/holder）由 on_enter_INSPECTION(target_shelf=...) 处理。
+        """
+        if event_repo and self.model:
+            shelf_code = (
+                target_shelf.code
+                if target_shelf and hasattr(target_shelf, "code") else ""
+            )
+            source_label = {
+                "PENDING": "待下发",
+                "PROGRAMMING": "编程中",
+                "IN_PROCESS": "生产架",
+            }.get(from_status or "", "未知来源")
+            note = (
+                f"扫码快捷品检：来自{source_label} → 品检架 {shelf_code or '?'}"
+            )
+            self._add_event(
+                event_repo,
+                event_type=PartEventType.INSPECTED,
+                from_status=PartStatus(from_status) if from_status else None,
+                to_status=PartStatus.INSPECTION,
+                drawing_code=self._serial_of(self.model),
+                note=note,
+                created_by=created_by,
             )

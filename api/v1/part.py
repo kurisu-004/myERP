@@ -72,6 +72,7 @@ from schema.part import (
     PlaceOnShelfRequest,
     ReceiveToInspectionRequest,
     RepairDispatchRequest,
+    ScanInspectRequest,
     SendToOutsourceRequest,
 )
 from schema._types import IdStr  # 2026-08-05 召回：PartRecallRequest.batch_id 用 IdStr 序列化
@@ -908,6 +909,33 @@ async def fail_part_inspection(
     svc: PartService = Depends(get_part_service),
 ) -> PartOut:
     return await svc.fail_inspection(part_id, payload)
+
+
+# 2026-08-12 PR-I-scan-inspect：扫码快捷品检（一步完成搬到品检架 + 通过/打回）。
+# 注册顺序：必须在 /{part_id} catch-all 之前, 否则被截胡。
+@router.post(
+    "/{part_id}/scan-inspect",
+    response_model=PartOut,
+    summary=(
+        "PR-I-scan-inspect 2026-08-12：扫码快捷品检（MANAGER / INSPECTOR）"
+        "—— PENDING / PROGRAMMING / IN_PROCESS(ON_SHELF) → INSPECTION → PASS / FAIL"
+    ),
+    description=(
+        "body: target_inspection_shelf_id（必填，INSPECTION 区 active）+ "
+        "decision（PASS / FAIL）+ FAIL 时的 shelf_id + next_process_id + note + "
+        "可选 batch_id / quantity。"
+        "IN_PROCESS + WORKER / READY_TO_SHIP / DELIVERED / REPAIRING / OUTSOURCE / "
+        "INSPECTION → 400 BIZ_INVALID_TRANSITION（这些状态请走原 pass / fail 流程）。"
+        "原子：搬到品检架 + 过 / 打回在同一事务里。"
+    ),
+    dependencies=_inspector_dep,
+)
+async def scan_inspect_part(
+    part_id: int,
+    payload: ScanInspectRequest,
+    svc: PartService = Depends(get_part_service),
+) -> PartOut:
+    return await svc.scan_inspect(part_id, payload)
 
 
 @router.post(
