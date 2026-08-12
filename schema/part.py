@@ -3,7 +3,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from model.enums import PartEventType, PartLocation, PartSortKey, PartStatus, SortDir
 from schema._types import IdStr, IdStrNonNull
@@ -706,6 +706,58 @@ class FailInspectionRequest(BaseModel):
     quantity: int | None = Field(
         default=None, gt=0, description="部分数量；缺省 = 批次全量",
     )
+
+
+class ScanInspectRequest(BaseModel):
+    """2026-08-12 PR-I-scan-inspect：扫码快捷品检请求体。
+
+    适用范围：PENDING / PROGRAMMING / IN_PROCESS+PRODUCTION_SHELF 三类工件，
+    品检员/管理员在「待品检」页扫码命中后一步完成：搬到品检架 + 过/打回。
+
+    - `target_inspection_shelf_id` 必填（INSPECTION 区 active 货架；
+      service 走 `_validate_inspection_shelf` 校验）。
+    - `decision ∈ {PASS, FAIL}`：
+      - PASS → INSPECTION → READY_TO_SHIP（品检通过；复用 pass_inspection）。
+      - FAIL → INSPECTION → IN_PROCESS（指定下一道工序 + 目标生产货架；
+        复用 fail_inspection，校验货架-工序映射）。
+    - FAIL 时 `shelf_id` + `next_process_id` 必填（model_validator 校验）。
+    - `batch_id` / `quantity` 可选（部分量走 `_maybe_split`）。
+    """
+
+    target_inspection_shelf_id: IdStrNonNull = Field(
+        description="目标品检货架 id（雪花 ID；zone=INSPECTION，is_active）",
+    )
+    decision: Literal["PASS", "FAIL"] = Field(
+        description="通过(PASS) / 打回(FAIL)；决定第二步动作",
+    )
+    # FAIL 必填（model_validator 校验）
+    shelf_id: IdStr = Field(
+        default=None,
+        description="仅 FAIL 需要；目标生产货架（PRODUCTION 区 active）",
+    )
+    next_process_id: IdStr = Field(
+        default=None,
+        description="仅 FAIL 需要；下一道工序 id（雪花 ID；必填且需与 shelf 映射）",
+    )
+    note: str | None = Field(
+        default=None, max_length=500, description="仅 FAIL 需要；品检备注",
+    )
+    # 批次参数（可选；部分量先拆再转）
+    batch_id: IdStr = Field(
+        default=None, description="目标批次 id；缺省按状态唯一批次解析",
+    )
+    quantity: int | None = Field(
+        default=None, gt=0, description="部分数量；缺省 = 批次全量",
+    )
+
+    @model_validator(mode="after")
+    def _validate_fail_requires_shelf_process(self):
+        if self.decision == "FAIL":
+            if not self.shelf_id:
+                raise ValueError("FAIL 时 shelf_id 必填")
+            if not self.next_process_id:
+                raise ValueError("FAIL 时 next_process_id 必填")
+        return self
 
 
 class PartUpdateRequest(BaseModel):

@@ -660,6 +660,40 @@ export async function failInspection(
   return resp.data
 }
 
+/**
+ * 2026-08-12 PR-I-scan-inspect：扫码快捷品检（一步完成搬到品检架 + 通过/打回）。
+ * 适用范围：PENDING / PROGRAMMING / IN_PROCESS + location=PRODUCTION_SHELF。
+ * 不适用（400 BIZ_INVALID_TRANSITION）：IN_PROCESS+WORKER / READY_TO_SHIP /
+ * DELIVERED / REPAIRING / OUTSOURCE / INSPECTION —— 这些状态请走原 pass/fail。
+ */
+export interface ScanInspectPayload {
+  /** 目标品检货架 id（雪花 ID 字符串；必填，zone=INSPECTION） */
+  target_inspection_shelf_id: string
+  /** 通过(PASS) / 打回(FAIL) */
+  decision: 'PASS' | 'FAIL'
+  /** 仅 FAIL 需要；目标生产货架 id */
+  shelf_id?: string
+  /** 仅 FAIL 需要；下一道工序 id */
+  next_process_id?: string
+  /** 仅 FAIL 需要；品检备注 */
+  note?: string | null
+  /** 目标批次 id；缺省按状态唯一批次解析（多批次工单必须指定） */
+  batch_id?: string | null
+  /** 部分数量；缺省 = 批次全量 */
+  quantity?: number | null
+}
+
+export async function scanInspect(
+  id: string,
+  payload: ScanInspectPayload,
+): Promise<PartItem> {
+  const resp = await api.post<PartItem>(
+    `/parts/${id}/scan-inspect`,
+    payload,
+  )
+  return resp.data
+}
+
 /** READY_TO_SHIP → DELIVERED：发货（文员/管理员手动）。 */
 export async function deliverPart(id: string): Promise<PartItem> {
   const resp = await api.post<PartItem>(`/parts/${id}/deliver`)

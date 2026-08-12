@@ -83,6 +83,7 @@ from schema.part import (
     PartPickUpRequest,
     PartScanRequest,
     PartUpdateRequest,
+    ScanInspectRequest,
     PlaceOnShelfRequest,
     ReceiveToInspectionRequest,
     SendToOutsourceRequest,
@@ -4066,6 +4067,119 @@ class PartService:
         await self._after_batch_transition(part)
         items = await self._to_out([part])
         return items[0]
+
+    async def scan_inspect(
+        self, part_id: int, data: ScanInspectRequest,
+    ) -> PartOut:
+        """2026-08-12 PR-I-scan-inspect：扫码快捷品检一步完成。
+
+        适用范围：PENDING / PROGRAMMING / IN_PROCESS + location=PRODUCTION_SHELF。
+        不适用（service 拒绝 400 BIZ_INVALID_TRANSITION）：
+        - IN_PROCESS + WORKER（工人持有）→ 让工人先归还或送检
+        - READY_TO_SHIP / DELIVERED / REPAIRING / OUTSOURCE / INSPECTION
+          → 这些状态请走原 pass/fail 流程
+
+        单事务流程（参考 receive_from_outsource_to_inspection 的范式）：
+        1. 解析批次：`_resolve_target_batch` expect ∈ {PENDING, PROGRAMMING, IN_PROCESS}。
+           IN_PROCESS 还要再校验 batch.location == 'PRODUCTION_SHELF'
+           （service 层拒绝 WORKER，状态机本身不感知）。
+        2. 校验品检货架：`_validate_inspection_shelf`。
+        3. `_maybe_split` 处理部分量。
+        4. 第一步：`target.sm.inspect_direct(target_shelf=..., from_status=...)`
+           → batch 搬到 INSPECTION；写 INSPECTED 事件（note 区分来源）。
+        5. 第二步按 decision 分流复用现有 service：
+           - PASS → `self.pass_inspection(part.id, batch_id=target.id)`
+           - FAIL → `self.fail_inspection(part.id, FailInspectionRequest(...))`
+           第二步内部已 _after_batch_transition + 看板广播。
+
+        事务一致性：第一步与第二步在同一 service / session，第二步抛错
+        → 整事务回滚，无半成品（与 receive_from_outsource_to_inspection 一致）。
+        """
+        part = await self._get_part_or_404(part_id)
+
+        # 1) 解析批次（限定三种可操作状态）
+        batch = await self._resolve_target_batch(
+            part, self._parse_batch_id(data),
+            expect=lambda b: b.status in (
+                PartStatus.PENDING.value,
+                PartStatus.PROGRAMMING.value,
+                PartStatus.IN_PROCESS.value,
+            ),
+            action="扫码快捷品检",
+        )
+
+        # 工人持有件拒绝（IN_PROCESS+WORKER 必须先让工人归还或送检）
+        if (
+            batch.status == PartStatus.IN_PROCESS.value
+            and batch.location == "WORKER"
+        ):
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"batch {batch.batch_no} 状态=IN_PROCESS, "
+                    "location=WORKER（工人持有）；请先让工人归还或送检"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        # IN_PROCESS 仅允许 PRODUCTION_SHELF 上的（其他 location 不走这条路径）
+        if (
+            batch.status == PartStatus.IN_PROCESS.value
+            and batch.location != "PRODUCTION_SHELF"
+        ):
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_TRANSITION,
+                message=(
+                    f"batch {batch.batch_no} 状态=IN_PROCESS, "
+                    f"location={batch.location!r}；不在生产架上，无法快捷品检"
+                ),
+                http_status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2) 验品检货架
+        target_shelf = await self._validate_inspection_shelf(
+            data.target_inspection_shelf_id,
+        )
+
+        # 3) 部分量先拆
+        target = await self._maybe_split(
+            part, batch, getattr(data, "quantity", None),
+        )
+        from_status = target.status  # PENDING / PROGRAMMING / IN_PROCESS
+
+        # 4) 第一步：搬到 INSPECTION（复用 on_enter_INSPECTION 副作用）
+        target.sm.inspect_direct(
+            target_shelf=target_shelf,
+            from_status=from_status,
+            event_repo=self.events,
+            created_by=self._user_id,
+        )
+        target.updated_by = self._user_id
+        await self._batches().update(target)
+        await self._after_batch_transition(part)
+        items = await self._to_out([part])
+        await self._broadcast_event(
+            "INSPECTED",
+            self._banner_payload(
+                part,
+                customer_path=items[0].customer_path,
+                shelf_code=target_shelf.code,
+            ),
+        )
+
+        # 5) 第二步：按 decision 分流复用现有 service（同 session / 事务）
+        if data.decision == "PASS":
+            return await self.pass_inspection(part.id, batch_id=target.id)
+        # FAIL → 打回生产架；复用 FailInspectionRequest + 现有 fail_inspection 校验
+        return await self.fail_inspection(
+            part.id,
+            FailInspectionRequest(
+                shelf_id=data.shelf_id,                # type: ignore[arg-type]
+                next_process_id=data.next_process_id,  # type: ignore[arg-type]
+                note=data.note,
+                batch_id=str(target.id),
+                quantity=None,  # 第一步已拆分，第二步不再传
+            ),
+        )
 
     async def cancel(
         self, part_id: int, *, batch_id: int | None = None,

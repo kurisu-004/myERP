@@ -445,6 +445,157 @@
       </template>
     </el-dialog>
 
+    <!-- 2026-08-12 PR-I-scan-inspect：扫码快捷品检弹窗（PENDING / PROGRAMMING / IN_PROCESS+ON_SHELF → INSPECTION → PASS/FAIL） -->
+    <el-dialog
+      v-model="scanInspectDialogVisible"
+      title="扫码快捷品检 — 选择通过 / 打回"
+      :width="scanInspectDlg.width.value"
+      :top="scanInspectDlg.top.value"
+      :fullscreen="scanInspectDlg.fullscreen.value"
+      :close-on-click-modal="false"
+      append-to-body
+      @closed="onScanInspectDialogClosed"
+    >
+      <div v-if="scanInspectRow" class="fail-summary">
+        <div><strong>流水号：</strong>{{ scanInspectRow.serial_no || '—' }}</div>
+        <div><strong>批次：</strong>{{ scanInspectRow.batch_label || '—' }}</div>
+        <div><strong>图号：</strong>{{ scanInspectRow.drawing_no }}</div>
+        <div><strong>名称：</strong>{{ scanInspectRow.name }}</div>
+        <div>
+          <strong>当前状态：</strong>
+          <el-tag size="small" :type="scanInspectRow.status === 'PENDING' ? 'info' : 'primary'">
+            {{ scanInspectRow.status === 'PENDING' ? '待下发' : scanInspectRow.status === 'PROGRAMMING' ? '编程中' : '生产中' }}
+          </el-tag>
+        </div>
+      </div>
+
+      <el-form label-width="96px" style="margin-top: 12px">
+        <el-form-item label="品检架" required>
+          <el-select
+            v-model="scanInspectShelfId"
+            placeholder="请选择目标品检架"
+            filterable
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="s in inspectionShelves"
+              :key="s.id"
+              :value="String(s.id)"
+              :label="`${s.code} — ${s.name}`"
+            >
+              {{ s.code }} — {{ s.name }}
+            </el-option>
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="数量">
+          <el-input-number
+            v-model="scanInspectQty"
+            :min="1"
+            :max="scanInspectRow?.quantity"
+            :precision="0"
+            style="width: 160px"
+          />
+          <span v-if="scanInspectRow" class="muted" style="margin-left: 8px">
+            / {{ scanInspectRow.quantity }}
+          </span>
+        </el-form-item>
+
+        <el-form-item label="品检动作" required>
+          <el-radio-group v-model="scanInspectDecision">
+            <el-radio value="PASS">品检通过（PASS）</el-radio>
+            <el-radio value="FAIL">打回生产架（FAIL）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <template v-if="scanInspectDecision === 'FAIL'">
+          <el-form-item label="下一道工序" required>
+            <el-select
+              v-model="scanInspectProcessId"
+              placeholder="请先选择下一道工序"
+              filterable
+              clearable
+              style="width: 100%"
+            >
+              <el-option
+                v-for="p in scanInspectFilteredProcesses"
+                :key="p.id"
+                :value="String(p.id)"
+                :label="`${p.code} — ${p.name}`"
+              >
+                {{ p.code }} — {{ p.name }}
+                <el-tag v-if="p.category === 'OUTSOURCE'" type="warning" size="small" effect="plain" class="opt-tag">
+                  外协
+                </el-tag>
+              </el-option>
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="目标生产架" required>
+            <el-select
+              v-model="scanInspectShelfIdFail"
+              placeholder="先选工序；货架候选按映射过滤"
+              filterable
+              clearable
+              style="width: 100%"
+              :disabled="!scanInspectProcessId"
+            >
+              <el-option
+                v-for="s in scanInspectFilteredProductionShelves"
+                :key="s.id"
+                :value="String(s.id)"
+                :label="`${s.code} — ${s.name}`"
+                :disabled="!s.is_active"
+              >
+                {{ s.code }} — {{ s.name }}
+                <span v-if="!s.is_active" class="muted">（已停用）</span>
+              </el-option>
+              <template #empty>
+                <span class="muted">
+                  {{
+                    scanInspectProcessId
+                      ? '当前工序未映射到任何生产货架，请先在「货架管理 → 工序映射」配置'
+                      : '请先选择下一道工序'
+                  }}
+                </span>
+              </template>
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="品检备注">
+            <el-input
+              v-model="scanInspectNote"
+              type="textarea"
+              :rows="3"
+              :maxlength="500"
+              show-word-limit
+              placeholder="不合格原因 / 返修要点（写入事件历史，工人领取时可见）"
+            />
+          </el-form-item>
+        </template>
+
+        <el-alert
+          type="info"
+          :closable="false"
+          title="快捷品检将一次性把零件搬到品检架，再按上面选择的动作（PASS → READY_TO_SHIP / FAIL → 回到生产架并指定下一道工序）完成流转。"
+          show-icon
+        />
+      </el-form>
+
+      <template #footer>
+        <el-button @click="scanInspectDialogVisible = false">取消</el-button>
+        <el-button
+          :type="scanInspectDecision === 'PASS' ? 'success' : 'warning'"
+          :loading="scanInspectSubmitting"
+          :disabled="!scanInspectShelfId
+            || (scanInspectDecision === 'FAIL'
+              && (!scanInspectShelfIdFail || !scanInspectProcessId))"
+          @click="onScanInspectConfirm"
+        >确认品检</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 2026-08-04：扫码命中同一 serial 多批次时复用报工台 BatchPickerDialog -->
     <BatchPickerDialog
       v-model="showBatchPicker"
@@ -471,8 +622,10 @@ import {
 } from '@/utils/scanHelpers'
 import {
   failInspection,
+  getPartBySerial,
   listInspectionBatches,
   passInspection,
+  scanInspect,
   type PartItem,
 } from '@/api/parts'
 import { listShelves } from '@/api/shelves'
@@ -610,18 +763,26 @@ async function onInspectionScan(rawCode: string): Promise<void> {
   if (
     passDialogVisible.value ||
     failDialogVisible.value ||
-    scanChooserOpen.value
+    scanChooserOpen.value ||
+    scanInspectDialogVisible.value
   ) {
     return
   }
-  // 在当前已加载列表里按 serial_no || drawing_no 匹配
+  // 快速路径：在当前已加载列表里按 serial_no || drawing_no 匹配（不限状态，按命中的状态分流）
   const matches = findAllByCode(
     items.value as unknown as PartItem[],
     code,
-  ).filter((r) => r.status === 'INSPECTION')
-  if (matches.length === 1) {
-    scanChooserRow.value = matches[0] as unknown as RowState
-    scanChooserOpen.value = true
+  )
+  if (matches.length === 0) {
+    // 0 命中 — PENDING / PROGRAMMING / IN_PROCESS+ON_SHELF 永远不会出现在 inspection 一览；
+    // 调 getPartBySerial 按 serial_no 查任意状态零件，再按状态路由。
+    try {
+      const part = await getPartBySerial(code)
+      routeScannedPart(part)
+    } catch {
+      // 404 / 网络错误 → 走 helper 显示「未找到」warning + 位置提示
+      await findPartBySerialAndPrompt(code)
+    }
     return
   }
   if (matches.length > 1) {
@@ -631,8 +792,28 @@ async function onInspectionScan(rawCode: string): Promise<void> {
     showBatchPicker.value = true
     return
   }
-  // 0 命中 — 走报工台风格「该零件当前不在本工序」位置提示
-  await findPartBySerialAndPrompt(code)
+  // 单条命中 — 按状态路由
+  routeScannedPart(matches[0])
+}
+
+// 统一扫码路由：列表命中 / getPartBySerial fallback / BatchPicker 三处共用
+// - INSPECTION → 原有二选一弹窗（点按钮复用原 pass/fail dialog）
+// - PENDING / PROGRAMMING / IN_PROCESS+PRODUCTION_SHELF → 扫码快捷品检（新弹窗）
+// - 其他（IN_PROCESS+WORKER / READY_TO_SHIP / DELIVERED / REPAIRING / OUTSOURCE）→ 降级提示
+function routeScannedPart(part: PartItem): void {
+  const row = part as unknown as RowState
+  if (part.status === 'INSPECTION') {
+    scanChooserRow.value = row
+    scanChooserOpen.value = true
+  } else if (
+    part.status === 'PENDING' ||
+    part.status === 'PROGRAMMING' ||
+    (part.status === 'IN_PROCESS' && part.location === 'PRODUCTION_SHELF')
+  ) {
+    openScanInspectDialog(row)
+  } else {
+    void findPartBySerialAndPrompt(part.serial_no ?? part.drawing_no ?? '')
+  }
 }
 
 function onScanChooserPass(): void {
@@ -651,13 +832,7 @@ function onScanChooserFail(): void {
 
 function onBatchPicked(p: PartItem): void {
   showBatchPicker.value = false
-  if (p.status === 'INSPECTION') {
-    scanChooserRow.value = p as unknown as RowState
-    scanChooserOpen.value = true
-  } else {
-    // 极少见：批次状态在弹出 BatchPicker 期间被改了
-    void findPartBySerialAndPrompt(p.serial_no ?? p.drawing_no ?? '')
-  }
+  routeScannedPart(p)
 }
 
 const { onScan } = useBarcodeScanner()
@@ -714,6 +889,7 @@ const failQty = ref<number | undefined>(undefined)
 const failSubmitting = ref(false)
 const productionShelves = ref<Shelf[]>([])
 const processes = ref<Process[]>([])
+const inspectionShelves = ref<Shelf[]>([])  // 2026-08-12 PR-I-scan-inspect：扫码快捷品检品检架选项
 // 指定工序默认走 INHOUSE 工序（外协工序走 send_to_outsource 路径）；
 // 不强制过滤 category，避免业务上「品检后直接外协返修」分支被锁死。
 const {
@@ -750,6 +926,114 @@ async function loadProcesses(): Promise<void> {
   } catch (e) {
     ElMessage.error(`加载工序失败：${(e as Error).message}`)
     processes.value = []
+  }
+}
+
+// ============ 2026-08-12 PR-I-scan-inspect：扫码快捷品检 ============
+// 命中 PENDING / PROGRAMMING / IN_PROCESS+PRODUCTION_SHELF 时弹本对话框，
+// 一步完成：搬到品检架 + 通过品检 / 指定下一工序。
+const scanInspectDlg = useDialogSize({ desktopWidth: 520 })
+const scanInspectDialogVisible = ref(false)
+const scanInspectRow = ref<RowState | null>(null)
+const scanInspectShelfId = ref<string>('')         // 目标品检架
+const scanInspectProcessId = ref<string>('')       // 下一道工序（仅 FAIL）
+const scanInspectShelfIdFail = ref<string>('')     // 目标生产架（仅 FAIL）
+const scanInspectNote = ref<string>('')
+const scanInspectQty = ref<number | undefined>(undefined)
+const scanInspectDecision = ref<'PASS' | 'FAIL'>('PASS')
+const scanInspectSubmitting = ref(false)
+
+// 复用 fail 弹窗的 shelf/process 双向过滤
+const {
+  filteredShelves: scanInspectFilteredProductionShelves,
+  filteredProcesses: scanInspectFilteredProcesses,
+} = useShelfProcessFilter(
+  productionShelves,
+  processes,
+  computed({
+    get: () => scanInspectShelfIdFail.value || null,
+    set: (v) => { scanInspectShelfIdFail.value = v ?? '' },
+  }),
+  computed({
+    get: () => scanInspectProcessId.value || null,
+    set: (v) => { scanInspectProcessId.value = v ?? '' },
+  }),
+)
+
+async function loadInspectionShelves(): Promise<void> {
+  try {
+    const resp = await listShelves({ zone: 'INSPECTION', is_active: true, limit: 200 })
+    inspectionShelves.value = resp.items
+  } catch (e) {
+    ElMessage.error(`加载品检货架失败：${(e as Error).message}`)
+    inspectionShelves.value = []
+  }
+}
+
+async function openScanInspectDialog(row: RowState): Promise<void> {
+  scanInspectRow.value = row
+  scanInspectShelfId.value = ''
+  scanInspectShelfIdFail.value = ''
+  scanInspectProcessId.value = ''
+  scanInspectNote.value = ''
+  scanInspectQty.value = row.quantity
+  scanInspectDecision.value = 'PASS'
+  scanInspectDialogVisible.value = true
+  // 三个候选数据源并发加载（inspectionShelves / productionShelves / processes）
+  await Promise.all([
+    inspectionShelves.value.length === 0 ? loadInspectionShelves() : Promise.resolve(),
+    productionShelves.value.length === 0 ? loadProductionShelves() : Promise.resolve(),
+    processes.value.length === 0 ? loadProcesses() : Promise.resolve(),
+  ])
+  void loadShelfProcessMap()
+}
+
+function onScanInspectDialogClosed(): void {
+  scanInspectRow.value = null
+  scanInspectShelfId.value = ''
+  scanInspectShelfIdFail.value = ''
+  scanInspectProcessId.value = ''
+  scanInspectNote.value = ''
+  scanInspectQty.value = undefined
+  scanInspectDecision.value = 'PASS'
+}
+
+async function onScanInspectConfirm(): Promise<void> {
+  const row = scanInspectRow.value
+  if (!row) return
+  if (!scanInspectShelfId.value) {
+    ElMessage.warning('请选择品检架')
+    return
+  }
+  if (
+    scanInspectDecision.value === 'FAIL'
+    && (!scanInspectShelfIdFail.value || !scanInspectProcessId.value)
+  ) {
+    ElMessage.warning('打回生产架时，目标货架与下一道工序必填')
+    return
+  }
+  scanInspectSubmitting.value = true
+  try {
+    await scanInspect(row.id, {
+      target_inspection_shelf_id: scanInspectShelfId.value,
+      decision: scanInspectDecision.value,
+      shelf_id: scanInspectShelfIdFail.value || undefined,
+      next_process_id: scanInspectProcessId.value || undefined,
+      note: scanInspectNote.value.trim() || null,
+      batch_id: row.batch_id ?? null,
+      quantity: scanInspectQty.value ?? null,
+    })
+    ElMessage.success(
+      scanInspectDecision.value === 'PASS'
+        ? `零件 ${row.serial_no || row.drawing_no} 快捷品检通过`
+        : `零件 ${row.serial_no || row.drawing_no} 已快捷打回`,
+    )
+    scanInspectDialogVisible.value = false
+    await fetchList()
+  } catch (e) {
+    ElMessage.error(`快捷品检失败：${(e as Error).message}`)
+  } finally {
+    scanInspectSubmitting.value = false
   }
 }
 
