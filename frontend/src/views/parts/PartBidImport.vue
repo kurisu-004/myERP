@@ -103,6 +103,7 @@
       <el-table
         v-if="rows.length > 0"
         :data="rows"
+        :row-key="(row: ImportRow) => row.uid"
         border
         size="small"
         :row-class-name="rowClassName"
