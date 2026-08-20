@@ -21,138 +21,8 @@
   <div class="parts-list">
     <el-card shadow="never" class="filter-card">
       <div class="filter-row">
-        <!-- 搜索组（2026-07-22：三组分类） -->
-        <div class="filter-group filter-group--search">
-          <el-input
-            v-model="search.keyword"
-            placeholder="图号 / 名称（全模糊）"
-            clearable
-            style="width: 260px"
-            @keyup.enter="onSearch"
-            @clear="onSearch"
-          >
-            <template #prefix>
-              <el-icon><Search /></el-icon>
-            </template>
-          </el-input>
-
-          <!-- 订单号独立搜索框（2026-07-22） -->
-          <el-input
-            v-model="search.orderNo"
-            placeholder="订单号"
-            clearable
-            style="width: 160px"
-            @keyup.enter="onSearch"
-            @clear="onSearch"
-          >
-            <template #prefix>
-              <el-icon><Search /></el-icon>
-            </template>
-          </el-input>
-
-          <!-- 2026-08-11：订单号空白筛选（覆盖 order_no 子串搜索）。
-               el-checkbox v-model 仅支持 boolean；用 :model-value + @update:model-value
-               把 state (boolean | undefined) 与 UI (boolean) 解耦。 -->
-          <el-checkbox
-            :model-value="search.orderNoIsNull === true"
-            class="filter-blank"
-            @update:model-value="(v) => onOrderNoIsNullChange(v)"
-          >
-            仅空白
-          </el-checkbox>
-
-          <!-- 序列号独立搜索框（2026-07-31） -->
-          <el-input
-            v-model="search.serialNo"
-            placeholder="序列号"
-            clearable
-            :class="{ 'scan-flash': serialNoFlash }"
-            style="width: 160px"
-            @keyup.enter="onSearch"
-            @clear="onSearch"
-          >
-            <template #prefix>
-              <el-icon><Search /></el-icon>
-            </template>
-          </el-input>
-
-          <!-- 行类型筛选（2026-08-05）：全部 / 仅零件 / 仅装配件 -->
-          <el-select
-            v-model="search.rowType"
-            placeholder="类型"
-            style="width: 120px"
-            @change="onRowTypeChange"
-          >
-            <el-option label="全部" value="ALL" />
-            <el-option label="仅零件" value="PART" />
-            <el-option label="仅装配件" value="ASSEMBLY" />
-          </el-select>
-
-          <el-button @click="onReset">
-            <el-icon><RefreshLeft /></el-icon>
-            <span>重置</span>
-          </el-button>
-        </div>
-
-        <!-- 日期组（2026-07-22：三组分类） -->
-        <div class="filter-group filter-group--dates">
-          <div class="date-filter-item">
-            <span class="date-filter-label">请购日期</span>
-            <el-date-picker
-              v-model="requestDateRange"
-              type="daterange"
-              value-format="YYYY-MM-DD"
-              range-separator="~"
-              start-placeholder="起点"
-              end-placeholder="终点"
-              unlink-panels
-              clearable
-              style="width: 240px"
-              @change="onDateRangeChange"
-            />
-          </div>
-          <div class="date-filter-item">
-            <span class="date-filter-label">计划交期</span>
-            <el-date-picker
-              v-model="plannedDateRange"
-              type="daterange"
-              value-format="YYYY-MM-DD"
-              range-separator="~"
-              start-placeholder="起点"
-              end-placeholder="终点"
-              unlink-panels
-              clearable
-              style="width: 240px"
-              @change="onDateRangeChange"
-            />
-          </div>
-          <div class="date-filter-item">
-            <span class="date-filter-label">系统交期</span>
-            <el-date-picker
-              v-model="systemDateRange"
-              type="daterange"
-              value-format="YYYY-MM-DD"
-              range-separator="~"
-              start-placeholder="起点"
-              end-placeholder="终点"
-              unlink-panels
-              clearable
-              style="width: 240px"
-              @change="onDateRangeChange"
-            />
-            <!-- 2026-08-11：系统交期空白筛选（勾选时区间失效，仅返回 NULL）。
-                 同 orderNoIsNull：解耦 el-checkbox v-model 与 state（boolean | undefined）。 -->
-            <el-checkbox
-              :model-value="search.systemDeliveryDateIsNull === true"
-              class="filter-blank"
-              @update:model-value="(v) => onSystemDeliveryDateIsNullChange(v)"
-            >
-              仅空白
-            </el-checkbox>
-          </div>
-        </div>
-
-        <!-- 操作组（2026-07-22：三组分类） -->
+        <!-- 2026-08-20：搜索/日期全部迁移到「查询」表头 popover，
+             顶部仅保留操作组与重置按钮。queryFilterActive 高亮提示筛选生效。 -->
         <div class="filter-group filter-group--actions">
           <!-- 手机筛选入口（桌面走表头 popover） -->
           <el-button
@@ -164,6 +34,15 @@
             <el-icon><Filter /></el-icon>
             <span>筛选</span>
           </el-button>
+
+          <el-button @click="onReset">
+            <el-icon><RefreshLeft /></el-icon>
+            <span>重置查询</span>
+          </el-button>
+
+          <span v-if="queryFilterActive" class="total-hint">
+            查询已激活 {{ queryFilterCount }} 项
+          </span>
 
           <!-- INSPECTOR 看不到导入按钮（PR-I 2026-07-20）；
                2026-08-05：CNC 与 INSPECTOR 同样对待（看不到导入/批量/下发） -->
@@ -248,6 +127,128 @@
         :reserve-selection="true"
         :selectable="isBatchSelectable"
       />
+
+      <!-- 2026-08-20：查询列——文本/下拉/日期/仅空白全部聚合到表头弹层。
+           列体留空（无业务字段），仅承载筛选入口；与现有 状态/客户/下一道工序/所在位置
+           列的 filter-icon 模式保持一致。 -->
+      <el-table-column label="查询" width="84" fixed="left" align="center">
+        <template #header>
+          <span class="header-cell" :class="{ 'is-active': queryFilterActive }">
+            <span>{{ queryFilterActive ? `查询(${queryFilterCount})` : '查询' }}</span>
+            <el-popover
+              :width="380"
+              placement="bottom-start"
+              trigger="click"
+              :show-arrow="false"
+              v-model:visible="queryPopoverVisible"
+              @show="syncQueryDraft"
+            >
+              <template #reference>
+                <el-icon class="filter-icon" :class="{ active: queryFilterActive }">
+                  <Filter />
+                </el-icon>
+              </template>
+              <div class="query-popover">
+                <el-input
+                  v-model="queryDraft.keyword"
+                  placeholder="图号 / 名称（全模糊）"
+                  clearable
+                  size="small"
+                  @keyup.enter="confirmQueryFilter"
+                >
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+                <div class="query-row">
+                  <el-input
+                    v-model="queryDraft.orderNo"
+                    placeholder="订单号"
+                    clearable
+                    size="small"
+                    style="flex: 1"
+                    @keyup.enter="confirmQueryFilter"
+                  >
+                    <template #prefix><el-icon><Search /></el-icon></template>
+                  </el-input>
+                  <el-checkbox
+                    :model-value="queryDraft.orderNoIsNull === true"
+                    @update:model-value="(v) => (queryDraft.orderNoIsNull = v ? true : undefined)"
+                  >仅空白</el-checkbox>
+                </div>
+                <el-input
+                  v-model="queryDraft.serialNo"
+                  placeholder="序列号"
+                  clearable
+                  :class="{ 'scan-flash': serialNoFlash }"
+                  size="small"
+                  @keyup.enter="confirmQueryFilter"
+                >
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+                <el-select
+                  v-model="queryDraft.rowType"
+                  placeholder="类型"
+                  size="small"
+                  style="width: 100%"
+                  @change="onRowTypeChange"
+                >
+                  <el-option label="全部" value="ALL" />
+                  <el-option label="仅零件" value="PART" />
+                  <el-option label="仅装配件" value="ASSEMBLY" />
+                </el-select>
+                <el-date-picker
+                  v-model="queryRequestDateRange"
+                  type="daterange"
+                  value-format="YYYY-MM-DD"
+                  range-separator="~"
+                  start-placeholder="请购起点"
+                  end-placeholder="请购终点"
+                  unlink-panels
+                  clearable
+                  size="small"
+                  style="width: 100%"
+                />
+                <el-date-picker
+                  v-model="queryPlannedDateRange"
+                  type="daterange"
+                  value-format="YYYY-MM-DD"
+                  range-separator="~"
+                  start-placeholder="计划起点"
+                  end-placeholder="计划终点"
+                  unlink-panels
+                  clearable
+                  size="small"
+                  style="width: 100%"
+                />
+                <div class="query-row">
+                  <el-date-picker
+                    v-model="querySystemDateRange"
+                    type="daterange"
+                    value-format="YYYY-MM-DD"
+                    range-separator="~"
+                    start-placeholder="系统起点"
+                    end-placeholder="系统终点"
+                    unlink-panels
+                    clearable
+                    size="small"
+                    style="flex: 1"
+                  />
+                  <el-checkbox
+                    :model-value="queryDraft.systemDeliveryDateIsNull === true"
+                    @update:model-value="(v) => (queryDraft.systemDeliveryDateIsNull = v ? true : undefined)"
+                  >仅空白</el-checkbox>
+                </div>
+              </div>
+              <div class="filter-actions">
+                <el-button size="small" link @click="resetQueryDraft">重置</el-button>
+                <el-button size="small" type="primary" @click="confirmQueryFilter">确定</el-button>
+              </div>
+            </el-popover>
+          </span>
+        </template>
+        <template #default>
+          <!-- 列体留空：查询语义在弹层内，列只承载筛选入口 -->
+        </template>
+      </el-table-column>
 
       <el-table-column
         v-if="columnVisibility.isVisible('serial_no')"
@@ -380,12 +381,20 @@
 
       <el-table-column
         v-if="columnVisibility.isVisible('applicant')"
-        label="申请人" min-width="110" show-overflow-tooltip align="center">
+        label="申请人" min-width="160" show-overflow-tooltip align="center">
         <template #default="{ row }">
-          <el-input
+          <el-autocomplete
             v-if="editingId === row.id"
             v-model="editBuffer.applicant_name"
+            value-key="name"
+            :fetch-suggestions="applicantSuggest"
+            :trigger-on-focus="true"
+            :debounce="0"
+            :loading="applicantLoading"
+            placeholder="选择或输入申请人姓名"
+            clearable
             size="small"
+            style="width: 100%"
           />
           <span v-else>{{ row.applicant_name || '—' }}</span>
         </template>
@@ -1093,7 +1102,7 @@
       </template>
     </el-dialog>
 
-    <!-- 手机筛选抽屉：承载桌面表头 popover 的同款筛选（状态 + 加急 + 客户） -->
+    <!-- 手机筛选抽屉：承载桌面表头 popover 的同款筛选（状态 + 加急 + 客户 + 查询） -->
     <el-drawer
       v-model="mobileFilterOpen"
       title="筛选"
@@ -1127,6 +1136,89 @@
             style="width: 100%"
             @clear="customerDraft = null"
           />
+        </div>
+        <!-- 2026-08-20：手机端同步承载桌面「查询」popover 的字段（共享 queryDraft） -->
+        <div class="mf-section">
+          <div class="mf-label">查询</div>
+          <el-input
+            v-model="queryDraft.keyword"
+            placeholder="图号 / 名称"
+            clearable
+            size="small"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <div class="query-row">
+            <el-input
+              v-model="queryDraft.orderNo"
+              placeholder="订单号"
+              clearable
+              size="small"
+              style="flex: 1"
+            >
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <el-checkbox
+              :model-value="queryDraft.orderNoIsNull === true"
+              @update:model-value="(v) => (queryDraft.orderNoIsNull = v ? true : undefined)"
+            >仅空白</el-checkbox>
+          </div>
+          <el-input
+            v-model="queryDraft.serialNo"
+            placeholder="序列号"
+            clearable
+            :class="{ 'scan-flash': serialNoFlash }"
+            size="small"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <el-select v-model="queryDraft.rowType" placeholder="类型" size="small" style="width: 100%">
+            <el-option label="全部" value="ALL" />
+            <el-option label="仅零件" value="PART" />
+            <el-option label="仅装配件" value="ASSEMBLY" />
+          </el-select>
+          <el-date-picker
+            v-model="queryRequestDateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="请购起点"
+            end-placeholder="请购终点"
+            unlink-panels
+            clearable
+            size="small"
+            style="width: 100%"
+          />
+          <el-date-picker
+            v-model="queryPlannedDateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="计划起点"
+            end-placeholder="计划终点"
+            unlink-panels
+            clearable
+            size="small"
+            style="width: 100%"
+          />
+          <div class="query-row">
+            <el-date-picker
+              v-model="querySystemDateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              range-separator="~"
+              start-placeholder="系统起点"
+              end-placeholder="系统终点"
+              unlink-panels
+              clearable
+              size="small"
+              style="flex: 1"
+            />
+            <el-checkbox
+              :model-value="queryDraft.systemDeliveryDateIsNull === true"
+              @update:model-value="(v) => (queryDraft.systemDeliveryDateIsNull = v ? true : undefined)"
+            >仅空白</el-checkbox>
+          </div>
         </div>
       </div>
       <template #footer>
@@ -1191,6 +1283,8 @@ import {
 import { useAuthSession } from '@/composables/useAuthSession'
 import { usePermissions } from '@/composables/usePermissions'
 import { useCustomerTree } from '@/composables/useCustomerTree'
+import { useApplicantSearch } from '@/composables/useApplicantSearch'
+import type { Applicant } from '@/types/applicant'
 import {
   splitLocationSelection,
   usePartLocationTree,
@@ -1229,6 +1323,66 @@ function canRecallToProgramming(row: PartListItem): boolean {
   return row.status === 'IN_PROCESS' && row.location === 'PRODUCTION_SHELF'
 }
 const { tree: customerTree } = useCustomerTree()
+
+// 申请人补全（PR-2026-08-20）：行内编辑态下复用 PartBatchNew/AssemblyCreate 的同款
+// useApplicantSearch，按「当前编辑行所在客户」懒加载申请人全集。
+// PartListItem 不含 customer_id，只能按 customer_name 在 customerTree 里反查一级客户 id。
+const {
+  applicants: applicantOptions,
+  loading: applicantLoading,
+  loadForCustomer,
+  querySearch,
+} = useApplicantSearch({
+  resolveRootCustomerId: (pickedId: string | null): string | null => {
+    if (!pickedId) return null
+    const walk = (nodes: typeof customerTree.value): string | null => {
+      for (const n of nodes) {
+        if (String(n.id) === pickedId) return String(n.id)
+        const found = walk(n.children ?? [])
+        if (found) return found
+      }
+      return null
+    }
+    return walk(customerTree.value)
+  },
+})
+
+/** 2026-08-20：按 PartListItem.customer_name 在 customerTree 中反查到一级客户 id。
+ *  行无 customer_name（极少；如老数据 / 系统装配）→ 返回 null，autocomplete 走「自由输入」。
+ *  命中叶子客户 → 返回其所属一级客户的 id；命中一级客户 → 返回自身。 */
+function resolveRootCustomerForRow(row: PartListItem): string | null {
+  const name = row.customer_name
+  if (!name) return null
+  const walk = (
+    nodes: typeof customerTree.value,
+    rootId: string,
+  ): string | null => {
+    for (const n of nodes) {
+      if (n.name === name) return rootId
+      const found = walk(n.children ?? [], rootId)
+      if (found !== null) return found
+    }
+    return null
+  }
+  for (const root of customerTree.value) {
+    const found = walk(root.children ?? [], String(root.id))
+    if (found !== null) return found
+  }
+  return null
+}
+
+/** 申请人 autocomplete 在编辑态下的可用性：有缓存或允许自由输入时为 true。
+ *  querySearch 对空 query 回退全缓存，所以有 root 解析但缓存为空时仍允许输入并提交。 */
+const applicantEditingReady = computed(() => applicantOptions.value.length > 0)
+
+// 2026-08-20：el-autocomplete 的 :fetch-suggestions 期望 (q, cb) => void 签名；
+// Vue 模板里写 TS 类型注解会被模板编译器拒解析，故包一层并显式标注。
+function applicantSuggest(
+  queryString: string,
+  callback: (items: Applicant[]) => void,
+): void {
+  querySearch(queryString, callback)
+}
 const route = useRoute()
 const router = useRouter()
 const { isMobile } = useBreakpoint()
@@ -1327,44 +1481,8 @@ const tableKey = computed(
     ].join('|'),
 )
 
-// ============ 三个日期区间筛选（2026-07-22：内联 daterange） ============
-// daterange 的 v-model 绑定 [start, end]；清空时 el 抛 null，getter/setter 兜底。
-type DateRange = [string, string] | null
-type DateRangeKey =
-  | 'requestDateFrom'
-  | 'requestDateTo'
-  | 'plannedDeliveryDateFrom'
-  | 'plannedDeliveryDateTo'
-  | 'systemDeliveryDateFrom'
-  | 'systemDeliveryDateTo'
-
-function makeRangeModel(fromKey: DateRangeKey, toKey: DateRangeKey) {
-  return computed<DateRange>({
-    get: () =>
-      search[fromKey] || search[toKey]
-        ? ([search[fromKey], search[toKey]] as [string, string])
-        : null,
-    set: (val: DateRange) => {
-      search[fromKey] = val?.[0] ?? ''
-      search[toKey] = val?.[1] ?? ''
-    },
-  })
-}
-
-const requestDateRange = makeRangeModel('requestDateFrom', 'requestDateTo')
-const plannedDateRange = makeRangeModel(
-  'plannedDeliveryDateFrom',
-  'plannedDeliveryDateTo',
-)
-const systemDateRange = makeRangeModel(
-  'systemDeliveryDateFrom',
-  'systemDeliveryDateTo',
-)
-
-function onDateRangeChange(): void {
-  page.value = 1
-  void fetchList()
-}
+// 2026-08-20：原顶部内联日期区间 makeRangeModel 已迁移到查询 popover 内复用
+// makeQueryRangeModel（草稿层），search.* 由 writeDraftToSearch 一次性回填。
 
 // ============ 状态列头 popover（draft + 确定/重置） ============
 // draft 完全用 OrderStatus 类型（用 string 存「仅加急」标记已删除）；
@@ -1508,9 +1626,162 @@ function confirmCustomerFilter(): void {
   onSearch()
 }
 
+// ============ 2026-08-20：查询 popover（合并文本/下拉/日期到表头弹层）============
+// draft 与 search 字段一一对应；弹层打开时 syncQueryDraft 把 search.* 回填到 draft，
+// 「确定」时 writeDraftToSearch 把 draft 写回 search.* 并触发 onSearch()。
+// queryDraft 字段命名与 SearchState 一致，便于 buildParams() 直接消费 search.*。
+interface QueryDraftState {
+  keyword: string
+  orderNo: string
+  orderNoIsNull: boolean | undefined
+  serialNo: string
+  rowType: PartRowTypeFilter
+  requestDateFrom: string
+  requestDateTo: string
+  plannedDeliveryDateFrom: string
+  plannedDeliveryDateTo: string
+  systemDeliveryDateFrom: string
+  systemDeliveryDateTo: string
+  systemDeliveryDateIsNull: boolean | undefined
+}
+function emptyQueryDraft(): QueryDraftState {
+  return {
+    keyword: '',
+    orderNo: '',
+    orderNoIsNull: undefined,
+    serialNo: '',
+    rowType: 'ALL',
+    requestDateFrom: '',
+    requestDateTo: '',
+    plannedDeliveryDateFrom: '',
+    plannedDeliveryDateTo: '',
+    systemDeliveryDateFrom: '',
+    systemDeliveryDateTo: '',
+    systemDeliveryDateIsNull: undefined,
+  }
+}
+const queryPopoverVisible = ref(false)
+const queryDraft = reactive<QueryDraftState>(emptyQueryDraft())
+
+// 弹层打开时把 search.* 同步进 draft（确保再次打开看到当前生效条件）
+function syncQueryDraft(): void {
+  queryDraft.keyword = search.keyword
+  queryDraft.orderNo = search.orderNo
+  queryDraft.orderNoIsNull = search.orderNoIsNull
+  queryDraft.serialNo = search.serialNo
+  queryDraft.rowType = search.rowType
+  queryDraft.requestDateFrom = search.requestDateFrom
+  queryDraft.requestDateTo = search.requestDateTo
+  queryDraft.plannedDeliveryDateFrom = search.plannedDeliveryDateFrom
+  queryDraft.plannedDeliveryDateTo = search.plannedDeliveryDateTo
+  queryDraft.systemDeliveryDateFrom = search.systemDeliveryDateFrom
+  queryDraft.systemDeliveryDateTo = search.systemDeliveryDateTo
+  queryDraft.systemDeliveryDateIsNull = search.systemDeliveryDateIsNull
+}
+
+// 弹层「确定」：把 draft 写回 search.* 并触发查询
+function writeDraftToSearch(): void {
+  search.keyword = queryDraft.keyword
+  search.orderNo = queryDraft.orderNo
+  search.orderNoIsNull = queryDraft.orderNoIsNull
+  search.serialNo = queryDraft.serialNo
+  search.rowType = queryDraft.rowType
+  search.requestDateFrom = queryDraft.requestDateFrom
+  search.requestDateTo = queryDraft.requestDateTo
+  search.plannedDeliveryDateFrom = queryDraft.plannedDeliveryDateFrom
+  search.plannedDeliveryDateTo = queryDraft.plannedDeliveryDateTo
+  search.systemDeliveryDateFrom = queryDraft.systemDeliveryDateFrom
+  search.systemDeliveryDateTo = queryDraft.systemDeliveryDateTo
+  search.systemDeliveryDateIsNull = queryDraft.systemDeliveryDateIsNull
+}
+
+function resetQueryDraft(): void {
+  const cleared = emptyQueryDraft()
+  Object.assign(queryDraft, cleared)
+  Object.assign(search, cleared)
+  queryPopoverVisible.value = false
+  onSearch()
+}
+
+function confirmQueryFilter(): void {
+  writeDraftToSearch()
+  queryPopoverVisible.value = false
+  if (batchMode.value) clearAllSelection()
+  onSearch()
+}
+
+// 任一字段非默认值 → 激活态高亮 + 表头计数
+const queryFilterActive = computed(() => {
+  return (
+    queryDraft.keyword !== ''
+    || queryDraft.orderNo !== ''
+    || queryDraft.orderNoIsNull !== undefined
+    || queryDraft.serialNo !== ''
+    || queryDraft.rowType !== 'ALL'
+    || queryDraft.requestDateFrom !== ''
+    || queryDraft.requestDateTo !== ''
+    || queryDraft.plannedDeliveryDateFrom !== ''
+    || queryDraft.plannedDeliveryDateTo !== ''
+    || queryDraft.systemDeliveryDateFrom !== ''
+    || queryDraft.systemDeliveryDateTo !== ''
+    || queryDraft.systemDeliveryDateIsNull !== undefined
+  )
+})
+
+const queryFilterCount = computed(() => {
+  let n = 0
+  if (queryDraft.keyword) n++
+  if (queryDraft.orderNo) n++
+  if (queryDraft.orderNoIsNull !== undefined) n++
+  if (queryDraft.serialNo) n++
+  if (queryDraft.rowType !== 'ALL') n++
+  if (queryDraft.requestDateFrom || queryDraft.requestDateTo) n++
+  if (queryDraft.plannedDeliveryDateFrom || queryDraft.plannedDeliveryDateTo) n++
+  if (
+    queryDraft.systemDeliveryDateFrom
+    || queryDraft.systemDeliveryDateTo
+    || queryDraft.systemDeliveryDateIsNull !== undefined
+  ) n++
+  return n
+})
+
+// 三个 daterange 用同一对 getter/setter 桥接到 queryDraft（沿用 SearchState 风格）。
+type QDraftRangeKey =
+  | 'requestDateFrom'
+  | 'requestDateTo'
+  | 'plannedDeliveryDateFrom'
+  | 'plannedDeliveryDateTo'
+  | 'systemDeliveryDateFrom'
+  | 'systemDeliveryDateTo'
+function makeQueryRangeModel(fromKey: QDraftRangeKey, toKey: QDraftRangeKey) {
+  type Daterange = [string, string] | null
+  return computed<Daterange>({
+    get: () =>
+      queryDraft[fromKey] || queryDraft[toKey]
+        ? ([queryDraft[fromKey], queryDraft[toKey]] as [string, string])
+        : null,
+    set: (val: Daterange) => {
+      queryDraft[fromKey] = val?.[0] ?? ''
+      queryDraft[toKey] = val?.[1] ?? ''
+    },
+  })
+}
+const queryRequestDateRange = makeQueryRangeModel('requestDateFrom', 'requestDateTo')
+const queryPlannedDateRange = makeQueryRangeModel(
+  'plannedDeliveryDateFrom',
+  'plannedDeliveryDateTo',
+)
+const querySystemDateRange = makeQueryRangeModel(
+  'systemDeliveryDateFrom',
+  'systemDeliveryDateTo',
+)
+
 // ============ 手机筛选抽屉 ============
+// 2026-08-20：手机端同步承载查询弹层（文本/日期/类型/仅空白）+ 既有 status/customer 筛选。
 const mobileFilterOpen = ref(false)
-const anyFilterActive = computed(() => statusFilterActive.value || customerFilterActive.value)
+const anyFilterActive = computed(
+  () => statusFilterActive.value || customerFilterActive.value || queryFilterActive.value,
+)
 
 // 2026-08-12：采购订单 Excel 导入对话框可见性
 const orderImportVisible = ref(false)
@@ -1518,12 +1789,14 @@ const orderImportVisible = ref(false)
 function openMobileFilter(): void {
   syncStatusDraft()
   syncCustomerDraft()
+  syncQueryDraft()
   mobileFilterOpen.value = true
 }
 function confirmMobileFilter(): void {
   search.statuses = [...statusDraft.value]
   search.isUrgent = statusUrgentDraft.value ? true : null
   search.customerId = customerDraft.value ?? ''
+  writeDraftToSearch()
   mobileFilterOpen.value = false
   onSearch()
 }
@@ -1531,6 +1804,9 @@ function resetMobileFilter(): void {
   statusDraft.value = []
   statusUrgentDraft.value = false
   customerDraft.value = null
+  const cleared = emptyQueryDraft()
+  Object.assign(queryDraft, cleared)
+  Object.assign(search, cleared)
   search.statuses = []
   search.isUrgent = null
   search.customerId = ''
@@ -2046,6 +2322,12 @@ function onSerialNoScan(rawCode: string): void {
   nextProcessDraft.value = []
   customerDraft.value = null
   locationDraft.value = []
+  // 2026-08-20：清空 queryDraft + 两个仅空白 checkbox。
+  const cleared = emptyQueryDraft()
+  Object.assign(queryDraft, cleared)
+  queryDraft.serialNo = code
+  // 序列号输入框在「查询」popover 内；扫码时把弹层打开便于看到 scan-flash 动画。
+  queryPopoverVisible.value = true
   // 持久化（与 onReset 同步写 localStorage）。
   snapshotPartsFilter()
   // 触发查询（onSearch 内会清空批量选择 + fetchList）。
@@ -2119,6 +2401,10 @@ function onReset(): void {
   // 2026-08-11：清空两个空白筛选 checkbox。
   search.orderNoIsNull = undefined
   search.systemDeliveryDateIsNull = undefined
+  // 2026-08-20：行类型筛选也属于查询范畴，一并重置为 ALL。
+  search.rowType = 'ALL'
+  // 2026-08-20：同步刷 queryDraft，让弹层下次打开看到清空后的状态。
+  Object.assign(queryDraft, emptyQueryDraft())
   page.value = 1
   // 2026-07-31：重置按钮清空批量选择（与「改筛选即清空」语义一致）
   if (batchMode.value) clearAllSelection()
@@ -2128,16 +2414,10 @@ function onReset(): void {
   void fetchList()
 }
 
-// 2026-08-11：可空列空白筛选 checkbox change 桥接（state 是 boolean | undefined）。
-// `true` ⇒ 显式记录，buildParams 才发参数；`false` ⇒ 还原为 undefined（不发参数）。
-function onOrderNoIsNullChange(v: boolean | string | number): void {
-  search.orderNoIsNull = v ? true : undefined
-  onSearch()
-}
-function onSystemDeliveryDateIsNullChange(v: boolean | string | number): void {
-  search.systemDeliveryDateIsNull = v ? true : undefined
-  onSearch()
-}
+// 2026-08-20：可空列空白筛选 checkbox 改在「查询」popover 内通过
+// `:model-value` + `@update:model-value` 内联桥接（queryDraft.orderNoIsNull
+// / systemDeliveryDateIsNull），不再需要 onOrderNoIsNullChange /
+// onSystemDeliveryDateIsNullChange 这两个独立 handler。
 
 onMounted(async () => {
   // 1) 优先尝试从 URL ?status=PENDING 注入（与批量新建后跳转保持一致）
@@ -2255,6 +2535,9 @@ function startEdit(row: PartListItem): void {
   editBuffer.note = row.note
   editBuffer.is_urgent = row.is_urgent
   editingId.value = row.id
+  // 2026-08-20：申请人 autocomplete 按行所在客户懒加载全集。
+  // loadForCustomer 内部对同 rootCustomerId 幂等，切到不同行时自动 refetch。
+  void loadForCustomer(resolveRootCustomerForRow(row))
 }
 
 // 2026-07-24：双击行进入编辑（仅 MANAGER/CLERK + 非批量模式）
@@ -2681,31 +2964,8 @@ async function onBatchDispatchConfirm(): Promise<void> {
   }
 }
 
-/* 日期组：组内 gap 稍大 */
-.filter-group--dates {
-  gap: 12px;
-}
-
-/* 2026-07-22：内联日期区间筛选（请购/计划/系统交期） */
-.date-filter-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* 2026-08-11：可空列空白筛选 checkbox（紧凑，与 el-input 同高）。 */
-.filter-blank {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-}
-
-.date-filter-label {
-  font-size: 13px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
+/* 2026-08-20：原 .filter-group--dates / .date-filter-item / .date-filter-label /
+   .filter-blank 已被「查询」表头 popover 取代，残留样式删除。 */
 
 .total-hint {
   font-size: 13px;
@@ -2857,6 +3117,22 @@ async function onBatchDispatchConfirm(): Promise<void> {
   gap: 8px;
   border-top: 1px solid var(--border-color-lighter);
   padding-top: 8px;
+}
+
+// 2026-08-20：查询 popover 内部布局——垂直堆叠控件，控件之间留 8px 间隔。
+.query-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+// 单行内联两个控件（订单号 + 仅空白 / 系统交期 + 仅空白）。
+.query-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 // 加急行：dashboard 同款红底 #fde2e2（与默认 .el-table 浅灰底可叠加）
