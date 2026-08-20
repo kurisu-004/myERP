@@ -146,9 +146,18 @@ async def list_parts(
     customer_id: str | None = Query(default=None, description="客户 id（雪花 ID 字符串）"),
     statuses: list[str] | None = Query(default=None, description="订单状态多选"),
     is_urgent: bool | None = Query(default=None, description="是否加急"),
+    # 2026-08-20：图号 / 名称拆为两个独立 ILIKE 子串参数（替换原 keyword 在本接口的用法）。
+    # 两个参数同时设 ⇒ AND 联合（drawing_no ILIKE AND name ILIKE）。
+    drawing_no: str | None = Query(
+        default=None, max_length=100, description="图号 ILIKE 子串"
+    ),
+    name: str | None = Query(
+        default=None, max_length=200, description="名称 ILIKE 子串"
+    ),
+    # 2026-08-20：keyword 保留作为兼容 fallback，其他端点（outsource picker 等）继续使用。
     keyword: str | None = Query(
         default=None,
-        description="搜索关键字（图号 ILIKE 包含 %kw%；名称 ILIKE 前缀 kw%）",
+        description="搜索关键字（兼容其他端点；本接口建议改用 drawing_no + name）",
     ),
     order_no: str | None = Query(
         default=None, description="订单号搜索（ILIKE 包含 %kw%；2026-07-22 新增）"
@@ -229,6 +238,10 @@ async def list_parts(
             customer_id=customer_id,
             statuses=[PartStatus(s) for s in statuses] if statuses else None,
             is_urgent=is_urgent,
+            # 2026-08-20：drawing_no / name 替代 keyword 在本接口的位置；
+            # 仍透传 keyword 以兼容 keyword 直接调用方（后端走 OR fallback）。
+            drawing_no=drawing_no,
+            name=name,
             keyword=keyword,
             order_no=order_no,
             serial_no=serial_no,

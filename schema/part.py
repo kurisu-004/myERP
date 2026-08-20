@@ -30,9 +30,15 @@ class PartListQuery(BaseModel):
         default=None, description="订单状态多选（空=全部）"
     )
     is_urgent: bool | None = Field(default=None, description="是否加急（null=全部）")
+    # 2026-08-20：图号 / 名称拆为两个独立 ILIKE 子串参数（替换原 keyword 在本接口的用法）。
+    # 两个参数同时设 ⇒ AND 联合（drawing_no ILIKE AND name ILIKE）。
+    drawing_no: str | None = Field(default=None, max_length=100, description="图号 ILIKE 子串")
+    name: str | None = Field(default=None, max_length=200, description="名称 ILIKE 子串")
+    # 2026-08-20：keyword 字段保留作为其他端点（pending-programming / outsource picker / 等）
+    # 的兼容 fallback，不在 /parts 列表主路径使用。
     keyword: str | None = Field(
         default=None,
-        description="搜索关键字（图号 ILIKE 包含匹配 %kw%；名称 ILIKE 前缀匹配 kw%）",
+        description="搜索关键字（兼容其他端点；本接口建议改用 drawing_no + name）",
     )
     order_no: str | None = Field(
         default=None, description="订单号搜索（ILIKE 包含匹配 %kw%；2026-07-22 新增）"
