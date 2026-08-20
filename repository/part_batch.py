@@ -85,6 +85,26 @@ class PartBatchRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def sum_delivered_by_part_ids(
+        self, part_ids: list[int]
+    ) -> dict[int, int]:
+        """批量返回每个工单的已送数量：未软删批次中 status ∈ (DELIVERED, COMPLETED) 的 quantity 之和。"""
+        if not part_ids:
+            return {}
+        stmt = (
+            select(TPartBatch.part_id, func.sum(TPartBatch.quantity))
+            .where(
+                TPartBatch.part_id.in_(part_ids),
+                TPartBatch.status.in_(
+                    [PartStatus.DELIVERED.value, PartStatus.COMPLETED.value]
+                ),
+                TPartBatch.deleted_at.is_(None),
+            )
+            .group_by(TPartBatch.part_id)
+        )
+        result = await self.session.execute(stmt)
+        return {int(pid): int(total) for pid, total in result.all()}
+
     async def next_batch_no(self, part_id: int) -> int:
         """下一个批次序号（MAX+1）。须在拆分锁内调用；取消的批次不占号不复用。"""
         stmt = select(

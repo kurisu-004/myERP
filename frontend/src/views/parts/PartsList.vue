@@ -571,6 +571,18 @@
         </template>
       </el-table-column>
 
+      <el-table-column
+        v-if="columnVisibility.isVisible('delivered_quantity')"
+        prop="delivered_quantity"
+        label="已送数量"
+        min-width="100"
+        align="right">
+        <template #default="{ row }">
+          <span v-if="row.row_type === 'ASSEMBLY'" class="muted">—</span>
+          <span v-else>{{ row.delivered_quantity ?? 0 }}</span>
+        </template>
+      </el-table-column>
+
             <el-table-column
               v-if="columnVisibility.isVisible('is_urgent')"
               label="加急" min-width="80" align="center">
@@ -1185,6 +1197,8 @@ import type { Process } from '@/types/process'
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TAG_TYPE,
+  PART_SORT_KEY_SET,
+  PART_SORT_KEY_TO_PROP,
   PART_SORT_PROP_MAP,
   type OrderStatus,
 } from '@/types/parts'
@@ -1914,7 +1928,7 @@ const SORT_PROP_MAP: Record<string, PartSortKey> = PART_SORT_PROP_MAP
 
 type SortOrder = 'ascending' | 'descending'
 const defaultSort = computed<{ prop: string; order: SortOrder }>(() => ({
-  prop: 'planned_delivery_date',
+  prop: PART_SORT_KEY_TO_PROP[sortBy.value] ?? 'planned_delivery_date',
   order: sortDir.value === 'ASC' ? 'ascending' : 'descending',
 }))
 
@@ -2097,6 +2111,7 @@ const columnDefs = [
   { key: 'request_date', label: '请购日期' },
   { key: 'planned_delivery_date', label: '计划交期' },
   { key: 'system_delivery_date', label: '系统交期' },
+  { key: 'delivered_quantity', label: '已送数量' },
   { key: 'is_urgent', label: '加急' },
   { key: 'next_process', label: '下一道工序' },  // 2026-08-01 新增
   { key: 'location', label: '所在位置' },
@@ -2186,9 +2201,9 @@ onMounted(async () => {
           ? persisted.search.rowType
           : 'ALL'
       // localStorage 存的是 string，恢复时按合法值收敛（默认值兜底）
-      sortBy.value = (SORT_PROP_MAP[persisted.sortBy]
-        ? persisted.sortBy as PartSortKey
-        : 'PLANNED_DELIVERY_DATE')
+      sortBy.value = PART_SORT_KEY_SET.has(persisted.sortBy as PartSortKey)
+        ? (persisted.sortBy as PartSortKey)
+        : 'PLANNED_DELIVERY_DATE'
       sortDir.value = (persisted.sortDir === 'ASC' || persisted.sortDir === 'DESC'
         ? persisted.sortDir as SortDir
         : 'ASC')
@@ -2199,9 +2214,7 @@ onMounted(async () => {
   // 2026-07-29 PR-fix-0.2.0：表头排序箭头要等 el-table 挂载后手动调一次 sort()，
   // 否则离开页面再回来时 refs 已恢复但表头不显示箭头（:default-sort 是 one-time prop）。
   await nextTick()
-  const propForSortKey = (key: string): string | undefined =>
-    Object.entries(PART_SORT_PROP_MAP).find(([, v]) => v === key)?.[0]
-  const sortProp = propForSortKey(sortBy.value) ?? 'planned_delivery_date'
+  const sortProp = PART_SORT_KEY_TO_PROP[sortBy.value] ?? 'planned_delivery_date'
   const sortOrder = sortDir.value === 'ASC' ? 'ascending' : 'descending'
   partsListRef.value?.elTableRef?.sort(sortProp, sortOrder)
 })

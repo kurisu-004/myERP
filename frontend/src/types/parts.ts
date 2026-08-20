@@ -74,6 +74,15 @@ export const PART_SORT_PROP_MAP: Record<string, PartSortKey> = {
   total_price: 'TOTAL_PRICE',
 }
 
+/** PartSortKey 合法值集合（用于持久化恢复时收敛到合法值）。 */
+export const PART_SORT_KEY_SET: ReadonlySet<PartSortKey> =
+  new Set(Object.values(PART_SORT_PROP_MAP))
+/** PartSortKey → 列 prop 名（用于 default-sort / elTableRef.sort()）。 */
+export const PART_SORT_KEY_TO_PROP: Record<PartSortKey, string> =
+  Object.fromEntries(
+    Object.entries(PART_SORT_PROP_MAP).map(([prop, key]) => [key, prop]),
+  ) as Record<PartSortKey, string>
+
 /** 列表展示用窄出参（与 PartItem 不同，无 holder/next_process/assembly_id）。 */
 export interface PartListItem {
   id: string
@@ -99,6 +108,8 @@ export interface PartListItem {
   /** PR-F 2026-07-17：送货单字段 */
   order_no: string | null
   system_delivery_date: string | null
+  /** 已送数量：未软删批次中 status ∈ (DELIVERED, COMPLETED) 的 quantity 之和；装配件行恒为 null */
+  delivered_quantity?: number | null
   note: string | null
   customer_name: string | null
   parent_customer_name: string | null

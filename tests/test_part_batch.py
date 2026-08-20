@@ -30,6 +30,7 @@ from model import (
 )
 from model.enums import PartEventType, PartStatus, ShelfZone
 from repository.customer import CustomerRepository
+from repository.assembly import AssemblyRepository
 from repository.part import PartRepository
 from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
@@ -42,6 +43,7 @@ from repository.work_type_process import WorkTypeProcessRepository
 from repository.worker import WorkerRepository
 from schema.part import (
     FailInspectionRequest,
+    PartListQuery,
     PartPickUpRequest,
     PartScanRequest,
     PlaceOnShelfRequest,
@@ -93,6 +95,7 @@ def _make_service(session) -> PartService:
         work_types=WorkTypeRepository(session),
         work_type_process=WorkTypeProcessRepository(session),
         shelf_process_repo=ShelfProcessRepository(session),
+        assemblies=AssemblyRepository(session),
         broadcaster=None,
         event_broadcaster=None,
     )
@@ -591,3 +594,110 @@ async def test_outsource_sendable_lists_qualifying_batch_in_multibatch_order(cle
     # 7. count 也应只数 1 行（按批次计）
     count = await parts_repo.count_outsource_sendable()
     assert count == 1
+
+
+# ============================================================
+# 2026-08-20：列表「已送数量」列（PartListItem.delivered_quantity）
+# ============================================================
+async def test_list_parts_delivered_quantity_includes_partial_full_and_completed(clean_db):
+    """列表已送数量 = 未软删批次中 status ∈ (DELIVERED, COMPLETED) 的 quantity 之和。
+
+    覆盖：
+    - 部分量 deliver 12/20 → 列表 delivered_quantity == 12
+    - 全部 deliver 20/20 → 列表 delivered_quantity == 20
+    - 自动 COMPLETED 后 → 列表 delivered_quantity == 20（COMPLETED 仍计入）
+    """
+    from model import TAssembly
+    from sqlalchemy import select
+
+    world = await _make_world(clean_db)
+    part = await _make_part(clean_db, world["customer"], qty=20, serial="B9001")
+    svc = _make_service(clean_db)
+
+    # 全流程推到 READY_TO_SHIP
+    await _place(clean_db, svc, part, world)
+    await svc.pick_up_by_scan(PartPickUpRequest(
+        serial_no=part.serial_no,
+        shelf_id=world["shelf"].id,
+        badge_code=world["worker"].badge_code,
+    ))
+    await svc.scan_event(PartScanRequest(
+        serial_no=part.serial_no,
+        event_type=PartEventType.INSPECTED,
+        shelf_id=world["insp_shelf"].id,
+        badge_code=world["worker"].badge_code,
+        target_inspection_shelf_id=world["insp_shelf"].id,
+    ))
+    await svc.pass_inspection(part.id)
+
+    # 部分发货 12
+    await svc.deliver(part.id, quantity=12)
+
+    async def _list_q():
+        return await svc.list_parts(PartListQuery(limit=100))
+
+    out = await _list_q()
+    items = {i.serial_no: i for i in out.items}
+    assert items[part.serial_no].delivered_quantity == 12
+
+    # 剩余 8 发完 → 全部 DELIVERED
+    await svc.deliver(part.id)
+
+    # 校验 DB 状态（防 helper 顺序漂移）
+    delivered_batches = (
+        await clean_db.execute(
+            select(TPartBatch).where(
+                TPartBatch.part_id == part.id,
+                TPartBatch.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    assert all(
+        b.status in (
+            PartStatus.DELIVERED.value,
+            PartStatus.COMPLETED.value,
+        )
+        for b in delivered_batches
+    )
+
+    out = await _list_q()
+    items = {i.serial_no: i for i in out.items}
+    assert items[part.serial_no].delivered_quantity == 20
+
+    # complete：DELIVERED → COMPLETED，已送量仍计入
+    await svc.complete(part.id)
+    out = await _list_q()
+    items = {i.serial_no: i for i in out.items}
+    assert items[part.serial_no].delivered_quantity == 20
+
+
+async def test_list_parts_assembly_delivered_quantity_is_null(clean_db):
+    """装配件行走 _assemblies_to_list_items → PartListItem.delivered_quantity 恒为 None。"""
+    from model import TAssembly
+
+    world = await _make_world(clean_db)
+    asm = TAssembly(
+        drawing_no="ASM-DQ-001",
+        name="已送数量-装配体",
+        applicant_name="批次申请人",
+        customer_id=world["customer"].id,
+        request_date=date(2026, 7, 1),
+        planned_delivery_date=date(2026, 8, 1),
+        status="PENDING",
+        serial_no="A9001",
+        quantity=1,
+        unit_price=0,
+        total_price=0,
+    )
+    asm.created_by = None
+    asm.updated_by = None
+    clean_db.add(asm)
+    await clean_db.flush()
+
+    svc = _make_service(clean_db)
+    out = await svc.list_parts(
+        PartListQuery(include_assemblies=True, limit=100),
+    )
+    asm_items = [i for i in out.items if i.row_type == "ASSEMBLY"]
+    assert len(asm_items) == 1
+    assert asm_items[0].delivered_quantity is None

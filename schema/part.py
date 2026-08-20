@@ -348,6 +348,11 @@ class PartListItem(BaseModel):
     order_no: str | None = Field(default=None, description="订单号")
     system_delivery_date: date | None = Field(default=None, description="订单方系统内部交期")
     note: str | None = Field(default=None, description="备注")
+    # —— 2026-08-20：已送数量（未软删批次中 status ∈ (DELIVERED, COMPLETED) 的 quantity 之和；装配件行恒为 null）——
+    delivered_quantity: int | None = Field(
+        default=None,
+        description="已送数量：未删除批次中 status ∈ (DELIVERED, COMPLETED) 的 quantity 之和；装配件行恒为 null",
+    )
     customer_name: str | None = Field(
         default=None, description="客户名（二级节点）"
     )

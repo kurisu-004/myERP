@@ -196,6 +196,29 @@ class FakePartBatchRepository:
             if b.part_id in part_ids and b.deleted_at is None
         ]
 
+    async def sum_delivered_by_part_ids(
+        self, part_ids: list[int],
+    ) -> dict[int, int]:
+        """2026-08-20：列表「已送数量」批查 mock。
+
+        纯 mock 单测默认全部 0（part 多为 MagicMock；list 默认行为已覆盖）。
+        需要断言本行为的测试自行 monkeypatch。
+        """
+        from model.enums import PartStatus
+        out: dict[int, int] = {}
+        for b in self.store.values():
+            if b.part_id not in part_ids:
+                continue
+            if b.deleted_at is not None:
+                continue
+            if b.status not in (
+                PartStatus.DELIVERED.value,
+                PartStatus.COMPLETED.value,
+            ):
+                continue
+            out[b.part_id] = out.get(b.part_id, 0) + int(b.quantity or 0)
+        return out
+
     async def next_batch_no(self, part_id: int) -> int:
         await self._vivify(part_id)
         nos = [b.batch_no for b in self.store.values() if b.part_id == part_id]

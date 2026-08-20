@@ -4816,6 +4816,13 @@ class PartService:
             proc_rows = await self.processes.list_by_ids(next_process_ids)
             process_map = {pr.id: pr.name for pr in proc_rows}
 
+        # 2026-08-20：批查每个工单的「已送数量」（未软删批次中 DELIVERED + COMPLETED 的 quantity 之和）
+        delivered_map: dict[int, int] = {}
+        if self.part_batches is not None:
+            delivered_map = await self.part_batches.sum_delivered_by_part_ids(
+                [p.id for p in rows]
+            )
+
         out: list[PartListItem] = []
         for p in rows:
             cust = cust_map.get(p.customer_id)
@@ -4894,6 +4901,8 @@ class PartService:
                     created_at=p.created_at,
                     # 2026-08-04 「返修接收」PR-M：一览返修标记
                     has_been_repaired=bool(getattr(p, "has_been_repaired", False)),
+                    # 2026-08-20：已送数量（装配件行恒为 null；此处只覆盖工单行）
+                    delivered_quantity=delivered_map.get(p.id),
                 )
             )
         return out
