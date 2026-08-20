@@ -77,6 +77,10 @@ class PartRepository:
         customer_ids_in: list[int] | None = None,
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
+        # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表的用法；
+        # keyword 保留作兼容其他端点（outsource picker 等）的 fallback。
+        drawing_no: str | None = None,
+        name: str | None = None,
         keyword: str | None = None,
         order_no: str | None = None,
         serial_no: str | None = None,  # 2026-07-31：序列号独立搜索（ILIKE 包含）
@@ -116,6 +120,8 @@ class PartRepository:
             customer_ids_in=customer_ids_in,
             statuses=statuses,
             is_urgent=is_urgent,
+            drawing_no=drawing_no,
+            name=name,
             keyword=keyword,
             order_no=order_no,
             serial_no=serial_no,
@@ -175,6 +181,10 @@ class PartRepository:
         customer_ids_in: list[int] | None = None,
         statuses: list[PartStatus] | None = None,
         is_urgent: bool | None = None,
+        # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表的用法；
+        # keyword 保留作兼容其他端点（outsource picker 等）的 fallback。
+        drawing_no: str | None = None,
+        name: str | None = None,
         keyword: str | None = None,
         order_no: str | None = None,
         serial_no: str | None = None,  # 2026-07-31：序列号独立搜索（ILIKE 包含）
@@ -206,6 +216,8 @@ class PartRepository:
             customer_ids_in=customer_ids_in,
             statuses=statuses,
             is_urgent=is_urgent,
+            drawing_no=drawing_no,
+            name=name,
             keyword=keyword,
             order_no=order_no,
             serial_no=serial_no,
@@ -601,7 +613,11 @@ class PartRepository:
         customer_ids_in: list[int] | None,
         statuses: list[PartStatus] | None,
         is_urgent: bool | None,
-        keyword: str | None,
+        # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表的用法；
+        # keyword 保留作兼容其他端点（outsource picker 等）的 fallback。
+        drawing_no: str | None = None,
+        name: str | None = None,
+        keyword: str | None = None,
         order_no: str | None = None,
         serial_no: str | None = None,  # 2026-07-31：序列号独立搜索（ILIKE 包含）
         has_outsource_history: bool | None,
@@ -642,13 +658,22 @@ class PartRepository:
             )
         if is_urgent is not None:
             stmt = stmt.where(TPart.is_urgent.is_(is_urgent))
+        # 2026-08-20：图号 / 名称拆为两个独立 ILIKE 子串参数（替换原 keyword 在 /parts 列表的用法）。
+        # 两个参数同时设 ⇒ AND 联合（drawing_no ILIKE AND name ILIKE）。
+        # TODO: 后续把 %/_ 通配符转义（参考 repository/applicant.py:131-133）
+        if drawing_no:
+            dw = drawing_no.strip()
+            if dw:
+                stmt = stmt.where(TPart.drawing_no.ilike(f"%{dw}%"))
+        if name:
+            n = name.strip()
+            if n:
+                stmt = stmt.where(TPart.name.ilike(f"%{n}%"))
+        # 2026-08-20：keyword 保留为兼容其他端点（pending-programming / outsource picker 等），
+        # /parts 主路径不再使用。如果同时设 drawing_no/name + keyword，三个块都生效（AND 联合）。
         if keyword:
             kw = keyword.strip()
             if kw:
-                # 2026-08-11：drawing_no 与 name 都走子串包含（ilike '%kw%'），与前端
-                # "图号 / 名称（全模糊）" 一致。此前 name 用前缀是「减小回归面」的历史选择，
-                # 但实测用户经常输入名称片段搜中间字，导致搜不到——已无意义。
-                # TODO: 后续把 %/_ 通配符转义（参考 repository/applicant.py:131-133）
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"%{kw}%")

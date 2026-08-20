@@ -85,6 +85,17 @@ export interface ListPartsParams {
   customer_id?: string
   statuses?: OrderStatus[]
   is_urgent?: boolean
+  /**
+   * 2026-08-20：图号 / 名称拆为两个独立 ILIKE 子串参数（替换原 keyword 在 /parts 列表的用法）。
+   * 两个参数同时设 ⇒ AND 联合（drawing_no ILIKE AND name ILIKE）。
+   * keyword 字段由其他端点（pending-programming / outsource picker）继续使用。
+   */
+  drawing_no?: string
+  name?: string
+  /**
+   * 2026-08-20：原 /parts 列表主路径不再使用；保留供 listPendingProgramming / listOutsourceSendable
+   * 等其他端点继续使用（与后端 PartListQuery.keyword 兼容）。
+   */
   keyword?: string
   /** 2026-07-22：订单号独立搜索（ILIKE 包含 %kw%）。 */
   order_no?: string

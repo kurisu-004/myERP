@@ -282,6 +282,10 @@ class PartService:
                 statuses=query.statuses,
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
+                # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表路径；
+                # keyword 保留向下游 repo 透传（其他端点走 keyword fallback）。
+                drawing_no=query.drawing_no,
+                name=query.name,
                 order_no=query.order_no,
                 serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
@@ -306,6 +310,10 @@ class PartService:
                 statuses=query.statuses,
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
+                # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表路径；
+                # keyword 保留向下游 repo 透传（其他端点走 keyword fallback）。
+                drawing_no=query.drawing_no,
+                name=query.name,
                 order_no=query.order_no,
                 serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
@@ -337,6 +345,10 @@ class PartService:
                 statuses=query.statuses,
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
+                # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表路径；
+                # keyword 保留向下游 repo 透传（其他端点走 keyword fallback）。
+                drawing_no=query.drawing_no,
+                name=query.name,
                 order_no=query.order_no,
                 serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
@@ -362,6 +374,10 @@ class PartService:
                 statuses=query.statuses,
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
+                # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表路径；
+                # keyword 保留向下游 repo 透传（其他端点走 keyword fallback）。
+                drawing_no=query.drawing_no,
+                name=query.name,
                 order_no=query.order_no,
                 serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
@@ -424,6 +440,10 @@ class PartService:
                     statuses=assembly_statuses,
                     is_urgent=query.is_urgent,
                     keyword=query.keyword,
+                    # 2026-08-20：drawing_no / name 替代 keyword 在装配列表路径；
+                    # keyword 保留向下游 repo 透传。
+                    drawing_no_like=query.drawing_no,
+                    name_like=query.name,
                     order_no_like=query.order_no,
                     serial_no_like=query.serial_no,
                     request_date_from=query.request_date_from,
@@ -451,6 +471,10 @@ class PartService:
                     statuses=assembly_statuses,
                     is_urgent=query.is_urgent,
                     keyword=query.keyword,
+                    # 2026-08-20：drawing_no / name 替代 keyword 在装配列表路径；
+                    # keyword 保留向下游 repo 透传。
+                    drawing_no_like=query.drawing_no,
+                    name_like=query.name,
                     order_no_like=query.order_no,
                     serial_no_like=query.serial_no,
                     request_date_from=query.request_date_from,
@@ -488,6 +512,10 @@ class PartService:
                 statuses=query.statuses,
                 is_urgent=query.is_urgent,
                 keyword=query.keyword,
+                # 2026-08-20：drawing_no / name 替代 keyword 在 /parts 列表路径；
+                # keyword 保留向下游 repo 透传（其他端点走 keyword fallback）。
+                drawing_no=query.drawing_no,
+                name=query.name,
                 order_no=query.order_no,
                 serial_no=query.serial_no,
                 has_outsource_history=query.has_outsource_history,
