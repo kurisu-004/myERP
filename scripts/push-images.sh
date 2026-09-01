@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # ----------------------------------------------------------------------------
-# 本地构建并推送 myERP 前后端镜像到腾讯云 TCR
+# 本地构建并推送 myERP backend 镜像到腾讯云 TCR
+#
+# ⚠️ 本脚本只推 backend。前端镜像已迁出到独立仓库 ~/Code/frontend，
+#    前端构建/推送请走 frontend/scripts/push-frontend.sh。
+#
 # 用法:
 #   ./scripts/push-images.sh                        # 推 prod- 前缀,打 SHA + latest
 #   TAG_PREFIX=staging ./scripts/push-images.sh
@@ -35,29 +39,27 @@ REGISTRY_HOST="$(echo "$DOCKER_REPO" | cut -d/ -f1)"
 if [ -n "${VERSION:-}" ]; then
   TAGS=("$VERSION")
   echo "==> 仓库: $DOCKER_REPO"
-  echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend / $TAG_PREFIX-frontend)"
+  echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend)"
   echo "==> 发布版本: $VERSION  (Git SHA: $SHA, 只打 $VERSION tag)"
 else
   TAGS=("$SHA" "latest")
   echo "==> 仓库: $DOCKER_REPO"
-  echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend / $TAG_PREFIX-frontend)"
+  echo "==> 标签前缀: $TAG_PREFIX  (镜像: $TAG_PREFIX-backend)"
   echo "==> Git SHA: $SHA  (打 SHA + latest 两个 tag)"
 fi
 echo
 
-echo "==> 1/4 登录 TCR ($REGISTRY_HOST)"
+echo "==> 1/3 登录 TCR ($REGISTRY_HOST)"
 echo "$DOCKER_PASSWORD" | docker login "$REGISTRY_HOST" -u "$DOCKER_USERNAME" --password-stdin
 
 # 把所有 tag 拼成 docker build 的 -t 参数
 BACKEND_TAG_ARGS=()
-FRONTEND_TAG_ARGS=()
 for t in "${TAGS[@]}"; do
   BACKEND_TAG_ARGS+=("-t" "$DOCKER_REPO/$TAG_PREFIX-backend:$t")
-  FRONTEND_TAG_ARGS+=("-t" "$DOCKER_REPO/$TAG_PREFIX-frontend:$t")
 done
 
 echo
-echo "==> 2/4 构建 backend  ($TAG_PREFIX-backend:${TAGS[*]})"
+echo "==> 2/3 构建 backend  ($TAG_PREFIX-backend:${TAGS[*]})"
 # --platform linux/amd64：Mac Apple Silicon 本地 build 默认出 arm64，
 # CVM 是 amd64，必须显式指定。push 之后 CVM 才能正常拉取。
 docker build \
@@ -68,19 +70,9 @@ docker build \
   .
 
 echo
-echo "==> 3/4 构建 frontend ($TAG_PREFIX-frontend:${TAGS[*]})"
-docker build \
-  --platform linux/amd64 \
-  "${FRONTEND_TAG_ARGS[@]}" \
-  --label "org.opencontainers.image.revision=$SHA" \
-  --label "org.opencontainers.image.source=$(git config --get remote.origin.url 2>/dev/null || echo 'local')" \
-  ./frontend
-
-echo
-echo "==> 4/4 推送 tag 到 TCR"
+echo "==> 3/3 推送 tag 到 TCR"
 for t in "${TAGS[@]}"; do
   docker push "$DOCKER_REPO/$TAG_PREFIX-backend:$t"
-  docker push "$DOCKER_REPO/$TAG_PREFIX-frontend:$t"
 done
 
 echo
@@ -91,5 +83,4 @@ echo
 echo "✓ 推送完成"
 for t in "${TAGS[@]}"; do
   echo "  - $DOCKER_REPO/$TAG_PREFIX-backend:$t"
-  echo "  - $DOCKER_REPO/$TAG_PREFIX-frontend:$t"
 done

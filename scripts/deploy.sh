@@ -23,18 +23,20 @@ COMPOSE="docker compose --env-file $ENV_FILE"
 if [ -f "$ENV_FILE" ]; then
   while IFS='=' read -r key val; do
     case "$key" in
-      DOCKER_USERNAME|DOCKER_PASSWORD|DOCKER_REPO|FRONTEND_PORT|IMAGE_TAG)
+      DOCKER_USERNAME|DOCKER_PASSWORD|DOCKER_REPO|FRONTEND_PORT|BACKEND_IMAGE_TAG|RUST_BACKEND_IMAGE_TAG|FRONTEND_IMAGE_TAG)
         if [ -z "${!key:-}" ]; then
           export "$key=$val"
         fi
         ;;
     esac
-  done < <(grep -E '^(DOCKER_USERNAME|DOCKER_PASSWORD|DOCKER_REPO|FRONTEND_PORT|IMAGE_TAG)=' "$ENV_FILE" || true)
+  done < <(grep -E '^(DOCKER_USERNAME|DOCKER_PASSWORD|DOCKER_REPO|FRONTEND_PORT|BACKEND_IMAGE_TAG|RUST_BACKEND_IMAGE_TAG|FRONTEND_IMAGE_TAG)=' "$ENV_FILE" || true)
 fi
 
 echo "==> 当前部署目录: $(pwd)"
 echo "==> 环境文件:     $ENV_FILE"
-echo "==> IMAGE_TAG:    ${IMAGE_TAG:-latest}"
+echo "==> BACKEND_IMAGE_TAG:     ${BACKEND_IMAGE_TAG:-latest}"
+echo "==> RUST_BACKEND_IMAGE_TAG:${RUST_BACKEND_IMAGE_TAG:-latest}"
+echo "==> FRONTEND_IMAGE_TAG:    ${FRONTEND_IMAGE_TAG:-latest}"
 echo
 
 # 确认 TCR 登录
