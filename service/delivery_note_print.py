@@ -40,6 +40,12 @@
   ≈ 8.1 单位，覆盖实测最长 ``12月31日`` 8 单位内容；列宽 <8 单位时走 Excel
   默认截断（col 9 未列入 ``shrink_fit_cols``）。
 
+2026-09-02 交期列改取订单方系统交期：
+- 两模板 col 9「预估交期」字段值从 ``planned_delivery_date``（我方计划交期）
+  切到 ``system_delivery_date``（订单方系统内部交期）。``PrintRow`` 字段同步
+  改名；散件 / 装配体合并行的取值切换。``system_delivery_date`` 为空则
+  留空（不回退到 ``planned_delivery_date``——这是刻意行为，避免两份交期混淆）。
+
 模板字段含义（service 层不读，但供维护参考）：
 - 法拉（`template/delivery_note_fala.xlsx`，Sheet 'Sheet1'）：
   2026-07-24 换新模板（洪升宏 26.7.24），单份最多 10 行。
@@ -104,7 +110,7 @@ class PrintRow:
     name: str = ""
     quantity: int = 0
     unit: str = "件"  # 散件="件"；装配体合并行="套"
-    planned_delivery_date: Any = None
+    system_delivery_date: Any = None  # 2026-09-02：交期列改取订单方系统交期，NULL 留空
     note: str = ""
     customer_name: str = ""  # 法拉 col 3（L2 客户名）
 
@@ -189,7 +195,7 @@ TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
             CellBinding(7, "row.quantity"),
             # 2026-08-04：col 8 从 const "件" 改为按行取 unit（散件「件」/装配体「套」）
             CellBinding(8, "row_unit"),
-            CellBinding(9, "row.planned_delivery_date"),
+            CellBinding(9, "row.system_delivery_date"),
             CellBinding(10, "row.note"),
         ),
         page_setup=PageSetupSpec(
@@ -236,7 +242,7 @@ TEMPLATE_CONFIGS: dict[str, TemplateConfig] = {
             CellBinding(6, "row.quantity"),
             CellBinding(7, "const", const_value=""),
             CellBinding(8, "const", const_value=""),
-            CellBinding(9, "row.planned_delivery_date"),
+            CellBinding(9, "row.system_delivery_date"),
         ),
         page_setup=PageSetupSpec(
             paper_size=9,  # A4（保持模板原纸张）
@@ -688,7 +694,7 @@ class DeliveryNotePrintService:
                     name=p.name or "",
                     quantity=qty_by_part[p.id],  # 折叠后即求和；未折叠时等于 b.quantity
                     unit="件",
-                    planned_delivery_date=_format_print_date(p.planned_delivery_date),
+                    system_delivery_date=_format_print_date(p.system_delivery_date),
                     note=p.note or "",
                     customer_name=leaf_name_of_part.get(p.id, ""),
                 ),
@@ -724,7 +730,7 @@ class DeliveryNotePrintService:
                     # 2026-08-04 扩展：merge_quantities 按 assembly_id override 套数
                     quantity=(merge_quantities or {}).get(asm_id, 1),
                     unit="套",
-                    planned_delivery_date=_format_print_date(asm.planned_delivery_date),
+                    system_delivery_date=_format_print_date(asm.system_delivery_date),
                     note="",
                     customer_name=cust_name,
                 ),

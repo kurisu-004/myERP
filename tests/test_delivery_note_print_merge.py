@@ -51,8 +51,14 @@ async def _make_assembly(
     name: str = "装配件A",
     applicant_name: str = "总装测试员",
     planned_delivery_date: date | None = date(2026, 7, 30),
+    system_delivery_date: date | None = date(2026, 8, 5),
 ) -> TAssembly:
-    """直接构造一个 PENDING 状态的装配件（绕过 AssemblyService.create_assembly）。"""
+    """直接构造一个 PENDING 状态的装配件（绕过 AssemblyService.create_assembly）。
+
+    2026-09-02 新增 ``system_delivery_date`` 参数（默认非空，让 col I 列宽
+    测试仍有真实内容参与测量）；保持 ``planned_delivery_date`` 既有默认，
+    调用方可独立覆盖两个字段做对照。
+    """
     a = TAssembly(
         serial_no=serial_no,
         drawing_no=drawing_no,
@@ -61,6 +67,7 @@ async def _make_assembly(
         customer_id=customer_id,
         request_date=date(2026, 7, 1),
         planned_delivery_date=planned_delivery_date,
+        system_delivery_date=system_delivery_date,
         status=AssemblyStatus.PENDING.value,
     )
     session.add(a)
@@ -76,8 +83,13 @@ async def _make_part_with_assembly(
     serial_no: str,
     drawing_no: str,
     name: str | None = None,
+    system_delivery_date: date | None = date(2026, 7, 25),
 ) -> TPart:
-    """构造一个挂在指定装配件下的子件 part（带 root_batch）。"""
+    """构造一个挂在指定装配件下的子件 part（带 root_batch）。
+
+    2026-09-02 新增 ``system_delivery_date`` 参数；默认非空，
+    调用方传 ``None`` 模拟未填系统交期。
+    """
     p = TPart(
         serial_no=serial_no,
         drawing_no=drawing_no,
@@ -86,6 +98,7 @@ async def _make_part_with_assembly(
         quantity=2,
         request_date=date(2026, 7, 1),
         planned_delivery_date=date(2026, 7, 30),
+        system_delivery_date=system_delivery_date,
         order_no="ON-2026-001",
         customer_id=customer_id,
         status=PartStatus.READY_TO_SHIP.value,
@@ -105,8 +118,13 @@ async def _make_loose_part(
     serial_no: str,
     drawing_no: str,
     note: str | None = None,
+    system_delivery_date: date | None = date(2026, 7, 25),
 ) -> TPart:
-    """无装配体的散件 part。"""
+    """无装配体的散件 part。
+
+    2026-09-02 新增 ``system_delivery_date`` 参数；默认非空，
+    调用方传 ``None`` 模拟未填系统交期。
+    """
     p = TPart(
         serial_no=serial_no,
         drawing_no=drawing_no,
@@ -115,6 +133,7 @@ async def _make_loose_part(
         quantity=2,
         request_date=date(2026, 7, 1),
         planned_delivery_date=date(2026, 7, 30),
+        system_delivery_date=system_delivery_date,
         order_no="ON-2026-002",
         customer_id=customer_id,
         status=PartStatus.READY_TO_SHIP.value,
@@ -1457,11 +1476,16 @@ async def test_print_labels_xlsx_same_part_split_batches_merge(clean_db):
 
 # ============================================================
 # 2026-08-07：打印交期列格式「M月D日」（无前导零）
+# 2026-09-02：来源改为系统交期（t_part.system_delivery_date / t_assembly.system_delivery_date）；
+#   NULL 时留空，不再回退到 planned_delivery_date。
 # ============================================================
-async def test_print_xlsx_loose_part_planned_delivery_date_format(clean_db):
-    """散件行的预估交期列应为「M月D日」格式（无前导零）。
+async def test_print_xlsx_loose_part_system_delivery_date_format(clean_db):
+    """散件行的交期列应取 ``t_part.system_delivery_date``（2026-09-02 改来源）。
 
-    _make_loose_part 设的日期是 date(2026, 7, 30) → 期望 "7月30日"。
+    _make_loose_part 默认 ``system_delivery_date=date(2026, 7, 25)``
+    而 ``planned_delivery_date=date(2026, 7, 30)``——两者刻意不同：
+    断言 col 9 == "7月25日"（系统交期），并追加 ``!= "7月30日"`` 证明
+    计划交期未泄漏到打印列。
     """
     customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
     loose = await _make_loose_part(
@@ -1478,19 +1502,30 @@ async def test_print_xlsx_loose_part_planned_delivery_date_format(clean_db):
 
     xlsx_bytes, _ = await note_svc.print_xlsx(note_id=str(note.id))
     ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
-    # 法拉模板 col 9 = 交期
-    assert ws.cell(row=3, column=9).value == "7月30日", (
-        f"交期列应为 '7月30日'，实际 {ws.cell(row=3, column=9).value!r}"
+    # 法拉模板 col 9 = 系统交期（2026-09-02 起改）
+    assert ws.cell(row=3, column=9).value == "7月25日", (
+        f"系统交期列应为 '7月25日'，实际 {ws.cell(row=3, column=9).value!r}"
+    )
+    # 反向断言：确认打印列没有回退到 planned_delivery_date（"7月30日"）
+    assert ws.cell(row=3, column=9).value != "7月30日", (
+        "系统交期列不应回退到 planned_delivery_date=7月30日——"
+        f"实际 {ws.cell(row=3, column=9).value!r}"
     )
 
 
-async def test_print_xlsx_assembly_merge_planned_delivery_date_format(clean_db):
-    """装配件合并行的交期列同样应用「M月D日」格式。"""
+async def test_print_xlsx_assembly_merge_system_delivery_date_format(clean_db):
+    """装配件合并行的交期列同样应取 ``t_assembly.system_delivery_date``。
+
+    装配体两个字段刻意不同：
+    ``planned_delivery_date=date(2026, 8, 12)``、
+    ``system_delivery_date=date(2026, 8, 5)``——后者才是打印列的来源。
+    """
     customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
     asm = await _make_assembly(
         clean_db, customer_id=customer.id,
         serial_no="A7201", drawing_no="DA-7201", name="装配件E",
         planned_delivery_date=date(2026, 8, 12),
+        system_delivery_date=date(2026, 8, 5),
     )
     child = await _make_part_with_assembly(
         clean_db, customer_id=customer.id, assembly_id=asm.id,
@@ -1508,7 +1543,73 @@ async def test_print_xlsx_assembly_merge_planned_delivery_date_format(clean_db):
         note_id=str(note.id), merge_assemblies=True,
     )
     ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
-    # 装配件合并行：交期取自 asm.planned_delivery_date（8月12日）
-    assert ws.cell(row=3, column=9).value == "8月12日", (
-        f"合并行交期应为 '8月12日'，实际 {ws.cell(row=3, column=9).value!r}"
+    # 装配件合并行：交期取自 asm.system_delivery_date（8月5日）
+    assert ws.cell(row=3, column=9).value == "8月5日", (
+        f"合并行系统交期应为 '8月5日'，实际 {ws.cell(row=3, column=9).value!r}"
+    )
+
+
+async def test_print_xlsx_system_delivery_date_null_leaves_blank(clean_db):
+    """散件 ``system_delivery_date`` 为 NULL → 打印列留空（不再回退到计划交期）。
+
+    planned_delivery_date 固定 ``date(2026, 7, 30)``（"7月30日"），
+    系统交期刻意传 ``None``；openpyxl 读出 ``None`` 即为留空。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    loose = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FNUL1", drawing_no="D-FNUL1",
+        system_delivery_date=None,
+    )
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(loose)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    # 2026-09-02 起 system_delivery_date=NULL → 该单元格留空；不得回退到 planned。
+    val = ws.cell(row=3, column=9).value
+    assert val is None, (
+        "系统交期为空必须留空，且不得回退到计划交期——"
+        f"实际 col 9 = {val!r}（planned_delivery_date=7月30日）"
+    )
+
+
+async def test_print_xlsx_assembly_merge_system_delivery_date_null_leaves_blank(clean_db):
+    """装配件合并行：``system_delivery_date`` NULL → 打印列也留空。
+
+    planned_delivery_date 固定 ``date(2026, 8, 12)``（"8月12日"），
+    系统交期传 ``None``；同样不应回退。
+    """
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="ANUL1", drawing_no="DA-NUL1", name="装配件NUL",
+        planned_delivery_date=date(2026, 8, 12),
+        system_delivery_date=None,
+    )
+    child = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="FNUL2", drawing_no="D-FNUL2",
+    )
+    note_svc = _make_service(clean_db)
+    note = await note_svc.create_draft(customer_id=str(customer.id))
+    await note_svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(child)],
+        version=note.version,
+    )
+
+    xlsx_bytes, _ = await note_svc.print_xlsx(
+        note_id=str(note.id), merge_assemblies=True,
+    )
+    ws = load_workbook(io.BytesIO(xlsx_bytes))["Sheet1"]
+    val = ws.cell(row=3, column=9).value
+    assert val is None, (
+        "装配体合并行系统交期为空必须留空，且不得回退到计划交期——"
+        f"实际 col 9 = {val!r}（planned_delivery_date=8月12日）"
     )
