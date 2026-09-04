@@ -712,7 +712,11 @@ async def test_print_xlsx_planned_delivery_date_fits(clean_db):
 
 
 async def test_print_labels_xlsx_layout_unchanged(clean_db):
-    """render_labels 仍走旧的 _autosize_columns；不应被送货单的新逻辑波及。"""
+    """render_labels 仍走旧的 _autosize_columns；不应被送货单的新逻辑波及。
+
+    2026-09-04：表头插入「订单号」列（col 2），数量 / 单位列右移到 col 6/7，
+    列宽仍固定 8。
+    """
     customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
     p = await _make_loose_part(
         clean_db, customer_id=customer.id,
@@ -727,13 +731,64 @@ async def test_print_labels_xlsx_layout_unchanged(clean_db):
     labels_bytes, _ = await svc.print_labels_xlsx(note_id=str(note.id))
     ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
 
-    # 旧行为：数量 / 单位列固定 8 字符宽
-    assert ws.column_dimensions["E"].width == 8
+    # 数量 / 单位列固定 8 字符宽（2026-09-04 起位于 col 6 / col 7）
     assert ws.column_dimensions["F"].width == 8
+    assert ws.column_dimensions["G"].width == 8
     # 标签表不做页面设置（明确不在本次范围内）
     assert ws.sheet_properties.pageSetUpPr is None or (
         ws.sheet_properties.pageSetUpPr.fitToPage is None
     )
+
+
+# ============================================================
+# 2026-09-04：render_labels 表头新增「订单号」列（col 2），散件取 p.order_no，
+# 装配件合并行取 asm.order_no。
+# ============================================================
+async def test_print_labels_xlsx_includes_order_no(clean_db):
+    """render_labels 表头插入「订单号」（col 2），散件行 / 装配件合并行各自取
+    part.order_no / assembly.order_no。"""
+    customer = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    loose = await _make_loose_part(
+        clean_db, customer_id=customer.id,
+        serial_no="FB001", drawing_no="D-FB001",
+    )
+    loose.order_no = "ON-LBL-001"
+    await clean_db.flush()
+
+    asm = await _make_assembly(
+        clean_db, customer_id=customer.id,
+        serial_no="AB001", drawing_no="DA-B001", name="装配件标签",
+    )
+    asm.order_no = "ON-LBL-ASM-002"
+    await clean_db.flush()
+    child = await _make_part_with_assembly(
+        clean_db, customer_id=customer.id, assembly_id=asm.id,
+        serial_no="FB002", drawing_no="D-FB002",
+    )
+
+    svc = _make_service(clean_db)
+    note = await svc.create_draft(customer_id=str(customer.id))
+    await svc.add_parts(
+        note_id=str(note.id),
+        items=[_item(loose), _item(child)],
+        version=note.version,
+    )
+
+    labels_bytes, _ = await svc.print_labels_xlsx(note_id=str(note.id))
+    ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
+
+    # 1) 表头：col 2 = "订单号"，col 6 = "数量"，col 7 = "单位"
+    headers = [ws.cell(row=1, column=c).value for c in range(1, 8)]
+    assert headers == ["客户", "订单号", "申请人", "名称", "图号", "数量", "单位"]
+
+    # 2) 数据行：merge_assemblies 默认 True → 装配件子件合并为 1 行；
+    #    数据共 2 行（散件 1 + 合并 1）；col 2 应出现两个目标值，不依赖具体行号
+    actual_order_nos = {
+        ws.cell(row=r, column=2).value
+        for r in range(2, ws.max_row + 1)
+        if ws.cell(row=r, column=2).value
+    }
+    assert actual_order_nos == {"ON-LBL-001", "ON-LBL-ASM-002"}
 
 
 # ============================================================
@@ -868,7 +923,8 @@ async def test_print_labels_line_item_ids_subset(clean_db):
     assert ws.max_row == 3, (
         f"应只生成 2 行数据 + 1 表头 = 3，实际 {ws.max_row}"
     )
-    drawing_values = [ws.cell(row=r, column=4).value for r in (2, 3)]
+    # 2026-09-04：图号列右移到 col 5（订单号插到 col 2）
+    drawing_values = [ws.cell(row=r, column=5).value for r in (2, 3)]
     assert drawing_values == ["D-FA001", "D-FA003"], (
         f"应只含 D-FA001 + D-FA003，实际 {drawing_values!r}"
     )
@@ -909,9 +965,10 @@ async def test_print_labels_line_item_ids_preserves_custom_order(clean_db):
     )
     ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
     # 行 2 = p3, 行 3 = p2, 行 4 = p1
-    assert ws.cell(row=2, column=4).value == "D-FB003"
-    assert ws.cell(row=3, column=4).value == "D-FB002"
-    assert ws.cell(row=4, column=4).value == "D-FB001"
+    # 2026-09-04：图号列右移到 col 5（订单号插到 col 2）
+    assert ws.cell(row=2, column=5).value == "D-FB003"
+    assert ws.cell(row=3, column=5).value == "D-FB002"
+    assert ws.cell(row=4, column=5).value == "D-FB001"
 
 
 async def test_print_labels_line_item_ids_unknown_raises(clean_db):
@@ -1008,10 +1065,10 @@ async def test_print_labels_line_item_ids_merged_assembly(clean_db):
     )
     ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
     assert ws.max_row == 2, f"应 1 表头 + 1 合并行 = 2，实际 {ws.max_row}"
-    # 合并行 unit = "套"
-    assert ws.cell(row=2, column=6).value == "套"
-    # 合并行 drawing_no = 装配件 drawing_no
-    assert ws.cell(row=2, column=4).value == "DA-8801"
+    # 合并行 unit = "套"（2026-09-04：unit 列右移到 col 7）
+    assert ws.cell(row=2, column=7).value == "套"
+    # 合并行 drawing_no = 装配件 drawing_no（2026-09-04：图号列右移到 col 5）
+    assert ws.cell(row=2, column=5).value == "DA-8801"
 
 
 async def test_print_labels_line_item_ids_none_legacy_behavior(clean_db):
@@ -1042,7 +1099,8 @@ async def test_print_labels_line_item_ids_none_legacy_behavior(clean_db):
     ws = load_workbook(io.BytesIO(labels_bytes))["标签"]
     # 2 散件全打
     assert ws.max_row == 3
-    assert ws.column_dimensions["E"].width == 8  # 旧行为：数量列固定 8
+    # 2026-09-04：新增 col 2 订单号后，数量列右移到 col 6，仍固定 8 字符宽
+    assert ws.column_dimensions["F"].width == 8  # 旧行为：数量列固定 8
 
 
 # ============================================================
@@ -1468,10 +1526,10 @@ async def test_print_labels_xlsx_same_part_split_batches_merge(clean_db):
     assert ws.max_row == 2, (
         f"折叠后应 1 数据行（max_row=2），实际 max_row={ws.max_row}"
     )
-    # 数量列 (col 5) = 2
-    assert ws.cell(row=2, column=5).value == 2
-    # 单位列 (col 6) = "件"
-    assert ws.cell(row=2, column=6).value == "件"
+    # 数量列 (col 6) = 2；2026-09-04 起 col 2 是订单号，数量列右移到 col 6
+    assert ws.cell(row=2, column=6).value == 2
+    # 单位列 (col 7) = "件"
+    assert ws.cell(row=2, column=7).value == "件"
 
 
 # ============================================================

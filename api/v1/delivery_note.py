@@ -430,7 +430,7 @@ async def print_delivery_note(
     "/{note_id}/print-labels",
     summary=(
         "导出打印标签 XLSX（2026-08-05 新增；与 /print 配对触发两次下载，"
-        "表头 客户/申请人/名称/图号/数量/单位；行口径与送货单完全一致）"
+        "表头 客户/订单号/申请人/名称/图号/数量/单位；行口径与送货单完全一致）"
     ),
     dependencies=_OFFICE_DEP,
 )

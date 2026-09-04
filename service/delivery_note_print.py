@@ -617,22 +617,27 @@ class DeliveryNotePrintService:
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.title = "标签"
-            headers = ["客户", "申请人", "名称", "图号", "数量", "单位"]
+            # 2026-09-04：新增「订单号」列（col 2，紧贴客户列），与送货单 F/L 模板
+            # col 2 = 订单号的视觉位置对齐；PrintRow.order_no 已在 _build_print_rows 填好
+            # （散件取 p.order_no，装配件合并行取 asm.order_no）。
+            headers = ["客户", "订单号", "申请人", "名称", "图号", "数量", "单位"]
             for c, h in enumerate(headers, start=1):
                 ws.cell(row=1, column=c, value=h).font = Font(bold=True)
             for r, pr in enumerate(print_rows, start=2):
                 ws.cell(row=r, column=1, value=pr.customer_name)
-                ws.cell(row=r, column=2, value=pr.applicant_name)
-                ws.cell(row=r, column=3, value=pr.name)
-                ws.cell(row=r, column=4, value=pr.drawing_no)
-                ws.cell(row=r, column=5, value=pr.quantity)
-                ws.cell(row=r, column=6, value=pr.unit)
-            # 列宽：客户/名称/图号/申请人留宽；数量/单位固定窄列
+                ws.cell(row=r, column=2, value=pr.order_no)
+                ws.cell(row=r, column=3, value=pr.applicant_name)
+                ws.cell(row=r, column=4, value=pr.name)
+                ws.cell(row=r, column=5, value=pr.drawing_no)
+                ws.cell(row=r, column=6, value=pr.quantity)
+                ws.cell(row=r, column=7, value=pr.unit)
+            # 列宽：客户/订单号/申请人/名称/图号留宽（订单号列长可至 30 字符，wide_max=60 够用）；
+            # 数量/单位固定窄列（现为 col 6/7）。
             _autosize_columns(
                 ws,
-                max_col=6,
-                fixed_cols={5: 8, 6: 8},
-                wide_cols={1, 2, 3, 4},
+                max_col=7,
+                fixed_cols={6: 8, 7: 8},
+                wide_cols={1, 2, 3, 4, 5},
                 wide_max=60,
             )
             buf = io.BytesIO()
