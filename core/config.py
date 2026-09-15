@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     auto_complete_interval_hours: int = Field(
         default=24, alias="AUTO_COMPLETE_INTERVAL_HOURS", ge=1,
     )
+    # 2026-09-15 Phase 6 新增：lifespan 是否 spawn Python auto_complete_loop。
+    # 默认 True（本地开发向后兼容）；生产 / staging 部署应设 False，
+    # 避免与 Rust 后台（backend-rust/src/task/auto_complete.rs）双跑导致
+    # 同一批次被推两次 COMPLETED、重复写 actual_delivery_date / WS 广播。
+    auto_complete_enabled: bool = Field(
+        default=True, alias="PYTHON_AUTO_COMPLETE_ENABLED",
+        description="是否在 lifespan 启动 auto_complete_loop；Phase 6 起由 Rust 接管,生产应设为 false",
+    )
 
 
 settings = Settings()
