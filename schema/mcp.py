@@ -60,9 +60,9 @@ class McpBatchItem(BaseModel):
     next_process_name: str | None = Field(
         default=None, description="下一道待执行工序的名称；无待执行工序时为 null"
     )
-    has_been_repaired: bool = Field(
-        default=False, description="该批次是否经历过返修"
-    )
+    # 2026-09-16 删除 `has_been_repaired` 输出字段（t_part 瘦身，Rust 迁移 027）：
+    # 返修标识无法归属到具体批次整体废弃；返修轨迹请读 events 里的
+    # REPAIR_STARTED / REPAIR_COMPLETED。
     placed_at: datetime | None = Field(
         default=None, description="进入当前位置的时间；据此可判断压了多久"
     )
@@ -146,8 +146,10 @@ class McpDueRow(BaseModel):
     location_summary: str | None = Field(
         default=None,
         description=(
-            "工单层面的位置人话描述（rollup 自最落后的批次）。多批次分散在不同位置时"
-            "这个字段只反映其中一处，要完整信息请读 `batches`"
+            "工单层面的位置人话描述，2026-09-16 起改为从「最落后」的活跃批次派生"
+            "（工单自身的 location/holder 列已随 t_part 瘦身删除）。"
+            "多批次分散在不同位置时这个字段只反映其中一处，要完整信息请读 `batches`；"
+            "无活跃批次（全部完成/取消）时为 null"
         ),
     )
 
@@ -205,13 +207,18 @@ class McpPartDetail(BaseModel):
     quantity: int = Field(description="工单总件数")
     status: str = Field(description="工单状态（rollup 自最落后的活跃批次）")
     location_summary: str | None = Field(
-        default=None, description="工单层面的位置人话描述"
+        default=None,
+        description=(
+            "工单层面的位置人话描述，2026-09-16 起改为从「最落后」的活跃批次派生"
+            "（工单自身的 location/holder 列已随 t_part 瘦身删除）；"
+            "无活跃批次（全部完成/取消）时为 null"
+        ),
     )
     system_delivery_date: date | None = Field(default=None, description="系统交期")
     planned_delivery_date: date | None = Field(default=None, description="计划交期")
-    actual_delivery_date: date | None = Field(
-        default=None, description="实际送达日期；未送货时为 null"
-    )
+    # 2026-09-16 删除 `actual_delivery_date` 输出字段（t_part 瘦身，Rust 迁移 027）：
+    # 工单级实际送达日期列已删；是否送达请读 status / all_batches[].status，
+    # 送达时间请查 events 里的 STATUS_CHANGED(→DELIVERED)。
     order_no: str | None = Field(default=None, description="客户订单号")
     note: str | None = Field(default=None, description="工单备注")
     customer_path: str | None = Field(

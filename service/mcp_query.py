@@ -59,6 +59,22 @@ _TERMINAL_BATCH_STATUSES = frozenset({
     PartStatus.CANCELLED.value,
 })
 
+# 2026-09-16 t_part 瘦身（Rust 迁移 027）：工单级 location / current_holder_id
+# 列已删，part 级 `location_summary` 改为从「最落后」的活跃批次派生。
+# 进度序与 `service/_batch_ops.py::ROLLUP_PROGRESS` 保持一致
+# （IN_PROCESS 与 REPAIRING 同级，并列时取 batch_no 小者）；
+# 活跃 = 非 COMPLETED 非 CANCELLED。数据与 batches 数组同源，不加新查询。
+_BATCH_PROGRESS: dict[str, int] = {
+    "PENDING": 0,
+    "PROGRAMMING": 1,
+    "IN_PROCESS": 2,
+    "REPAIRING": 2,
+    "OUTSOURCE": 3,
+    "INSPECTION": 4,
+    "READY_TO_SHIP": 5,
+    "DELIVERED": 6,
+}
+
 _EVENT_LIMIT = 50
 
 
@@ -177,12 +193,10 @@ class McpQueryService:
             name=part.name,
             quantity=part.quantity,
             status=part.status,
-            location_summary=self._holder_display(
-                part.location, part.current_holder_id, ctx,
-            ),
+            # 2026-09-16：工单 location/holder 列已删，改由最落后活跃批次派生。
+            location_summary=self._part_location_summary(all_batches, ctx),
             system_delivery_date=part.system_delivery_date,
             planned_delivery_date=part.planned_delivery_date,
-            actual_delivery_date=part.actual_delivery_date,
             order_no=part.order_no,
             note=part.note,
             customer_path=ctx["customer_path"].get(part.id),
@@ -293,11 +307,14 @@ class McpQueryService:
             batches_by_part.setdefault(int(b.part_id), []).append(b)
 
         # holder 是多态列，得先按 location 分流才知道该去哪张表查。
+        # 2026-09-16 t_part 瘦身：工单级 location / current_holder_id 列已删，
+        # holder / next_process 的解析只遍历批次（part 级 location_summary
+        # 也从批次派生，见 _part_location_summary），不再读 TPart 的同名字段。
         shelf_ids: set[int] = set()
         worker_ids: set[int] = set()
         company_ids: set[int] = set()
         process_ids: set[int] = set()
-        for holder in [*rows, *batches]:
+        for holder in batches:
             self._collect_holder_id(holder, shelf_ids, worker_ids, company_ids)
             if holder.next_process_id:
                 process_ids.add(int(holder.next_process_id))
@@ -404,15 +421,41 @@ class McpQueryService:
             next_process_name=(
                 ctx["process"].get(int(b.next_process_id)) if b.next_process_id else None
             ),
-            has_been_repaired=bool(b.has_been_repaired),
             placed_at=b.placed_at,
         )
 
+    def _part_location_summary(
+        self, batches: list[TPartBatch], ctx: dict,
+    ) -> str | None:
+        """part 级 location_summary 的 2026-09-16 派生口径：
+
+        t_part 瘦身后工单自身没有 location / holder 列，改为取「最落后」的
+        **活跃**批次（非 COMPLETED 非 CANCELLED 中按 `_BATCH_PROGRESS` 最小，
+        并列取 batch_no 小者——与 `_batch_ops.ROLLUP_PROGRESS` 的工单 rollup
+        规则一致），渲染它的 location + holder。无活跃批次 → None。
+
+        传入的 batches 与各行 `batches` 数组同源（不加新查询）。
+        """
+        active = [b for b in batches if b.status not in _TERMINAL_BATCH_STATUSES]
+        if not active:
+            return None
+        least = min(
+            active,
+            key=lambda b: (_BATCH_PROGRESS.get(b.status, 0), b.batch_no),
+        )
+        return self._holder_display(least.location, least.current_holder_id, ctx)
+
     def _to_row(self, p: TPart, ctx: dict) -> McpDueRow:
-        batches = [
-            self._to_batch(b, ctx, serial_no=p.serial_no)
+        # 2026-09-16：活跃批次（非终态）既是 batches 数组的数据源，
+        # 也是 part 级 location_summary 的派生来源——保证两者口径一致。
+        active_batches = [
+            b
             for b in ctx["batches_by_part"].get(p.id, [])
             if b.status not in _TERMINAL_BATCH_STATUSES
+        ]
+        batches = [
+            self._to_batch(b, ctx, serial_no=p.serial_no)
+            for b in active_batches
         ]
         return McpDueRow(
             row_type="PART",
@@ -428,7 +471,7 @@ class McpQueryService:
             customer_path=ctx["customer_path"].get(p.id),
             applicant_name=p.applicant_name,
             is_urgent=bool(p.is_urgent),
-            location_summary=self._holder_display(p.location, p.current_holder_id, ctx),
+            location_summary=self._part_location_summary(active_batches, ctx),
             batches=batches,
             drawing=ctx["drawing"].get(p.id),
         )

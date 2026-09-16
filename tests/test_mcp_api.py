@@ -66,7 +66,7 @@ def _mk_part(
     is_urgent: bool = False,
     quantity: int = 10,
 ) -> TPart:
-    return TPart(
+    part = TPart(
         serial_no=serial_no,
         name=name,
         drawing_no=f"DWG-{serial_no}",
@@ -76,12 +76,17 @@ def _mk_part(
         planned_delivery_date=TOMORROW,
         system_delivery_date=system_delivery_date,
         status=status,
-        location=location,
-        current_holder_id=holder_id,
         customer_id=customer_id,
         assembly_id=assembly_id,
         is_urgent=is_urgent,
     )
+    # 2026-09-16 t_part 瘦身（Rust 迁移 027）：location / current_holder_id
+    # 已从 t_part 删除，不再是合法构造 kwarg。这里以 transient 属性挂在实例上，
+    # 仅供 seed_root_batch 镜像进根批次（MCP 的 batches / location_summary
+    # 全部从批次读）。
+    part.location = location
+    part.current_holder_id = holder_id
+    return part
 
 
 async def _seed_basic(session) -> dict:

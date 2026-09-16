@@ -23,7 +23,6 @@ from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     DateTime,
     Index,
     Integer,
@@ -94,17 +93,9 @@ class TPartBatch(Base, AuditMixin):
         comment="拆分谱系：源批次 id；根批次 NULL",
     )
 
-    # —— 返修件标识（PR-M 2026-08-04）——
-    # 与 t_part.has_been_repaired 同语义、同步写入；
-    # 仅展示用，不参与列表过滤热点索引。
-    has_been_repaired: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-        server_default="false",
-        comment="本批次是否经历过返修（与 t_part.has_been_repaired 同步写入）",
-    )
-    # ^ comment 与 migration 025 一致
+    # 2026-09-16 删除 `has_been_repaired`（t_part 瘦身，Rust 迁移 027）：
+    # 返修标识无法归属到具体批次（拆分后新旧批次语义不清），整体废弃；
+    # t_part.has_been_repaired 同步删除。v2 侧如需返修轨迹请查 t_part_event。
 
     @property
     def sm(self) -> "PartStateMachine":

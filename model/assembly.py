@@ -79,7 +79,8 @@ class TAssembly(Base, AuditMixin):
     planned_delivery_date: Mapped[date] = mapped_column(
         Date, nullable=False, index=True
     )
-    actual_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 2026-09-16 删除 `actual_delivery_date`（t_part 瘦身配套，Rust 迁移 027）：
+    # 装配体的实际交付日期随子件批次归属在 v2 侧重新设计，本表不再物化。
 
     is_urgent: Mapped[bool] = mapped_column(
         Boolean,

@@ -179,7 +179,21 @@ def _wipe_test_data_dir() -> None:
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _postgres_test_lifecycle():
-    """整场测试只跑一次：down -v → wipe bind mount → up -d → wait healthy → migrate → tests → down -v。"""
+    """整场测试只跑一次：down -v → wipe bind mount → up -d → wait healthy → migrate → tests → down -v。
+
+    2026-09-16 PR-2：环境变量 `SKIP_TEST_DB_LIFECYCLE=1` 时跳过整个 docker 编排
+    （包括结尾 down -v）。用于开发者在本地手动起好 test 容器后直接跑 pytest，
+    绕开 Docker Desktop + virtiofs 下「wipe 后立刻 up -d 偶发 bind-mount 失败」
+    的环境问题（PG initdb 报 `mkdir '/var/lib/postgresql/18/'` 失败）；
+    调用方需自行保证容器在 5434 端口 healthy + schema 已 `alembic upgrade heads`。
+    """
+    if _os.environ.get("SKIP_TEST_DB_LIFECYCLE") == "1":
+        # 开发者在外部已经把容器起好了；只跑迁移 + 等 SELECT 1 通。
+        await _probe_db_ready()
+        await asyncio.to_thread(_run_alembic_upgrade_head_sync)
+        yield
+        return
+
     # 1. 兜底：上次异常退出可能残留容器，先 down -v 停掉并清匿名 volume / 旧容器。幂等。
     #    必须先于 wipe——若旧容器仍挂着 bind mount 运行，rmtree 会与 PG 写入竞态，
     #    报 OSError: [Errno 66] Directory not empty（2026-08-05 实测踩坑）。
@@ -248,6 +262,12 @@ async def seed_root_batch(session: AsyncSession, part) -> "object":
 
     服务层所有流转都走批次；测试夹具若绕过 create_part 直接插 t_part 行，
     必须配套一条 batch_no=1 的根批次（镜像 status/location/holder/quantity）。
+
+    2026-09-16 t_part 瘦身（Rust 迁移 027）：t_part 的 location /
+    current_holder_id / placed_at / delivery_note_id 列已删。夹具若要给
+    根批次指定位置/holder，把这些值作为 **transient 属性** 挂在 part 实例上
+    （`part.location = ...`，与 repository 的 last_inspection_fail_note
+    同款约定），这里用 getattr 镜像进批次；不挂则批次对应字段为 NULL。
     """
     from model import TPartBatch
 
@@ -256,11 +276,11 @@ async def seed_root_batch(session: AsyncSession, part) -> "object":
         batch_no=1,
         quantity=part.quantity,
         status=part.status,
-        location=part.location,
-        current_holder_id=part.current_holder_id,
+        location=getattr(part, "location", None),
+        current_holder_id=getattr(part, "current_holder_id", None),
         next_process_id=part.next_process_id,
-        placed_at=part.placed_at,
-        delivery_note_id=part.delivery_note_id,
+        placed_at=getattr(part, "placed_at", None),
+        delivery_note_id=getattr(part, "delivery_note_id", None),
     )
     session.add(batch)
     await session.flush()
