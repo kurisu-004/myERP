@@ -9,6 +9,14 @@
                           零计数日期也补齐，返回固定 7 条。
 
 DB 不存 ENUM，所以这里用 `PartStatus.<X>.value` 字面量比较。
+
+2026-09-17 PR-4 复核：仍 dormant（v1 无前端入口；自 2026-09-15 Phase 5 起前端业务
+全走 v2，本文件 WebSocket 推送的 dashboard snapshot 无消费者）。`placed_at` 字段
+PR-3 已删，本文件保留 `getattr(part, "placed_at", None)` 兜底确保不抛 AttributeError。
+**不建议在本仓内独立复活 v1 路径**——大屏复活需配合 backend-rust v2 复活 PR 全栈改造
+（恢复 `t_part.placed_at` / `t_part_batch.placed_at` 列 + WebSocket 协议对齐 v2），
+单独复活本仓会与 v2 schema 漂移。具体列恢复步骤见 backend-rust 仓
+`docs/architecture.md` 的「v1 复活指引」。
 """
 from __future__ import annotations
 

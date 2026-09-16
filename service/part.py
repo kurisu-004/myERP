@@ -10,6 +10,16 @@
 
 货架与 SHELF_ACCOUNT 的耦合已经在 api/v1 层用 `require_shelf_account_from_body`
 校验；service 层只关心「传进来的 shelf_id 是否真的存在且生效」。
+
+2026-09-17 PR-4 复核：仍 dormant（v1 无前端入口；自 2026-09-15 Phase 5 起前端业务
+全走 v2）。本文件中大量方法 / 属性访问指向 PR-2/3 已删列
+（`t_part.location` / `current_holder_id` / `placed_at` / `actual_delivery_date` /
+`has_been_repaired`、`t_part_batch.next_process_id` / `placed_at` / `has_been_repaired`），
+均已加 `_batch_compat` / try-except pass / getattr(..., None) 兜底，确保仍能
+import 与 unit test mock 不抛 AttributeError。**不建议在本仓内独立复活 v1 路径**——
+v1 业务复活需配合 backend-rust v2 复活 PR 全栈改造（恢复已删列 + 状态机对齐 +
+前端扫码/领件入口），单独复活本仓会与 v2 schema 漂移。具体列恢复步骤见
+backend-rust 仓 `docs/architecture.md` 的「v1 复活指引」。
 """
 from __future__ import annotations
 
@@ -3479,10 +3489,15 @@ class PartService:
         """外协可发送一览（统一查询）：合并 APPROVAL（有报价）和 DIRECT（无需审批可直发）两路。
 
         2026-07-29 PR-fix-0.2.0 批次化：行=批次（之前行=工单，因 rollup 派生字段而漏显可发批次）。
-        谓词：
-        - APPROVAL：TPartBatch.part_id ∈ part_ids_with_approved_quote ∩ TPartBatch.next_process_id ∈ approval_proc_ids
+        2026-09-16 PR-3：``TPartBatch.next_process_id`` 列已删，谓词改为按
+        ``TPartBatch.current_process_step_id → t_process_chain_step.process_id``
+        派生。dormant v1 路径通过 ``_batch_compat(batch, "next_process_id")`` 兜底
+        取回 None（视为「无下一道工序」，DIRECT 流程不再触发）。
+        谓词（PR-3 改）：
+        - APPROVAL：TPartBatch.part_id ∈ part_ids_with_approved_quote
+          ∩ (current_process_step_id → chain_step.process_id) ∈ approval_proc_ids
           ∩ (TPartBatch.status=PENDING OR TPartBatch.status=IN_PROCESS+location=PRODUCTION_SHELF)
-        - DIRECT：TPartBatch.next_process_id ∈ direct_proc_ids
+        - DIRECT：(current_process_step_id → chain_step.process_id) ∈ direct_proc_ids
           ∩ (TPartBatch.status=PENDING OR TPartBatch.status=IN_PROCESS+location=PRODUCTION_SHELF)
 
         C2 货架**不**在此过滤；send_to_outsource 服务层在中间外协（IN_PROCESS）路径
