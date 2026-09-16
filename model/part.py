@@ -1,12 +1,10 @@
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Date,
-    DateTime,
     DECIMAL,
     Index,
     Integer,
@@ -33,19 +31,21 @@ class TPart(Base, AuditMixin):
 
     注意：
     - 项目约定 **不在 DB 层加物理外键**。
-      `customer_id` / `assembly_id` / `current_holder_id` 是逻辑外键，
+      `customer_id` / `assembly_id` 是逻辑外键，
       是否存在、是否被删除、是否允许写入都在 service 层处理。
     - 审计字段由 `AuditMixin` 提供。
     - **不用 DB ENUM**（CLAUDE.md 待补 §9）：`status` 列是 `varchar(20)`，
       取值合法性由 Python `PartStatus` 在 service 层校验。
 
-    多态 holder：
-    - `current_holder_id` 同时承载 `t_worker.id` 与 `t_shelf.id`；
-      含义由 `status` + service 层校验共同决定。
-      - `status=IN_PROCESS` 且 holder 在 `t_shelf`(zone=PRODUCTION) → 在生产货架
-      - `status=IN_PROCESS` 且 holder 在 `t_worker`(is_active) → 工人持有
-      - `status=INSPECTION` 且 holder 在 `t_shelf`(zone=INSPECTION) → 在品检货架
-      - 否则 NULL
+    2026-09-16 t_part 瘦身（Rust v2 迁移 027，与本模型同步删列）：
+    - `t_part` 只表示工单，批次依附信息全部归 `t_part_batch`。以下六列已从
+      DB 与本模型同步删除：`actual_delivery_date` / `location` /
+      `current_holder_id` / `placed_at` / `delivery_note_id` / `has_been_repaired`
+      （`has_been_repaired` 因无法归属到具体批次整体废弃，批次侧同删）。
+    - 保留 `status` / `next_process_id` 作为 rollup 物化列（v2 仍维护）。
+    - 位置 / 持有者 / 上架时间 / 送货单归属请查 `TPartBatch` 同名字段。
+    - v1 业务端点已 dormant（2026-09-15 Phase 5 起前端走 v2），本模型只需
+      保住 4 个打印端点与 /api/mcp 只读查询的 `select(TPart)` 不炸。
     """
 
     __tablename__ = "t_part"
@@ -76,9 +76,8 @@ class TPart(Base, AuditMixin):
     planned_delivery_date: Mapped[date] = mapped_column(
         Date, nullable=False, index=True
     )
-    actual_delivery_date: Mapped[date | None] = mapped_column(
-        Date, nullable=True
-    )
+    # 2026-09-16 删除 `actual_delivery_date`（t_part 瘦身，Rust 迁移 027）：
+    # 实际交付日期的批次归属在 v2 侧重新设计，工单级不再物化。
 
     # —— 送货单字段（PR-F 2026-07-17，三个可选字段）——
     # order_no：订单号（法拉示例「订单号」、路达示例「订单编号」共用）
@@ -102,6 +101,7 @@ class TPart(Base, AuditMixin):
     )
 
     # 订单状态。DB 存 varchar(20)，取值合法性由 Python PartStatus 校验。
+    # 2026-09-16 保留：rollup 物化列（v2 按「最落后」活跃批次维护），瘦身后不删。
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -110,10 +110,9 @@ class TPart(Base, AuditMixin):
         index=True,
     )
 
-    location: Mapped[Optional[str]] = mapped_column(
-        String(20), nullable=True, index=True,
-        comment="零件物理位置: OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF",
-    )
+    # 2026-09-16 删除 `location`（t_part 瘦身，Rust 迁移 027）：
+    # 物理位置（OFFICE / PRODUCTION_SHELF / WORKER / INSPECTION_SHELF /
+    # OUTSOURCE_COMPANY）是批次依附信息，归 `t_part_batch.location`。
 
     is_urgent: Mapped[bool] = mapped_column(
         Boolean,
@@ -124,19 +123,9 @@ class TPart(Base, AuditMixin):
         comment="是否加急",
     )
 
-    # —— 报工字段 ——
-    # current_holder_id：零件当前持有者；逻辑指向 t_worker.id 或 t_shelf.id。
-    # - IN_PROCESS 时可指向生产货架（holder=shelf）或被工人持有（holder=worker）。
-    # - INSPECTION 时指向品检货架。
-    # 不在 DB 层加物理外键；service 层校验。
-    current_holder_id: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True, index=True
-    )
-    # placed_at：文员首次把零件放到生产货架上的时间（PENDING→IN_PROCESS 时置位）。
-    # 数据大屏「按货架分组」展示「已放置 X 分钟」。
-    placed_at: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True, index=True
-    )
+    # 2026-09-16 删除 `current_holder_id` / `placed_at`（t_part 瘦身，
+    # Rust 迁移 027）：多态持有者（t_worker / t_shelf / t_outsource_company）
+    # 与首次上架时间同为批次依附信息，归 `t_part_batch` 同名字段。
 
     # —— 逻辑外键 —— 指向 t_customer.id 的叶子节点（具体分厂/部门）。
     customer_id: Mapped[int] = mapped_column(
@@ -158,20 +147,13 @@ class TPart(Base, AuditMixin):
         comment="逻辑外键 → t_assembly.id；NULL = 非装配件子件",
     )
 
-    # —— 送货单字段（2026-07-22 新增）——
-    # 同时刻一个 active 零件至多被分配到 1 张送货单；service.add_parts 校验，
-    # DB 不做 partial unique（与「同 note 至多 1 part」语义相反）。
-    # PICKED_UP 时 service 会把该字段置 NULL，让 PartDetail「所属送货单」卡片消失。
-    delivery_note_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        nullable=True,
-        index=True,
-        comment="逻辑外键 → t_delivery_note.id（PR-G 2026-07-22 新增）",
-    )
+    # 2026-09-16 删除 `delivery_note_id`（t_part 瘦身，Rust 迁移 027）：
+    # 送货单归属是批次级信息（一张单挂若干批次），归 `t_part_batch.delivery_note_id`。
 
     # —— 工序字段 ——
     # 下一道工序：place_on_shelf 时必填；RETURNED 时由工人指定。
     # 逻辑外键 → t_process.id；service 层校验存在性。
+    # 2026-09-16 保留：rollup 物化列（v2 按「最落后」活跃批次维护），瘦身后不删。
     next_process_id: Mapped[int | None] = mapped_column(
         BigInteger,
         nullable=True,
@@ -179,16 +161,9 @@ class TPart(Base, AuditMixin):
         comment="逻辑外键 → t_process.id；place_on_shelf / RETURNED 时更新",
     )
 
-    # —— 返修件标识（PR-M 2026-08-04）——
-    # start_repair 触发时被置 True；complete_repair 不清除；
-    # 工单进入 COMPLETED / CANCELLED 之后列表 / 卡片不再显示。
-    has_been_repaired: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-        server_default="false",
-        comment="该工单是否经历过返修（返修件标识，贯穿到 COMPLETED/CANCELLED）",
-    )
+    # 2026-09-16 删除 `has_been_repaired`（t_part 瘦身，Rust 迁移 027）：
+    # 返修标识无法归属到具体批次（拆分后新旧批次语义不清），整体废弃，
+    # `t_part_batch.has_been_repaired` 同步删除。
 
     @property
     def sm(self) -> "PartStateMachine":
@@ -197,17 +172,15 @@ class TPart(Base, AuditMixin):
         return PartStateMachine(model=self)
 
     # —— 组合索引 ——
-    # `ix_t_part_status_holder`：按状态 + holder 查询（Dashboard「按货架分组」）。
     # `ix_t_part_customer_status_delivery`：按客户 + 状态 + 交期查询。
-    # `ix_t_part_location_status_next_process`：扫码台 PICK_UP 列表热点过滤
-    #   (status='IN_PROCESS' AND location='PRODUCTION_SHELF' AND current_holder_id=shelf
-    #    AND next_process_id IN mapped_process_ids)
+    # 2026-09-16 t_part 瘦身（Rust 迁移 027）：随 `location` / `current_holder_id`
+    # / `placed_at` / `delivery_note_id` 删列，以下索引一并删除（DB 侧由 Rust
+    # 迁移 DROP，本模型同步去掉定义）：
+    # - ix_t_part_status_holder(status, current_holder_id)
+    # - ix_t_part_location_status_next_process(location, status, next_process_id)
+    # - 列级 index=True 的 ix_t_part_location / ix_t_part_current_holder_id /
+    #   ix_t_part_placed_at / ix_t_part_delivery_note_id（随列删除自动消失）
     __table_args__ = (
-        Index(
-            "ix_t_part_status_holder",
-            "status",
-            "current_holder_id",
-        ),
         Index(
             "ix_t_part_customer_status_delivery",
             "customer_id",
@@ -215,8 +188,4 @@ class TPart(Base, AuditMixin):
             "planned_delivery_date",
         ),
         Index("ix_t_part_assembly_id_status", "assembly_id", "status"),
-        Index(
-            "ix_t_part_location_status_next_process",
-            "location", "status", "next_process_id",
-        ),
     )

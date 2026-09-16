@@ -102,9 +102,11 @@ async def _make_part_with_assembly(
         order_no="ON-2026-001",
         customer_id=customer_id,
         status=PartStatus.READY_TO_SHIP.value,
-        location="INSPECTION_SHELF",
         assembly_id=assembly_id,
     )
+    # 2026-09-16 t_part 瘦身（Rust 迁移 027）：location 列已删，
+    # 以 transient 属性挂载，仅供 seed_root_batch 镜像进根批次。
+    p.location = "INSPECTION_SHELF"
     session.add(p)
     await session.flush()
     p.root_batch = await seed_root_batch(session, p)
@@ -137,9 +139,11 @@ async def _make_loose_part(
         order_no="ON-2026-002",
         customer_id=customer_id,
         status=PartStatus.READY_TO_SHIP.value,
-        location="INSPECTION_SHELF",
         note=note,
     )
+    # 2026-09-16 t_part 瘦身（Rust 迁移 027）：location 列已删，
+    # 以 transient 属性挂载，仅供 seed_root_batch 镜像进根批次。
+    p.location = "INSPECTION_SHELF"
     session.add(p)
     await session.flush()
     p.root_batch = await seed_root_batch(session, p)
@@ -1391,8 +1395,10 @@ async def test_print_xlsx_same_part_split_merge_quantity_sum_correctness(clean_d
         order_no="ON-2026-SUM",
         customer_id=customer.id,
         status=PartStatus.READY_TO_SHIP.value,
-        location="INSPECTION_SHELF",
     )
+    # 2026-09-16 t_part 瘦身（Rust 迁移 027）：location 列已删，
+    # 以 transient 属性挂载，仅供 seed_root_batch 镜像进根批次。
+    part.location = "INSPECTION_SHELF"
     clean_db.add(part)
     await clean_db.flush()
     from tests.conftest import seed_root_batch

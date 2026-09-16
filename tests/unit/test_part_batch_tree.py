@@ -45,6 +45,18 @@ from service.part import PartService
 from tests.unit._fake_batches import FakePartBatchRepository
 
 
+# 2026-09-16 review 第 1 轮 —— PR-2 t_part 瘦身（Rust v2 迁移 027）后，
+# 本文件 v1 业务端点已 dormant（前端业务全走 v2，Python 仅保留 4 个打印端点 +
+# /api/mcp 只读查询），整文件加 skip 与其它 25 个 dormant 单测同款：
+# - helper（_make_part 等）仍引用已删字段 t_part.location（迁移 027 删除的六列之一），
+#   函数体不被调用所以 collection 不会失败；
+# - 类体内测试断言 / 调用方同样已失效，跳过即可，不必逐个改造。
+pytestmark = [
+    pytest.mark.skip(reason="2026-09-16 t_part 瘦身 / Rust v2 迁移 027 / v1 dormant"),
+    pytest.mark.asyncio,
+]
+
+
 # ======================
 # Fixtures
 # ======================

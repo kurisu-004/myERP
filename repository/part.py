@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
 from model import TPart, TPartBatch, TPartEvent
-from model.enums import PartEventType, PartLocation, PartSortKey, PartStatus, SortDir
+from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
 
 
 class PartRepository:
@@ -99,11 +99,9 @@ class PartRepository:
         # 2026-08-11：Bug 1 修复后区间条件已默认排除 NULL；本参数叠加作为防御性冗余保留。
         system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
-        locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
-        # 2026-08-05：位置筛选细化到具体 holder。
-        # locations = PartLocation 大类；holder_ids = 具体货架/工人/外协公司雪花 ID。
-        # 两者为 OR 关系（前端勾「生产货架」父节点 + 某工人 → 并集）。
-        holder_ids: list[int] | None = None,
+        # 2026-09-16 删除 `locations` / `holder_ids` 两参（t_part 瘦身，
+        # Rust 迁移 027）：其 WHERE 依赖已删的 t_part.location / current_holder_id
+        # 列；唯一调用方是 dormant 的 v1 /parts 列表。位置/holder 过滤请走批次。
         sort_by: PartSortKey = PartSortKey.PLANNED_DELIVERY_DATE,
         sort_dir: SortDir = SortDir.ASC,
         include_deleted: bool = False,
@@ -136,8 +134,6 @@ class PartRepository:
             system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11
             system_delivery_date_not_null=system_delivery_date_not_null,
             next_process_ids=next_process_ids,
-            locations=locations,
-            holder_ids=holder_ids,
             include_deleted=include_deleted,
             assembly_id_is_null=assembly_id_is_null,
             assembly_ids_in=assembly_ids_in,
@@ -203,9 +199,9 @@ class PartRepository:
         # 2026-08-11：Bug 1 修复后区间条件已默认排除 NULL；本参数叠加作为防御性冗余保留。
         system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
-        locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
-        # 2026-08-05：位置筛选细化到具体 holder。
-        holder_ids: list[int] | None = None,
+        # 2026-09-16 删除 `locations` / `holder_ids` 两参（t_part 瘦身，
+        # Rust 迁移 027）：其 WHERE 依赖已删的 t_part.location / current_holder_id
+        # 列；唯一调用方是 dormant 的 v1 /parts 列表。位置/holder 过滤请走批次。
         include_deleted: bool = False,
         assembly_id_is_null: bool | None = None,
         # 2026-08-05：把 count 收敛到指定装配件的子件集合（C2 命中子件回显用）。
@@ -232,8 +228,6 @@ class PartRepository:
             system_delivery_date_is_null=system_delivery_date_is_null,  # 2026-08-11
             system_delivery_date_not_null=system_delivery_date_not_null,
             next_process_ids=next_process_ids,
-            locations=locations,
-            holder_ids=holder_ids,
             include_deleted=include_deleted,
             assembly_id_is_null=assembly_id_is_null,
             assembly_ids_in=assembly_ids_in,
@@ -308,183 +302,13 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    # ===== 工人持有件列表（扫码台 RETURN 新流程用，PR-E 2026-07-10）=====
-    async def list_held_by_worker(
-        self,
-        *,
-        worker_id: int,
-        include_deleted: bool = False,
-    ) -> list[TPart]:
-        """扫码台 RETURN：列出当前由某工人持有的零件。
-
-        过滤：
-        - status = 'IN_PROCESS'（DB 共享状态）
-        - location = 'WORKER'（在工人手）
-        - current_holder_id = worker_id
-
-        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
-        （与 list_for_work_type 一致，加急优先 → 临期优先 → 稳定排序）。
-
-        返回空 list 当 worker_id 为空时（让 service 层短路）。
-        """
-        if not worker_id:
-            return []
-        stmt = (
-            select(TPart)
-            .where(
-                TPart.status == "IN_PROCESS",
-                TPart.location == "WORKER",
-                TPart.current_holder_id == worker_id,
-            )
-        )
-        if not include_deleted:
-            stmt = stmt.where(TPart.deleted_at.is_(None))
-        stmt = stmt.order_by(
-            TPart.is_urgent.desc(),
-            TPart.planned_delivery_date.asc(),
-            TPart.id.desc(),
-        )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    # ===== 工种取件列表（PICK_UP 扫码台热点路径）=====
-    async def list_for_work_type(
-        self,
-        *,
-        shelf_id: int,
-        mapped_process_ids: list[int],
-        include_deleted: bool = False,
-    ) -> list[TPart]:
-        """扫码台 PICK_UP：列出当前生产货架上、由某工种可领的零件。
-
-        过滤条件：
-        - status = 'IN_PROCESS'
-        - location = 'PRODUCTION_SHELF'
-        - current_holder_id = shelf_id（该零件当前就在指定货架上）
-        - next_process_id IS NULL（未指定下一道工序）OR
-          next_process_id IN mapped_process_ids（被该工种可领）
-
-        2026-07-21 改：在 SELECT 里附加标量子查询，取该 part 最新一条
-        `INSPECTION_FAILED` 事件的 `note`（品检打回备注），作为
-        TPart 的 transient 属性 `last_inspection_fail_note` 返回，供
-        service 层 `_to_out` 写入 `PartOut.last_inspection_fail_note`。
-        transient 属性不会被 SQLAlchemy 视为 dirty。
-
-        排序：is_urgent DESC（加急优先）, planned_delivery_date ASC（临期优先）,
-              id DESC（稳定排序）。
-
-        返回空 list 当 mapped_process_ids 为空时（让 service 层短路）。
-        """
-        if not mapped_process_ids:
-            return []
-        last_fail_note_subq = (
-            select(TPartEvent.note)
-            .where(
-                TPartEvent.part_id == TPart.id,
-                TPartEvent.event_type == PartEventType.INSPECTION_FAILED.value,
-            )
-            .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
-            .limit(1)
-            .scalar_subquery()
-        )
-        stmt = (
-            select(TPart, last_fail_note_subq.label("last_inspection_fail_note"))
-            .where(
-                TPart.status == "IN_PROCESS",
-                TPart.location == "PRODUCTION_SHELF",
-                TPart.current_holder_id == shelf_id,
-                or_(
-                    TPart.next_process_id.is_(None),
-                    TPart.next_process_id.in_(mapped_process_ids),
-                ),
-            )
-        )
-        if not include_deleted:
-            stmt = stmt.where(TPart.deleted_at.is_(None))
-        stmt = stmt.order_by(
-            TPart.is_urgent.desc(),
-            TPart.planned_delivery_date.asc(),
-            TPart.id.desc(),
-        )
-        result = await self.session.execute(stmt)
-        parts: list[TPart] = []
-        for row in result.all():
-            part = row[0]
-            part.last_inspection_fail_note = row[1]  # transient attr
-            parts.append(part)
-        return parts
-
-    async def list_for_work_type_all_shelves(
-        self,
-        *,
-        mapped_process_ids: list[int],
-        shelf_ids: list[int] | None = None,
-        include_deleted: bool = False,
-    ) -> list[TPart]:
-        """共享 HMI PICK_UP 跨架列表：列出 HMI 货架范围内、由某工种可领的零件。
-
-        与 `list_for_work_type` 的差异：
-        1. 去掉 `current_holder_id == shelf_id` 单架过滤，改为可选
-           `shelf_ids` 多架过滤（None = 全架；空 list = 永远空）；
-        2. 前端按 `current_holder_id` 在卡片网格里分组。
-
-        2026-07-21 改：同样附加 last_inspection_fail_note 标量子查询（与
-        list_for_work_type 一致）。
-
-        过滤条件：
-        - status = 'IN_PROCESS'
-        - location = 'PRODUCTION_SHELF'
-        - shelf_ids 不为空时：current_holder_id IN shelf_ids
-        - next_process_id IS NULL（未指定下一道工序）OR
-          next_process_id IN mapped_process_ids（被该工种可领）
-
-        排序：is_urgent DESC（加急优先）, planned_delivery_date ASC（临期优先）,
-              id DESC（稳定排序）。
-
-        返回空 list 当 mapped_process_ids 为空，或 shelf_ids 显式传空 list 时
-        （让 service 层短路）。
-        """
-        if not mapped_process_ids:
-            return []
-        if shelf_ids is not None and not shelf_ids:
-            return []
-        last_fail_note_subq = (
-            select(TPartEvent.note)
-            .where(
-                TPartEvent.part_id == TPart.id,
-                TPartEvent.event_type == PartEventType.INSPECTION_FAILED.value,
-            )
-            .order_by(TPartEvent.created_at.desc(), TPartEvent.id.desc())
-            .limit(1)
-            .scalar_subquery()
-        )
-        stmt = (
-            select(TPart, last_fail_note_subq.label("last_inspection_fail_note"))
-            .where(
-                TPart.status == "IN_PROCESS",
-                TPart.location == "PRODUCTION_SHELF",
-                or_(
-                    TPart.next_process_id.is_(None),
-                    TPart.next_process_id.in_(mapped_process_ids),
-                ),
-            )
-        )
-        if shelf_ids is not None:
-            stmt = stmt.where(TPart.current_holder_id.in_(shelf_ids))
-        if not include_deleted:
-            stmt = stmt.where(TPart.deleted_at.is_(None))
-        stmt = stmt.order_by(
-            TPart.is_urgent.desc(),
-            TPart.planned_delivery_date.asc(),
-            TPart.id.desc(),
-        )
-        result = await self.session.execute(stmt)
-        parts: list[TPart] = []
-        for row in result.all():
-            part = row[0]
-            part.last_inspection_fail_note = row[1]
-            parts.append(part)
-        return parts
+    # ===== 工人持有件 / 工种取件列表 =====
+    # 2026-09-16 删除（t_part 瘦身，Rust 迁移 027）：原 `list_held_by_worker` /
+    # `list_for_work_type` / `list_for_work_type_all_shelves` 三个扫码台查询的
+    # WHERE 全部依赖已删的 t_part.location / current_holder_id 列。v1 扫码端点
+    # 已 dormant（2026-09-15 Phase 5 起前端走 v2），且 service 层实际调用的是
+    # `repository/part_batch.py` 的同名批次版方法（t_part_batch 列保留），
+    # 本类这三个方法早已无调用方，随删列一并移除，不再保留炸弹。
 
     # ===== 申请人引用计数（软删前 BIZ_APPLICANT_IN_USE 校验）=====
     async def count_by_applicant_name_in_customers(
@@ -578,32 +402,10 @@ class PartRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    # ===== 在架件数批量统计（共享 HMI picker current_load）=====
-    async def get_load_map_by_shelf_ids(
-        self, shelf_ids: list[int]
-    ) -> dict[int, int]:
-        """批量取每架的 `current_load`（status=IN_PROCESS + location=PRODUCTION_SHELF 的件数）。
-
-        Returns: `{shelf_id: count}`；传入 id 不在结果中时返回 0。
-        service 层给每张卡片填 current_load。
-        """
-        out: dict[int, int] = {sid: 0 for sid in shelf_ids}
-        if not shelf_ids:
-            return out
-        stmt = (
-            select(TPart.current_holder_id, func.count(TPart.id))
-            .where(
-                TPart.current_holder_id.in_(shelf_ids),
-                TPart.status == "IN_PROCESS",
-                TPart.location == "PRODUCTION_SHELF",
-                TPart.deleted_at.is_(None),
-            )
-            .group_by(TPart.current_holder_id)
-        )
-        result = await self.session.execute(stmt)
-        for shelf_id, count in result.all():
-            out[int(shelf_id)] = int(count)
-        return out
+    # ===== 在架件数批量统计 =====
+    # 2026-09-16 删除（t_part 瘦身，Rust 迁移 027）：原 `get_load_map_by_shelf_ids`
+    # 按 t_part.current_holder_id / location 统计在架件数，两列已删；
+    # 唯一调用方 service/shelf.py 的 v1 货架卡片已 dormant，一并移除不再保留。
 
     # ===== 内部 =====
     def _build_filter_stmt(
@@ -635,9 +437,9 @@ class PartRepository:
         # 2026-08-11：Bug 1 修复后区间条件已默认排除 NULL；本参数叠加作为防御性冗余保留。
         system_delivery_date_not_null: bool | None = None,
         next_process_ids: list[int] | None = None,  # 2026-08-01：下一道工序多选
-        locations: list[PartLocation] | None = None,  # 2026-08-01：物理位置多选
-        # 2026-08-05：位置筛选细化到具体 holder。
-        holder_ids: list[int] | None = None,
+        # 2026-09-16 删除 `locations` / `holder_ids` 两参（t_part 瘦身，
+        # Rust 迁移 027）：其 WHERE 依赖已删的 t_part.location / current_holder_id
+        # 列；唯一调用方是 dormant 的 v1 /parts 列表。位置/holder 过滤请走批次。
         include_deleted: bool,
         assembly_id_is_null: bool | None = None,
         # 2026-08-05：把结果收敛到指定装配件的子件集合（C2 命中子件回显用）。
@@ -772,18 +574,8 @@ class PartRepository:
         # `next_process_id IS NULL` 的零件会被 SQL `IN` 排除，符合「未指派下一道工序 = 不参与筛选」。
         if next_process_ids:
             stmt = stmt.where(TPart.next_process_id.in_(next_process_ids))
-        # 2026-08-05：位置筛选细化到具体 holder。
-        # locations = PartLocation 大类；holder_ids = 具体货架/工人/外协公司雪花 ID。
-        # 两者为 OR 关系（前端勾「生产货架」父节点 + 某工人 → 并集）。
-        _loc_terms = []
-        if locations:
-            _loc_terms.append(TPart.location.in_([loc.value for loc in locations]))
-        if holder_ids:
-            _loc_terms.append(TPart.current_holder_id.in_(holder_ids))
-        if len(_loc_terms) == 1:
-            stmt = stmt.where(_loc_terms[0])
-        elif len(_loc_terms) > 1:
-            stmt = stmt.where(or_(*_loc_terms))
+        # 2026-09-16 删除 locations / holder_ids 过滤分支（t_part 瘦身，
+        # Rust 迁移 027）：t_part.location / current_holder_id 列已删。
         return stmt
 
     # ============================================================
@@ -1172,45 +964,10 @@ class PartRepository:
         return int(result.scalar_one())
 
 
-    async def list_outsource_receivable(
-        self,
-        *,
-        customer_ids_in: list[int] | None = None,
-        keyword: str | None = None,
-        is_urgent: bool | None = None,
-        limit: int = 50,
-        offset: int = 0,
-        include_deleted: bool = False,
-    ) -> list[TPart]:
-        """外协接收一览：status='OUTSOURCE' + location='OUTSOURCE_COMPANY' 的零件。
-
-        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
-        """
-        stmt = select(TPart).where(
-            TPart.status == "OUTSOURCE",
-            TPart.location == "OUTSOURCE_COMPANY",
-        )
-        if not include_deleted:
-            stmt = stmt.where(TPart.deleted_at.is_(None))
-        if customer_ids_in:
-            stmt = stmt.where(TPart.customer_id.in_(customer_ids_in))
-        if is_urgent is not None:
-            stmt = stmt.where(TPart.is_urgent.is_(is_urgent))
-        if keyword:
-            kw = keyword.strip()
-            if kw:
-                stmt = stmt.where(
-                    TPart.drawing_no.ilike(f"%{kw}%")
-                    | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"{kw}%")
-                )
-        stmt = stmt.order_by(
-            TPart.is_urgent.desc(),
-            TPart.planned_delivery_date.asc(),
-            TPart.id.desc(),
-        ).limit(limit).offset(offset)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+    # 2026-09-16 删除 `list_outsource_receivable`（t_part 瘦身，Rust 迁移 027）：
+    # 其 WHERE 依赖已删的 t_part.location 列（status='OUTSOURCE' +
+    # location='OUTSOURCE_COMPANY'），且全仓已无调用方（v1 外协接收端点
+    # dormant），随删列一并移除，不再保留炸弹。
 
     # ============================================================
     # 新建报价 picker 默认筛选（PR-H 2026-07-28）
