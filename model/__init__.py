@@ -37,6 +37,7 @@ from .part_event import TPartEvent
 from .part_file import TPartFile
 from .pickup_skip_event import TPickupSkipEvent
 from .process import TProcess
+from .process_chain_step import TProcessChainStep  # 2026-09-16 PR-3：MCP 只读接口读端 ORM
 from .serial_counter import TSerialCounter
 from .shelf import TShelf
 from .shelf_process import TShelfProcess
@@ -68,6 +69,7 @@ __all__ = [
     "TPartFile",
     "TPickupSkipEvent",
     "TProcess",
+    "TProcessChainStep",  # 2026-09-16 PR-3
     "TRoleMenu",
     "TSerialCounter",
     "TShelf",

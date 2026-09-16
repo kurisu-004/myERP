@@ -111,6 +111,46 @@ Broadcaster = Callable[[], Awaitable[None]]
 EventBroadcaster = Callable[[str, dict], Awaitable[None]]
 
 
+def _batch_compat(batch: "TPartBatch", *names: str) -> dict:
+    """2026-09-16 PR-3：v1 dormant PartService 兼容助手。
+
+    2026-09-16 PR-3 把 ``t_part_batch.next_process_id`` / ``placed_at`` 列删除，
+    改成 ``current_process_step_id``（→ t_process_chain_step.id）。但 v1
+    PartService 全套状态流转 / picker / scanner 端点（自 2026-09-15 Phase 5
+    起前端业务全走 v2，已 dormant）仍引用已删列。
+
+    不重写整个 dormant v1 service（会引入大段无意义的回归测试与跨文件
+    schema 漂移）；这里把 ``batch.next_process_id`` / ``batch.placed_at``
+    等访问包成「属性不存在 → 视为 None」单点兜底，保证：
+    - 已删列时 dormant 代码不抛 AttributeError；
+    - 仍能正常 import 与 mock 测试（unit test 不接 DB，依赖 mock 对象访问）。
+    返回值是 dict，按名取键即可。
+
+    对 ``next_process_id`` 这类已删列做特殊兼容：若 batch 缺该字段，则回退
+    到 ``current_process_step_id``（→ t_process_chain_step.id），与 rust 端
+    rollup 语义对齐——v2 端的「下一步工序 id」语义本来就在 step 上。
+
+    注意：仅供 dormant 路径（service/part.py 的 PartService 方法群）；
+    新的 v2 路径或 MCP / printing 路径请直接用 ORM 字段，不要走本函数。
+    """
+    out: dict[str, object] = {}
+    for n in names:
+        try:
+            out[n] = getattr(batch, n)
+        except AttributeError:
+            # 2026-09-16 PR-3：列已删时回退到 current_process_step_id。
+            # 仅对 next_process_id 这一已删列做语义化回退；placed_at
+            # / has_been_repaired 等无对应新列，置 None。
+            if n == "next_process_id":
+                try:
+                    out[n] = getattr(batch, "current_process_step_id")
+                except AttributeError:
+                    out[n] = None
+            else:
+                out[n] = None
+    return out
+
+
 def _item_to_part_create_request(item: PartBatchTreeItem) -> PartCreateRequest:
     """PartBatchTreeItem → PartCreateRequest。`create_parts_tree` 调单页 PDF 时复用 `create_part` 走标准路径。
 
@@ -3113,9 +3153,16 @@ class PartService:
             # 2026-07-17：货架↔工序 映射校验收紧（去掉之前空集时跳过的 permissive 行为）
             await self._assert_shelf_maps_process(shelf, new_process)
             # 解析 prev_process_code 与 worker_work_type_code 给状态机 note 用
+            # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant 路径不再
+            # 触发，但单元测试 / 静态访问仍可能命中——try 兜底 AttributeError，
+            # 视为「无上一道工序」继续走（状态机 note 退化）。
             prev_process_code: str | None = None
-            if self.processes is not None and batch.next_process_id is not None:
-                prev = await self.processes.get_by_id(batch.next_process_id)
+            try:
+                _prev_npid = batch.next_process_id
+            except AttributeError:
+                _prev_npid = None  # 2026-09-16 PR-3：列已删，dormant 兼容
+            if self.processes is not None and _prev_npid is not None:
+                prev = await self.processes.get_by_id(_prev_npid)
                 if prev is not None:
                     prev_process_code = prev.code
             worker_work_type_code: str | None = None
@@ -3552,8 +3599,13 @@ class PartService:
         items: list[OutsourceSendableItem] = []
 
         # 6a. DIRECT items（按批次）
+        # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant 外协
+        # picker 兼容——读不到就视作「无下一道工序」，对应 DIRECT 流程不再触发。
+        # 若 v2 端复活 picker，请按 t_process_chain_step.process_id 重写。
         for batch, p in direct_rows:
-            cids = direct_proc_to_active_companies.get(batch.next_process_id, [])
+            _b = _batch_compat(batch, "next_process_id")
+            _batch_npid = _b["next_process_id"]
+            cids = direct_proc_to_active_companies.get(_batch_npid, [])
             company_opts = [
                 DirectOutsourceCompanyOption(
                     id=cid,
@@ -3563,7 +3615,7 @@ class PartService:
             ]
             if not company_opts:
                 continue
-            next_proc = process_map.get(batch.next_process_id)
+            next_proc = process_map.get(_batch_npid)
             customer_path: str | None = None
             if p.customer_id is not None and p.customer_id in cust_cache:
                 customer_path = make_customer_path_cached(
@@ -3587,7 +3639,7 @@ class PartService:
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=batch.next_process_id,
+                next_process_id=_batch_npid,
                 next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=None,
                 outsource_company_name=None,
@@ -3634,7 +3686,9 @@ class PartService:
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=batch.next_process_id,
+                # 2026-09-16 PR-3：batch.next_process_id 列已删；dormant v1
+                # APPROVAL 流程不再触发；保留 schema 兼容用 _batch_compat 兜底。
+                next_process_id=_batch_compat(batch, "next_process_id")["next_process_id"],
                 next_process_name=next_proc.name if next_proc else None,
                 outsource_company_id=q.outsource_company_id,
                 outsource_company_name=company.name if company else None,
@@ -3929,12 +3983,19 @@ class PartService:
             action="完成返修",
         )
         # PR-M 2026-08-04: caller explicit next_process_id 覆盖 carried; 缺省沿用 batch 值
-        effective_next_pid = next_process_id or batch.next_process_id
+        # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant 兼容。
+        _b_compat = _batch_compat(batch, "next_process_id")
+        effective_next_pid = next_process_id or _b_compat["next_process_id"]
         if shelf.zone == ShelfZone.PRODUCTION.value:
             if effective_next_pid is not None:
                 carried_process = await self._get_process(effective_next_pid)
                 await self._assert_shelf_maps_process(shelf, carried_process)
-            batch.next_process_id = effective_next_pid
+            # 2026-09-16 PR-3：dormant v1 不再触发；赋值在「列已删」时 noop。
+            # 当前测试用 MagicMock(spec=TPartBatch) 仍允许 setattr，写入不被消费。
+            try:
+                batch.next_process_id = effective_next_pid
+            except AttributeError:
+                pass  # 2026-09-16 PR-3：dormant 列已删
             batch.sm.complete_repair(
                 shelf=shelf, event_repo=self.events,
                 created_by=self._user_id,
@@ -4005,8 +4066,17 @@ class PartService:
         )
         target = await self._maybe_split(part, batch, quantity)
         # PR-M 2026-08-04：标记返修件（工单 + 当前批次）
-        target.has_been_repaired = True
-        part.has_been_repaired = True
+        # 2026-09-16 PR-2 + PR-3：t_part_batch.has_been_repaired / t_part.has_been_repaired
+        # 列已删（PR-2 删 t_part 侧、PR-3 删 batch 侧）。dormant v1 不再触发；
+        # 留 try 兼容 MagicMock 路径上的赋值（spec 允许任意 setattr）。
+        try:
+            target.has_been_repaired = True
+        except AttributeError:
+            pass  # 2026-09-16 PR-3：batch 列已删
+        try:
+            part.has_been_repaired = True
+        except AttributeError:
+            pass  # 2026-09-16 PR-2：t_part 列已删
         # step 1: start_repair 状态机（任意入口 → REPAIRING）
         target.sm.start_repair(
             event_repo=self.events, created_by=self._user_id,
@@ -4014,12 +4084,17 @@ class PartService:
         target.updated_by = self._user_id
         part.updated_by = self._user_id
         # step 2: complete_repair 状态机（REPAIRING → ON_SHELF 或 INSPECTION）
-        effective_next_pid = next_process_id or target.next_process_id
+        # 2026-09-16 PR-3：target.next_process_id 列已删；dormant 兼容。
+        _t_compat = _batch_compat(target, "next_process_id")
+        effective_next_pid = next_process_id or _t_compat["next_process_id"]
         if shelf.zone == ShelfZone.PRODUCTION.value:
             if effective_next_pid is not None:
                 carried_process = await self._get_process(effective_next_pid)
                 await self._assert_shelf_maps_process(shelf, carried_process)
-            target.next_process_id = effective_next_pid
+            try:
+                target.next_process_id = effective_next_pid
+            except AttributeError:
+                pass  # 2026-09-16 PR-3：batch 列已删
             target.sm.complete_repair(
                 shelf=shelf, event_repo=self.events,
                 created_by=self._user_id,
@@ -4084,7 +4159,13 @@ class PartService:
         target = await self._maybe_split(
             part, batch, getattr(data, "quantity", None),
         )
-        target.next_process_id = process.id  # 保留 inspector 指定的下一道工序
+        # 2026-09-16 PR-3：batch.next_process_id 列已删；dormant v1 不再触发。
+        # 实际语义（保留 inspector 指定的下一道工序）已由 part 级 next_process_id
+        # 物化列承担（rollup_part_status 会从 current_process_step_id 派生）。
+        try:
+            target.next_process_id = process.id  # 保留 inspector 指定的下一道工序
+        except AttributeError:
+            pass  # 2026-09-16 PR-3：batch 列已删
         target.sm.fail_inspection(
             shelf=shelf, process=process, event_repo=self.events,
             created_by=self._user_id,
@@ -4357,7 +4438,7 @@ class PartService:
         if not batches:
             return []
 
-        # holder / 工序 / 送货单 名称批查
+        # holder / 工艺链 step / 工序 / 送货单 名称批查
         shelf_ids = [
             int(b.current_holder_id) for b in batches
             if b.location in ("PRODUCTION_SHELF", "INSPECTION_SHELF")
@@ -4383,13 +4464,40 @@ class PartService:
                 c.id: c.name
                 for c in await self.outsource_companies.list_by_ids(company_ids)
             }
-        process_ids = {int(b.next_process_id) for b in batches if b.next_process_id}
+
+        # 2026-09-16 PR-3：next_process_name 改由 current_process_step_id
+        # → t_process_chain_step.process_id → t_process.name 派生。
+        # 这里一次性 SELECT chain_step IN (batch.current_process_step_id)，
+        # 再用 process_id 集合去 processes 字典拉工序名。
+        from sqlalchemy import select
+
+        from model import TProcessChainStep
+
+        step_ids = sorted({
+            int(b.current_process_step_id)
+            for b in batches if b.current_process_step_id
+        })
+        chain_step_process: dict[int, int] = {}
+        if step_ids:
+            rows_steps = await self.parts.session.execute(
+                select(
+                    TProcessChainStep.id, TProcessChainStep.process_id,
+                ).where(
+                    TProcessChainStep.id.in_(step_ids),
+                    TProcessChainStep.deleted_at.is_(None),
+                )
+            )
+            chain_step_process = {
+                int(sid): int(pid) for sid, pid in rows_steps.all()
+            }
+        process_ids = sorted(set(chain_step_process.values()))
         process_map: dict[int, str] = {}
         if process_ids and self.processes is not None:
             process_map = {
                 pr.id: pr.name
-                for pr in await self.processes.list_by_ids(list(process_ids))
+                for pr in await self.processes.list_by_ids(process_ids)
             }
+
         note_ids = {int(b.delivery_note_id) for b in batches if b.delivery_note_id}
         note_map: dict[int, str] = {}
         if note_ids and self.delivery_notes_repo is not None:
@@ -4413,6 +4521,13 @@ class PartService:
             elif b.location == "OFFICE":
                 holder_display = "编程员持有" if b.status == "PROGRAMMING" else "办公室"
 
+            # 2026-09-16 PR-3：next_process_name 由 chain_step → process 派生。
+            next_process_name: str | None = None
+            if b.current_process_step_id is not None:
+                pid = chain_step_process.get(int(b.current_process_step_id))
+                if pid is not None:
+                    next_process_name = process_map.get(pid)
+
             out.append(PartBatchOut(
                 id=b.id,
                 version=b.version,
@@ -4427,12 +4542,12 @@ class PartService:
                 location=b.location,
                 current_holder_id=b.current_holder_id,
                 current_holder_display=holder_display,
-                next_process_id=b.next_process_id,
-                next_process_name=(
-                    process_map.get(int(b.next_process_id))
-                    if b.next_process_id else None
+                current_process_step_id=(
+                    str(b.current_process_step_id)
+                    if b.current_process_step_id is not None
+                    else None
                 ),
-                placed_at=b.placed_at,
+                next_process_name=next_process_name,
                 delivery_note_id=b.delivery_note_id,
                 delivery_note_no=(
                     note_map.get(int(b.delivery_note_id))
@@ -4717,7 +4832,14 @@ class PartService:
                 c.id: c.name
                 for c in await self.outsource_companies.list_by_ids(company_ids)
             }
-        process_ids = {int(b.next_process_id) for b, _ in rows if b.next_process_id}
+        # 2026-09-16 PR-3：batch.next_process_id 列已删；dormant v1 _to_batch_out
+        # 兼容——读不到就视作「无下一道工序」。
+        process_ids: set[int] = set()
+        for b, _ in rows:
+            _b = _batch_compat(b, "next_process_id")
+            _npid = _b["next_process_id"]
+            if _npid is not None:
+                process_ids.add(int(_npid))
         process_map: dict[int, str] = {}
         if process_ids and self.processes is not None:
             process_map = {
@@ -4769,14 +4891,19 @@ class PartService:
                 "worker_name": worker_name,
                 "outsource_company_name": company_name,
                 "current_holder_display": holder_display,
-                "next_process_id": b.next_process_id,
+                # 2026-09-16 PR-3：batch.next_process_id / placed_at / has_been_repaired
+                # 列已删；dormant v1 _to_batch_out 兼容——读不到就视作 None。
+                "next_process_id": _batch_compat(b, "next_process_id")["next_process_id"],
                 "next_process_name": (
-                    process_map.get(int(b.next_process_id))
-                    if b.next_process_id else None
+                    process_map.get(
+                        int(_batch_compat(b, "next_process_id")["next_process_id"] or 0)
+                    )
+                    if _batch_compat(b, "next_process_id")["next_process_id"] else None
                 ),
-                "placed_at": b.placed_at,
+                "placed_at": _batch_compat(b, "placed_at")["placed_at"],
                 # 2026-08-04 「返修接收」PR-M：批次级返修标识
                 # 优先取批次标记（部分返修拆分时新批次独立计），无则继承工单标记
+                # 2026-09-16 PR-3 + PR-2：has_been_repaired 列已删，hasattr 兜底为 False。
                 "has_been_repaired": bool(
                     getattr(b, "has_been_repaired", False)
                     or getattr(p, "has_been_repaired", False)

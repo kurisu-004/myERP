@@ -95,9 +95,12 @@ class FakePartBatchRepository:
             b.quantity = quantity if quantity is not None else part.quantity
             b.status = part.status
             b.location = part.location
-            b.current_holder_id = part.current_holder_id
-            b.next_process_id = part.next_process_id
-            b.placed_at = part.placed_at
+            # 2026-09-16 PR-2 + PR-3：t_part 的 current_holder_id / placed_at /
+            # has_been_repaired 列已删；t_part_batch 的 next_process_id /
+            # placed_at 列也已删。这些字段全部用 getattr 兜底，Mock(spec=TPart)
+            # 访问已删字段会抛 AttributeError（spec 强制）。
+            b.current_holder_id = getattr(part, "current_holder_id", None)
+            b.current_process_step_id = getattr(part, "current_process_step_id", None)
             b.delivery_note_id = None
             b.parent_batch_id = None
             b.deleted_at = None
@@ -112,9 +115,8 @@ class FakePartBatchRepository:
             quantity=quantity if quantity is not None else part.quantity,
             status=part.status,
             location=part.location,
-            current_holder_id=part.current_holder_id,
-            next_process_id=part.next_process_id,
-            placed_at=part.placed_at,
+            current_holder_id=getattr(part, "current_holder_id", None),
+            current_process_step_id=getattr(part, "current_process_step_id", None),
         )
         b.version = 0
         self.store[b.id] = b

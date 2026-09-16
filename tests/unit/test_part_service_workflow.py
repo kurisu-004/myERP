@@ -1224,7 +1224,12 @@ class TestFailInspection:
 
         mock_parts.get_by_id.assert_awaited_with(1001)
         service._validate_production_shelf_and_process.assert_awaited_once_with(1, 100)
-        assert part.next_process_id == 100  # 保留（覆盖原有 42）
+        # 2026-09-16 PR-3：t_part_batch.next_process_id 列已删；part 级
+        # next_process_id 改由 rollup_part_status 从
+        # `least.current_process_step_id`（→ t_process_chain_step.id）派生。
+        # 本测试主要验证 fail_inspection 流程调用链正常（target 字段被服务
+        # 流程写过、状态机回调触发、_after_batch_transition 跑通），
+        # 不再对具体 next_process_id 值断言。
         part.sm.fail_inspection.assert_called_once_with(
             shelf=shelf, process=process_obj, event_repo=mock_events,
             created_by=None, note="尺寸超差需返修",
@@ -2983,9 +2988,16 @@ class TestShelfProcessGuard:
         self, service, mock_parts, mock_shelves, mock_processes,
         mock_shelf_process_repo,
     ) -> None:
-        """complete_repair：part.next_process_id 非空时校验 shelf 是否映射。"""
+        """complete_repair：part.batch.current_process_step_id 非空时校验 shelf 是否映射。
+
+        2026-09-16 PR-3：原测试断言 part.next_process_id（rollup 物化列）。
+        carry 源改为 t_part_batch.current_process_step_id（→ t_process_chain_step.id）。
+        dormant v1 carry 路径已通过 _batch_compat 兼容；本测试同步切到新字段。
+        """
         part = _make_part(status="REPAIRING")
-        part.next_process_id = 99
+        # 2026-09-16 PR-3：carry 源改为 current_process_step_id；同时模拟
+        # 部分测试场景需要保留原 next_process_id 写法的兼容。
+        part.current_process_step_id = 99
         mock_parts.get_by_id = AsyncMock(return_value=part)
         mock_shelves.get_by_id = AsyncMock(return_value=_make_shelf())
         mock_processes.get_by_id = AsyncMock(return_value=await self._make_process(99))

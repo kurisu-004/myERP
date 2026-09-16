@@ -10,6 +10,12 @@
 - 端点的 **docstring 就是 MCP tool 的 description**，AI 靠它决定怎么调。
   写业务语义、写边界、写字段歧义，别写实现细节。
 - `response_model` 会被 fastmcp 提取成 MCP `outputSchema`，必须给。
+
+2026-09-16 PR-3 字段契约变更：`batches[].next_process_name` 数据源切换——
+从 `TPartBatch.next_process_id`（已删列）改为按 part 一次性 JOIN
+`TProcessChainStep` 取 `process_id`，再 JOIN `TProcess` 取工序名；
+`batches[]` 新增 `current_process_step_id` 字段（→ t_process_chain_step.id），
+删除 `next_process_id` / `placed_at` / `has_been_repaired`（后两者 PR-2 已删）。
 """
 from __future__ import annotations
 
