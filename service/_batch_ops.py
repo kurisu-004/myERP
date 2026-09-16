@@ -9,10 +9,11 @@ commit 由调用方所在请求/任务统一负责。
 2026-09-16 PR-3：
 - `split_batch` 不再继承源批次的 ``next_process_id`` / ``placed_at``（已删列），
   改为继承 ``current_process_step_id``（→ t_process_chain_step.id）。
-- `rollup_part_status` 仍把「最落后」活跃批次的 ``current_process_step_id``
-  写回 part 的 ``next_process_id`` 物化列（v1 端用作 rollup 缓存；Rust v2 端
-  也会从同源派生）。Rust v2 端最终会替换为从 step.process_id 派生的语义，
-  v1 端的语义短期保留以不破坏现有 v1 API 读路径。
+- `rollup_part_status` PR-3 第 1/3 轮修复：写入 part.next_process_id（物化列）
+  前先按 least.current_process_step_id 取对应 chain step 的 process_id，再写
+  process_id（而非 step.id）。v1 业务端点已 dormant，本字段仅打印 / MCP
+  旁路消费；写 process_id 可让 dormant 读端 `process_map[process_id]` 仍
+  取到正确工序名（写 step.id 会落空）。Rust v2 端会从同源派生。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from fastapi import status as http_status
 
 from core.error_code import ErrCode
 from core.exception import BizError
-from model import TPart, TPartBatch, TPartEvent
+from model import TPart, TPartBatch, TPartEvent, TProcessChainStep
 from model.enums import PartEventType, PartStatus
 from repository.part_batch import PartBatchRepository
 from repository.part_event import PartEventRepository
@@ -131,11 +132,13 @@ async def rollup_part_status(
       释放 serial_no（回池），写工单级终态事件（batch_id=NULL）。
     - 全部活跃批次都已 DELIVERED 且 actual_delivery_date 未填 → 记今天。
 
-    2026-09-16 PR-3：part.next_process_id 仍是 rollup 物化列；v1 端暂保留
-    当前持久口径（直接复制最落后批次的 current_process_step_id 当作
-    next_process_id 值；语义上有损——step.id 不是 process.id——v1 业务
-    端点已 dormant，不暴露给前端；Rust v2 端会改写为从 step.process_id
-    派生）。v1 仅打印端点 / MCP 路径不依赖该字段的语义正确性。
+    2026-09-16 PR-3 第 1/3 轮修复：part.next_process_id（rollup 物化列）写
+    入前先按 least.current_process_step_id 取对应 chain step 的 process_id，
+    再写 process_id（而非 step.id）；最落后批次无 step / step 已软删 → None。
+    之前直接复制 step.id 的写法会让下游打印 / MCP 旁路按 step.id 查
+    t_process 落空。v1 业务端点已 dormant，仅本字段的 dormant 读端（print /
+    MCP）消费此值，写 process_id 可让 `process_map[process_id]` 仍取到正确
+    工序名。Rust v2 端从同源派生，语义对齐。
     """
     all_batches = await batches.list_by_part(part.id)
     if not all_batches:
@@ -173,11 +176,24 @@ async def rollup_part_status(
     part.status = least.status
     part.location = least.location
     part.current_holder_id = least.current_holder_id
-    # 2026-09-16 PR-3：t_part_batch.next_process_id 列已删；这里直接写
-    # current_process_step_id 到 part.next_process_id 物化列作为缓存，
-    # v1 dormant 业务端点不再消费，仅打印 / MCP 旁路使用，语义有损但
-    # 不影响正确性（详见 docstring）。
-    part.next_process_id = least.current_process_step_id
+    # 2026-09-16 PR-3 修复：t_part_batch.next_process_id 列已删；不能直接写
+    # least.current_process_step_id（step.id）到 part.next_process_id
+    # （物化列期望 process.id，否则下游打印 / MCP 旁路会按 step.id 去查
+    # t_process 而落空）。先按 least.current_process_step_id 取对应 chain
+    # step 的 process_id 再写入；最落后批次无 step / step 已软删 → None。
+    # v1 业务端点已 dormant，本字段仅打印 / MCP 旁路消费，dormant 读端用
+    # process_map[process_id] 仍能取到正确工序名（详见模块 docstring）。
+    from sqlalchemy import select
+    least_step_pid: int | None = None
+    if least.current_process_step_id is not None:
+        pid_row = await batches.session.execute(
+            select(TProcessChainStep.process_id).where(
+                TProcessChainStep.id == least.current_process_step_id,
+                TProcessChainStep.deleted_at.is_(None),
+            )
+        )
+        least_step_pid = pid_row.scalar_one_or_none()
+    part.next_process_id = least_step_pid
     # 全部活跃批次都已送出（DELIVERED）→ 记实际交付日（仅首次）
     if (
         part.actual_delivery_date is None

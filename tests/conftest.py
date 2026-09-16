@@ -160,25 +160,79 @@ async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
         "ON t_part_batch (current_process_step_id)"
     ))
     # t_process_chain_step 表（PR-3 新增；只读镜像 Rust 端 017/026 迁移结构）
-    # 仅在 MCP 只读接口用，无需 strict 约束；缺则建。
+    # 2026-09-16 PR-3 第 1/3 轮修复：补 DDL 漂移（对齐 Rust 迁移 017）：
+    # - created_at / updated_at NOT NULL DEFAULT now()
+    # - created_by / updated_by NOT NULL
+    # - estimated_minutes CHECK >= 0
+    # - 部分唯一索引 uq_chain_step_chain_order
+    # - ix_chain_step_chain 改为 partial WHERE deleted_at IS NULL
+    # 测试 DB 由 conftest 启动时 wipe 重跑（_wipe_test_data_dir），建表
+    # 一定走 fresh DDL；若有历史残留库（SKIP_TEST_DB_LIFECYCLE=1 场景），
+    # 表内无数据时直接 ALTER COLUMN 即可，NOT NULL DEFAULT now() 兜底。
     await session.execute(text(
         "CREATE TABLE IF NOT EXISTS t_process_chain_step ("
         "    id bigint PRIMARY KEY, "
         "    chain_id bigint NOT NULL, "
         "    sort_order integer NOT NULL, "
         "    process_id bigint NOT NULL, "
-        "    estimated_minutes integer NOT NULL, "
+        "    estimated_minutes integer NOT NULL CHECK (estimated_minutes >= 0), "
         "    version integer NOT NULL DEFAULT 0, "
-        "    created_at timestamp NULL, "
-        "    created_by bigint NULL, "
-        "    updated_at timestamp NULL, "
-        "    updated_by bigint NULL, "
+        "    created_at timestamp NOT NULL DEFAULT now(), "
+        "    created_by bigint NOT NULL, "
+        "    updated_at timestamp NOT NULL DEFAULT now(), "
+        "    updated_by bigint NOT NULL, "
         "    deleted_at timestamp NULL"
         ")"
     ))
+    # 历史残留库兼容：把 nullable 老列补成 NOT NULL DEFAULT now()。
+    # 先 backfill NULL → now()/0，再 SET NOT NULL；PG 18 允许两步走。
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET created_at = now() "
+        "WHERE created_at IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN created_at SET DEFAULT now(), "
+        "ALTER COLUMN created_at SET NOT NULL"
+    ))
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET updated_at = now() "
+        "WHERE updated_at IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN updated_at SET DEFAULT now(), "
+        "ALTER COLUMN updated_at SET NOT NULL"
+    ))
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET created_by = 0 WHERE created_by IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN created_by SET NOT NULL"
+    ))
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET updated_by = 0 WHERE updated_by IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN updated_by SET NOT NULL"
+    ))
+    # 部分唯一索引（与 Rust 017 uq_chain_step_chain_order 对齐）
+    await session.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_step_chain_order "
+        "ON t_process_chain_step (chain_id, sort_order) "
+        "WHERE deleted_at IS NULL"
+    ))
+    # 部分索引（与 Rust 017 ix_chain_step_chain 对齐：WHERE deleted_at IS NULL）
+    # 历史残留库兼容：若旧的全列索引存在，先 DROP 再按 partial 重建。
+    await session.execute(text(
+        "DROP INDEX IF EXISTS ix_chain_step_chain"
+    ))
     await session.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_chain_step_chain "
-        "ON t_process_chain_step (chain_id)"
+        "ON t_process_chain_step (chain_id) "
+        "WHERE deleted_at IS NULL"
     ))
     await session.commit()
 

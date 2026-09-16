@@ -936,17 +936,23 @@ class PartService:
         await self._check_parent_assembly(part)
 
     async def create_root_batch(self, part: TPart) -> TPartBatch:
-        """新工单建根批次（batch_no=1，quantity=工单总量，状态跟随 part）。"""
+        """新工单建根批次（batch_no=1，quantity=工单总量，状态跟随 part）。
+
+        2026-09-16 PR-3 修复：t_part_batch 的 ``next_process_id`` / ``placed_at``
+        列已删（Rust 迁移 028），不再从 TPart 复制这两个物化字段。TPartBatch
+        仍保留 ``location`` / ``current_holder_id`` 两列，但 TPart 这两列也已删
+        （PR-2 / 迁移 027），用 ``getattr`` 兜底读 transient 属性；新建工单
+        默认 location=None + current_holder_id=None（批次仅 PENDING 状态，
+        尚未进入生产流）。
+        """
         root = TPartBatch(
             id=new_id(),
             part_id=part.id,
             batch_no=1,
             quantity=part.quantity,
             status=part.status,
-            location=part.location,
-            current_holder_id=part.current_holder_id,
-            next_process_id=part.next_process_id,
-            placed_at=part.placed_at,
+            location=getattr(part, "location", None),
+            current_holder_id=getattr(part, "current_holder_id", None),
         )
         root.created_by = self._user_id
         root.updated_by = self._user_id

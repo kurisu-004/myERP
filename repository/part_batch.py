@@ -12,8 +12,26 @@ from datetime import date, datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model import TPart, TPartBatch, TPartEvent
+from model import TPart, TPartBatch, TPartEvent, TProcessChainStep
 from model.enums import PartEventType, PartStatus
+
+
+def _chain_step_process_subq():
+    """2026-09-16 PR-3：t_part_batch.next_process_id 列已删（Rust 迁移 028），
+    改用 ``current_process_step_id → t_process_chain_step.process_id`` 派生
+    工序筛选条件。详见 ``repository/part.py::_chain_step_process_subq`` 同名
+    函数（两处语义一致；不抽公共是因两个仓库 import 各自的子模块就够了，
+    抽到 core 反而增加循环依赖风险）。
+    """
+    return (
+        select(TProcessChainStep.process_id)
+        .where(
+            TProcessChainStep.id == TPartBatch.current_process_step_id,
+            TProcessChainStep.deleted_at.is_(None),
+        )
+        .correlate(TPartBatch)
+        .scalar_subquery()
+    )
 
 
 class PartBatchRepository:
@@ -134,8 +152,11 @@ class PartBatchRepository:
                 TPartBatch.location == "PRODUCTION_SHELF",
                 TPartBatch.current_holder_id == shelf_id,
                 or_(
-                    TPartBatch.next_process_id.is_(None),
-                    TPartBatch.next_process_id.in_(mapped_process_ids),
+                    # 2026-09-16 PR-3：next_process_id 列已删，NULL 判断改用
+                    # current_process_step_id IS NULL（保持「无工序或工序不在
+                    # 映射集里都进列表」的旧语义）。
+                    TPartBatch.current_process_step_id.is_(None),
+                    _chain_step_process_subq().in_(mapped_process_ids),
                 ),
                 TPartBatch.deleted_at.is_(None),
                 TPart.deleted_at.is_(None),
@@ -166,8 +187,10 @@ class PartBatchRepository:
                 TPartBatch.location == "PRODUCTION_SHELF",
                 TPartBatch.current_holder_id.in_(shelf_ids),
                 or_(
-                    TPartBatch.next_process_id.is_(None),
-                    TPartBatch.next_process_id.in_(mapped_process_ids),
+                    # 2026-09-16 PR-3：next_process_id 列已删，NULL 判断改用
+                    # current_process_step_id IS NULL（语义同 list_for_work_type）。
+                    TPartBatch.current_process_step_id.is_(None),
+                    _chain_step_process_subq().in_(mapped_process_ids),
                 ),
                 TPartBatch.deleted_at.is_(None),
                 TPart.deleted_at.is_(None),

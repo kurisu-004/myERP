@@ -5,8 +5,27 @@ from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
-from model import TPart, TPartBatch, TPartEvent
+from model import TPart, TPartBatch, TPartEvent, TProcessChainStep
 from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
+
+
+def _chain_step_process_subq():
+    """2026-09-16 PR-3：t_part_batch.next_process_id 列已删（Rust 迁移 028），
+    改用 ``current_process_step_id → t_process_chain_step.process_id`` 派生
+    工序筛选条件。本函数返回 correlated scalar subquery，对每行 batch 取
+    其当前 step 的 process_id（未软删 step），NULL 表示批次尚未进入生产流
+    或所属 step 已软删。在 ``WHERE ... .in_(process_ids)`` 里替换原
+    ``TPartBatch.next_process_id.in_(process_ids)`` 即可。
+    """
+    return (
+        select(TProcessChainStep.process_id)
+        .where(
+            TProcessChainStep.id == TPartBatch.current_process_step_id,
+            TProcessChainStep.deleted_at.is_(None),
+        )
+        .correlate(TPartBatch)
+        .scalar_subquery()
+    )
 
 
 class PartRepository:
@@ -716,13 +735,14 @@ class PartRepository:
         - TPartBatch.current_holder_id = c2_shelf_id（必须在 C2 货架上）
         - TPartBatch.next_process_id IN process_ids（上游 service 已筛选 requires_approval=false 的 OUTSOURCE 工序）
 
-        排序：is_urgent DESC, planned_delivery_date ASC, id DESC
+排序：is_urgent DESC, planned_delivery_date ASC, id DESC
         """
         stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
             TPartBatch.status == "IN_PROCESS",
             TPartBatch.location == "PRODUCTION_SHELF",
             TPartBatch.current_holder_id == c2_shelf_id,
-            TPartBatch.next_process_id.in_(process_ids),
+            # 2026-09-16 PR-3：next_process_id 列已删，改为派生 step.process_id。
+            _chain_step_process_subq().in_(process_ids),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
@@ -735,7 +755,7 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
                 )
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
@@ -759,7 +779,8 @@ class PartRepository:
             TPartBatch.status == "IN_PROCESS",
             TPartBatch.location == "PRODUCTION_SHELF",
             TPartBatch.current_holder_id == c2_shelf_id,
-            TPartBatch.next_process_id.in_(process_ids),
+            # 2026-09-16 PR-3：next_process_id 列已删，改为派生 step.process_id。
+            _chain_step_process_subq().in_(process_ids),
         )
         if not include_deleted:
             stmt = stmt.where(TPart.deleted_at.is_(None))
@@ -772,7 +793,7 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
                 )
         stmt = stmt.with_only_columns(func.count(TPartBatch.id))
         result = await self.session.execute(stmt)
@@ -794,16 +815,17 @@ class PartRepository:
     ) -> list[tuple[TPartBatch, TPart]]:
         """直接发送外协候选（无需审批工序的两种来源状态合并）。行=批次（2026-07-29 批次化）。
 
-        谓词（2026-07-29 批次化；不再要求 c2_shelf_id；起始 / 中间外协都进列表）：
+        谓词（2026-07-29 批次化；2026-09-16 PR-3 派生 step.process_id）：
         - deleted_at IS NULL
-        - TPartBatch.next_process_id IN process_ids
+        - t_process_chain_step.process_id IN process_ids（由 batch.current_process_step_id 派生）
         - TPartBatch.status = PENDING（起始外协，OFFICE）
         - OR (TPartBatch.status = IN_PROCESS + TPartBatch.location = PRODUCTION_SHELF)（中间外协）
 
         C2 货架前置**只**保留在 send_to_outsource 服务层校验（中间外协路径）。
         """
         stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
-            TPartBatch.next_process_id.in_(process_ids),
+            # 2026-09-16 PR-3：next_process_id 列已删，改为派生 step.process_id。
+            _chain_step_process_subq().in_(process_ids),
             or_(
                 TPartBatch.status == "PENDING",
                 and_(
@@ -823,7 +845,7 @@ class PartRepository:
                 stmt = stmt.where(
                     TPart.drawing_no.ilike(f"%{kw}%")
                     | TPart.name.ilike(f"{kw}%")
-                    | TPart.serial_no.ilike(f"{kw}%")
+                    | TPart.serial_no.ilike(f"%{kw}%")
                 )
         stmt = stmt.order_by(
             TPart.is_urgent.desc(),
@@ -843,7 +865,8 @@ class PartRepository:
     ) -> int:
         """直接发送候选总数（按批次计；与 list_direct_outsource_sendable 同谓词）。"""
         stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
-            TPartBatch.next_process_id.in_(process_ids),
+            # 2026-09-16 PR-3：next_process_id 列已删，改为派生 step.process_id。
+            _chain_step_process_subq().in_(process_ids),
             or_(
                 TPartBatch.status == "PENDING",
                 and_(
@@ -882,10 +905,10 @@ class PartRepository:
     ) -> list[tuple[TPartBatch, TPart]]:
         """审批后外协可发送候选（需审批工序 + 有 APPROVED 报价 + 起始 / 中间外协来源）。行=批次。
 
-        谓词（2026-07-29 批次化）：
+        谓词（2026-07-29 批次化；2026-09-16 PR-3 派生 step.process_id）：
         - deleted_at IS NULL
         - TPart.id IN part_ids（service 预筛：至少有 1 条 APPROVED 报价的 part_id）
-        - TPartBatch.next_process_id IN process_ids（service 预筛：这些工序需要审批）
+        - t_process_chain_step.process_id IN process_ids（由 batch.current_process_step_id 派生；service 预筛：这些工序需要审批）
         - TPartBatch.status = PENDING（起始外协审批）
         - OR (TPartBatch.status = IN_PROCESS + TPartBatch.location = PRODUCTION_SHELF)（中间外协审批）
         """
@@ -893,7 +916,8 @@ class PartRepository:
             return []
         stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
             TPart.id.in_(part_ids),
-            TPartBatch.next_process_id.in_(process_ids),
+            # 2026-09-16 PR-3：next_process_id 列已删，改为派生 step.process_id。
+            _chain_step_process_subq().in_(process_ids),
             or_(
                 TPartBatch.status == "PENDING",
                 and_(
@@ -937,7 +961,8 @@ class PartRepository:
             return 0
         stmt = select(TPart, TPartBatch).join(TPartBatch, TPartBatch.part_id == TPart.id).where(
             TPart.id.in_(part_ids),
-            TPartBatch.next_process_id.in_(process_ids),
+            # 2026-09-16 PR-3：next_process_id 列已删，改为派生 step.process_id。
+            _chain_step_process_subq().in_(process_ids),
             or_(
                 TPartBatch.status == "PENDING",
                 and_(
