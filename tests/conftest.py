@@ -9,6 +9,16 @@
    容器和 volume 一并删除，下一次又是干净环境。
 
 副作用：开发库（5433）完全不会被触及。
+
+2026-09-17 PR-4 文档同步：`_apply_pr3_test_db_patch`（PR-3 第 1/3 轮修复）已通过
+本仓 SQL 比对与 Rust 迁移 017/026/028 一致——补 `t_part_batch.current_process_step_id`
+列 + 索引、t_process_chain_step 表 DDL（NOT NULL DEFAULT now() / estimated_minutes
+CHECK ≥ 0 / partial 唯一索引 uq_chain_step_chain_order / partial index
+ix_chain_step_chain）。**如 Rust 端 schema 变更（新增 / 修改
+t_process_chain_step / t_part_batch / t_part 列），必须同步更新本函数并跑一次
+`uv run pytest tests/unit/test_pr3_step_ify_fix.py` 验证 DDL 一致性**——单元测试
+`tests/unit/test_pr3_step_ify_fix.py::test_apply_pr3_test_db_patch_matches_rust_ddl`
+通过 `inspect.getsource` 比对本函数源码与 Rust 017 迁移 DDL 一致性。
 """
 from __future__ import annotations
 

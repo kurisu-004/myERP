@@ -10,6 +10,13 @@
 
 ⚠️ 与 `api/v1` 不同：`/api/mcp/*` 的响应**不走** `UnifiedResponseMiddleware` 信封，
 顶层就是这里定义的对象，没有 `{code, message, data}` 包装。
+
+2026-09-17 PR-4 文档同步：本仓 schema 与 Rust 契约对齐最终态（PR-2 + PR-3）——
+`t_part_batch.current_process_step_id`（→ t_process_chain_step.id）已就位；MCP 输出的
+`location_summary` 全部从「最落后」的活跃批次派生，不再依赖 t_part 已删的
+`location` / `current_holder_id` / `placed_at` 列；`actual_delivery_date` 已下掉，
+送达时间改读 events 里的 STATUS_CHANGED(→DELIVERED) created_at。后续字段级变更请同步
+刷新对应 description 与本仓 CLAUDE.md「最近重大重构」段。
 """
 from __future__ import annotations
 
