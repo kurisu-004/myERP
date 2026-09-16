@@ -57,14 +57,30 @@ class McpBatchItem(BaseModel):
             "`工人 张三` / `外协 XX电镀厂` / `编程员持有`。持有方已被删除时为 null"
         ),
     )
-    next_process_name: str | None = Field(
-        default=None, description="下一道待执行工序的名称；无待执行工序时为 null"
+    # 2026-09-16 PR-3 删除输出字段 `next_process_id` / `placed_at` /
+    # `has_been_repaired`（后两者 PR-2 已删，本次确认）：
+    # - `next_process_id`：原本输出 `t_part_batch.next_process_id`（t_process.id），
+    #   现列已删；语义由 `current_process_step_id` 取代（指向工艺链 step 而非直接
+    #   工序，未来支持分支 / 多 step 共享同一 process 时无需再加列）。
+    # - `placed_at`：原本输出 `t_part_batch.placed_at`（首次进入 ON_SHELF 时间），
+    #   现列已删；看板「压了多久」请改查 `t_part_event` 中 PLACED_ON_SHELF 事件
+    #   的 created_at（v1 看板已 dormant，v2 侧负责）。
+    # - `has_been_repaired`：PR-2 已删，返修轨迹请读 events 里的
+    #   REPAIR_STARTED / REPAIR_COMPLETED。
+    current_process_step_id: IdStr = Field(
+        default=None,
+        description=(
+            "2026-09-16 PR-3 新增：本批次在工艺链上的当前 step id（→ t_process_chain_step.id）。"
+            "无工艺链或 step 已被清除时为 null。下一步要执行的工序名见 `next_process_name`，"
+            "由 `current_process_step_id → t_process_chain_step.process_id → t_process.name` 派生"
+        ),
     )
-    # 2026-09-16 删除 `has_been_repaired` 输出字段（t_part 瘦身，Rust 迁移 027）：
-    # 返修标识无法归属到具体批次整体废弃；返修轨迹请读 events 里的
-    # REPAIR_STARTED / REPAIR_COMPLETED。
-    placed_at: datetime | None = Field(
-        default=None, description="进入当前位置的时间；据此可判断压了多久"
+    next_process_name: str | None = Field(
+        default=None,
+        description=(
+            "下一道待执行工序的名称，由 current_process_step_id 经 t_process_chain_step 派生。"
+            "无 step（null）或 step 关联的 process 已删时为 null"
+        ),
     )
 
 

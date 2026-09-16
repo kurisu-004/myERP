@@ -244,7 +244,18 @@ class PartOut(BaseModel):
 
 
 class PartBatchOut(BaseModel):
-    """批次监控出参（2026-07-29 批次化；详情页批次卡片）。"""
+    """批次监控出参（2026-07-29 批次化；详情页批次卡片）。
+
+    2026-09-16 PR-3 字段口径：
+    - 删 `next_process_id` / `placed_at` / `has_been_repaired`（后两者 PR-2 已删）；
+    - 新增 `current_process_step_id` 字段，逻辑外键 → t_process_chain_step.id；
+    - `next_process_name` 数据源从 `b.next_process_id`（已删列）改为由
+      `current_process_step_id → t_process_chain_step.process_id → t_process.name`
+      派生（service 层 list_batches 已实现）。
+
+    v1 PartDetail 详情页已 dormant（2026-09-15 Phase 5 起前端业务全走 v2），
+    本 schema 仅作为 service 内部接口契约与测试夹具使用；不暴露给前端。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -260,17 +271,21 @@ class PartBatchOut(BaseModel):
     current_holder_display: str | None = Field(
         default=None, description="所在位置的人类可读描述（同 PartOut）",
     )
-    next_process_id: IdStr = Field(default=None, description="下一道工序 id")
-    next_process_name: str | None = Field(default=None, description="下一道工序名称")
-    placed_at: datetime | None = Field(default=None, description="进入 ON_SHELF 时间")
+    # 2026-09-16 PR-3：本批次在工艺链上的当前 step id；下一道工序名见
+    # next_process_name，由 chain_step.process_id 派生。
+    current_process_step_id: IdStr = Field(
+        default=None, description="本批次在工艺链上的当前 step id；语义替代原 next_process_id",
+    )
+    next_process_name: str | None = Field(
+        default=None, description="下一道工序名称（由 current_process_step_id 派生）",
+    )
     delivery_note_id: IdStr = Field(default=None, description="所属送货单 id")
     delivery_note_no: str | None = Field(default=None, description="所属送货单单号")
     parent_batch_id: IdStr = Field(default=None, description="拆分谱系：源批次 id")
-    # —— 2026-08-04 「返修接收」PR-M：批次级返修件标识 ——
-    has_been_repaired: bool = Field(
-        default=False,
-        description="本批次是否经历过返修；与服务层 t_part_batch.has_been_repaired 同步",
-    )
+    # 2026-09-16 PR-2 删除 `has_been_repaired`（PR-M 「返修接收」已落库但语义有损：
+    # 拆分后新旧批次归属不清；改由 events 里的 REPAIR_STARTED / REPAIR_COMPLETED
+    # 表达返修轨迹）。
+
     created_at: datetime
     updated_at: datetime
 

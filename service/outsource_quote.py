@@ -752,10 +752,22 @@ class OutsourceQuoteService:
             company_rows = await self.companies.list_by_ids(list(set(company_ids)))
             company_map = {c.id: c.name for c in company_rows}
 
-        process_ids = [
-            int(b.next_process_id)
-            for _, _, b in rows if b is not None and b.next_process_id
-        ]
+        # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant 外协报价 picker
+        # 兼容——读不到视作「无下一道工序」，process_map 不再收录。
+# t_part_batch.next_process_id / placed_at / has_been_repaired 已删，
+# v1 dormant 路径不再触发；本 picker 已无业务方，保留注释以备 v2 复活时切换到
+# t_process_chain_step.process_id 派生。
+        process_ids: list[int] = []
+        for _, _, b in rows:
+            if b is None:
+                continue
+            try:
+                npid = b.next_process_id
+            except AttributeError:
+                # 2026-09-16 PR-3：列已删，等价于「无 next_process_id」。
+                npid = None
+            if npid:
+                process_ids.append(int(npid))
         process_map: dict[int, str] = {}
         if process_ids:
             proc_rows = await self.processes.list_by_ids(list(set(process_ids)))
@@ -774,7 +786,16 @@ class OutsourceQuoteService:
                 customer_path = make_customer_path_cached(
                     cust_cache[part.customer_id], cust_cache,
                 )
-            next_process_id = batch.next_process_id if batch else None
+            # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant 外协
+            # 在途 picker 兼容——读不到视作 None。v2 端如需复活，请改为
+            # `batch.current_process_step_id → t_process_chain_step.process_id`。
+            next_process_id: int | None = None
+            if batch is not None:
+                try:
+                    next_process_id = batch.next_process_id
+                except AttributeError:
+                    # 2026-09-16 PR-3：列已删。
+                    next_process_id = None
             items.append(OutsourceInFlightItem(
                 part_id=part.id,
                 batch_id=batch.id if batch else None,
@@ -854,10 +875,17 @@ class OutsourceQuoteService:
 
         # 4. 批查 process（批次 next_process + 报价 process）/ company / customer
         # 2026-07-29：page_rows 是 list[tuple[TPartBatch, TPart]]
+        # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant 外协报价
+        # 兼容——读不到视作 None。v2 端如需复活，请按 t_process_chain_step 派生。
         need_proc_ids: set[int] = set()
         for batch, p in page_rows:
-            if batch.next_process_id is not None:
-                need_proc_ids.add(batch.next_process_id)
+            try:
+                npid = batch.next_process_id
+            except AttributeError:
+                # 2026-09-16 PR-3：列已删。
+                npid = None
+            if npid is not None:
+                need_proc_ids.add(npid)
             q = quotes_by_part.get(p.id)
             if q is not None:
                 need_proc_ids.add(q.process_id)
@@ -928,7 +956,11 @@ class OutsourceQuoteService:
                 ),
                 is_urgent=bool(getattr(p, "is_urgent", False)),
                 customer_path=customer_path,
-                next_process_id=batch.next_process_id,
+                # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 dormant
+                # 外协报价 picker 兼容——读不到视作 None。
+                next_process_id=(
+                    getattr(batch, "next_process_id", None)
+                ),
                 next_process_name=next_proc.name if next_proc else None,
                 # PR-H 2026-07-28：源货架 code（绑了外协工序的货架）
                 shelf_code=(

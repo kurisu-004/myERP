@@ -7,14 +7,22 @@
 - 输出面向 LLM 而非前端表格：位置渲染成人话、字段带完整语义。
 
 ⚠️ 部署约束：这些端点没有鉴权，靠 nginx / 安全组不暴露 `/api/mcp` 与 `/mcp` 来兜底。
+
+2026-09-16 PR-3：`batches[].next_process_name` 数据源切换——
+从 `TPartBatch.next_process_id`（已删列）改为按 part 一次性 JOIN
+`TProcessChainStep` 取 `process_id`，再 JOIN `TProcess` 取工序名。
+`McpBatchItem` 同时新增 `current_process_step_id` 字段直出 step id，
+删除 `next_process_id` / `placed_at` / `has_been_repaired`（后两者 PR-2 已删）。
 """
 from __future__ import annotations
 
 from datetime import date
 
+from sqlalchemy import select
+
 from core.exception import BizError
 from core.error_code import ErrCode
-from model import TPart, TPartBatch
+from model import TPart, TPartBatch, TProcessChainStep
 from model.enums import PartFileKind, PartSortKey, PartStatus, SortDir
 from repository.assembly import AssemblyRepository
 from repository.customer import CustomerRepository
@@ -295,8 +303,14 @@ class McpQueryService:
         （`_to_out` 那里是逐行 `list_by_ids([id])` 的 N+1）。
 
         `batches` 显式传入时用它，否则只取未软删批次。`get_by_serial` 要展示
-        含终态的**全部**批次，就把那份列表传进来——这样 holder / process 的 map
-        一轮就覆盖全，不用事后再补一次差集。
+        含终态的**全部**批次，就把那份列表传进来——这样 holder / chain_step /
+        process 的 map 一轮就覆盖全，不用事后再补一次差集。
+
+        2026-09-16 PR-3 同步加载 `TProcessChainStep`（一次 SELECT IN）：
+        - `chain_step_process`：step_id → process_id（batch.current_process_step_id
+          取 process 名的中间桥；未软删的 step）。
+        - 同时 `chain_step_process.values()` 直接喂给 `processes.list_by_ids`
+          取工序名，避免 MCP 输出 N+1。
         """
         part_ids = [p.id for p in rows]
 
@@ -308,16 +322,19 @@ class McpQueryService:
 
         # holder 是多态列，得先按 location 分流才知道该去哪张表查。
         # 2026-09-16 t_part 瘦身：工单级 location / current_holder_id 列已删，
-        # holder / next_process 的解析只遍历批次（part 级 location_summary
-        # 也从批次派生，见 _part_location_summary），不再读 TPart 的同名字段。
+        # holder 解析只遍历批次（part 级 location_summary 也从批次派生，
+        # 见 _part_location_summary），不再读 TPart 的同名字段。
+        # 2026-09-16 PR-3 进一步：`next_process_id` 列已删；next_process_name
+        # 改由 current_process_step_id → t_process_chain_step.process_id → t_process.name
+        # 派生，本方法末尾一轮 SELECT IN 拉齐 chain step 即可。
         shelf_ids: set[int] = set()
         worker_ids: set[int] = set()
         company_ids: set[int] = set()
-        process_ids: set[int] = set()
+        step_ids: set[int] = set()
         for holder in batches:
             self._collect_holder_id(holder, shelf_ids, worker_ids, company_ids)
-            if holder.next_process_id:
-                process_ids.add(int(holder.next_process_id))
+            if holder.current_process_step_id:
+                step_ids.add(int(holder.current_process_step_id))
 
         shelf_map = {
             s.id: s.code for s in await self.shelves.list_by_ids(sorted(shelf_ids))
@@ -329,6 +346,24 @@ class McpQueryService:
             c.id: c.name
             for c in await self.outsource_companies.list_by_ids(sorted(company_ids))
         }
+
+        # 2026-09-16 PR-3：chain step → process_id → process_name 的两跳派生。
+        # 第一跳：批量加载未软删 step 行（仅取 id + process_id 两列，省内存）。
+        chain_step_process: dict[int, int] = {}
+        if step_ids:
+            rows_steps = await self.part_batches.session.execute(
+                select(
+                    TProcessChainStep.id, TProcessChainStep.process_id,
+                ).where(
+                    TProcessChainStep.id.in_(sorted(step_ids)),
+                    TProcessChainStep.deleted_at.is_(None),
+                )
+            )
+            chain_step_process = {
+                int(sid): int(pid) for sid, pid in rows_steps.all()
+            }
+        # 第二跳：用上一步收集到的 process_id 去批量取工序名。
+        process_ids = set(chain_step_process.values())
         process_map = {
             p.id: p.name for p in await self.processes.list_by_ids(sorted(process_ids))
         }
@@ -358,6 +393,7 @@ class McpQueryService:
             "worker": worker_map,
             "company": company_map,
             "process": process_map,
+            "chain_step_process": chain_step_process,
             "customer_path": customer_path,
             "drawing": drawing,
         }
@@ -410,6 +446,19 @@ class McpQueryService:
 
     def _to_batch(self, b: TPartBatch, ctx: dict, *, serial_no: str | None = None) -> McpBatchItem:
         label = f"{serial_no}B{b.batch_no}" if serial_no else None
+        # 2026-09-16 PR-3：next_process_name 数据源从
+        # `b.next_process_id`（已删列）改为
+        # `b.current_process_step_id → ctx["chain_step_process"][...] → ctx["process"][...]`
+        # 的两跳派生。`placed_at` 字段同步删除（已删列）；`current_process_step_id`
+        # 直出 step id 供 AI 直接引用。
+        next_process_name: str | None = None
+        step_id = (
+            int(b.current_process_step_id) if b.current_process_step_id else None
+        )
+        if step_id is not None:
+            pid = ctx["chain_step_process"].get(step_id)
+            if pid is not None:
+                next_process_name = ctx["process"].get(pid)
         return McpBatchItem(
             batch_id=b.id,
             batch_no=b.batch_no,
@@ -418,10 +467,12 @@ class McpQueryService:
             status=b.status,
             location=b.location,
             holder_display=self._holder_display(b.location, b.current_holder_id, ctx),
-            next_process_name=(
-                ctx["process"].get(int(b.next_process_id)) if b.next_process_id else None
+            current_process_step_id=(
+                str(b.current_process_step_id)
+                if b.current_process_step_id is not None
+                else None
             ),
-            placed_at=b.placed_at,
+            next_process_name=next_process_name,
         )
 
     def _part_location_summary(

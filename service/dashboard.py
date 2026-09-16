@@ -116,10 +116,13 @@ async def build_snapshot(
     worker_name_map = await _fetch_worker_names(session, worker_ids)
 
     # 批量取工序名（适用三个区段的所有批次；Dashboard 大屏显示「下一工序」）
+    # 2026-09-16 PR-3：batch.next_process_id 列已删；v1 大屏 dormant 兼容——
+    # 读不到视作「无下一工序」，process_name_map 不收录。v2 端大屏如需复活，
+    # 请按 t_process_chain_step.process_id 派生。
     process_ids = list({
-        b.next_process_id
+        getattr(b, "next_process_id", None)
         for b, _ in on_prod_rows + on_insp_rows + worker_rows
-        if b.next_process_id is not None
+        if getattr(b, "next_process_id", None) is not None
     })
     process_name_map = await _fetch_process_names(session, process_ids)
 
@@ -463,16 +466,38 @@ def _to_dict(
     placed_at: Any | None = None,
     process_map: dict[int, str] | None = None,
 ) -> dict[str, Any]:
-    """卡片 dict。2026-07-29：传 batch 时数量/位置/工序/holder 取批次值。"""
+    """卡片 dict。2026-07-29：传 batch 时数量/位置/工序/holder 取批次值。
+
+    2026-09-16 PR-3：t_part_batch.next_process_id / placed_at / has_been_repaired
+    列已删（PR-2 已删 t_part 侧同名列）。v1 大屏 dormant：getattr 兜底取
+    None，process / placed_at 渲染退化；v2 端如需复活请按 t_process_chain_step
+    派生。
+    """
     cust_info = cust_map.get(part.customer_id, {})
-    np_id = batch.next_process_id if batch is not None else part.next_process_id
+    # 2026-09-16 PR-3：batch.next_process_id 列已删；dormant v1 大屏用 getattr 兜底。
+    if batch is not None:
+        try:
+            np_id = batch.next_process_id
+        except AttributeError:
+            np_id = None
+    else:
+        try:
+            np_id = part.next_process_id
+        except AttributeError:
+            np_id = None
     holder_id = (
         batch.current_holder_id if batch is not None else part.current_holder_id
     )
     quantity = batch.quantity if batch is not None else part.quantity
-    eff_placed_at = (
-        batch.placed_at if batch is not None else getattr(part, "placed_at", None)
-    )
+    # 2026-09-16 PR-3：batch.placed_at / part.placed_at 列均已删；getattr 兜底。
+    eff_placed_at: Any | None = None
+    if batch is not None:
+        try:
+            eff_placed_at = batch.placed_at
+        except AttributeError:
+            eff_placed_at = None
+    else:
+        eff_placed_at = getattr(part, "placed_at", None)
     if placed_at is not None:
         eff_placed_at = placed_at
     return {

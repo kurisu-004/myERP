@@ -139,6 +139,104 @@ def _run_alembic_upgrade_head_sync() -> None:
     command.upgrade(cfg, "heads")
 
 
+async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
+    """2026-09-16 PR-3 测试 DB 补丁。
+
+    与 PR-2 「不动 alembic 迁移」惯例一致：生产 schema 变更由 Rust v2 后端
+    迁移 028（t_part_batch 删 next_process_id / placed_at + 加
+    current_process_step_id）+ 迁移 017/026（建 t_process_chain_step）承担。
+
+    测试 DB 只走 alembic，不知道这些变更；这里用幂等 DDL 把缺失列 / 表补上，
+    使 ORM 模型与测试库对齐。生产 DB 永不跑本函数。
+    """
+    # t_part_batch 加 current_process_step_id 列（PR-3 新增；幂等）
+    await session.execute(text(
+        "ALTER TABLE t_part_batch "
+        "ADD COLUMN IF NOT EXISTS current_process_step_id bigint NULL"
+    ))
+    # 给该列加索引（对应 ORM 上的 index=True；幂等）
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_t_part_batch_current_process_step_id "
+        "ON t_part_batch (current_process_step_id)"
+    ))
+    # t_process_chain_step 表（PR-3 新增；只读镜像 Rust 端 017/026 迁移结构）
+    # 2026-09-16 PR-3 第 1/3 轮修复：补 DDL 漂移（对齐 Rust 迁移 017）：
+    # - created_at / updated_at NOT NULL DEFAULT now()
+    # - created_by / updated_by NOT NULL
+    # - estimated_minutes CHECK >= 0
+    # - 部分唯一索引 uq_chain_step_chain_order
+    # - ix_chain_step_chain 改为 partial WHERE deleted_at IS NULL
+    # 测试 DB 由 conftest 启动时 wipe 重跑（_wipe_test_data_dir），建表
+    # 一定走 fresh DDL；若有历史残留库（SKIP_TEST_DB_LIFECYCLE=1 场景），
+    # 表内无数据时直接 ALTER COLUMN 即可，NOT NULL DEFAULT now() 兜底。
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS t_process_chain_step ("
+        "    id bigint PRIMARY KEY, "
+        "    chain_id bigint NOT NULL, "
+        "    sort_order integer NOT NULL, "
+        "    process_id bigint NOT NULL, "
+        "    estimated_minutes integer NOT NULL CHECK (estimated_minutes >= 0), "
+        "    version integer NOT NULL DEFAULT 0, "
+        "    created_at timestamp NOT NULL DEFAULT now(), "
+        "    created_by bigint NOT NULL, "
+        "    updated_at timestamp NOT NULL DEFAULT now(), "
+        "    updated_by bigint NOT NULL, "
+        "    deleted_at timestamp NULL"
+        ")"
+    ))
+    # 历史残留库兼容：把 nullable 老列补成 NOT NULL DEFAULT now()。
+    # 先 backfill NULL → now()/0，再 SET NOT NULL；PG 18 允许两步走。
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET created_at = now() "
+        "WHERE created_at IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN created_at SET DEFAULT now(), "
+        "ALTER COLUMN created_at SET NOT NULL"
+    ))
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET updated_at = now() "
+        "WHERE updated_at IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN updated_at SET DEFAULT now(), "
+        "ALTER COLUMN updated_at SET NOT NULL"
+    ))
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET created_by = 0 WHERE created_by IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN created_by SET NOT NULL"
+    ))
+    await session.execute(text(
+        "UPDATE t_process_chain_step SET updated_by = 0 WHERE updated_by IS NULL"
+    ))
+    await session.execute(text(
+        "ALTER TABLE t_process_chain_step "
+        "ALTER COLUMN updated_by SET NOT NULL"
+    ))
+    # 部分唯一索引（与 Rust 017 uq_chain_step_chain_order 对齐）
+    await session.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_step_chain_order "
+        "ON t_process_chain_step (chain_id, sort_order) "
+        "WHERE deleted_at IS NULL"
+    ))
+    # 部分索引（与 Rust 017 ix_chain_step_chain 对齐：WHERE deleted_at IS NULL）
+    # 历史残留库兼容：若旧的全列索引存在，先 DROP 再按 partial 重建。
+    await session.execute(text(
+        "DROP INDEX IF EXISTS ix_chain_step_chain"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_chain_step_chain "
+        "ON t_process_chain_step (chain_id) "
+        "WHERE deleted_at IS NULL"
+    ))
+    await session.commit()
+
+
 def _wipe_test_data_dir() -> None:
     """把宿主机上 `data/postgres-test/` 整个删掉。
 
@@ -191,6 +289,9 @@ async def _postgres_test_lifecycle():
         # 开发者在外部已经把容器起好了；只跑迁移 + 等 SELECT 1 通。
         await _probe_db_ready()
         await asyncio.to_thread(_run_alembic_upgrade_head_sync)
+        # 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列 + 表），生产 DB 不跑。
+        async with SessionLocal() as s:
+            await _apply_pr3_test_db_patch(s)
         yield
         return
 
@@ -210,7 +311,7 @@ async def _postgres_test_lifecycle():
 
     # 4. 等 healthy（docker healthcheck）
     _wait_container_healthy()
-    print("[test-db] container is healthy")
+    print("[test-db] container is already running")
 
     # 5. 再用真实 SELECT 1 探一次。pg_isready 可能过早 healthy（PG 启动早期会断连）。
     await _probe_db_ready()
@@ -220,9 +321,13 @@ async def _postgres_test_lifecycle():
     await asyncio.to_thread(_run_alembic_upgrade_head_sync)
     print("[test-db] alembic upgrade head done")
 
+    # 7. 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列 + 表），生产 DB 不跑。
+    async with SessionLocal() as s:
+        await _apply_pr3_test_db_patch(s)
+
     yield  # ---- tests run here ----
 
-    # 6. session 结束：清容器 + 清 volume
+    # 8. session 结束：清容器 + 清 volume
     down = _compose("down", "-v")
     print(f"[test-db] docker compose down -v:\n{down.stdout.strip()}")
 
@@ -268,6 +373,11 @@ async def seed_root_batch(session: AsyncSession, part) -> "object":
     根批次指定位置/holder，把这些值作为 **transient 属性** 挂在 part 实例上
     （`part.location = ...`，与 repository 的 last_inspection_fail_note
     同款约定），这里用 getattr 镜像进批次；不挂则批次对应字段为 NULL。
+
+    2026-09-16 PR-3（Rust 迁移 028）：t_part_batch 的 `next_process_id` /
+    `placed_at` 列也已删，改为 `current_process_step_id`（→ t_process_chain_step.id）。
+    t_part.next_process_id 仍保留（rollup 物化列），但 fixture 端通常无工艺链
+    关联，传 None 即可。
     """
     from model import TPartBatch
 
@@ -278,8 +388,7 @@ async def seed_root_batch(session: AsyncSession, part) -> "object":
         status=part.status,
         location=getattr(part, "location", None),
         current_holder_id=getattr(part, "current_holder_id", None),
-        next_process_id=part.next_process_id,
-        placed_at=getattr(part, "placed_at", None),
+        current_process_step_id=getattr(part, "current_process_step_id", None),
         delivery_note_id=getattr(part, "delivery_note_id", None),
     )
     session.add(batch)
