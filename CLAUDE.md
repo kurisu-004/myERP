@@ -2,6 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 最近重大重构（2026-09-17 更新）
+
+2026-09-16/17 连续完成 **PR-2（feat/part-slim-down）+ PR-3（feat/batch-step-ify）**：
+
+- **`t_part` 瘦身**（PR-2，对齐 Rust 迁移 027）：删除 `actual_delivery_date` / `location` /
+  `current_holder_id` / `placed_at` / `delivery_note_id` / `has_been_repaired` 列；rollup
+  物化列（`status` / `next_process_id` 等）保留。状态机 + 批次 rollup 已接管派生字段。
+- **`t_part_batch` 工艺链 step 切换**（PR-3，对齐 Rust 迁移 028）：删除
+  `next_process_id`（→ t_process.id）/ `placed_at` 列，新增 `current_process_step_id`（→
+  t_process_chain_step.id）；同步建 t_process_chain_step 表。
+- **`t_assembly` 同步瘦身**：删除 `actual_delivery_date` 列。
+- **本仓 model 同步**：`model/part.py` / `model/part_batch.py` / `model/assembly.py` 已
+  全部删除对应列并补 2026-09-16 注释。`MCP` 输出契约（`schema/mcp.py`）同步：
+  `McpPartDetail` 删 `actual_delivery_date`、`McpBatchItem` 删 `next_process_id` /
+  `placed_at` / `has_been_repaired` 并新增 `current_process_step_id` + `next_process_name`
+  派生字段，`McpDueRow.location_summary` 改从「最落后」活跃批次派生。
+- **dormant 路径处置**（25 个 v1 测试 + `test_part_batch_tree`）：PR-2/3 期间按文件级
+  `pytest.skip()` 全部 skip；`service/part.py` 内 v1 dormant 状态机路径未删，加
+  `_batch_compat` 兼容助手 + 列已删注释 + try/except pass 兜底，确保仍能 import 与
+  unit test mock 不抛 AttributeError。
+- **后续若 v1 业务复活**：需按 PR-2/3 commit log 反向恢复列（MCP / service / model
+  同步），并配合 backend-rust v2 复活 PR 全栈改造（单独列恢复步骤见 backend-rust 仓
+  `docs/architecture.md` 的「v1 复活指引」），不建议在本仓内独立复活 v1 路径。
+
 ## 项目概述
 
 myERP —— 零件加工订单管理系统。覆盖法拉电子、路达等一级客户及其下分厂/部门的零件下单、生产跟踪、外协、交付闭环。

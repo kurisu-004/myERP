@@ -8,8 +8,14 @@
 > 3. 仅保留一个 `名称` 字段（对应品名/零件名称）。
 > 4. 订单状态枚举：`待生产 / 生产中 / 品检中 / 待送货 / 已送货 / 返修中 / 已完成 / 已取消`。
 > 5. **不使用物理外键** —— 所有跨表引用都是普通列 + 普通索引；引用完整性、级联策略、防自环等都在 service 层处理。
-> 6. **所有表都有审计字段**：`created_at / created_by / updated_at / updated_by / deleted_at`，由 `model/base.Base` 统一声明，所有 model 自动继承。
+> 6. **所有表都有审计字段**：`created_at / created_by / updated_at / updated_by / deleted_at`，由 `model/audit.AuditMixin` 提供（`Base` 仅 abstract，不带字段）；业务主表继承 `AuditMixin`，事件表继承 `EventTimestampMixin`（仅 `created_at`）。详见根仓 `CLAUDE.md` §2 与 `model/audit.py`。
 > 7. `t_part` 加 `is_urgent` 字段（是否加急）；列表查询支持按 `drawing_no` / `name` 模糊匹配，并按 `is_urgent` / `status` 过滤、按 `planned_delivery_date` 排序。
+
+> 2026-09-17 PR-4 文档同步：本文件 4.1 / 4.2 / 4.4 段 ER 图 + 列注释中审计字段
+> 来源从「`Base` 声明」更正为「`AuditMixin`」（与 `model/audit.py` 实现一致）；
+> 4.4 段补充 `EventTimestampMixin` 备注；新增 4.6 段说明 `t_part` /
+> `t_part_batch` / `t_assembly` PR-2/3 列删除（瘦身 + 工艺链 step 切换）。
+> **PR-4 不修业务字段语义，只对齐 ORM 注释与 schema 真实状态。**
 
 ---
 
@@ -88,11 +94,11 @@ erDiagram
 | id | BIGINT | 是 | AUTO_INCREMENT | 主键，自增 |
 | name | VARCHAR(100) | 是 | — | 客户名称，如"法拉电子"、"母排厂"、"开发一部197" |
 | parent_id | BIGINT | 否 | NULL | **逻辑**父节点 id（无 DB 外键）；service 层校验存在性、防自环 |
-| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，Base 声明） |
-| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，Base 声明） |
-| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，Base 声明） |
-| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，Base 声明） |
-| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，Base 声明） |
+| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，AuditMixin） |
+| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，AuditMixin） |
+| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，AuditMixin） |
+| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，AuditMixin） |
+| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，AuditMixin） |
 
 **索引**
 - PRIMARY KEY (`id`)
@@ -126,11 +132,11 @@ erDiagram
 | status | ENUM(part_status) | 是 | `PENDING` | 见 4.3 |
 | is_urgent | BOOLEAN | 是 | false | 是否加急；用于加急看板、列表置顶 |
 | customer_id | BIGINT | 是 | — | **逻辑**外键，指向 `t_customer.id` 的叶子节点（无 DB 外键）；service 层校验存在性 |
-| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，Base 声明） |
-| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，Base 声明） |
-| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，Base 声明） |
-| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，Base 声明） |
-| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，Base 声明） |
+| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，AuditMixin） |
+| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，AuditMixin） |
+| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，AuditMixin） |
+| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，AuditMixin） |
+| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，AuditMixin） |
 
 **索引**
 - PRIMARY KEY (`id`)
@@ -175,22 +181,50 @@ PENDING → IN_PROCESS → INSPECTION → READY_TO_SHIP → DELIVERED → COMPLE
 
 ---
 
-### 4.4 审计字段（Base 统一声明）
+### 4.4 审计字段（AuditMixin / EventTimestampMixin 提供）
 
-所有表通过继承 `model.base.Base` 自动获得以下字段，无需在子类重复声明：
+**业务主表**（t_part / t_customer / t_assembly / ...）继承 `model.audit.AuditMixin`
+自动获得以下字段，**`Base` 仅 `__abstract__` 占位不带字段**，不要在子类重复声明：
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
+| version | INTEGER | 是 | `0` | 乐观锁列；SQLAlchemy `version_id_col` 注入；详见 CLAUDE.md §12 |
 | created_at | DATETIME | 是 | `now()` | 创建时间，DB 默认值 |
 | created_by | BIGINT | 否 | NULL | 创建人 id，当前无用户体系，由调用方传 |
 | updated_at | DATETIME | 是 | `now()` on update | 更新时间，DB 自动维护 |
 | updated_by | BIGINT | 否 | NULL | 最后修改人 id，由调用方传 |
 | deleted_at | DATETIME | 否 | NULL | 软删时间。NULL = 未删除，非空 = 已删除时间 |
 
+**事件/日志表**（t_part_event / t_outsource_quote_event / t_pickup_skip_event / ...）
+继承 `model.audit.EventTimestampMixin`，**仅获得 `created_at`**（append-only，不加
+`version` / `updated_at` 等可变更字段）。
+
 **约定**
 - 默认查询条件是 `deleted_at IS NULL`；repository 已经统一处理。
 - 删除操作走 `soft_delete(part)`（写 `deleted_at = utcnow()`），**禁止**直接 `session.delete()`。
 - `updated_at` 由 SQLAlchemy `onupdate=func.now()` 自动维护；`updated_by` 必须在 service 层显式赋值。
+
+### 4.6 PR-2/3 列变更（2026-09-17 复核）
+
+PR-2（feat/part-slim-down，对齐 Rust 迁移 027）+ PR-3（feat/batch-step-ify，
+对齐 Rust 迁移 028）后，表结构发生以下变更（生产 schema 由 alembic 不动、
+由 backend-rust v2 端迁移承担；本仓仅 ORM 同步）：
+
+- **`t_part` 删列**：`actual_delivery_date` / `location` / `current_holder_id` /
+  `placed_at` / `delivery_note_id` / `has_been_repaired`（送回 t_part 层面，由
+  `t_part_batch` 批次级 rollup 接管）；rollup 物化列（`status` /
+  `next_process_id`）保留。
+- **`t_part_batch` 删列 + 新列**：删 `next_process_id`（→ t_process.id） /
+  `placed_at` / `has_been_repaired`；新增 `current_process_step_id`（→
+  t_process_chain_step.id）。
+- **`t_assembly` 删列**：`actual_delivery_date`（装配体实际交付日期随子件批次
+  归属在 v2 侧重新设计，本表不再物化）。
+- **新增表**：`t_process_chain_step`（PR-3，PR-2/3 期间 Rust 端迁移 017/026）。
+- **dormant 处置**：v1 dormant 端点（自 2026-09-15 Phase 5 起前端业务全走 v2）
+  对应的 service / repository / 测试代码未删，加兼容兜底（`service/part.py`
+  `_batch_compat`、try-except pass、25 个 v1 测试 + `test_part_batch_tree` 文件级
+  skip）。**v1 业务复活需配合 backend-rust v2 复活 PR 全栈改造**，不建议在本仓
+  单独复活（详见根仓 CLAUDE.md「最近重大重构」段）。
 
 ---
 

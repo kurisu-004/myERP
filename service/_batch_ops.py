@@ -14,6 +14,10 @@ commit 由调用方所在请求/任务统一负责。
   process_id（而非 step.id）。v1 业务端点已 dormant，本字段仅打印 / MCP
   旁路消费；写 process_id 可让 dormant 读端 `process_map[process_id]` 仍
   取到正确工序名（写 step.id 会落空）。Rust v2 端会从同源派生。
+
+2026-09-17 PR-4 复核：本文件仍活跃（`split_batch` / `rollup_part_status` 仍被
+`PartService._after_batch_transition` + `DeliveryNoteService` 调用，PR-3 已
+完成对齐）；dormant 路径评估仅针对 `service/part.py` 等纯 v1 端点。
 """
 from __future__ import annotations
 
