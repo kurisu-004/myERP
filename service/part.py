@@ -12,14 +12,30 @@
 校验；service 层只关心「传进来的 shelf_id 是否真的存在且生效」。
 
 2026-09-17 PR-4 复核：仍 dormant（v1 无前端入口；自 2026-09-15 Phase 5 起前端业务
-全走 v2）。本文件中大量方法 / 属性访问指向 PR-2/3 已删列
+全走 v2）。本文件中仍大量引用 PR-2/3 已删列
 （`t_part.location` / `current_holder_id` / `placed_at` / `actual_delivery_date` /
 `has_been_repaired`、`t_part_batch.next_process_id` / `placed_at` / `has_been_repaired`），
-均已加 `_batch_compat` / try-except pass / getattr(..., None) 兜底，确保仍能
-import 与 unit test mock 不抛 AttributeError。**不建议在本仓内独立复活 v1 路径**——
-v1 业务复活需配合 backend-rust v2 复活 PR 全栈改造（恢复已删列 + 状态机对齐 +
-前端扫码/领件入口），单独复活本仓会与 v2 schema 漂移。具体列恢复步骤见
-backend-rust 仓 `docs/architecture.md` 的「v1 复活指引」。
+兜底策略按方向不同：
+
+- **读取路径**：已加 `_batch_compat` / try-except pass / `getattr(..., None)`
+  兜底，确保仍能 import 与 unit test mock 不抛 AttributeError。
+- **写入路径**（**PR-4 不修**，留 PR-5 统一清理）：
+  - `create_part`（:1186）`actual_delivery_date=data.actual_delivery_date` —
+    ORM 已删列，构造时直接 TypeError；
+  - `create_part`（:1194）`part.location = "OFFICE"` — 静默 no-op（进
+    `__dict__`，不进 DB）；
+  - `_after_batch_transition`（:935-940）`refresh_for_state_machine(..., attrs=("status",
+    "location", "current_holder_id", "next_process_id", "serial_no",
+    "actual_delivery_date"))` — `location` / `current_holder_id` /
+    `actual_delivery_date` 在 ORM 已不存在，`session.refresh` KeyError。
+  以上三处均属 PR-2/3 时期债务，PR-4 仅在 docstring 内标注、不动业务代码；
+  处置方案由 PR-5 决定（策略 A 直接删 dormant 端点 / 策略 B 保守过滤
+  refresh_for_state_machine attrs）。
+
+**不建议在本仓内独立复活 v1 路径** —— v1 业务复活需配合 backend-rust v2
+复活 PR 全栈改造（恢复已删列 + 状态机对齐 + 前端扫码/领件入口），单独
+复活本仓会与 v2 schema 漂移。具体列恢复步骤见 backend-rust 仓
+`docs/architecture.md` 的「v1 复活指引」。
 """
 from __future__ import annotations
 

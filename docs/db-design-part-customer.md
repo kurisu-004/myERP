@@ -94,11 +94,11 @@ erDiagram
 | id | BIGINT | 是 | AUTO_INCREMENT | 主键，自增 |
 | name | VARCHAR(100) | 是 | — | 客户名称，如"法拉电子"、"母排厂"、"开发一部197" |
 | parent_id | BIGINT | 否 | NULL | **逻辑**父节点 id（无 DB 外键）；service 层校验存在性、防自环 |
-| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，Base 声明） |
-| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，Base 声明） |
-| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，Base 声明） |
-| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，Base 声明） |
-| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，Base 声明） |
+| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，AuditMixin） |
+| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，AuditMixin） |
+| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，AuditMixin） |
+| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，AuditMixin） |
+| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，AuditMixin） |
 
 **索引**
 - PRIMARY KEY (`id`)
@@ -132,11 +132,11 @@ erDiagram
 | status | ENUM(part_status) | 是 | `PENDING` | 见 4.3 |
 | is_urgent | BOOLEAN | 是 | false | 是否加急；用于加急看板、列表置顶 |
 | customer_id | BIGINT | 是 | — | **逻辑**外键，指向 `t_customer.id` 的叶子节点（无 DB 外键）；service 层校验存在性 |
-| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，Base 声明） |
-| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，Base 声明） |
-| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，Base 声明） |
-| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，Base 声明） |
-| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，Base 声明） |
+| created_at | DATETIME | 是 | `now()` | 创建时间（审计字段，AuditMixin） |
+| created_by | BIGINT | 否 | NULL | 创建人 id（审计字段，AuditMixin） |
+| updated_at | DATETIME | 是 | `now()` on update | 更新时间（审计字段，AuditMixin） |
+| updated_by | BIGINT | 否 | NULL | 最后修改人 id（审计字段，AuditMixin） |
+| deleted_at | DATETIME | 否 | NULL | 软删时间，非空表示已删除（审计字段，AuditMixin） |
 
 **索引**
 - PRIMARY KEY (`id`)

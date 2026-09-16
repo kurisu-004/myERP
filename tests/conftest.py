@@ -17,7 +17,7 @@ CHECK ≥ 0 / partial 唯一索引 uq_chain_step_chain_order / partial index
 ix_chain_step_chain）。**如 Rust 端 schema 变更（新增 / 修改
 t_process_chain_step / t_part_batch / t_part 列），必须同步更新本函数并跑一次
 `uv run pytest tests/unit/test_pr3_step_ify_fix.py` 验证 DDL 一致性**——单元测试
-`tests/unit/test_pr3_step_ify_fix.py::test_apply_pr3_test_db_patch_matches_rust_ddl`
+`tests/unit/test_pr3_step_ify_fix.py::test_pr3_ddl_drift_fix_mirrors_rust_017`
 通过 `inspect.getsource` 比对本函数源码与 Rust 017 迁移 DDL 一致性。
 """
 from __future__ import annotations
