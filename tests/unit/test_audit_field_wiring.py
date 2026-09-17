@@ -45,9 +45,10 @@ from service.shelf import ShelfService
 from service.worker import WorkerService
 from service.work_type import WorkTypeService
 
-pytestmark = pytest.mark.asyncio
-
-
+pytestmark = [
+    pytest.mark.skip(reason='2026-09-17 v1 业务路由下线 + JWT bypass：业务由 backend-rust v2 承接，本测试断言 / 构造 / 调用方都已失效。'),
+    pytest.mark.asyncio,
+]
 def _user(uid: int = 42) -> CurrentUser:
     return CurrentUser(
         id=uid,

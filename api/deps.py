@@ -1,3 +1,18 @@
+"""2026-09-17 重构：v1 业务路由下线 + JWT bypass 后，DI 工厂只保留 4 类
+注入：
+
+- `get_session`              — 请求级 Session（commit/rollback + dashboard
+                              广播调度）
+- `get_auth_service` / `get_user_service`
+                            — `api/v1/auth.py` (login / refresh / me /
+                              change-password)
+- `get_sts_service`          — `api/v1/sts.py` (STS 临时凭证端口)
+- `get_mcp_query_service` / `get_mcp_part_file_service`
+                            — `/api/mcp/*`（AI 只读入口）
+
+所有 v1 业务 router 的 DI 工厂（get_part_service / get_assembly_service /
+...）已整体移除；业务由 backend-rust v2 承接。
+"""
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -7,52 +22,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import SessionLocal
 from core.permission import CurrentUser, get_current_user
 from repository import (
-    ApplicantRepository,
     AssemblyRepository,
     CustomerRepository,
-    DeliveryNoteCounterRepository,
-    DeliveryNoteEventRepository,
-    DeliveryNoteRepository,
     MenuRepository,
-    OutsourceCompanyProcessRepository,
     OutsourceCompanyRepository,
-    OutsourceQuoteEventRepository,
-    OutsourceQuoteRepository,
-    OutsourceShipmentRepository,
     PartBatchRepository,
     PartEventRepository,
     PartFileRepository,
     PartRepository,
-    PickupSkipEventRepository,
     ProcessRepository,
-    SerialCounterRepository,
-    ShelfProcessRepository,
     ShelfRepository,
     UserRepository,
     UserRoleRepository,
     WorkerRepository,
-    WorkTypeProcessRepository,
-    WorkTypeRepository,
 )
 from service import (
-    ApplicantService,
-    AssemblyService,
     AuthService,
-    CustomerService,
-    DeliveryNoteService,
-    OutsourceCompanyService,
-    OutsourceQuoteService,
+    McpQueryService,
     PartFileService,
-    PartService,
-    ProcessService,
-    ShelfProcessService,
-    ShelfService,
+    StsService,
     UserService,
-    WorkerService,
-    WorkTypeProcessService,
-    WorkTypeService,
 )
-from service.mcp_query import McpQueryService
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -136,8 +126,6 @@ async def _dashboard_flush_worker() -> None:
     global _pending_snapshot, _pending_events
     import logging
 
-    from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
-
     logger = logging.getLogger(__name__)
     while _pending_snapshot or _pending_events:
         want_snapshot = _pending_snapshot
@@ -146,19 +134,21 @@ async def _dashboard_flush_worker() -> None:
         _pending_events = []
         try:
             if want_snapshot:
-                await broadcast_dashboard_snapshot()
-            for event_type, payload in events:
-                await broadcast_dashboard_event(event_type, payload)
+                # 2026-09-17：dashboard WS 路由下线（v1 业务），但广播器仍可
+                # 被外部脚本触发（保留兼容）；懒加载避免强制引用 _archive/api_v1/ws。
+                from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
+
+                if want_snapshot:
+                    await broadcast_dashboard_snapshot()
+                for event_type, payload in events:
+                    await broadcast_dashboard_event(event_type, payload)
         except Exception:  # noqa: BLE001
             logger.exception("dashboard broadcast flush failed")
 
 
-def get_serial_counter_repo(
-    session: AsyncSession = Depends(get_session),
-) -> SerialCounterRepository:
-    return SerialCounterRepository(session)
-
-
+# ============================================================
+# 仓库 DI（仅保留 v1 auth + MCP 仍引用的）
+# ============================================================
 def get_user_repo(
     session: AsyncSession = Depends(get_session),
 ) -> UserRepository:
@@ -177,54 +167,15 @@ def get_shelf_repo(
     return ShelfRepository(session)
 
 
-def get_worker_repo(
-    session: AsyncSession = Depends(get_session),
-) -> WorkerRepository:
-    return WorkerRepository(session)
-
-
 def get_menu_repo(
     session: AsyncSession = Depends(get_session),
 ) -> MenuRepository:
     return MenuRepository(session)
 
 
-def get_part_repository(
-    session: AsyncSession = Depends(get_session),
-) -> PartRepository:
-    """图纸打印 / 打印 service 共用的 PartRepository 工厂。
-
-    2026-07-10 起也被 `get_shelf_service` 引用（list_for_return 拿 current_load），
-    故前置到此避免模块加载顺序问题。
-    """
-    return PartRepository(session)
-
-
-def get_part_event_repository(
-    session: AsyncSession = Depends(get_session),
-) -> PartEventRepository:
-    """2026-07-28 新增：供 `get_outsource_company_service` 对账端点用。"""
-    return PartEventRepository(session)
-
-
-def get_process_repo(
-    session: AsyncSession = Depends(get_session),
-) -> ProcessRepository:
-    """2026-07-10 起被 `get_shelf_service` 引用（list_for_return 校验 next_process_id），
-    故前置到此避免模块加载顺序问题。
-    """
-    return ProcessRepository(session)
-
-
-def get_shelf_process_repo(
-    session: AsyncSession = Depends(get_session),
-) -> ShelfProcessRepository:
-    """2026-07-10 起被 `get_shelf_service` 引用（list_for_return 取 mapped process codes），
-    故前置到此避免模块加载顺序问题。
-    """
-    return ShelfProcessRepository(session)
-
-
+# ============================================================
+# Auth / User service DI（api/v1/auth.py 用）
+# ============================================================
 def get_auth_service(
     users: UserRepository = Depends(get_user_repo),
     user_roles: UserRoleRepository = Depends(get_user_role_repo),
@@ -247,467 +198,30 @@ def get_user_service(
     )
 
 
-def get_shelf_service(
-    shelves: ShelfRepository = Depends(get_shelf_repo),
-    user_roles: UserRoleRepository = Depends(get_user_role_repo),
-    parts: PartRepository = Depends(get_part_repository),
-    processes: ProcessRepository = Depends(get_process_repo),
-    shelf_process: ShelfProcessRepository = Depends(get_shelf_process_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> ShelfService:
-    """注入 ShelfService；2026-07-10 起 list_for_return 需要 parts/processes/
-    shelf_process 三个 repo（共享 HMI RETURN picker）。CRUD 流用不到，但
-    注入是 cheap（无 IO），不区分。
+# ============================================================
+# STS 临时凭证端口（2026-09-17 新增）
+# ============================================================
+# 裸开鉴权（参考 /api/mcp/* 模式），靠部署层 nginx / 安全组隔离。
+# 不注入 `get_session`（无 DB IO）/ `get_current_user`（bypass 模式无关）。
+def get_sts_service() -> "StsService":
+    """STS 临时凭证 service 工厂。
+
+    service 层只读 settings + 调 `core.sts.grant_sts_tmp_key`，无状态；
+    直接返回单例即可，不放 Depends 链上避免和 SessionInit 冲突。
+
+    类型注解用字符串字面量避免在文件顶部导入 `service.sts.StsService`
+    触发 service 链导入（service/__init__.py 还会触发一堆 v1 已下线
+    service 的 init，被一并移到 `_archive/` 后才不会 import）。
     """
-    return ShelfService(
-        shelves=shelves,
-        user_roles=user_roles,
-        parts=parts,
-        processes=processes,
-        shelf_process=shelf_process,
-        current_user=user,
-    )
-
-
-def get_part_service(
-    session: AsyncSession = Depends(get_session),
-    serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> PartService:
-    """注入 PartService，并把 dashboard 广播器作为闭包传入。
-
-    闭包内自带独立 SessionLocal，不复用请求 session（请求 session 此时已经
-    commit/rollback，避免在事件触发瞬间读到不一致的数据）。
-
-    同时注入两个闭包：
-    - `_broadcaster()`：触发整张 snapshot 立即重推；
-    - `_event_broadcaster(event_type, payload)`：触发单条业务事件推送
-      （PICKED_UP / RELEASED / PLACED_ON_SHELF），由前端横幅组件消费。
-
-    2026-07-10 起：注入 `PartFileRepository` 以支持
-    `POST /parts/batch` multipart 端点的 PDF 上传 + 下发前置校验
-    (≥1 G_CODE + ≥1 SETUP_SHEET)。
-
-    2026-07-16 起：注入 `OutsourceQuoteRepository` + `OutsourceQuoteEventRepository`
-    以支持 send_to_outsource 防御闸 + APPROVED→USED 自动 mark。
-    """
-
-    async def _broadcaster() -> None:
-        # 不立即广播：累积到 session.info，由 get_session 在事务 commit 成功后
-        # 统一 flush（见 _flush_dashboard_broadcasts）。否则独立 session 构建的
-        # 快照读不到本请求尚未提交的写入 → 大屏货架「没变化」。
-        session.info[_SNAPSHOT_PENDING_KEY] = True
-
-    async def _event_broadcaster(event_type: str, payload: dict) -> None:
-        session.info.setdefault(_EVENTS_PENDING_KEY, []).append((event_type, payload))
-
-    return PartService(
-        parts=PartRepository(session),
-        part_batches=PartBatchRepository(session),  # 2026-07-29：批次化
-        customers=CustomerRepository(session),
-        workers=WorkerRepository(session),
-        events=PartEventRepository(session),
-        serial_counters=serial_counters,
-        shelves=ShelfRepository(session),
-        processes=ProcessRepository(session),
-        work_types=WorkTypeRepository(session),
-        work_type_process=WorkTypeProcessRepository(session),
-        applicants=ApplicantRepository(session),
-        shelf_process_repo=ShelfProcessRepository(session),
-        files=PartFileRepository(session),
-        assemblies=AssemblyRepository(session),  # 2026-07-21：create_parts_tree 写 t_assembly
-        delivery_notes_repo=DeliveryNoteRepository(session),  # 2026-07-22：PR-G 详情显示所属送货单
-        outsource_companies=OutsourceCompanyRepository(session),
-        outsource_company_process=OutsourceCompanyProcessRepository(session),
-        outsource_quotes=OutsourceQuoteRepository(session),
-        quote_events=OutsourceQuoteEventRepository(session),
-        outsource_shipments=OutsourceShipmentRepository(session),  # 2026-07-30：外协发货记录
-        pickup_skip_events=PickupSkipEventRepository(session),  # 2026-08-05：跳序取件事件
-        broadcaster=_broadcaster,
-        event_broadcaster=_event_broadcaster,
-        current_user=user,
-    )
-
-
-def get_worker_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> WorkerService:
-    return WorkerService(
-        workers=WorkerRepository(session),
-        work_types=WorkTypeRepository(session),
-        parts=PartRepository(session),  # 2026-08-04：停用前 BIZ_WORKER_IN_USE 校验
-        current_user=user,
-    )
+    return StsService()
 
 
 # ============================================================
-# 工种 / 工序 / 映射 DI
+# MCP 只读查询（免鉴权）
 # ============================================================
-def get_work_type_repo(
-    session: AsyncSession = Depends(get_session),
-) -> WorkTypeRepository:
-    return WorkTypeRepository(session)
-
-
-def get_work_type_process_repo(
-    session: AsyncSession = Depends(get_session),
-) -> WorkTypeProcessRepository:
-    return WorkTypeProcessRepository(session)
-
-
-def get_shelf_process_service(
-    shelves: ShelfRepository = Depends(get_shelf_repo),
-    processes: ProcessRepository = Depends(get_process_repo),
-    junction: ShelfProcessRepository = Depends(get_shelf_process_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> ShelfProcessService:
-    return ShelfProcessService(
-        shelves=shelves, processes=processes, junction=junction,
-        current_user=user,
-    )
-
-
-def get_work_type_service(
-    session: AsyncSession = Depends(get_session),
-    work_types: WorkTypeRepository = Depends(get_work_type_repo),
-    junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> WorkTypeService:
-    """注入 WorkTypeService；worker_repo 用于软删前引用校验。
-
-    直接构造 WorkerRepository（共享 session），避免 DI 循环依赖。
-    """
-    return WorkTypeService(
-        work_types=work_types,
-        worker_repo=WorkerRepository(session),
-        junction_repo=junction,
-        current_user=user,
-    )
-
-
-def get_process_service(
-    processes: ProcessRepository = Depends(get_process_repo),
-    junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> ProcessService:
-    return ProcessService(
-        processes=processes,
-        junction_repo=junction,
-        current_user=user,
-    )
-
-
-def get_work_type_process_service(
-    work_types: WorkTypeRepository = Depends(get_work_type_repo),
-    processes: ProcessRepository = Depends(get_process_repo),
-    junction: WorkTypeProcessRepository = Depends(get_work_type_process_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> WorkTypeProcessService:
-    return WorkTypeProcessService(
-        work_types=work_types,
-        processes=processes,
-        junction=junction,
-        current_user=user,
-    )
-
-
-def get_customer_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> CustomerService:
-    return CustomerService(
-        customers=CustomerRepository(session),
-        parts=PartRepository(session),
-        assemblies=AssemblyRepository(session),
-        current_user=user,
-    )
-
-
-def get_applicant_repo(
-    session: AsyncSession = Depends(get_session),
-) -> ApplicantRepository:
-    return ApplicantRepository(session)
-
-
-def get_applicant_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> ApplicantService:
-    return ApplicantService(
-        applicants=ApplicantRepository(session),
-        customers=CustomerRepository(session),
-        parts=PartRepository(session),
-        current_user=user,
-    )
-
-
-def get_part_file_repository(
-    session: AsyncSession = Depends(get_session),
-) -> PartFileRepository:
-    """统一文件仓储工厂（零件 / 装配体图纸 + G 代码 + 设定单）。"""
-    return PartFileRepository(session)
-
-
-def get_part_file_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> PartFileService:
-    """统一文件 service 工厂。"""
-    return PartFileService(
-        files=PartFileRepository(session),
-        current_user=user,
-    )
-
-
-def get_part_repository(
-    session: AsyncSession = Depends(get_session),
-) -> PartRepository:
-    """图纸打印 / 打印 service 共用的 PartRepository 工厂。"""
-    return PartRepository(session)
-
-
-def get_assembly_repo(
-    session: AsyncSession = Depends(get_session),
-) -> AssemblyRepository:
-    """装配件 Repository 工厂。"""
-    return AssemblyRepository(session)
-
-
-def get_assembly_service(
-    session: AsyncSession = Depends(get_session),
-    serial_counters: SerialCounterRepository = Depends(get_serial_counter_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> AssemblyService:
-    """注入 AssemblyService。
-
-    共享同一 session/事务：构造 PartService / PartFileService 时复用 session，
-    装配体创建时的所有 DB 写入都在一个事务里，任一失败整体回滚。
-    """
-    parts_repo = PartRepository(session)
-    files_repo = PartFileRepository(session)
-    assemblies_repo = AssemblyRepository(session)
-    customers_repo = CustomerRepository(session)
-    workers_repo = WorkerRepository(session)
-    events_repo = PartEventRepository(session)
-    shelves_repo = ShelfRepository(session)
-
-    part_service = PartService(
-        parts=parts_repo,
-        customers=customers_repo,
-        workers=workers_repo,
-        events=events_repo,
-        serial_counters=serial_counters,
-        shelves=shelves_repo,
-        processes=ProcessRepository(session),
-        shelf_process_repo=ShelfProcessRepository(session),
-        files=files_repo,
-        delivery_notes_repo=DeliveryNoteRepository(session),  # 2026-07-22：PR-G
-        outsource_companies=OutsourceCompanyRepository(session),
-        outsource_company_process=OutsourceCompanyProcessRepository(session),
-        outsource_shipments=OutsourceShipmentRepository(session),  # 2026-07-30：cancel 级联取消子件时关闭开放发货单
-        part_batches=PartBatchRepository(session),  # 2026-07-29：批次化 — cancel / create_root_batch 必填
-        current_user=user,
-    )
-    part_files = PartFileService(
-        files=files_repo,
-        current_user=user,
-    )
-
-    async def _broadcaster() -> None:
-        # 装配体级联取消 / 软删会让 dashboard 卡片消失，走整张 snapshot 重推。
-        # 同 PartService：累积到 session.info，commit 成功后由 get_session flush。
-        session.info[_SNAPSHOT_PENDING_KEY] = True
-
-    async def _event_broadcaster(event_type: str, payload: dict) -> None:
-        session.info.setdefault(_EVENTS_PENDING_KEY, []).append((event_type, payload))
-
-    return AssemblyService(
-        assemblies=assemblies_repo,
-        parts=parts_repo,
-        files=files_repo,
-        customers=customers_repo,
-        serial_counters=serial_counters,
-        events=events_repo,
-        part_service=part_service,
-        part_files=part_files,
-        applicants=ApplicantRepository(session),
-        broadcaster=_broadcaster,
-        event_broadcaster=_event_broadcaster,
-        current_user=user,
-    )
-
-
-def get_delivery_note_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> DeliveryNoteService:
-    """送货单管理 service 工厂（PR-G 2026-07-22 替代 PR-B 老 XLSX 导出）。
-
-    注入：
-    - notes / note_events / counter：CRUD + 事件流 + 每日单号
-    - parts / part_events：pickup() 时联动 part.deliver + 写 TPartEvent
-    - customers：建单校验存在
-    - workers：pickup() 校验司机工种 / 活跃
-    - broadcaster / event_broadcaster：pickup() 影响多个 part 状态，触发整张
-      dashboard snapshot 与业务事件（DELIVERY_NOTE_PICKED_UP）；通过闭包传，
-      不复用请求 session。
-
-    2026-08-08：移除了 `broadcaster` / `event_broadcaster` 两个函数签名参数。
-    它们没有 `Depends()`，FastAPI 会当成 **query 参数**解析，而 `Broadcaster` 是
-    `Callable[...]` 别名 → `app.openapi()` 抛
-    `PydanticInvalidForJsonSchema: Cannot generate a JsonSchema for CallableSchema`，
-    连带 `/docs` 与 `/openapi.json` 全挂（且 HTTP 请求根本没法给 Callable 传值，
-    这俩参数在生产链路上始终是 None）。改用下面的局部闭包，行为不变。
-    要在测试里替换广播行为请走 `app.dependency_overrides`。
-    """
-    async def _broadcaster() -> None:
-        # pickup() 影响多个 part.deliver → dashboard 卡片「待送货」消失，
-        # 走整张 snapshot 重推。同 PartService：累积到 session.info，
-        # commit 成功后由 get_session flush。
-        session.info[_SNAPSHOT_PENDING_KEY] = True
-
-    async def _event_broadcaster(event_type: str, payload: dict) -> None:
-        session.info.setdefault(_EVENTS_PENDING_KEY, []).append(
-            (event_type, payload),
-        )
-
-    return DeliveryNoteService(
-        session=session,
-        notes=DeliveryNoteRepository(session),
-        note_events=DeliveryNoteEventRepository(session),
-        counter=DeliveryNoteCounterRepository(session),
-        parts=PartRepository(session),
-        part_batches=PartBatchRepository(session),  # 2026-07-29：批次化
-        customers=CustomerRepository(session),
-        workers=WorkerRepository(session),
-        work_types=WorkTypeRepository(session),
-        part_events=PartEventRepository(session),
-        assemblies=AssemblyRepository(session),  # 2026-08-03：pickup 触发装配件 rollup
-        broadcaster=_broadcaster,
-        event_broadcaster=_event_broadcaster,
-        current_user=user,
-    )
-
-
-# ============================================================
-# 生产统计 DI（2026-08-03 新增）
-# ============================================================
-def get_statistics_service(
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> "StatisticsService":
-    """生产统计 service 工厂（MANAGER-only）。
-
-    仅读路径；不写 DB、不广播 dashboard：避免无谓大屏重推。
-    注入：StatisticsRepository + PartRepository / PartEventRepository /
-    WorkerRepository / WorkTypeRepository（保留 API，service 内部按需使用）。
-    """
-    from service.statistics import StatisticsService
-    from repository.statistics import StatisticsRepository
-
-    return StatisticsService(
-        session=session,
-        stats_repo=StatisticsRepository(session),
-        parts=PartRepository(session),
-        events=PartEventRepository(session),
-        workers=WorkerRepository(session),
-        work_types=WorkTypeRepository(session),
-        current_user=user,
-    )
-
-
-# ============================================================
-# 外协公司 DI（2026-07-15 新增）
-# ============================================================
-def get_outsource_company_repo(
-    session: AsyncSession = Depends(get_session),
-) -> OutsourceCompanyRepository:
-    return OutsourceCompanyRepository(session)
-
-
-def get_outsource_company_process_repo(
-    session: AsyncSession = Depends(get_session),
-) -> OutsourceCompanyProcessRepository:
-    return OutsourceCompanyProcessRepository(session)
-
-
-def get_outsource_shipment_repo(
-    session: AsyncSession = Depends(get_session),
-) -> OutsourceShipmentRepository:
-    return OutsourceShipmentRepository(session)
-
-
-def get_outsource_company_service(
-    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
-    junction: OutsourceCompanyProcessRepository = Depends(
-        get_outsource_company_process_repo,
-    ),
-    processes: ProcessRepository = Depends(get_process_repo),
-    part_repo: PartRepository = Depends(get_part_repository),
-    part_events: PartEventRepository = Depends(get_part_event_repository),
-    shipments: OutsourceShipmentRepository = Depends(get_outsource_shipment_repo),
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> OutsourceCompanyService:
-    return OutsourceCompanyService(
-        companies=companies, junction=junction, processes=processes,
-        part_repo=part_repo, part_events=part_events,
-        # 2026-07-30：对账页改为基于 t_outsource_shipment
-        outsource_shipments=shipments,
-        customers=CustomerRepository(session),
-        current_user=user,
-    )
-
-
-# ============================================================
-# 外协报价 DI（2026-07-16 新增）
-# ============================================================
-def get_outsource_quote_repo(
-    session: AsyncSession = Depends(get_session),
-) -> OutsourceQuoteRepository:
-    return OutsourceQuoteRepository(session)
-
-
-def get_outsource_quote_event_repo(
-    session: AsyncSession = Depends(get_session),
-) -> OutsourceQuoteEventRepository:
-    return OutsourceQuoteEventRepository(session)
-
-
-def get_outsource_quote_service(
-    quotes: OutsourceQuoteRepository = Depends(get_outsource_quote_repo),
-    quote_events: OutsourceQuoteEventRepository = Depends(
-        get_outsource_quote_event_repo,
-    ),
-    parts: PartRepository = Depends(get_part_repository),
-    companies: OutsourceCompanyRepository = Depends(get_outsource_company_repo),
-    processes: ProcessRepository = Depends(get_process_repo),
-    shipments: OutsourceShipmentRepository = Depends(get_outsource_shipment_repo),
-    session: AsyncSession = Depends(get_session),
-    user: CurrentUser = Depends(get_current_user),
-) -> OutsourceQuoteService:
-    return OutsourceQuoteService(
-        quotes=quotes,
-        quote_events=quote_events,
-        parts=parts,
-        companies=companies,
-        processes=processes,
-        customers=CustomerRepository(session),
-        shelves=ShelfRepository(session),
-        workers=WorkerRepository(session),
-        part_events=PartEventRepository(session),
-        shipments=shipments,
-        current_user=user,
-    )
-
-
-# ===================== MCP 只读查询（免鉴权）=====================
 # ⚠️ 以下两个工厂**刻意不注入 `get_current_user`**——`/api/mcp/*` 是给 AI 用的
 # 免登录只读入口，注入了会让端点直接 401。安全性靠部署层（nginx / 安全组不暴露
 # `/api/mcp` 与 `/mcp` 前缀）保证，不要在这里加回 `Depends(get_current_user)`。
-
-
 def get_mcp_query_service(
     session: AsyncSession = Depends(get_session),
 ) -> McpQueryService:

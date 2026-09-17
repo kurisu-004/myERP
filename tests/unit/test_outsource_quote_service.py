@@ -890,3 +890,11 @@ class TestSearchQuotesStatusesMulti:
 # =============================================================================
 
 
+
+
+# === 2026-09-17 v1 业务路由下线 guard ===
+import pytest as _pytest_v1_guard  # noqa: E402
+pytestmark = [
+    _pytest_v1_guard.mark.skip(reason='2026-09-17 v1 业务路由下线 + JWT bypass：业务由 backend-rust v2 承接，本测试断言 / 构造 / 调用方都已失效。'),
+    _pytest_v1_guard.mark.asyncio,
+]

@@ -27,6 +27,7 @@ dependencies = [
     "pypdfium2>=5.12.1",
     "reportlab>=5.0.0",
     "fastmcp>=3.4.6",
+    "qcloud-python-sts>=3.1.6",  # 2026-09-17：STS 临时凭证 SDK（前端直传 COS 端口用）
 ]
 
 [tool.pytest.ini_options]

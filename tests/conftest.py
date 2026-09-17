@@ -46,6 +46,159 @@ _os.environ.setdefault("SHELF_SEED_ON_MIGRATE", "false")
 _os.environ.setdefault("TZ", "Asia/Shanghai")
 
 # ============================================================
+# 2026-09-17 v1 业务路由下线 guard：把已移至 _archive/ 的 v1 模块注册成
+# 空 stub，让 pytest collection 时不抛 ImportError；接着 v1 业务测试文件用
+# 文件级 pytestmark = pytest.mark.skip 跳过所有用例。
+# ============================================================
+import sys as _sys
+import types as _types
+
+_V1_DORMANT_MODULES = (
+    # service
+    "service.applicant", "service.assembly", "service.customer",
+    "service.delivery_note", "service.outsource_company",
+    "service.outsource_quote", "service.outsource_shipment",
+    "service.part", "service.process", "service.shelf",
+    "service.shelf_process", "service.statistics",
+    "service.work_type", "service.work_type_process", "service.worker",
+    # repository
+    "repository.applicant", "repository.delivery_note",
+    "repository.outsource_company_process", "repository.outsource_company",
+    "repository.outsource_quote", "repository.outsource_quote_event",
+    "repository.outsource_shipment", "repository.part",
+    "repository.part_batch", "repository.part_event",
+    "repository.pickup_skip_event", "repository.process",
+    "repository.serial_counter", "repository.shelf_process",
+    "repository.statistics", "repository.work_type",
+    "repository.work_type_process", "repository.worker",
+    # schema（part_file 仍保留：被 service/part_file.py 引用）
+    "schema.applicant", "schema.assembly", "schema.cnc_program",
+    "schema.customer", "schema.delivery_note", "schema.drawing",
+    "schema.outsource_company", "schema.outsource_quote",
+    "schema.part", "schema.process",
+    "schema.shelf", "schema.shelf_process", "schema.statistics",
+    "schema.work_type", "schema.work_type_process", "schema.worker",
+    # api v1
+    "api.v1.applicant", "api.v1.assembly", "api.v1.cnc_program",
+    "api.v1.customer", "api.v1.delivery_note", "api.v1.drawing",
+    "api.v1.outsource_company", "api.v1.outsource_quote",
+    "api.v1.outsource_shipment", "api.v1.part", "api.v1.process",
+    "api.v1.shelf", "api.v1.statistics", "api.v1.user",
+    "api.v1.work_type", "api.v1.worker", "api.v1.ws",
+)
+
+
+class _DormantStub:
+    """任何属性访问 / 调用都返回自身 —— 真正支持 v1 测试能 collection
+    但运行即被 pytestmark.skip() 拦截。"""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def __getattr__(self, name: str) -> "_DormantStub":
+        return self
+
+    def __call__(self, *args, **kwargs) -> "_DormantStub":
+        return self
+
+    def __await__(self):
+        async def _coro():
+            return self
+        return _coro().__await__()
+
+
+class _DormantPackage(_types.ModuleType):
+    """包级别 stub：repository / service / schema 这三个顶层包允许
+    `from repository import X` 任意 X 都不抛 ImportError。"""
+
+    def __getattr__(self, name: str) -> object:
+        # 子模块（repository.applicant 等）走 sys.modules stub 路径；
+        # 这里处理「从包直接 import 名字」（如 from repository import ApplicantRepository）。
+        if name in _V1_REMOVED_FROM_PACKAGE.get(self.__name__, set()):
+            return _DormantStub
+        raise AttributeError(
+            f"module {self.__name__!r} has no attribute {name!r}"
+        )
+
+
+# 2026-09-17 记录：从各顶层包直接 import 但已下线的名字。
+# 注意：仅包含真正**已下线**的名字；仍被活跃 service 引用的（如
+# `schema.part_file.PartFileOut` / `service.part_file.PartFileService`）不
+# 在列，避免把真实对象替换为 DormantStub。
+_V1_REMOVED_FROM_PACKAGE = {
+    "repository": {
+        "ApplicantRepository", "DeliveryNoteCounterRepository",
+        "DeliveryNoteEventRepository", "DeliveryNoteRepository",
+        "OutsourceCompanyProcessRepository",
+        "OutsourceQuoteEventRepository", "OutsourceQuoteRepository",
+        "OutsourceShipmentRepository", "PickupSkipEventRepository",
+        "StatisticsRepository", "WorkTypeProcessRepository",
+        # 2026-09-17 STS 端口 PR：auto_complete.py 已删，SerialCounterRepository
+        # 无活跃 service 引用；从 repository/__init__.py 顶层 export 一并移除
+        # 后，package-level `from repository import SerialCounterRepository`
+        # 走 DormantStub 兜底，让旧 v1 测试仍能 collection（运行被
+        # pytestmark.skip 拦截）。
+        "SerialCounterRepository",
+    },
+    "schema": {
+        "ApplicantOut", "AssemblyOut", "BulkApplicantItem",
+        "FailInspectionRequest", "PartListQuery", "PartPickUpRequest",
+        "PartScanRequest", "PlaceOnShelfRequest",
+        "PartListItem", "PartBatchOut", "PartUpdateRequest",
+        "DeliveryNoteCandidatePart", "DeliveryNoteOut",
+        "DeliveryNoteDetailOut", "DeliveryNotePickupScanOut",
+        "DeliveryNoteEventOut", "AddAssemblyChildRequest",
+        "AssemblyUpdateRequest", "WorkTypeUpdateRequest",
+    },
+    "service": {
+        "ApplicantService", "AssemblyService", "CustomerService",
+        "DeliveryNoteService", "OutsourceCompanyService",
+        "OutsourceQuoteService", "PartService", "ProcessService",
+        "ShelfProcessService", "ShelfService", "StatisticsService",
+        "WorkTypeProcessService", "WorkTypeService", "WorkerService",
+    },
+}
+
+
+def _install_dormant_stubs() -> None:
+    # 子模块 stub
+    for _name in _V1_DORMANT_MODULES:
+        if _name in _sys.modules:
+            continue
+        _mod = _types.ModuleType(_name)
+        _mod.__getattr__ = lambda _attr: _DormantStub  # type: ignore[attr-defined]
+        _sys.modules[_name] = _mod
+    # 顶层包 stub（拦截 `from repository import X` 中 X 已被移除的名字）
+    # 但**不替换**真实包，因为 api/deps.py 等仍要 import 仍存活的名字。
+    # 策略：用 PEP 562 模块级 __getattr__，从模块字典里直接拿而不走 getattr()。
+    import repository as _repo_mod
+    import schema as _schema_mod
+    import service as _svc_mod
+
+    def _make_pkg_getattr(mod, removed: set[str]):
+        # 通过 sys.modules 直接拿 module dict，避免触发自身 __getattr__。
+        mod_dict = _sys.modules[mod.__name__].__dict__
+
+        def _pkg_getattr(name: str) -> object:
+            if name in removed:
+                return _DormantStub
+            # 从 module dict 取；若不存在直接抛 AttributeError，
+            # 不要走 getattr(mod, name) 否则递归。
+            if name in mod_dict:
+                return mod_dict[name]
+            raise AttributeError(
+                f"module {mod.__name__!r} has no attribute {name!r}"
+            )
+        return _pkg_getattr
+
+    _repo_mod.__getattr__ = _make_pkg_getattr(_repo_mod, _V1_REMOVED_FROM_PACKAGE["repository"])  # type: ignore[attr-defined]
+    _schema_mod.__getattr__ = _make_pkg_getattr(_schema_mod, _V1_REMOVED_FROM_PACKAGE["schema"])  # type: ignore[attr-defined]
+    _svc_mod.__getattr__ = _make_pkg_getattr(_svc_mod, _V1_REMOVED_FROM_PACKAGE["service"])  # type: ignore[attr-defined]
+
+
+_install_dormant_stubs()
+
+# ============================================================
 # 接下来才是正常 import
 # ============================================================
 import asyncio

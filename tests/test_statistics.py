@@ -43,11 +43,9 @@ from repository.worker import WorkerRepository
 from service.statistics import StatisticsService
 
 pytestmark = [
-    pytest.mark.skip(reason='2026-09-16 t_part 瘦身（Rust v2 迁移 027）：本测试断言已删字段 / 已删行为（t_part.{actual_delivery_date,location,current_holder_id,placed_at,delivery_note_id,has_been_repaired}、t_part_batch.has_been_repaired、t_assembly.actual_delivery_date）。v1 业务端点已 dormant（2026-09-15 Phase 5 起前端业务全走 v2，Python 仅保留 4 个打印端点 + /api/mcp），本测试构造 / 断言 / 调用方都已失效；详见 backend-rust 迁移 027 与本仓 root CLAUDE.md §跨子模块架构。'),
+    pytest.mark.skip(reason='2026-09-17 v1 业务路由下线 + JWT bypass：业务由 backend-rust v2 承接，本测试断言 / 构造 / 调用方都已失效。'),
     pytest.mark.asyncio,
 ]
-
-
 # ============================================================
 # Helpers
 # ============================================================

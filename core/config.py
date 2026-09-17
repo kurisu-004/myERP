@@ -128,13 +128,29 @@ class Settings(BaseSettings):
     auto_complete_interval_hours: int = Field(
         default=24, alias="AUTO_COMPLETE_INTERVAL_HOURS", ge=1,
     )
-    # 2026-09-15 Phase 6 新增：lifespan 是否 spawn Python auto_complete_loop。
-    # 默认 True（本地开发向后兼容）；生产 / staging 部署应设 False，
-    # 避免与 Rust 后台（backend-rust/src/task/auto_complete.rs）双跑导致
-    # 同一批次被推两次 COMPLETED、重复写 actual_delivery_date / WS 广播。
+    # 2026-09-17 STS 端口 PR：auto_complete 由 backend-rust v2 task/auto_complete.rs
+    # 接管，本仓 lifespan 不再 spawn auto_complete_loop（service/auto_complete.py 已删）。
+    # 保留字段以兼容现有 .env（PYTHON_AUTO_COMPLETE_ENABLED），仅作配置文档；
+    # 实际不再消费。
     auto_complete_enabled: bool = Field(
         default=True, alias="PYTHON_AUTO_COMPLETE_ENABLED",
-        description="是否在 lifespan 启动 auto_complete_loop；Phase 6 起由 Rust 接管,生产应设为 false",
+        description="已废弃：auto_complete 由 backend-rust v2 接管,本仓不再启动此 loop；保留字段以兼容 .env",
+    )
+
+    # ---- STS 临时凭证端口（2026-09-17 新增，§8 直传 COS 流程）----
+    # TTL 上下界与腾讯云 sts.tencentcloudapi.com 的 GetFederationToken 配额一致：
+    # 60..43200 秒。TTL 越大，单张临时凭证泄露影响面越大；生产建议 ≤ 3600。
+    sts_default_ttl_seconds: int = Field(
+        default=1800, alias="STS_DEFAULT_TTL_SECONDS", ge=60, le=43200,
+        description="STS 临时凭证默认 TTL（秒）；腾讯云 SDK 范围 60-43200",
+    )
+    sts_max_ttl_seconds: int = Field(
+        default=43200, alias="STS_MAX_TTL_SECONDS", ge=60, le=43200,
+        description="STS 临时凭证 TTL 上限（秒）；请求超过此值会回退到上限",
+    )
+    sts_default_user_id: int = Field(
+        default=1, alias="STS_DEFAULT_USER_ID", ge=1,
+        description="JWT bypass 后默认 user_id；拼 tmp_key 命名空间用（tmp/<uid>/<sha16>/<file>）",
     )
 
 

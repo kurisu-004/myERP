@@ -183,21 +183,69 @@ class PartCreateRequest(BaseModel):
 - **不**使用 `PUT` / `PATCH` / `DELETE`。路径用动词承载语义（`cancel` / `release` / `pick-up` / `soft-delete` 等）。
 - `WebSocket` 不受此约束。
 
-### 8. COS 文件上传（后端模式）
+### 8. COS 文件上传（前端直传 STS + 后端 confirm 两段式，2026-09-17 重构）
 
-文件 IO 全部走后端，**不**走前端直传 / STS：
+文件上传采用**前端直传 COS tmp 区 + 后端不再代理 body**的两段式：
 
-- `core/cos.py` 用 `cos-python-sdk-v5`，单进程共用 `CosS3Client`；阻塞调用用 `asyncio.to_thread`。
-- 密钥来自 `.env`（`COS_SECRET_ID` / `COS_SECRET_KEY`）。
-- 前端预览/下载走后端签 GET 临时 URL（默认 900s）。上传走 multipart。
-- **新增文件类型只改 `core/cos.py` + `core/_file_kind_policy.py`**，不引入 presign PUT / STS。
+1. **前端**先调 `POST /api/v1/files/sts-tmp-keys` 拿 STS 临时凭证（CAM
+   policy 限定到 `tmp/{user_id}/{sha16}/*` 单目录，TTL 默认 1800s），用
+   `cos-js-sdk-v5`（前端 v5 客户端）直接 PUT 到 `tmp/{uid}/{sha16}/{filename}`。
+2. **后端**业务接口（如 `POST /api/v1/parts/{id}/drawings` 之类 v2 直传
+   confirm）只接收 object_key + SHA-256，**不再走 multipart 流上传**——
+   文件已经在 COS 上，后端只做 `t_part_file` 表 CAS 写入。
 
-**CAS 命名 + SHA-256 去重**（便于 DB 丢失时人工恢复）：
-- object_key 模板：`{prefix}{owner_kind}/{owner_id}/{KIND}/{sha16}_{safe_filename}`（`sha16` = SHA-256 前 16 hex；`safe_filename` = ASCII 折叠）。
-- `t_part_file.content_sha256`（CHAR(64)）+ 部分唯一索引 `(part_id, kind, content_sha256) WHERE deleted_at IS NULL AND ... IS NOT NULL`。上传流程：hash → 查活跃行 → 命中复用（跳过 COS PUT）/ 未命中走 PUT+insert。
-- **跨 part 不共享**：同字节跨 part → 捕获 `IntegrityError` → `BIZ_PART_FILE_DUPLICATE 409`。
-- 文件格式白名单（`_file_kind_policy.py`）：`DRAWING`=PDF + 9 种图片（PNG/JPG/JPEG/GIF/BMP/TIF/TIFF/WEBP/HEIC，图片与 PDF 同槽单文件覆盖）；`THREE_D_MODEL`=STEP/STP/IGES/IGS/STL/OBJ/3MF；`CAD_2D`=DWG/DXF；`G_CODE`=nc/tap/cnc/mpf/ngc。
-- **打印双面 PDF**（`service/printing.py`）：图纸 / 图片正面 + 背面序列号大字 + Code128 条码；朝向随图纸同步；无图纸走信息卡占位。
+**后端服务**：
+- `core/cos.py` 仍用 `cos-python-sdk-v5`，但**只用于下载 / 清理 / 后端
+  内部写**（如消息附件），不再承担前端上传的中转。
+- `core/sts.py`（2026-09-17 新增）用 `qcloud-python-sts` 官方 SDK
+  （pip 名 `qcloud-python-sts`，import 路径 `sts.sts.Sts`）现签凭证；
+  每次请求通过 `asyncio.to_thread` 调同步 SDK，**不缓存**。
+- `service/sts.py` 薄层 service 只做参数整理 + 拼 `tmp_key` + 注入
+  endpoint / scheme / 上传前缀；不持 session、不写 DB。
+- `api/v1/sts.py` 路由**裸开鉴权**（参考 `/api/mcp/*` 模式，详见 §14），
+  靠部署层 nginx / 安全组隔离。
+
+**STS 端口响应（`POST /api/v1/files/sts-tmp-keys`）**：
+```json
+{
+  "tmp_key": "tmp/1/abcdef0123456789/test.pdf",
+  "bucket": "myerp-prod-1300000000",
+  "region": "ap-guangzhou",
+  "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
+  "scheme": "https",
+  "credentials": {
+    "tmp_secret_id": "...",
+    "tmp_secret_key": "...",
+    "session_token": "...",
+    "start_time": 1700000000,
+    "expired_time": 1700001800
+  },
+  "expires_in": 1800,
+  "upload_prefix": "drawings/"
+}
+```
+
+**CAM policy**：
+- 资源限定 `tmp/{user_id}/{sha16}/*` 单目录，禁止通配到整个桶。
+- 仅允许上传类 7 个动作：`PutObject` / `InitiateMultipartUpload` /
+  `ListMultipartUploads` / `ListParts` / `UploadPart` /
+  `CompleteMultipartUpload` / `AbortMultipartUpload`。
+- 不含 `GetObject`（下载仍走 `core/cos.presigned_get_url` 后端代理）/
+  `DeleteObject`（清理走 `core/cos.delete_object`）。
+
+**CAS 命名 + SHA-256 去重**（保持兼容）：
+- tmp 路径：`tmp/{user_id}/{sha16}/{safe_filename}`（`sha16` = SHA-256
+  前 16 hex；`safe_filename` = ASCII 折叠）。后续业务端点拿到 object_key
+  后写 `t_part_file.content_sha256`（CHAR(64)）+ 部分唯一索引
+  `(part_id, kind, content_sha256) WHERE deleted_at IS NULL`。
+- **跨 part 不共享**：同字节跨 part → 捕获 `IntegrityError` →
+  `BIZ_PART_FILE_DUPLICATE 409`。
+- 文件格式白名单（`_file_kind_policy.py`）：`DRAWING`=PDF + 9 种图片
+  （PNG/JPG/JPEG/GIF/BMP/TIF/TIFF/WEBP/HEIC，图片与 PDF 同槽单文件覆盖）；
+  `THREE_D_MODEL`=STEP/STP/IGES/IGS/STL/OBJ/3MF；`CAD_2D`=DWG/DXF；
+  `G_CODE`=nc/tap/cnc/mpf/ngc。
+- **打印双面 PDF**（`service/printing.py`）：图纸 / 图片正面 + 背面序列号
+  大字 + Code128 条码；朝向随图纸同步；无图纸走信息卡占位。
 
 ### 9. 状态机约定
 
@@ -380,7 +428,7 @@ frontend/src/
 
 `alembic/versions/` 下用 **12 位零填充数字** revision id（如 `000000000001_schema_init.py`），不是 hex。模块顶部写明 `revision` / `down_revision` / `Create Date`，docstring 说明要点。
 
-**当前迁移（5 个 schema + 4 个 prod_data 共 9 文件，schema 链 001 → 003 → 005 → 009 → 010，单 head = `000000000030`）**：
+**当前迁移（5 个 schema + 4 个 prod_data 共 9 文件，schema 链 001 → 003 → 005 → 009 → 010，单 head = `000000000031`）**：
 
 | 文件 | revision | down | 内容 |
 |------|----------|------|------|
@@ -395,9 +443,11 @@ frontend/src/
 | `schema/000000000010_add_delivery_note_delivery_date.py` | `000000000010` | `000000000009` | `t_delivery_note.delivery_date`（Date NULL；默认 = 创建当天）；DRAFT/SUBMITTED 可改；PICKED_UP/ARCHIVED 后保留打印能力。 |
 | `schema/000000000029_worktype_limit_and_pickup_skip.py` | `000000000029` | `000000000028` | `t_work_type.max_held_batches` 列 + `t_pickup_skip_event` 表（12 列 append-only）|
 | `prod_data/000000000030_cnc_parts_list_menu.py` | `000000000030` | `000000000029` | 编程员零件一览菜单（`t_role_menu` 幂等授予 CNC_PROGRAMMER）|
+| `prod_data/000000000031_delivery_note_menu_inspector.py` | `000000000031` | `000000000030` | INSPECTOR 送货单菜单授权（仅 t_role_menu row 插入；Create Date 2026-08-05，PR-K 早已合并，与本 PR 无关）|
 
 - `alembic.ini`：`version_locations = schema:prod_data`（`recursive_version_locations = true`）。**无 `dev_data/` 目录**。
-- `alembic heads` 只返 1 行（`000000000030`）；`alembic upgrade head` 单命令即可（Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
+- `alembic heads` 只返 1 行（`000000000031`）；`alembic upgrade head` 单命令即可（Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
+- **2026-09-17 STS 端口 PR**：alembic head 已停在 `000000000031`（`prod_data/000000000031_delivery_note_menu_inspector.py`，Create Date 2026-08-05，仅含 INSPECTOR 角色菜单授权 row 插入；与本 PR 无关——之前 PR-K 已合并）。本 PR **未新增任何 alembic 迁移**。
 - 冷启结果：seed 表有数据，业务表（part/customer/assembly/applicant/outsource）为空。
 - **新 schema 迁移放 `schema/` 子目录**，revision id 用下一个 12 位数字，`down_revision` 指向当前 head。改 `schema_init` 时验收门：全新库 `upgrade head` 后 `pg_dump --schema-only` 与旧链对比无意外差异。
 - **已有库对齐**：确认 schema 等价后 `alembic stamp <head>` 即可；dev 本地假数据另写独立 seed 脚本（不走迁移）。
@@ -650,3 +700,56 @@ frontend/src/
 4. **`docs/db-design-part-customer.md` 部分描述已过时**（审计字段说由 `Base` 声明，实际是 `AuditMixin`）；以本文件和 `model/audit.py` 为准。
 5. **`UnitOfWork` 待补**：各 service 直接用 repository，尚未实现统一 UnitOfWork（repository 层已具备原子 `soft_delete` / `create` / `update`）。
 6. **历史时间错位不 backfill**：早期 `deleted_at` / `last_login_at` / `placed_at` 可能有 8h 偏差（`now_naive()` 接入前），单条 SQL 修正即可，不做全量迁移。
+
+---
+
+## 14. v1 业务路由下线 + JWT 完全 Bypass（2026-09-17 STS 端口 PR）
+
+2026-09-17 起，本仓 v1 业务路由整体下线，业务由 backend-rust v2 承接；本仓同时切换为 JWT 完全 Bypass 模式（不依赖 token / 不查 DB）。
+
+### 范围
+
+**保留端点（共 5 个）**：
+- `POST /api/v1/auth/login` — 双 token 签发（AuthService 仍用 `core.security.decode_*_token`，本端点本身不调用 `get_current_user`）
+- `POST /api/v1/auth/refresh` — refresh 轮转
+- `GET  /api/v1/auth/me` — 当前账号（bypass 后固定 default user）
+- `POST /api/v1/auth/change-password` — `UserService.change_own_password`
+- `POST /api/v1/files/sts-tmp-keys` — **新增**：前端直传 COS 临时凭证（裸开鉴权，参考 `/api/mcp/*`）
+
+**下线路由（18 个，已移至 `_archive/api_v1/` 待评审 git rm）**：
+applicant / assembly / cnc_program / customer / delivery_note / drawing /
+outsource_company / outsource_quote / outsource_shipment / part / process / shelf /
+statistics / user / work_type / worker / ws。
+
+**保留的 model / repository / schema / service 子集**：
+- `repository`：`menu / customer / part / part_batch / part_event / part_file /` `assembly / process / worker / shelf / shelf_process / work_type /` `outsource_company / user / serial_counter`（仍被 MCP / auto_complete / 认证引用）
+- `service`：`auth / user / menu / mcp_query / part_file / sts / dashboard /` `auto_complete` + `_*.py` 工具 + `printing / delivery_note_print`
+- `schema`：`user / menu / mcp / sts / part_file / _types`
+- `model/*`（所有 ORM）保留—— alembic / rust v2 仍引用
+
+### JWT Bypass 实现（`core/permission.py`）
+
+- `get_current_user_from_access_token(token)` 函数体替换为直接返回 `_DEFAULT_USER = CurrentUser(id=1, username="default", full_name="Default User", is_active=True, roles=("MANAGER",), shelf_ids=(), shelf_wildcard=True)`，`token` 参数保留但忽略。
+- `get_current_user(request)` 同样直接返回 `_DEFAULT_USER`。
+- `require_role` / `require_roles` / `require_part_file_role` 内部直接 `return user`。
+- `require_shelf_account_from_body` 取 shelf_id 后直接 `return user, shelf_id`（跳过 `can_operate_shelf` 校验——default MANAGER 已对任意 shelf 放行）。
+- `require_auth()` 保持 `return get_current_user`。
+- `core/security.py::decode_access_token / decode_refresh_token` **保留原逻辑**，AuthService.refresh / auth.login 仍直接调用签发双 token。
+
+### STS 端口裸开鉴权
+
+`/api/v1/files/sts-tmp-keys` 不依赖 `get_current_user` 也不挂 `Depends(require_auth)`；安全性靠 nginx `/api/v1/files/` 不暴露 / 安全组隔离保证。部署层务必确认此路径不被直连到公网（仅 frontend nginx 同源访问）。
+
+### 验证门
+
+`uv run pytest` 当前 269 passed / 662 skipped。v1 业务测试（25 个 + dormant）已统一文件级 `pytestmark = pytest.mark.skip(reason=...)` 跳过，理由为「2026-09-17 v1 业务路由下线 + JWT bypass：业务由 backend-rust v2 承接」。
+
+`tests/conftest.py` 加了 module-name stub + `__getattr__` 代理，让 removed modules collection 不抛 ImportError；运行即被 pytestmark.skip() 拦截。
+
+**重启 v1 业务**需从 git history 还原下列文件 + 恢复 `core/permission.py` 原实现，并补 alembic 030 → 031 迁移的 DB 同步（见上文 §Alembic 迁移）。
+
+### 风险与后续
+
+- 本仓 auto_complete_loop 仍默认开启（`auto_complete_enabled=True`），与 backend-rust v2 后台 `auto_complete.rs` 双跑——若两仓同时连同一 DB 会重复推 COMPLETED。生产 / staging 应在 `.env` 设 `PYTHON_AUTO_COMPLETE_ENABLED=false`（已在 §Alembic 迁移里说明）。
+- `created_by` / `updated_by` 全为 NULL 现状不变（item 2）；保留后续按 `settings.sts_default_user_id` 自动填。
+- v1 复活指引：见 `_archive/api_v1/` 目录的文件历史 commit log。

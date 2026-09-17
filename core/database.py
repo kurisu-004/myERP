@@ -35,28 +35,13 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("SELECT 1"))
         print("启动心跳")
 
-    # 启动 7 天自动完成后台循环（PR-D 2026-07-10）。
-    # 2026-09-15 Phase 6：默认开（向后兼容本地开发）；生产/staging 部署
-    # 设 PYTHON_AUTO_COMPLETE_ENABLED=false 让 Rust 后台接管（见
-    # backend-rust/src/task/auto_complete.rs），避免双跑推重复 COMPLETED 事件。
-    import asyncio
-    if settings.auto_complete_enabled:
-        from service.auto_complete import auto_complete_loop
-        app.state.auto_complete_task = asyncio.create_task(
-            auto_complete_loop(), name="auto_complete_loop",
-        )
-    else:
-        # 显式 None 占位：测试可断言 disabled 时 lifespan 不 spawn task
-        app.state.auto_complete_task = None
+    # 2026-09-17 STS 端口 PR：auto_complete 由 backend-rust v2 task/auto_complete.rs
+    # 接管，本仓不再启动此 loop（service/auto_complete.py 已删除）。保留
+    # settings.auto_complete_enabled 字段以兼容 .env，但 lifespan 不再消费。
+    app.state.auto_complete_task = None
 
     try:
         yield
     finally:
-        # 取消后台循环并等其退出（disabled 时 task 为 None，跳过）
-        if app.state.auto_complete_task is not None:
-            app.state.auto_complete_task.cancel()
-            try:
-                await app.state.auto_complete_task
-            except asyncio.CancelledError:
-                pass
+        # 无后台任务需要取消
         await engine.dispose()

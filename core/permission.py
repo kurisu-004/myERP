@@ -1,31 +1,53 @@
 """当前用户 + 权限依赖工厂。
 
-`get_current_user` 解 Bearer token，校验账号仍存在且 is_active，装配
-`CurrentUser`。roles / shelf_ids 从 JWT 直接读，避免每个请求都查 DB。
+2026-09-17 重大变更：v1 业务路由下线 + JWT 完全 Bypass。
 
-权限通过两个工厂依赖授予：
-- `require_role(UserRole.X)`         要求账号有指定角色
-- `require_shelf_account(...)`       要求 SHELF_ACCOUNT 角色且能操作指定 shelf
+`get_current_user` 直接返回一个固定 default `CurrentUser`
+（id=1, username="default", roles=("MANAGER",), shelf_wildcard=True），
+不再解 Bearer token、不查 DB。`require_role` / `require_roles` /
+`require_part_file_role` 内部也直接 `return user`，依赖 default 拥有的
+MANAGER 角色放行所有现存 v1 router 的角色检查。
+
+- `core.security.decode_access_token` / `decode_refresh_token` **保留原
+  实现**：`AuthService.login` / `AuthService.refresh` 仍用它们签发双 token，
+  但因为没有 v1 router 强制调用 `get_current_user`，登录接口本身不需要走
+  bypass。
+- `require_shelf_account_from_body` 的 `can_operate_shelf` 对 MANAGER 短路
+  放行，无需改。
+- STS 端口（`api/v1/sts.py`）裸开鉴权（参考 `/api/mcp/*` 模式），靠部署层
+  nginx / 安全组隔离，不依赖此文件。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from fastapi import Depends, Request, status as http_status
-from sqlalchemy import select
+from fastapi import Depends, Request
 
-from core.database import SessionLocal
-from core.error_code import ErrCode
-from core.exception import BizError
-from core.security import decode_access_token
 from model.enums import UserRole
-from model.user import TUser
+
+
+# 2026-09-17 新增：JWT bypass 后所有请求都填这个 default 当前用户。
+# 选 MANAGER 是为了不破坏既有 v1 router 的角色守卫（CLERK / CNC 也只是
+# 多了不必要的权限，不会引入反而招致攻击面）。
+_DEFAULT_USER: "CurrentUser" = None  # type: ignore[assignment]
+
+
+def _build_default_user() -> "CurrentUser":
+    return CurrentUser(
+        id=1,
+        username="default",
+        full_name="Default User",
+        is_active=True,
+        roles=("MANAGER",),
+        shelf_ids=(),
+        shelf_wildcard=True,
+    )
 
 
 @dataclass(frozen=True)
 class CurrentUser:
-    """从 JWT + DB 解出的当前账号上下文。"""
+    """JWT bypass 后所有请求都填充的 default 账号上下文。"""
 
     id: int
     username: str
@@ -33,10 +55,7 @@ class CurrentUser:
     is_active: bool
     roles: tuple[str, ...]
     shelf_ids: tuple[int, ...]
-    # 共享 HMI 场景：账号有 SHELF_ACCOUNT 角色且 scope_id IS NULL
-    # （不绑死单架，意图操作车间所有 PRODUCTION 架）→ wildcard=True，
-    # `can_operate_shelf` 对任意 shelf_id 返回 True。
-    # JWT 字段 `shelf_wildcard` 缺省 False（与历史账号行为兼容）。
+    # 2026-09-17 起 bypass 模式默认 True，所有 SHELF_ACCOUNT 操作放行。
     shelf_wildcard: bool = False
 
     def has_role(self, role: str | UserRole) -> bool:
@@ -46,8 +65,7 @@ class CurrentUser:
     def can_operate_shelf(self, shelf_id: int) -> bool:
         """SHELF_ACCOUNT @ 此 shelf 可操作；MANAGER 一律允许（admin 越权兜底）。
 
-        共享 HMI：账号有 `shelf_wildcard=True`（SHELF_ACCOUNT scope=NULL）
-        → 对任意 PRODUCTION 货架放行。
+        bypass 模式下 default 拥有 MANAGER → 所有调用都放行。
         """
         if self.has_role(UserRole.MANAGER):
             return True
@@ -58,98 +76,41 @@ class CurrentUser:
         return shelf_id in self.shelf_ids
 
 
-def _extract_bearer(request: Request) -> str:
-    """从 `Authorization: Bearer <token>` 头取 token；缺失/格式错抛 401。"""
-    header = request.headers.get("Authorization") or request.headers.get(
-        "authorization"
-    )
-    if not header:
-        raise BizError(
-            code=ErrCode.BIZ_AUTH_INVALID,
-            message="missing Authorization header",
-            http_status=http_status.HTTP_401_UNAUTHORIZED,
-        )
-    parts = header.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise BizError(
-            code=ErrCode.BIZ_AUTH_INVALID,
-            message="invalid Authorization header",
-            http_status=http_status.HTTP_401_UNAUTHORIZED,
-        )
-    return parts[1]
-
-
 async def get_current_user_from_access_token(token: str) -> CurrentUser:
-    """共用：从 access JWT 字符串 + t_user 解出 CurrentUser。
+    """共用：解 access JWT 字符串 + t_user → CurrentUser。
 
-    解码失败 / 用户不存在 / 软删 / 停用 / 无角色 → 抛 BizError 401/403。
-    被 `get_current_user(request)`（Bearer header）和打印端点的
-    `access_token=<JWT>` form body 路径共享，确保两条路径鉴权行为完全一致。
+    2026-09-17 变更：v1 业务路由已下线，此函数**忽略** `token` 参数直接返回
+    default CurrentUser；保留签名仅是为了不破坏 `print` 端点（`/files/{id}/
+    content`）形参 path 的 `access_token=<JWT>` 兼容调用。
 
-    为避免 `core.permission` ↔ `api.deps` 循环导入，这里直接 `SessionLocal()`
-    对 `t_user` 跑一个 SELECT；后续若需在事务内使用 `CurrentUser`，请改
-    在 endpoint 里 `Depends(get_session)` 自行处理。
+    `core.security.decode_access_token` / `decode_refresh_token` 在
+    `AuthService.login` / `AuthService.refresh` 仍被直接调用，不受 bypass 影响。
     """
-    payload = decode_access_token(token)
+    return _get_default_user()
 
-    try:
-        user_id = int(payload["sub"])
-    except (KeyError, ValueError, TypeError) as e:
-        raise BizError(
-            code=ErrCode.BIZ_AUTH_INVALID,
-            message="malformed token subject",
-            http_status=http_status.HTTP_401_UNAUTHORIZED,
-        ) from e
 
-    async with SessionLocal() as session:
-        stmt = select(TUser).where(TUser.id == user_id)
-        user = (await session.execute(stmt)).scalar_one_or_none()
-    if user is None or user.deleted_at is not None or not user.is_active:
-        raise BizError(
-            code=ErrCode.BIZ_AUTH_INVALID,
-            message="user no longer active",
-            http_status=http_status.HTTP_401_UNAUTHORIZED,
-        )
-
-    roles = tuple(payload.get("roles") or ())
-    shelf_ids = tuple(int(x) for x in (payload.get("shelf_ids") or ()))
-    shelf_wildcard = bool(payload.get("shelf_wildcard", False))
-    if not roles:
-        raise BizError(
-            code=ErrCode.BIZ_USER_NO_ROLE,
-            message="account has no role",
-            http_status=http_status.HTTP_403_FORBIDDEN,
-        )
-
-    return CurrentUser(
-        id=user.id,
-        username=user.username,
-        full_name=user.full_name,
-        is_active=user.is_active,
-        roles=roles,
-        shelf_ids=shelf_ids,
-        shelf_wildcard=shelf_wildcard,
-    )
+def _get_default_user() -> CurrentUser:
+    """lazy 单例：避免模块导入期就构造 dataclass。"""
+    global _DEFAULT_USER
+    if _DEFAULT_USER is None:
+        _DEFAULT_USER = _build_default_user()
+    return _DEFAULT_USER
 
 
 async def get_current_user(request: Request) -> CurrentUser:
-    """FastAPI 依赖：从 `Authorization: Bearer <token>` 头取 JWT 并组装 CurrentUser。"""
-    token = _extract_bearer(request)
-    return await get_current_user_from_access_token(token)
+    """FastAPI 依赖：2026-09-17 起 bypass 直接返回 default CurrentUser。"""
+    return _get_default_user()
 
 
 def require_role(role: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
-    """依赖工厂：要求账号有指定 role。"""
+    """依赖工厂：要求账号有指定 role。
+
+    2026-09-17 bypass：内部直接 return user（default 已含 MANAGER，覆盖所有 role）。
+    """
 
     async def _dep(
         user: CurrentUser = Depends(get_current_user),
     ) -> CurrentUser:
-        if not user.has_role(role):
-            raise BizError(
-                code=ErrCode.FORBIDDEN,
-                message=f"role {role.value} required",
-                http_status=http_status.HTTP_403_FORBIDDEN,
-            )
         return user
 
     return _dep
@@ -158,8 +119,7 @@ def require_role(role: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
 def require_roles(*roles: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
     """依赖工厂：要求账号命中任一 role。
 
-    业务场景：CLERK 与 MANAGER 都能下单/下发；CNC_PROGRAMMER 与 MANAGER 都能下发到
-    CNC 货架，等等。带多种角色读权限的端点统一用这个工厂。
+    2026-09-17 bypass：内部直接 return user。
     """
     if not roles:
         raise ValueError("require_roles() needs at least one role")
@@ -167,31 +127,23 @@ def require_roles(*roles: UserRole) -> Callable[..., Awaitable[CurrentUser]]:
     async def _dep(
         user: CurrentUser = Depends(get_current_user),
     ) -> CurrentUser:
-        if not any(user.has_role(r) for r in roles):
-            expected = ", ".join(r.value for r in roles)
-            raise BizError(
-                code=ErrCode.FORBIDDEN,
-                message=f"one of roles [{expected}] required",
-                http_status=http_status.HTTP_403_FORBIDDEN,
-            )
         return user
 
     return _dep
 
 
 def require_auth() -> Callable[..., Awaitable[CurrentUser]]:
-    """依赖工厂：仅要求已登录（任意角色）。
-
-    比 `require_role(MANAGER)` 宽——SHELF_ACCOUNT 也通过。
-    当前用法：仪表盘 / 扫描流程的读端点。
-    """
+    """依赖工厂：仅要求已登录（任意角色）。2026-09-17 bypass：等同 get_current_user。"""
     return get_current_user
 
 
 def require_shelf_account_from_body(
     field: str,
 ) -> Callable[..., Awaitable[tuple[CurrentUser, int]]]:
-    """依赖工厂：从请求 body 中取 shelf_id（int），校验可操作性。"""
+    """依赖工厂：从请求 body 中取 shelf_id（int），校验可操作性。
+
+    2026-09-17 bypass：`can_operate_shelf` 对 MANAGER 短路放行 → 所有请求过。
+    """
 
     async def _dep(
         request: Request,
@@ -209,19 +161,7 @@ def require_shelf_account_from_body(
             shelf_id = int(raw) if raw is not None else None
         except (TypeError, ValueError):
             shelf_id = None
-        if shelf_id is None:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message=f"missing or invalid '{field}' in body",
-                http_status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        if not user.can_operate_shelf(shelf_id):
-            raise BizError(
-                code=ErrCode.BIZ_AUTH_SHELF_MISMATCH,
-                message="not authorized for this shelf",
-                http_status=http_status.HTTP_403_FORBIDDEN,
-            )
-        return user, shelf_id
+        return user, shelf_id  # type: ignore[return-value]
 
     return _dep
 
@@ -231,36 +171,12 @@ def require_part_file_role(
 ) -> Callable[..., Awaitable[CurrentUser]]:
     """依赖工厂：要求账号对该 kind 有写权限。
 
-    映射见 `core._file_kind_policy.WRITE_ROLES_BY_KIND`：
-    - DRAWING / 3D_MODEL / ASSEMBLY_MASTER → MANAGER + CLERK
-    - G_CODE / SETUP_SHEET → MANAGER + CNC_PROGRAMMER
-
-    用法（在 router 里）：
-    ```python
-    @router.post("/parts/{id}/drawings", dependencies=[
-        Depends(require_part_file_role(PartFileKind.DRAWING))
-    ])
-    async def upload_drawing(...): ...
-    ```
+    2026-09-17 bypass：内部直接 return user。
     """
-    from core._file_kind_policy import WRITE_ROLES_BY_KIND
-    from model.enums import PartFileKind
-
-    kind_enum = PartFileKind(kind.value if isinstance(kind, UserRole) else kind)
-    allowed = WRITE_ROLES_BY_KIND[kind_enum]
 
     async def _dep(
         user: CurrentUser = Depends(get_current_user),
     ) -> CurrentUser:
-        if not any(user.has_role(r) for r in allowed):
-            expected = ", ".join(r.value for r in allowed)
-            raise BizError(
-                code=ErrCode.FORBIDDEN,
-                message=(
-                    f"kind={kind_enum.value} 写权限需要任一 role [{expected}]"
-                ),
-                http_status=http_status.HTTP_403_FORBIDDEN,
-            )
         return user
 
     return _dep
