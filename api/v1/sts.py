@@ -3,7 +3,7 @@
 裸开鉴权（参考 `/api/mcp/*` 模式，2026-09-17 起 v1 业务路由已 JWT bypass，
 此端点更不依赖 `get_current_user`），靠部署层 nginx / 安全组隔离。
 
-路径：
+路径（2026-09-18 review：列入 CLAUDE.md §14「保留端点」段）：
 - `POST /api/v1/files/sts-tmp-keys`            — 前端直传 COS（`tmp/<uid>/<sha16>/*` 命名空间）。
 - `POST /api/v1/files/sts-prefix-credentials`  — 2026-09-18 新增：内部端口——
   供 rust 后端按任意 `tmp/...` 前缀签凭证，不返回 `tmp_key`。

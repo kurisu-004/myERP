@@ -15,7 +15,7 @@ from core.error_code import ErrCode
 from core.exception import BizError
 from core.file_hash import safe_filename
 from core.sts import (
-    _TMP_PREFIX_REQUIRED,
+    TMP_PREFIX_REQUIRED,
     grant_credentials_for_prefix,
     grant_sts_tmp_key,
 )
@@ -67,16 +67,31 @@ class StsService:
     ) -> StsPrefixCredentialsResponse:
         """按调用方传入的 prefix 签一组 STS 临时凭证。
 
-        - prefix 必须以 `tmp/` 开头，否则 `BIZ_STS_PREFIX_INVALID`。
+        - prefix 必须以 `tmp/` 开头 + 至少含一个子目录段（即 `tmp/`
+          与 `tmp/<single>` 都拒，避免误传拿到整 tmp/ 命名空间写权），
+          否则 `BIZ_STS_PREFIX_INVALID`。
         - duration 在 service 层 clamp 到 `settings.sts_max_ttl_seconds`
           （core 层仍有兜底，service clamp 是契约层声明）。
         - credentials 块复用 schema，**不**含 `tmp_key`。
         """
-        if not req.prefix.startswith(_TMP_PREFIX_REQUIRED):
+        prefix = req.prefix
+        if not prefix.startswith(TMP_PREFIX_REQUIRED):
+            raise BizError(
+                code=ErrCode.BIZ_STS_PREFIX_INVALID,
+                message=(f"prefix {prefix!r} must start with {TMP_PREFIX_REQUIRED!r}"),
+                http_status=400,
+            )
+        # 2026-09-18 review：防呆——`tmp/` 后必须有非空子段，且至少含一
+        # 个 `/` 边界（即不能是 `tmp/<single>`，避免误传拿到整
+        # `tmp/<uid>/*` 命名空间写权；旧端点 `tmp/<uid>/<sha16>` 形态
+        # 自然满足）。rest 与 slash 任一缺失即拒。
+        rest = prefix[len(TMP_PREFIX_REQUIRED) :]
+        if not rest or "/" not in rest:
             raise BizError(
                 code=ErrCode.BIZ_STS_PREFIX_INVALID,
                 message=(
-                    f"prefix {req.prefix!r} must start with {_TMP_PREFIX_REQUIRED!r}"
+                    f"prefix {prefix!r} must contain a sub-directory after "
+                    f"{TMP_PREFIX_REQUIRED!r} (e.g. 'tmp/<uid>/<sha16>')"
                 ),
                 http_status=400,
             )
