@@ -714,7 +714,8 @@ frontend/src/
 - `POST /api/v1/auth/refresh` — refresh 轮转
 - `GET  /api/v1/auth/me` — 当前账号（bypass 后固定 default user）
 - `POST /api/v1/auth/change-password` — `UserService.change_own_password`
-- `POST /api/v1/files/sts-tmp-keys` — **新增**：前端直传 COS 临时凭证（裸开鉴权，参考 `/api/mcp/*`）
+- `POST /api/v1/files/sts-tmp-keys` — **2026-09-17 新增**：前端直传 COS 临时凭证（裸开鉴权，参考 `/api/mcp/*`）
+- `POST /api/v1/files/sts-prefix-credentials` — **2026-09-18 新增**：内部端口——供 rust 后端按任意 `tmp/...` 前缀签凭证；policy 走 `core.sts.grant_credentials_for_prefix`，prefix 必须 `tmp/` 开头 + 至少含一个子目录段 + 无 `* ? .. \x00 \\` 字符
 
 **下线路由（18 个，已移至 `_archive/api_v1/` 待评审 git rm）**：
 applicant / assembly / cnc_program / customer / delivery_note / drawing /
