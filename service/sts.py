@@ -6,9 +6,16 @@
 2026-09-18 新增 `grant_prefix_credentials`：内部端口（供 rust 后端按
 前缀签凭证），仅做 prefix 校验（`tmp/` 开头）+ duration clamp，policy
 签发统一走 `core.sts.grant_credentials_for_prefix`。
+
+2026-09-18 新增 `sts_health`：healthcheck 探针端口（compose 探活用），
+真实调一次 `grant_credentials_for_prefix`，返回 `{status, probe_prefix,
+expired_at}`。BizError 由 core 层直接透传（自带 http_status，让
+healthcheck 拿到非 2xx 即 fail）。
 """
 
 from __future__ import annotations
+
+import uuid
 
 from core.config import settings
 from core.error_code import ErrCode
@@ -21,6 +28,7 @@ from core.sts import (
 )
 from schema.sts import (
     StsCredentialsOut,
+    StsHealthResponse,
     StsPrefixCredentialsRequest,
     StsPrefixCredentialsResponse,
     StsTmpKeysRequest,
@@ -121,4 +129,32 @@ class StsService:
             region=settings.cos_region,
             endpoint=endpoint,
             scheme=scheme,
+        )
+
+    # 2026-09-18 新增：STS 签发自检（healthcheck 探针）。
+    # 真实调一次 SDK 签发，不 mock——验证整条链路（qcloud-python-sts SDK +
+    # 主账号 secret_id/secret_key + CAM policy + 到 sts.tencentcloudapi.com
+    # 的网络）。compose healthcheck 拿 HTTP 200 → ok；BizError 透传 →
+    # healthcheck 拿到非 2xx 即 fail。
+    # probe prefix 用 uuid4 hex 隔离命名空间（同一秒内多次探活也不会撞
+    # CAM policy 的 resource 收口），TTL 60s——即使未被销毁也很快失效。
+    async def sts_health(self) -> StsHealthResponse:
+        """签发一次仅探活的 STS 凭证（expire_seconds=60）。
+
+        - 不 PutObject / 不写 DB / 不写 Redis——零数据变更副作用。
+        - 失败路径：`core.sts.grant_credentials_for_prefix` 抛
+          `BizError(BIZ_STS_GRANT_FAILED, 502)` 等，本方法**不**重新包装，
+          让上层（api 层）拿到原始 http_status。
+        """
+        probe_prefix = (
+            f"{TMP_PREFIX_REQUIRED}__sts_healthcheck__/{uuid.uuid4().hex}/probe"
+        )
+        creds = await grant_credentials_for_prefix(
+            prefix=probe_prefix,
+            expire_seconds=60,
+        )
+        return StsHealthResponse(
+            status="ok",
+            probe_prefix=probe_prefix,
+            expired_at=creds["expired_time"],
         )
