@@ -1,9 +1,6 @@
-"""2026-09-17 重构：v1 业务路由下线后只保留仍被活跃 service 引用的
-repository。
+"""2026-09-19 重构：python 端 IAM 域（auth/user/menu）整体迁出至 backend-rust v2。
 
 活跃 repository：
-- `MenuRepository` / `UserRepository` / `UserRoleRepository` / `ShelfRepository`
-  — `AuthService` / `UserService` / `build_menu_tree`
 - `PartRepository` / `PartBatchRepository` / `PartEventRepository` /
   `PartFileRepository` / `AssemblyRepository` / `CustomerRepository` /
   `WorkerRepository` / `ProcessRepository` / `OutsourceCompanyRepository`
@@ -14,13 +11,13 @@ repository。
 无活跃 service 引用它，import 它走 `from repository.serial_counter import ...`
 直连路径即可）。
 
-具体业务 repository（如 applicant/delivery_note/outsource_quote/
-pickup_skip_event/...）整体移至 `_archive/repository/`，由 backend-rust v2
+具体业务 repository（如 applicant/delivery_note/menu/outsource_quote/
+pickup_skip_event/user/...）整体移至 `_archive/repository/`，由 backend-rust v2
 承接。
 """
+
 from .assembly import AssemblyRepository
 from .customer import CustomerRepository
-from .menu import MenuRepository
 from .outsource_company import OutsourceCompanyRepository
 from .part import PartRepository
 from .part_batch import PartBatchRepository
@@ -29,14 +26,12 @@ from .part_file import PartFileRepository
 from .process import ProcessRepository
 from .shelf import ShelfRepository
 from .shelf_process import ShelfProcessRepository
-from .user import UserRepository, UserRoleRepository
 from .work_type import WorkTypeRepository
 from .worker import WorkerRepository
 
 __all__ = [
     "AssemblyRepository",
     "CustomerRepository",
-    "MenuRepository",
     "OutsourceCompanyRepository",
     "PartBatchRepository",
     "PartEventRepository",
@@ -45,8 +40,6 @@ __all__ = [
     "ProcessRepository",
     "ShelfProcessRepository",
     "ShelfRepository",
-    "UserRepository",
-    "UserRoleRepository",
     "WorkTypeRepository",
     "WorkerRepository",
 ]

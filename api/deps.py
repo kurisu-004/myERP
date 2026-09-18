@@ -1,18 +1,20 @@
-"""2026-09-17 重构：v1 业务路由下线 + JWT bypass 后，DI 工厂只保留 4 类
-注入：
+"""2026-09-19 重构：python 端 IAM 域（auth/user/menu）整体迁出至 backend-rust v2。
+
+本仓 v1 已不再注入 AuthService / UserService / UserRepository / UserRoleRepository
+/ MenuRepository / get_auth_service / get_user_service / get_user_repo /
+get_user_role_repo / get_menu_repo —— 这些 DI 工厂随 IAM 域迁至 backend-rust v2
+(`/api/v2/iam/*`)。当前仅活跃 4 类注入：
 
 - `get_session`              — 请求级 Session（commit/rollback + dashboard
                               广播调度）
-- `get_auth_service` / `get_user_service`
-                            — `api/v1/auth.py` (login / refresh / me /
-                              change-password)
 - `get_sts_service`          — `api/v1/sts.py` (STS 临时凭证端口)
 - `get_mcp_query_service` / `get_mcp_part_file_service`
                             — `/api/mcp/*`（AI 只读入口）
 
-所有 v1 业务 router 的 DI 工厂（get_part_service / get_assembly_service /
-...）已整体移除；业务由 backend-rust v2 承接。
+业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发（与 IAM 无关）
+与 MCP AI 只读入口。
 """
+
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -20,11 +22,9 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
-from core.permission import CurrentUser, get_current_user
 from repository import (
     AssemblyRepository,
     CustomerRepository,
-    MenuRepository,
     OutsourceCompanyRepository,
     PartBatchRepository,
     PartEventRepository,
@@ -32,16 +32,12 @@ from repository import (
     PartRepository,
     ProcessRepository,
     ShelfRepository,
-    UserRepository,
-    UserRoleRepository,
     WorkerRepository,
 )
 from service import (
-    AuthService,
     McpQueryService,
     PartFileService,
     StsService,
-    UserService,
 )
 
 
@@ -97,7 +93,8 @@ def _drain_and_schedule_dashboard_broadcasts(session: AsyncSession) -> None:
 
 
 def _schedule_dashboard_flush(
-    want_snapshot: bool, events: list[tuple[str, dict]],
+    want_snapshot: bool,
+    events: list[tuple[str, dict]],
 ) -> None:
     """把待广播合并进模块级 pending，并保证只有一个后台 flush task 在跑。"""
     global _pending_snapshot, _flush_task
@@ -116,12 +113,9 @@ def _schedule_dashboard_flush(
 async def _dashboard_flush_worker() -> None:
     """后台 flush：先推 snapshot，再逐条推 event（保持「先 snapshot 后 event」）。
 
-    - 一轮 drain 当前 pending → 广播（await WS send，可能被慢客户端拖住，但只影响
-      本后台任务，不影响任何 HTTP 响应）；
-    - drain 期间新到的 pending 会让 worker 继续下一轮，收敛后退出；
-    - snapshot 构建走 broadcast_dashboard_snapshot 自己的 SessionLocal，
-      **不引用**任何请求 session。
-    - 捕获并 log 所有异常，避免 "Task exception was never retrieved"。
+    2026-09-19：v1 业务路由 + IAM 域整体下线后，dashboard WS 路由 (`/ws/dashboard`)
+    已不再被任何 v1 路由触发；广播器可被外部脚本触发（保留兼容）——lazy 调用
+    防止强制 import 历史 v1 模块。
     """
     global _pending_snapshot, _pending_events
     import logging
@@ -134,9 +128,12 @@ async def _dashboard_flush_worker() -> None:
         _pending_events = []
         try:
             if want_snapshot:
-                # 2026-09-17：dashboard WS 路由下线（v1 业务），但广播器仍可
-                # 被外部脚本触发（保留兼容）；懒加载避免强制引用 _archive/api_v1/ws。
-                from api.v1.ws import broadcast_dashboard_event, broadcast_dashboard_snapshot
+                # 2026-09-19：v1 dashboard WS 路由下线；广播器若被外部脚本
+                # 触发仍可工作；懒加载避免循环引用（`api.v1.ws` 在 _archive）。
+                from api.v1.ws import (
+                    broadcast_dashboard_event,
+                    broadcast_dashboard_snapshot,
+                )
 
                 if want_snapshot:
                     await broadcast_dashboard_snapshot()
@@ -147,55 +144,12 @@ async def _dashboard_flush_worker() -> None:
 
 
 # ============================================================
-# 仓库 DI（仅保留 v1 auth + MCP 仍引用的）
+# 仓库 DI（仅保留 MCP 仍引用的）
 # ============================================================
-def get_user_repo(
-    session: AsyncSession = Depends(get_session),
-) -> UserRepository:
-    return UserRepository(session)
-
-
-def get_user_role_repo(
-    session: AsyncSession = Depends(get_session),
-) -> UserRoleRepository:
-    return UserRoleRepository(session)
-
-
 def get_shelf_repo(
     session: AsyncSession = Depends(get_session),
 ) -> ShelfRepository:
     return ShelfRepository(session)
-
-
-def get_menu_repo(
-    session: AsyncSession = Depends(get_session),
-) -> MenuRepository:
-    return MenuRepository(session)
-
-
-# ============================================================
-# Auth / User service DI（api/v1/auth.py 用）
-# ============================================================
-def get_auth_service(
-    users: UserRepository = Depends(get_user_repo),
-    user_roles: UserRoleRepository = Depends(get_user_role_repo),
-    shelves: ShelfRepository = Depends(get_shelf_repo),
-    menus: MenuRepository = Depends(get_menu_repo),
-) -> AuthService:
-    return AuthService(
-        users=users, user_roles=user_roles, shelves=shelves, menus=menus,
-    )
-
-
-def get_user_service(
-    users: UserRepository = Depends(get_user_repo),
-    user_roles: UserRoleRepository = Depends(get_user_role_repo),
-    shelves: ShelfRepository = Depends(get_shelf_repo),
-    user: CurrentUser = Depends(get_current_user),
-) -> UserService:
-    return UserService(
-        users=users, user_roles=user_roles, shelves=shelves, current_user=user,
-    )
 
 
 # ============================================================
@@ -210,8 +164,7 @@ def get_sts_service() -> "StsService":
     直接返回单例即可，不放 Depends 链上避免和 SessionInit 冲突。
 
     类型注解用字符串字面量避免在文件顶部导入 `service.sts.StsService`
-    触发 service 链导入（service/__init__.py 还会触发一堆 v1 已下线
-    service 的 init，被一并移到 `_archive/` 后才不会 import）。
+    触发 service 链导入。
     """
     return StsService()
 

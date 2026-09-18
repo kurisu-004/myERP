@@ -11,7 +11,24 @@
 
 错误处理：decode 失败一律抛 `BizError(BIZ_AUTH_INVALID/BIZ_AUTH_REFRESH_INVALID, 401)`；
 过期单独抛对应版本号。
+
+2026-09-19 IAM 域迁出：本仓 `service/auth.py` / `service/user.py` /
+`api/v1/auth.py` 已删除（账号 / 登录 / 改密等路由整体由 backend-rust v2
+的 `/api/v2/iam/*` 承接）；但本模块**保留**——下游消费者仍依赖：
+
+- `tests/test_delivery_note_print_api.py` — 调用 `create_access_token` /
+  `create_refresh_token` / `hash_password` 构造测试 token，断言
+  `GET /delivery-notes/{id}/print` 鉴权链路（含 `ErrCode.BIZ_AUTH_INVALID`
+  / `ErrCode.BIZ_AUTH_TOKEN_EXPIRED`）
+- `tests/unit/test_part_service_workflow.py` — 断言扫码流程中 SHELF_ACCOUNT
+  操作货架不匹配时抛 `ErrCode.BIZ_AUTH_SHELF_MISMATCH`
+- `core/permission.py` docstring — 历史设计说明，不实际 import
+
+彻底下线本模块需先迁移上述两个测试到「不依赖真实 JWT 签发 / 解码」的
+纯 mock 路径（参考 `test_part_*_filter.py` 系列直接 patch `get_current_user`
+的 fixture 写法）。在迁移完成前，本模块保留原逻辑。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

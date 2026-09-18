@@ -55,22 +55,22 @@ import types as _types
 
 _V1_DORMANT_MODULES = (
     # service
-    "service.applicant", "service.assembly", "service.customer",
-    "service.delivery_note", "service.outsource_company",
+    "service.applicant", "service.assembly", "service.auth", "service.customer",
+    "service.delivery_note", "service.menu", "service.outsource_company",
     "service.outsource_quote", "service.outsource_shipment",
     "service.part", "service.process", "service.shelf",
-    "service.shelf_process", "service.statistics",
+    "service.shelf_process", "service.statistics", "service.user",
     "service.work_type", "service.work_type_process", "service.worker",
     # repository
-    "repository.applicant", "repository.delivery_note",
+    "repository.applicant", "repository.delivery_note", "repository.menu",
     "repository.outsource_company_process", "repository.outsource_company",
     "repository.outsource_quote", "repository.outsource_quote_event",
     "repository.outsource_shipment", "repository.part",
     "repository.part_batch", "repository.part_event",
     "repository.pickup_skip_event", "repository.process",
     "repository.serial_counter", "repository.shelf_process",
-    "repository.statistics", "repository.work_type",
-    "repository.work_type_process", "repository.worker",
+    "repository.statistics", "repository.user",
+    "repository.work_type", "repository.work_type_process", "repository.worker",
     # schema（part_file 仍保留：被 service/part_file.py 引用）
     "schema.applicant", "schema.assembly", "schema.cnc_program",
     "schema.customer", "schema.delivery_note", "schema.drawing",
@@ -79,12 +79,16 @@ _V1_DORMANT_MODULES = (
     "schema.shelf", "schema.shelf_process", "schema.statistics",
     "schema.work_type", "schema.work_type_process", "schema.worker",
     # api v1
-    "api.v1.applicant", "api.v1.assembly", "api.v1.cnc_program",
+    "api.v1.applicant", "api.v1.assembly", "api.v1.auth",
+    "api.v1.cnc_program",
     "api.v1.customer", "api.v1.delivery_note", "api.v1.drawing",
     "api.v1.outsource_company", "api.v1.outsource_quote",
     "api.v1.outsource_shipment", "api.v1.part", "api.v1.process",
     "api.v1.shelf", "api.v1.statistics", "api.v1.user",
     "api.v1.work_type", "api.v1.worker", "api.v1.ws",
+    # 2026-09-19 IAM 域迁出：model/user.py / model/user_role.py / model/menu.py
+    # 已删除；部分 pytest dormant 测试仍 import 这些名字。
+    "model.user", "model.user_role", "model.menu",
 )
 
 
@@ -139,6 +143,9 @@ _V1_REMOVED_FROM_PACKAGE = {
         # 走 DormantStub 兜底，让旧 v1 测试仍能 collection（运行被
         # pytestmark.skip 拦截）。
         "SerialCounterRepository",
+        # 2026-09-19 IAM 域迁出：repository/user.py / repository/menu.py 已删，
+        # 顶层 package 不再导出 UserRepository / UserRoleRepository / MenuRepository。
+        "UserRepository", "UserRoleRepository", "MenuRepository",
     },
     "schema": {
         "ApplicantOut", "AssemblyOut", "BulkApplicantItem",
@@ -156,6 +163,9 @@ _V1_REMOVED_FROM_PACKAGE = {
         "OutsourceQuoteService", "PartService", "ProcessService",
         "ShelfProcessService", "ShelfService", "StatisticsService",
         "WorkTypeProcessService", "WorkTypeService", "WorkerService",
+        # 2026-09-19 IAM 域迁出：service/auth.py / service/user.py / service/menu.py
+        # 已删，AuthService / UserService 不再从顶层 service package 导出。
+        "AuthService", "UserService",
     },
 }
 

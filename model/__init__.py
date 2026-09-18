@@ -25,7 +25,6 @@ from .enums import (
     SortDir,
     UserRole,
 )
-from .menu import TMenu, TRoleMenu
 from .outsource_company import TOutsourceCompany
 from .outsource_company_process import TOutsourceCompanyProcess
 from .outsource_shipment import TOutsourceShipment
@@ -37,15 +36,21 @@ from .part_event import TPartEvent
 from .part_file import TPartFile
 from .pickup_skip_event import TPickupSkipEvent
 from .process import TProcess
-from .process_chain_step import TProcessChainStep  # 2026-09-16 PR-3：MCP 只读接口读端 ORM
+from .process_chain_step import (
+    TProcessChainStep,
+)  # 2026-09-16 PR-3：MCP 只读接口读端 ORM
 from .serial_counter import TSerialCounter
 from .shelf import TShelf
 from .shelf_process import TShelfProcess
-from .user import TUser
-from .user_role import TUserRole
 from .worker import TWorker
 from .work_type import TWorkType
 from .work_type_process import TWorkTypeProcess
+
+# 2026-09-19 IAM 域迁出：TUser / TUserRole / TMenu / TRoleMenu ORM 已随
+# `model/user.py` / `model/user_role.py` / `model/menu.py` 一并删除 —— 基表
+# 由 alembic 管理、rust v2 直接读写，本仓不再持有 ORM 抽象。
+# 错误码 BIZ_USER_* / BIZ_AUTH_* 仍保留（被 delivery_note_print 集成测试
+# 与历史 unit 测试引用），见 `core/error_code.py`。
 
 __all__ = [
     "AuditMixin",
@@ -57,7 +62,6 @@ __all__ = [
     "TDeliveryNote",
     "TDeliveryNoteCounter",
     "TDeliveryNoteEvent",
-    "TMenu",
     "TOutsourceCompany",
     "TOutsourceCompanyProcess",
     "TOutsourceQuote",
@@ -70,12 +74,9 @@ __all__ = [
     "TPickupSkipEvent",
     "TProcess",
     "TProcessChainStep",  # 2026-09-16 PR-3
-    "TRoleMenu",
     "TSerialCounter",
     "TShelf",
     "TShelfProcess",
-    "TUser",
-    "TUserRole",
     "TWorker",
     "TWorkType",
     "TWorkTypeProcess",
