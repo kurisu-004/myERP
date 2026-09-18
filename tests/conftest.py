@@ -20,6 +20,7 @@ t_process_chain_step / t_part_batch / t_part 列），必须同步更新本函�
 `tests/unit/test_pr3_step_ify_fix.py::test_pr3_ddl_drift_fix_mirrors_rust_017`
 通过 `inspect.getsource` 比对本函数源码与 Rust 017 迁移 DDL 一致性。
 """
+
 from __future__ import annotations
 
 # ============================================================
@@ -55,40 +56,86 @@ import types as _types
 
 _V1_DORMANT_MODULES = (
     # service
-    "service.applicant", "service.assembly", "service.auth", "service.customer",
-    "service.delivery_note", "service.menu", "service.outsource_company",
-    "service.outsource_quote", "service.outsource_shipment",
-    "service.part", "service.process", "service.shelf",
-    "service.shelf_process", "service.statistics", "service.user",
-    "service.work_type", "service.work_type_process", "service.worker",
+    "service.applicant",
+    "service.assembly",
+    "service.auth",
+    "service.customer",
+    "service.delivery_note",
+    "service.menu",
+    "service.outsource_company",
+    "service.outsource_quote",
+    "service.outsource_shipment",
+    "service.part",
+    "service.process",
+    "service.shelf",
+    "service.shelf_process",
+    "service.statistics",
+    "service.user",
+    "service.work_type",
+    "service.work_type_process",
+    "service.worker",
     # repository
-    "repository.applicant", "repository.delivery_note", "repository.menu",
-    "repository.outsource_company_process", "repository.outsource_company",
-    "repository.outsource_quote", "repository.outsource_quote_event",
-    "repository.outsource_shipment", "repository.part",
-    "repository.part_batch", "repository.part_event",
-    "repository.pickup_skip_event", "repository.process",
-    "repository.serial_counter", "repository.shelf_process",
-    "repository.statistics", "repository.user",
-    "repository.work_type", "repository.work_type_process", "repository.worker",
+    "repository.applicant",
+    "repository.delivery_note",
+    "repository.menu",
+    "repository.outsource_company_process",
+    "repository.outsource_company",
+    "repository.outsource_quote",
+    "repository.outsource_quote_event",
+    "repository.outsource_shipment",
+    "repository.part",
+    "repository.part_batch",
+    "repository.part_event",
+    "repository.pickup_skip_event",
+    "repository.process",
+    "repository.serial_counter",
+    "repository.shelf_process",
+    "repository.statistics",
+    "repository.user",
+    "repository.work_type",
+    "repository.work_type_process",
+    "repository.worker",
     # schema（part_file 仍保留：被 service/part_file.py 引用）
-    "schema.applicant", "schema.assembly", "schema.cnc_program",
-    "schema.customer", "schema.delivery_note", "schema.drawing",
-    "schema.outsource_company", "schema.outsource_quote",
-    "schema.part", "schema.process",
-    "schema.shelf", "schema.shelf_process", "schema.statistics",
-    "schema.work_type", "schema.work_type_process", "schema.worker",
+    "schema.applicant",
+    "schema.assembly",
+    "schema.cnc_program",
+    "schema.customer",
+    "schema.delivery_note",
+    "schema.drawing",
+    "schema.outsource_company",
+    "schema.outsource_quote",
+    "schema.part",
+    "schema.process",
+    "schema.shelf",
+    "schema.shelf_process",
+    "schema.statistics",
+    "schema.work_type",
+    "schema.work_type_process",
+    "schema.worker",
     # api v1
-    "api.v1.applicant", "api.v1.assembly", "api.v1.auth",
+    "api.v1.applicant",
+    "api.v1.assembly",
+    "api.v1.auth",
     "api.v1.cnc_program",
-    "api.v1.customer", "api.v1.delivery_note", "api.v1.drawing",
-    "api.v1.outsource_company", "api.v1.outsource_quote",
-    "api.v1.outsource_shipment", "api.v1.part", "api.v1.process",
-    "api.v1.shelf", "api.v1.statistics", "api.v1.user",
-    "api.v1.work_type", "api.v1.worker", "api.v1.ws",
+    "api.v1.customer",
+    "api.v1.delivery_note",
+    "api.v1.drawing",
+    "api.v1.outsource_company",
+    "api.v1.outsource_quote",
+    "api.v1.outsource_shipment",
+    "api.v1.part",
+    "api.v1.process",
+    "api.v1.shelf",
+    "api.v1.statistics",
+    "api.v1.user",
+    "api.v1.work_type",
+    "api.v1.worker",
+    "api.v1.ws",
     # 2026-09-19 IAM 域迁出：model/user.py / model/user_role.py / model/menu.py
     # 已删除；部分 pytest dormant 测试仍 import 这些名字。
-    "model.user", "model.user_role", "model.menu",
+    "model.user",
+    "model.user_role",
+    "model.menu",
 )
 
 
@@ -108,6 +155,7 @@ class _DormantStub:
     def __await__(self):
         async def _coro():
             return self
+
         return _coro().__await__()
 
 
@@ -120,9 +168,7 @@ class _DormantPackage(_types.ModuleType):
         # 这里处理「从包直接 import 名字」（如 from repository import ApplicantRepository）。
         if name in _V1_REMOVED_FROM_PACKAGE.get(self.__name__, set()):
             return _DormantStub
-        raise AttributeError(
-            f"module {self.__name__!r} has no attribute {name!r}"
-        )
+        raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}")
 
 
 # 2026-09-17 记录：从各顶层包直接 import 但已下线的名字。
@@ -131,12 +177,17 @@ class _DormantPackage(_types.ModuleType):
 # 在列，避免把真实对象替换为 DormantStub。
 _V1_REMOVED_FROM_PACKAGE = {
     "repository": {
-        "ApplicantRepository", "DeliveryNoteCounterRepository",
-        "DeliveryNoteEventRepository", "DeliveryNoteRepository",
+        "ApplicantRepository",
+        "DeliveryNoteCounterRepository",
+        "DeliveryNoteEventRepository",
+        "DeliveryNoteRepository",
         "OutsourceCompanyProcessRepository",
-        "OutsourceQuoteEventRepository", "OutsourceQuoteRepository",
-        "OutsourceShipmentRepository", "PickupSkipEventRepository",
-        "StatisticsRepository", "WorkTypeProcessRepository",
+        "OutsourceQuoteEventRepository",
+        "OutsourceQuoteRepository",
+        "OutsourceShipmentRepository",
+        "PickupSkipEventRepository",
+        "StatisticsRepository",
+        "WorkTypeProcessRepository",
         # 2026-09-17 STS 端口 PR：auto_complete.py 已删，SerialCounterRepository
         # 无活跃 service 引用；从 repository/__init__.py 顶层 export 一并移除
         # 后，package-level `from repository import SerialCounterRepository`
@@ -145,27 +196,50 @@ _V1_REMOVED_FROM_PACKAGE = {
         "SerialCounterRepository",
         # 2026-09-19 IAM 域迁出：repository/user.py / repository/menu.py 已删，
         # 顶层 package 不再导出 UserRepository / UserRoleRepository / MenuRepository。
-        "UserRepository", "UserRoleRepository", "MenuRepository",
+        "UserRepository",
+        "UserRoleRepository",
+        "MenuRepository",
     },
     "schema": {
-        "ApplicantOut", "AssemblyOut", "BulkApplicantItem",
-        "FailInspectionRequest", "PartListQuery", "PartPickUpRequest",
-        "PartScanRequest", "PlaceOnShelfRequest",
-        "PartListItem", "PartBatchOut", "PartUpdateRequest",
-        "DeliveryNoteCandidatePart", "DeliveryNoteOut",
-        "DeliveryNoteDetailOut", "DeliveryNotePickupScanOut",
-        "DeliveryNoteEventOut", "AddAssemblyChildRequest",
-        "AssemblyUpdateRequest", "WorkTypeUpdateRequest",
+        "ApplicantOut",
+        "AssemblyOut",
+        "BulkApplicantItem",
+        "FailInspectionRequest",
+        "PartListQuery",
+        "PartPickUpRequest",
+        "PartScanRequest",
+        "PlaceOnShelfRequest",
+        "PartListItem",
+        "PartBatchOut",
+        "PartUpdateRequest",
+        "DeliveryNoteCandidatePart",
+        "DeliveryNoteOut",
+        "DeliveryNoteDetailOut",
+        "DeliveryNotePickupScanOut",
+        "DeliveryNoteEventOut",
+        "AddAssemblyChildRequest",
+        "AssemblyUpdateRequest",
+        "WorkTypeUpdateRequest",
     },
     "service": {
-        "ApplicantService", "AssemblyService", "CustomerService",
-        "DeliveryNoteService", "OutsourceCompanyService",
-        "OutsourceQuoteService", "PartService", "ProcessService",
-        "ShelfProcessService", "ShelfService", "StatisticsService",
-        "WorkTypeProcessService", "WorkTypeService", "WorkerService",
+        "ApplicantService",
+        "AssemblyService",
+        "CustomerService",
+        "DeliveryNoteService",
+        "OutsourceCompanyService",
+        "OutsourceQuoteService",
+        "PartService",
+        "ProcessService",
+        "ShelfProcessService",
+        "ShelfService",
+        "StatisticsService",
+        "WorkTypeProcessService",
+        "WorkTypeService",
+        "WorkerService",
         # 2026-09-19 IAM 域迁出：service/auth.py / service/user.py / service/menu.py
         # 已删，AuthService / UserService 不再从顶层 service package 导出。
-        "AuthService", "UserService",
+        "AuthService",
+        "UserService",
     },
 }
 
@@ -196,14 +270,19 @@ def _install_dormant_stubs() -> None:
             # 不要走 getattr(mod, name) 否则递归。
             if name in mod_dict:
                 return mod_dict[name]
-            raise AttributeError(
-                f"module {mod.__name__!r} has no attribute {name!r}"
-            )
+            raise AttributeError(f"module {mod.__name__!r} has no attribute {name!r}")
+
         return _pkg_getattr
 
-    _repo_mod.__getattr__ = _make_pkg_getattr(_repo_mod, _V1_REMOVED_FROM_PACKAGE["repository"])  # type: ignore[attr-defined]
-    _schema_mod.__getattr__ = _make_pkg_getattr(_schema_mod, _V1_REMOVED_FROM_PACKAGE["schema"])  # type: ignore[attr-defined]
-    _svc_mod.__getattr__ = _make_pkg_getattr(_svc_mod, _V1_REMOVED_FROM_PACKAGE["service"])  # type: ignore[attr-defined]
+    _repo_mod.__getattr__ = _make_pkg_getattr(
+        _repo_mod, _V1_REMOVED_FROM_PACKAGE["repository"]
+    )  # type: ignore[attr-defined]
+    _schema_mod.__getattr__ = _make_pkg_getattr(
+        _schema_mod, _V1_REMOVED_FROM_PACKAGE["schema"]
+    )  # type: ignore[attr-defined]
+    _svc_mod.__getattr__ = _make_pkg_getattr(
+        _svc_mod, _V1_REMOVED_FROM_PACKAGE["service"]
+    )  # type: ignore[attr-defined]
 
 
 _install_dormant_stubs()
@@ -323,15 +402,19 @@ async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
     使 ORM 模型与测试库对齐。生产 DB 永不跑本函数。
     """
     # t_part_batch 加 current_process_step_id 列（PR-3 新增；幂等）
-    await session.execute(text(
-        "ALTER TABLE t_part_batch "
-        "ADD COLUMN IF NOT EXISTS current_process_step_id bigint NULL"
-    ))
+    await session.execute(
+        text(
+            "ALTER TABLE t_part_batch "
+            "ADD COLUMN IF NOT EXISTS current_process_step_id bigint NULL"
+        )
+    )
     # 给该列加索引（对应 ORM 上的 index=True；幂等）
-    await session.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_t_part_batch_current_process_step_id "
-        "ON t_part_batch (current_process_step_id)"
-    ))
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_t_part_batch_current_process_step_id "
+            "ON t_part_batch (current_process_step_id)"
+        )
+    )
     # t_process_chain_step 表（PR-3 新增；只读镜像 Rust 端 017/026 迁移结构）
     # 2026-09-16 PR-3 第 1/3 轮修复：补 DDL 漂移（对齐 Rust 迁移 017）：
     # - created_at / updated_at NOT NULL DEFAULT now()
@@ -342,71 +425,81 @@ async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
     # 测试 DB 由 conftest 启动时 wipe 重跑（_wipe_test_data_dir），建表
     # 一定走 fresh DDL；若有历史残留库（SKIP_TEST_DB_LIFECYCLE=1 场景），
     # 表内无数据时直接 ALTER COLUMN 即可，NOT NULL DEFAULT now() 兜底。
-    await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS t_process_chain_step ("
-        "    id bigint PRIMARY KEY, "
-        "    chain_id bigint NOT NULL, "
-        "    sort_order integer NOT NULL, "
-        "    process_id bigint NOT NULL, "
-        "    estimated_minutes integer NOT NULL CHECK (estimated_minutes >= 0), "
-        "    version integer NOT NULL DEFAULT 0, "
-        "    created_at timestamp NOT NULL DEFAULT now(), "
-        "    created_by bigint NOT NULL, "
-        "    updated_at timestamp NOT NULL DEFAULT now(), "
-        "    updated_by bigint NOT NULL, "
-        "    deleted_at timestamp NULL"
-        ")"
-    ))
+    await session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS t_process_chain_step ("
+            "    id bigint PRIMARY KEY, "
+            "    chain_id bigint NOT NULL, "
+            "    sort_order integer NOT NULL, "
+            "    process_id bigint NOT NULL, "
+            "    estimated_minutes integer NOT NULL CHECK (estimated_minutes >= 0), "
+            "    version integer NOT NULL DEFAULT 0, "
+            "    created_at timestamp NOT NULL DEFAULT now(), "
+            "    created_by bigint NOT NULL, "
+            "    updated_at timestamp NOT NULL DEFAULT now(), "
+            "    updated_by bigint NOT NULL, "
+            "    deleted_at timestamp NULL"
+            ")"
+        )
+    )
     # 历史残留库兼容：把 nullable 老列补成 NOT NULL DEFAULT now()。
     # 先 backfill NULL → now()/0，再 SET NOT NULL；PG 18 允许两步走。
-    await session.execute(text(
-        "UPDATE t_process_chain_step SET created_at = now() "
-        "WHERE created_at IS NULL"
-    ))
-    await session.execute(text(
-        "ALTER TABLE t_process_chain_step "
-        "ALTER COLUMN created_at SET DEFAULT now(), "
-        "ALTER COLUMN created_at SET NOT NULL"
-    ))
-    await session.execute(text(
-        "UPDATE t_process_chain_step SET updated_at = now() "
-        "WHERE updated_at IS NULL"
-    ))
-    await session.execute(text(
-        "ALTER TABLE t_process_chain_step "
-        "ALTER COLUMN updated_at SET DEFAULT now(), "
-        "ALTER COLUMN updated_at SET NOT NULL"
-    ))
-    await session.execute(text(
-        "UPDATE t_process_chain_step SET created_by = 0 WHERE created_by IS NULL"
-    ))
-    await session.execute(text(
-        "ALTER TABLE t_process_chain_step "
-        "ALTER COLUMN created_by SET NOT NULL"
-    ))
-    await session.execute(text(
-        "UPDATE t_process_chain_step SET updated_by = 0 WHERE updated_by IS NULL"
-    ))
-    await session.execute(text(
-        "ALTER TABLE t_process_chain_step "
-        "ALTER COLUMN updated_by SET NOT NULL"
-    ))
+    await session.execute(
+        text(
+            "UPDATE t_process_chain_step SET created_at = now() "
+            "WHERE created_at IS NULL"
+        )
+    )
+    await session.execute(
+        text(
+            "ALTER TABLE t_process_chain_step "
+            "ALTER COLUMN created_at SET DEFAULT now(), "
+            "ALTER COLUMN created_at SET NOT NULL"
+        )
+    )
+    await session.execute(
+        text(
+            "UPDATE t_process_chain_step SET updated_at = now() "
+            "WHERE updated_at IS NULL"
+        )
+    )
+    await session.execute(
+        text(
+            "ALTER TABLE t_process_chain_step "
+            "ALTER COLUMN updated_at SET DEFAULT now(), "
+            "ALTER COLUMN updated_at SET NOT NULL"
+        )
+    )
+    await session.execute(
+        text("UPDATE t_process_chain_step SET created_by = 0 WHERE created_by IS NULL")
+    )
+    await session.execute(
+        text("ALTER TABLE t_process_chain_step ALTER COLUMN created_by SET NOT NULL")
+    )
+    await session.execute(
+        text("UPDATE t_process_chain_step SET updated_by = 0 WHERE updated_by IS NULL")
+    )
+    await session.execute(
+        text("ALTER TABLE t_process_chain_step ALTER COLUMN updated_by SET NOT NULL")
+    )
     # 部分唯一索引（与 Rust 017 uq_chain_step_chain_order 对齐）
-    await session.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_step_chain_order "
-        "ON t_process_chain_step (chain_id, sort_order) "
-        "WHERE deleted_at IS NULL"
-    ))
+    await session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_step_chain_order "
+            "ON t_process_chain_step (chain_id, sort_order) "
+            "WHERE deleted_at IS NULL"
+        )
+    )
     # 部分索引（与 Rust 017 ix_chain_step_chain 对齐：WHERE deleted_at IS NULL）
     # 历史残留库兼容：若旧的全列索引存在，先 DROP 再按 partial 重建。
-    await session.execute(text(
-        "DROP INDEX IF EXISTS ix_chain_step_chain"
-    ))
-    await session.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_chain_step_chain "
-        "ON t_process_chain_step (chain_id) "
-        "WHERE deleted_at IS NULL"
-    ))
+    await session.execute(text("DROP INDEX IF EXISTS ix_chain_step_chain"))
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_chain_step_chain "
+            "ON t_process_chain_step (chain_id) "
+            "WHERE deleted_at IS NULL"
+        )
+    )
     await session.commit()
 
 
@@ -442,9 +535,7 @@ def _wipe_test_data_dir() -> None:
             last_err = e
             time.sleep(1.0)
     else:
-        raise RuntimeError(
-            f"failed to wipe {test_data} after 5 attempts"
-        ) from last_err
+        raise RuntimeError(f"failed to wipe {test_data} after 5 attempts") from last_err
     test_data.mkdir(parents=True, exist_ok=True)
 
 
@@ -578,12 +669,14 @@ async def _truncate_all(session: AsyncSession) -> None:
     # 复位流水号计数器；alembic 迁移可能没 seed，单独 ensure 一次。
     # 2026-07-09 起：seed A-Z 全 26 行（迁移 000000000014），不再限于 L/F/H。
     await session.execute(text("SELECT 1 FROM t_serial_counter LIMIT 0"))  # 探测表存在
-    await session.execute(text(
-        "INSERT INTO t_serial_counter (prefix, counter) "
-        "SELECT chr(ascii('A') + i), 0 "
-        "FROM generate_series(0, 25) i "
-        "ON CONFLICT (prefix) DO UPDATE SET counter = 0"
-    ))
+    await session.execute(
+        text(
+            "INSERT INTO t_serial_counter (prefix, counter) "
+            "SELECT chr(ascii('A') + i), 0 "
+            "FROM generate_series(0, 25) i "
+            "ON CONFLICT (prefix) DO UPDATE SET counter = 0"
+        )
+    )
     await session.commit()
 
 
@@ -621,9 +714,7 @@ class FakeCosClient:
 
     objects: dict[str, bytes] = field(default_factory=dict)
     put_calls: list[tuple[str, str, int, str]] = field(default_factory=list)
-    put_from_path_calls: list[tuple[str, str, int, str]] = field(
-        default_factory=list
-    )
+    put_from_path_calls: list[tuple[str, str, int, str]] = field(default_factory=list)
     upload_advanced_calls: list[tuple[str, str, int, int, int]] = field(
         default_factory=list
     )
@@ -658,7 +749,11 @@ class FakeCosClient:
         return {"ETag": "fake-etag", "Key": Key}
 
     def put_object_from_local_file(  # noqa: N803
-        self, Bucket, Key, LocalFilePath, **kwargs  # noqa: N803
+        self,
+        Bucket,
+        Key,
+        LocalFilePath,
+        **kwargs,  # noqa: N803
     ):
         if Key in self.fail_on_put:
             from core.cos import _wrap_cos_call
@@ -677,9 +772,7 @@ class FakeCosClient:
             data = f.read()
         self.objects[Key] = data
         content_type = kwargs.get("ContentType", "")
-        self.put_from_path_calls.append(
-            (Bucket, Key, len(data), content_type)
-        )
+        self.put_from_path_calls.append((Bucket, Key, len(data), content_type))
         return {"ETag": "fake-etag", "Key": Key}
 
     def upload_file(  # noqa: N803
@@ -708,9 +801,7 @@ class FakeCosClient:
         with open(LocalFilePath, "rb") as f:
             data = f.read()
         self.objects[Key] = data
-        self.upload_advanced_calls.append(
-            (Bucket, Key, len(data), PartSize, MAXThread)
-        )
+        self.upload_advanced_calls.append((Bucket, Key, len(data), PartSize, MAXThread))
         return {"ETag": "fake-etag", "Key": Key}
 
     # ---------- 下载 ----------

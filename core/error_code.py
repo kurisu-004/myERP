@@ -107,9 +107,11 @@ class ErrCode(IntEnum):
 
     # ---- 鉴权 (401 / 403) ----
     # 2026-09-19 IAM 域迁出：本仓 JWT 签发 / 解码逻辑（`core/security.py`）保留——
-    # 被 `tests/test_delivery_note_print_api.py`（构造 token 验证 `/print` 鉴权链路）
-    # 与 `tests/unit/test_part_service_workflow.py`（断言 BIZ_AUTH_SHELF_MISMATCH）
-    # 引用。下方的 BIZ_AUTH_* 错误码由 `core/security.py` 仍抛，待未来彻底下线
+    # 唯一真正 import `core/security` 的下游是
+    # `tests/test_delivery_note_print_api.py`（构造 token 验证 `/print` 鉴权链路）；
+    # `tests/unit/test_part_service_workflow.py` 只断言
+    # `ErrCode.BIZ_AUTH_SHELF_MISMATCH`（消费本枚举值，不 import core/security）。
+    # 下方的 BIZ_AUTH_* 错误码由 `core/security.py` 仍抛，待未来彻底下线
     # python 鉴权链路时一并清理。
     BIZ_AUTH_INVALID = 40101  # 401  Bearer 无效或密码错
     BIZ_AUTH_TOKEN_EXPIRED = 40102  # 401  JWT 过期

@@ -22,10 +22,13 @@ AI 只读入口。变更范围：
   `MenuRepository` / `TUser` / `TUserRole` / `TMenu` / `TRoleMenu`。
 - **错误码**：`ErrCode.BIZ_USER_DUPLICATE_USERNAME (20602)` /
   `ErrCode.BIZ_USER_NO_ROLE (20606)` 随抛点一并删除；其它 `BIZ_USER_*` /
-  `BIZ_AUTH_*` 暂留（被 `tests/test_delivery_note_print_api.py` /
-  `tests/unit/test_part_service_workflow.py` 引用）。
-- **`core/security.py` 保留**：被上述两个测试消费（构造 token 验证鉴权链路 +
-  断言 `BIZ_AUTH_SHELF_MISMATCH`）；彻底下线需先迁移这两个测试到「mock 不依赖
+  `BIZ_AUTH_*` 暂留（被 `tests/test_delivery_note_print_api.py` 消费；
+  `tests/unit/test_part_service_workflow.py` 仅消费
+  `ErrCode.BIZ_AUTH_SHELF_MISMATCH`，不 import core/security）。
+- **`core/security.py` 保留**：仅被 `tests/test_delivery_note_print_api.py`
+  消费（构造 token 验证鉴权链路）；`tests/unit/test_part_service_workflow.py`
+  不 import 本模块，仅作 `BIZ_AUTH_SHELF_MISMATCH` 错误码锚点保留。
+  彻底下线需先迁移 `tests/test_delivery_note_print_api.py` 到「mock 不依赖
   真实 JWT 签发 / 解码」的纯 fixture 路径。
 - **`core/permission.py` 保留**：bypass 壳依赖 `get_current_user`，
   STS / MCP / 所有 v1 业务都消费；2026-09-17 bypass 实现不动。
@@ -110,11 +113,12 @@ model/*.py           # SQLAlchemy ORM
 - `serial.py` — 流水号前缀解析（`resolve_root_prefix`；`code_for_parent` 已 deprecated）
 - `security.py` — 密码 hash + JWT 编解码（access/refresh 双 token）
   **历史保留**——2026-09-19 IAM 域迁出后，本仓仍消费 hash_password /
-  create_access_token / decode_*_token 的有：
+  create_access_token / decode_*_token 的**唯一**真实下游是：
   - `tests/test_delivery_note_print_api.py`（构造 token 验证 GET /print 鉴权链路）
-  - `tests/unit/test_part_service_workflow.py`（断言 BIZ_AUTH_SHELF_MISMATCH）
-  - `core/permission.py` docstring（历史设计说明，无 import）
-  彻底下线需先迁移上述两个测试到 mock-only 路径。
+  `tests/unit/test_part_service_workflow.py` **不 import core.security**，
+  只断言 `ErrCode.BIZ_AUTH_SHELF_MISMATCH`（仅消费 ErrCode 枚举）；
+  `core/permission.py` docstring（历史设计说明，无 import）。
+  彻底下线需先迁移 `tests/test_delivery_note_print_api.py` 到 mock-only 路径。
 - `permission.py` — `CurrentUser` + `require_role/roles/auth/shelf`（bypass 壳）
 - `time.py` — `now_naive()` / `now_shanghai_iso()`（Asia/Shanghai，不依赖环境 TZ）
 
@@ -1002,9 +1006,11 @@ frontend/src/
 - `require_auth()` 保持 `return get_current_user`。
 - `core/security.py::hash_password / create_access_token / create_refresh_token /
   decode_access_token / decode_refresh_token` **保留原逻辑**——
-  `tests/test_delivery_note_print_api.py`（构造 token 验证 GET /print 鉴权链路）
-  + `tests/unit/test_part_service_workflow.py`（断言 BIZ_AUTH_SHELF_MISMATCH）
-  仍直接 import；彻底下线需先迁移这两个测试到 mock-only 路径。
+  唯一仍直接 import 本模块的下游是 `tests/test_delivery_note_print_api.py`
+  （构造 token 验证 GET /print 鉴权链路）；
+  `tests/unit/test_part_service_workflow.py` **不 import core.security**，
+  只断言 `ErrCode.BIZ_AUTH_SHELF_MISMATCH`（仅消费 ErrCode 枚举）。
+  彻底下线需先迁移 `tests/test_delivery_note_print_api.py` 到 mock-only 路径。
 
 ### STS 端口裸开鉴权
 
@@ -1045,8 +1051,8 @@ alembic 030 → 031 迁移的 DB 同步（见上文 §Alembic 迁移）。
   user/role 抽象，由 v2 端按 CurrentUser.id 自动填。
 - v1 复活指引：见 `_archive/api_v1/` 目录的文件历史 commit log；IAM 源文件
   见 git history（`service/auth.py` 等 commit SHA 可通过 `git log --diff-filter=D` 查）。
-- `core/security.py` 彻底下线时机：等
-  `tests/test_delivery_note_print_api.py` 与
-  `tests/unit/test_part_service_workflow.py` 迁移到 mock-only 路径（直接
-  patch `get_current_user` 不走真实 JWT 签发 / 解码）后，再统一删
-  `core/security.py` + 清理 `BIZ_AUTH_*` 错误码。
+- `core/security.py` 彻底下线时机：等 `tests/test_delivery_note_print_api.py`
+  迁移到 mock-only 路径（直接 patch `get_current_user` 不走真实 JWT 签发 /
+  解码）后，再统一删 `core/security.py` + 清理 `BIZ_AUTH_*` 错误码。
+  `tests/unit/test_part_service_workflow.py` **不 import core.security**，
+  仅消费 `ErrCode.BIZ_AUTH_SHELF_MISMATCH`，无需迁移。
