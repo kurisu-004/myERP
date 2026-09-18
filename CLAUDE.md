@@ -709,7 +709,7 @@ frontend/src/
 
 ### 范围
 
-**保留端点（共 6 个）**：
+**保留端点（共 7 个）**：
 - `POST /api/v1/auth/login` — 双 token 签发（AuthService 仍用 `core.security.decode_*_token`，本端点本身不调用 `get_current_user`）
 - `POST /api/v1/auth/refresh` — refresh 轮转
 - `GET  /api/v1/auth/me` — 当前账号（bypass 后固定 default user）
