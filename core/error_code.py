@@ -136,6 +136,7 @@ class ErrCode(IntEnum):
     # 215xx：外协发货相关
     BIZ_OUTSOURCE_SHIPMENT_NOT_FOUND = 21501
     BIZ_STS_GRANT_FAILED = 21502             # 2026-09-17：STS 临时凭证签发失败（SDK 抛错 / policy 校验失败 / 网络）
+    BIZ_STS_PREFIX_INVALID = 21503           # 2026-09-18：STS prefix 非法（未以 tmp/ 开头）
 
     # ---- 送货单（t_delivery_note，2026-07-22 新增）----
     # 214xx：送货单相关
