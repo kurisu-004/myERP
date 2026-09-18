@@ -19,6 +19,11 @@ key）。
 `*` / `?` / `..` / `\\x00` 等通配 / 路径穿越字符；导出
 `TMP_PREFIX_REQUIRED` 常量供 service 复用，避免跨模块从 `core.sts`
 import 私有常量。
+
+2026-09-18 新增 `StsHealthResponse`：STS 签发自检端点响应契约——
+healthcheck 探针（`GET /api/v1/files/sts-health`）真实调一次 SDK 签发
+成功后回执（status="ok" + probe_prefix + expired_at），供 compose
+healthcheck 按 HTTP 状态判定通过 / 失败。
 """
 
 from __future__ import annotations
@@ -126,10 +131,23 @@ class StsPrefixCredentialsResponse(BaseModel):
     scheme: str
 
 
+# 2026-09-18 新增：STS 签发自检端点响应（healthcheck 探针）。
+# 与 prefix 内部端口响应解耦——本响应只关心「SDK 是否真签通了」+ probe
+# 元数据，不返回凭证五元组（避免健康检查路径泄漏临时凭证；调用方是 compose
+# healthcheck，不是业务客户端）。
+# status 固定为字面量 "ok"——失败路径由 BizError 透传（非 2xx），不进
+# response_model。
+class StsHealthResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    probe_prefix: str
+    expired_at: int
+
+
 __all__ = [
     "TMP_PREFIX_REQUIRED",
     "Purpose",
     "StsCredentialsOut",
+    "StsHealthResponse",
     "StsPrefixCredentialsRequest",
     "StsPrefixCredentialsResponse",
     "StsTmpKeysRequest",
