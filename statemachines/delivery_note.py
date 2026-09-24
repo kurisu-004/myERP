@@ -9,6 +9,11 @@
   on_enter_* 直接改写。
 - 终态只有 ARCHIVED；PICKED_UP 不 final，以便衔接 archive 一并完成 pickup 事务
   内的「state migration + part.deliver + delivery_note_id 清空」。
+
+2026-09-24 PR-3：TDeliveryNoteEvent 模型已下线。本状态机仅供历史
+`model.delivery_note.TDeliveryNote.sm` 懒加载引用，本仓活跃 service
+（delivery_note_print 仅调 `notes.get_by_id` + `render` / `render_labels`）不
+触发状态机流转，本文件作为历史设计保留。
 """
 from __future__ import annotations
 
@@ -16,7 +21,6 @@ from typing import TYPE_CHECKING
 
 from statemachine import State, StateChart
 
-from model.delivery_note_event import TDeliveryNoteEvent
 from model.enums import DeliveryNoteEventType, DeliveryNoteStatus
 
 if TYPE_CHECKING:

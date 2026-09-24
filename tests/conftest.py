@@ -10,15 +10,17 @@
 
 副作用：开发库（5433）完全不会被触及。
 
-2026-09-17 PR-4 文档同步：`_apply_pr3_test_db_patch`（PR-3 第 1/3 轮修复）已通过
-本仓 SQL 比对与 Rust 迁移 017/026/028 一致——补 `t_part_batch.current_process_step_id`
-列 + 索引、t_process_chain_step 表 DDL（NOT NULL DEFAULT now() / estimated_minutes
-CHECK ≥ 0 / partial 唯一索引 uq_chain_step_chain_order / partial index
-ix_chain_step_chain）。**如 Rust 端 schema 变更（新增 / 修改
-t_process_chain_step / t_part_batch / t_part 列），必须同步更新本函数并跑一次
-`uv run pytest tests/unit/test_pr3_step_ify_fix.py` 验证 DDL 一致性**——单元测试
-`tests/unit/test_pr3_step_ify_fix.py::test_pr3_ddl_drift_fix_mirrors_rust_017`
-通过 `inspect.getsource` 比对本函数源码与 Rust 017 迁移 DDL 一致性。
+2026-09-24 PR-3 重构：dormant stub 全部清零。活跃测试仅 6 个文件
+（`tests/test_delivery_note_print_merge.py` +
+`tests/unit/test_{printing_service,print_back_page,print_front_cache,
+sts_health,sts_prefix_credentials,file_hash,time}.py`），全部走真实 DB
+（`clean_db` / `db_session`）+ 假 SDK（`fake_cos`）+ `_id_parse` 等活跃 helper。
+dormant 测试集合（25 个 + 25 个 unit）已整体删除，无须 _V1_DORMANT_MODULES /
+_DormantStub / _V1_REMOVED_FROM_PACKAGE / _install_dormant_stubs 等兜底。
+
+2026-09-16 PR-2 兼容：`_apply_pr3_test_db_patch` 保留 `t_part_batch.current_process_step_id`
+列 + 索引的幂等 DDL；`t_process_chain_step` 表 DDL 已删（model/process_chain_step.py
+PR-3 删除，对应 ORM 不再持有）。
 """
 
 from __future__ import annotations
@@ -26,9 +28,6 @@ from __future__ import annotations
 # ============================================================
 # Env override —— 必须在任何 application import 之前执行
 # ============================================================
-# core.database 模块加载时会读 `settings.database_url`，而 `Settings()` 实例化
-# 会从环境变量取 `DATABASE_URL`。所以这一段必须放在所有 application import 之前，
-# 否则 engine 会指向开发库。
 import os as _os
 
 _os.environ["DATABASE_URL"] = _os.environ.get(
@@ -47,264 +46,6 @@ _os.environ.setdefault("SHELF_SEED_ON_MIGRATE", "false")
 _os.environ.setdefault("TZ", "Asia/Shanghai")
 
 # ============================================================
-# 2026-09-17 v1 业务路由下线 guard：把已移至 _archive/ 的 v1 模块注册成
-# 空 stub，让 pytest collection 时不抛 ImportError；接着 v1 业务测试文件用
-# 文件级 pytestmark = pytest.mark.skip 跳过所有用例。
-# ============================================================
-import sys as _sys
-import types as _types
-
-_V1_DORMANT_MODULES = (
-    # service
-    "service.applicant",
-    "service.assembly",
-    "service.auth",
-    "service.customer",
-    "service.dashboard",  # 2026-09-24 PR-1：dashboard 域已删
-    "service.delivery_note",
-    "service.menu",
-    "service.mcp_query",  # 2026-09-24 PR-1：MCP 域已删
-    "service.outsource_company",
-    "service.outsource_quote",
-    "service.outsource_shipment",
-    "service.part",
-    "service.part_file",  # 2026-09-24 PR-1：PartFile 域已删
-    "service.process",
-    "service.shelf",
-    "service.shelf_process",
-    "service.statistics",
-    "service.user",
-    "service.work_type",
-    "service.work_type_process",
-    "service.worker",
-    # repository
-    "repository.applicant",
-    "repository.delivery_note",
-    "repository.menu",
-    "repository.outsource_company_process",
-    "repository.outsource_company",
-    "repository.outsource_quote",
-    "repository.outsource_quote_event",
-    "repository.outsource_shipment",
-    "repository.part",
-    "repository.part_batch",
-    "repository.part_event",
-    "repository.pickup_skip_event",
-    "repository.process",
-    "repository.serial_counter",
-    "repository.shelf_process",
-    "repository.statistics",
-    "repository.user",
-    "repository.work_type",
-    "repository.work_type_process",
-    "repository.worker",
-    # schema（2026-09-24 PR-1：part_file / mcp 域已删，stub 化让 dormant 测试 collection 不抛 ImportError）
-    "schema.applicant",
-    "schema.assembly",
-    "schema.cnc_program",
-    "schema.customer",
-    "schema.delivery_note",
-    "schema.drawing",
-    "schema.mcp",  # 2026-09-24 PR-1：MCP schema 域已删
-    "schema.outsource_company",
-    "schema.outsource_quote",
-    "schema.part",
-    "schema.part_file",  # 2026-09-24 PR-1：PartFile schema 域已删
-    "schema.process",
-    "schema.shelf",
-    "schema.shelf_process",
-    "schema.statistics",
-    "schema.work_type",
-    "schema.work_type_process",
-    "schema.worker",
-    # api v1
-    "api.v1.applicant",
-    "api.v1.assembly",
-    "api.v1.auth",
-    "api.v1.cnc_program",
-    "api.v1.customer",
-    "api.v1.delivery_note",
-    "api.v1.drawing",
-    "api.v1.outsource_company",
-    "api.v1.outsource_quote",
-    "api.v1.outsource_shipment",
-    "api.v1.part",
-    "api.v1.process",
-    "api.v1.shelf",
-    "api.v1.statistics",
-    "api.v1.user",
-    "api.v1.work_type",
-    "api.v1.worker",
-    "api.v1.ws",
-    # 2026-09-19 IAM 域迁出：model/user.py / model/user_role.py / model/menu.py
-    # 已删除；部分 pytest dormant 测试仍 import 这些名字。
-    "model.user",
-    "model.user_role",
-    "model.menu",
-)
-
-
-class _DormantStub:
-    """任何属性访问 / 调用都返回自身 —— 真正支持 v1 测试能 collection
-    但运行即被 pytestmark.skip() 拦截。"""
-
-    def __init__(self, *args, **kwargs) -> None:
-        pass
-
-    def __getattr__(self, name: str) -> "_DormantStub":
-        return self
-
-    def __call__(self, *args, **kwargs) -> "_DormantStub":
-        return self
-
-    def __await__(self):
-        async def _coro():
-            return self
-
-        return _coro().__await__()
-
-
-class _DormantPackage(_types.ModuleType):
-    """包级别 stub：repository / service / schema 这三个顶层包允许
-    `from repository import X` 任意 X 都不抛 ImportError。"""
-
-    def __getattr__(self, name: str) -> object:
-        # 子模块（repository.applicant 等）走 sys.modules stub 路径；
-        # 这里处理「从包直接 import 名字」（如 from repository import ApplicantRepository）。
-        if name in _V1_REMOVED_FROM_PACKAGE.get(self.__name__, set()):
-            return _DormantStub
-        raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}")
-
-
-# 2026-09-17 记录：从各顶层包直接 import 但已下线的名字。
-# 注意：仅包含真正**已下线**的名字；活跃 service 引用的对象**不在列**，
-# 避免把真实对象替换为 DormantStub（2026-09-24 PR-1：service.part_file /
-# service.mcp_query / service.dashboard / schema.part_file / schema.mcp
-# 已下线，加入 _V1_DORMANT_MODULES 兜底 dormant 测试 collection）。
-_V1_REMOVED_FROM_PACKAGE = {
-    "repository": {
-        "ApplicantRepository",
-        "DeliveryNoteCounterRepository",
-        "DeliveryNoteEventRepository",
-        # 2026-09-24 PR-2：从 git 785df37^ 恢复 DeliveryNoteRepository，活跃
-        # service.delivery_note_print 消费；不再走 DormantStub 兜底
-        # "DeliveryNoteRepository",
-        "OutsourceCompanyProcessRepository",
-        "OutsourceQuoteEventRepository",
-        "OutsourceQuoteRepository",
-        "OutsourceShipmentRepository",
-        "PickupSkipEventRepository",
-        "StatisticsRepository",
-        "WorkTypeProcessRepository",
-        # 2026-09-17 STS 端口 PR：auto_complete.py 已删，SerialCounterRepository
-        # 无活跃 service 引用；从 repository/__init__.py 顶层 export 一并移除
-        # 后，package-level `from repository import SerialCounterRepository`
-        # 走 DormantStub 兜底，让旧 v1 测试仍能 collection（运行被
-        # pytestmark.skip 拦截）。
-        "SerialCounterRepository",
-        # 2026-09-19 IAM 域迁出：repository/user.py / repository/menu.py 已删，
-        # 顶层 package 不再导出 UserRepository / UserRoleRepository / MenuRepository。
-        "UserRepository",
-        "UserRoleRepository",
-        "MenuRepository",
-    },
-    "schema": {
-        "ApplicantOut",
-        "AssemblyOut",
-        "BulkApplicantItem",
-        "FailInspectionRequest",
-        "PartListQuery",
-        "PartPickUpRequest",
-        "PartScanRequest",
-        "PlaceOnShelfRequest",
-        "PartListItem",
-        "PartBatchOut",
-        "PartUpdateRequest",
-        "DeliveryNoteCandidatePart",
-        "DeliveryNoteOut",
-        "DeliveryNoteDetailOut",
-        "DeliveryNotePickupScanOut",
-        "DeliveryNoteEventOut",
-        "AddAssemblyChildRequest",
-        "AssemblyUpdateRequest",
-        "WorkTypeUpdateRequest",
-    },
-    "service": {
-        "ApplicantService",
-        "AssemblyService",
-        "CustomerService",
-        "DeliveryNoteService",
-        "OutsourceCompanyService",
-        "OutsourceQuoteService",
-        "PartService",
-        "ProcessService",
-        "ShelfProcessService",
-        "ShelfService",
-        "StatisticsService",
-        "WorkTypeProcessService",
-        "WorkTypeService",
-        "WorkerService",
-        # 2026-09-19 IAM 域迁出：service/auth.py / service/user.py / service/menu.py
-        # 已删，AuthService / UserService 不再从顶层 service package 导出。
-        "AuthService",
-        "UserService",
-    },
-}
-
-
-def _install_dormant_stubs() -> None:
-    # 子模块 stub
-    for _name in _V1_DORMANT_MODULES:
-        if _name in _sys.modules:
-            continue
-        _mod = _types.ModuleType(_name)
-        _mod.__getattr__ = lambda _attr: _DormantStub  # type: ignore[attr-defined]
-        _sys.modules[_name] = _mod
-    # 顶层包 stub（拦截 `from repository import X` 中 X 已被移除的名字）
-    # 但**不替换**真实包，因为 api/deps.py 等仍要 import 仍存活的名字。
-    # 策略：用 PEP 562 模块级 __getattr__，从模块字典里直接拿而不走 getattr()。
-    import repository as _repo_mod
-    import schema as _schema_mod
-    import service as _svc_mod
-
-    def _make_pkg_getattr(mod, removed: set[str]):
-        # 通过 sys.modules 直接拿 module dict，避免触发自身 __getattr__。
-        mod_dict = _sys.modules[mod.__name__].__dict__
-        mod_fullname = mod.__name__ + "."
-
-        def _pkg_getattr(name: str) -> object:
-            if name in removed:
-                return _DormantStub
-            # 从 module dict 取；若不存在直接抛 AttributeError，
-            # 不要走 getattr(mod, name) 否则递归。
-            if name in mod_dict:
-                return mod_dict[name]
-            # 2026-09-24 PR-1 review 修复：dormant 子模块（如 service.part_file
-            # / schema.mcp）已在 sys.modules 注册，但不在 parent.__dict__ 里
-            # ——Python import 子模块时触发 parent.__getattr__，需要回退到
-            # sys.modules 取回对应 stub，让 `import service.part_file` /
-            # `service.part_file.cos_mod` 等显式子模块引用正常工作。
-            full_name = mod_fullname + name
-            if full_name in _sys.modules:
-                return _sys.modules[full_name]
-            raise AttributeError(f"module {mod.__name__!r} has no attribute {name!r}")
-
-        return _pkg_getattr
-
-    _repo_mod.__getattr__ = _make_pkg_getattr(
-        _repo_mod, _V1_REMOVED_FROM_PACKAGE["repository"]
-    )  # type: ignore[attr-defined]
-    _schema_mod.__getattr__ = _make_pkg_getattr(
-        _schema_mod, _V1_REMOVED_FROM_PACKAGE["schema"]
-    )  # type: ignore[attr-defined]
-    _svc_mod.__getattr__ = _make_pkg_getattr(
-        _svc_mod, _V1_REMOVED_FROM_PACKAGE["service"]
-    )  # type: ignore[attr-defined]
-
-
-_install_dormant_stubs()
-
-# ============================================================
 # 接下来才是正常 import
 # ============================================================
 import asyncio
@@ -314,7 +55,6 @@ import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import pytest_asyncio
 from sqlalchemy import text
@@ -413,10 +153,13 @@ async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
 
     与 PR-2 「不动 alembic 迁移」惯例一致：生产 schema 变更由 Rust v2 后端
     迁移 028（t_part_batch 删 next_process_id / placed_at + 加
-    current_process_step_id）+ 迁移 017/026（建 t_process_chain_step）承担。
+    current_process_step_id）承担。
 
-    测试 DB 只走 alembic，不知道这些变更；这里用幂等 DDL 把缺失列 / 表补上，
+    测试 DB 只走 alembic，不知道这些变更；这里用幂等 DDL 把缺失列补上，
     使 ORM 模型与测试库对齐。生产 DB 永不跑本函数。
+
+    2026-09-24 PR-3：t_process_chain_step 表 DDL 已删（model/process_chain_step.py
+    不再持有）；t_part_batch.current_process_step_id 列保留。
     """
     # t_part_batch 加 current_process_step_id 列（PR-3 新增；幂等）
     await session.execute(
@@ -430,91 +173,6 @@ async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
         text(
             "CREATE INDEX IF NOT EXISTS ix_t_part_batch_current_process_step_id "
             "ON t_part_batch (current_process_step_id)"
-        )
-    )
-    # t_process_chain_step 表（PR-3 新增；只读镜像 Rust 端 017/026 迁移结构）
-    # 2026-09-16 PR-3 第 1/3 轮修复：补 DDL 漂移（对齐 Rust 迁移 017）：
-    # - created_at / updated_at NOT NULL DEFAULT now()
-    # - created_by / updated_by NOT NULL
-    # - estimated_minutes CHECK >= 0
-    # - 部分唯一索引 uq_chain_step_chain_order
-    # - ix_chain_step_chain 改为 partial WHERE deleted_at IS NULL
-    # 测试 DB 由 conftest 启动时 wipe 重跑（_wipe_test_data_dir），建表
-    # 一定走 fresh DDL；若有历史残留库（SKIP_TEST_DB_LIFECYCLE=1 场景），
-    # 表内无数据时直接 ALTER COLUMN 即可，NOT NULL DEFAULT now() 兜底。
-    await session.execute(
-        text(
-            "CREATE TABLE IF NOT EXISTS t_process_chain_step ("
-            "    id bigint PRIMARY KEY, "
-            "    chain_id bigint NOT NULL, "
-            "    sort_order integer NOT NULL, "
-            "    process_id bigint NOT NULL, "
-            "    estimated_minutes integer NOT NULL CHECK (estimated_minutes >= 0), "
-            "    version integer NOT NULL DEFAULT 0, "
-            "    created_at timestamp NOT NULL DEFAULT now(), "
-            "    created_by bigint NOT NULL, "
-            "    updated_at timestamp NOT NULL DEFAULT now(), "
-            "    updated_by bigint NOT NULL, "
-            "    deleted_at timestamp NULL"
-            ")"
-        )
-    )
-    # 历史残留库兼容：把 nullable 老列补成 NOT NULL DEFAULT now()。
-    # 先 backfill NULL → now()/0，再 SET NOT NULL；PG 18 允许两步走。
-    await session.execute(
-        text(
-            "UPDATE t_process_chain_step SET created_at = now() "
-            "WHERE created_at IS NULL"
-        )
-    )
-    await session.execute(
-        text(
-            "ALTER TABLE t_process_chain_step "
-            "ALTER COLUMN created_at SET DEFAULT now(), "
-            "ALTER COLUMN created_at SET NOT NULL"
-        )
-    )
-    await session.execute(
-        text(
-            "UPDATE t_process_chain_step SET updated_at = now() "
-            "WHERE updated_at IS NULL"
-        )
-    )
-    await session.execute(
-        text(
-            "ALTER TABLE t_process_chain_step "
-            "ALTER COLUMN updated_at SET DEFAULT now(), "
-            "ALTER COLUMN updated_at SET NOT NULL"
-        )
-    )
-    await session.execute(
-        text("UPDATE t_process_chain_step SET created_by = 0 WHERE created_by IS NULL")
-    )
-    await session.execute(
-        text("ALTER TABLE t_process_chain_step ALTER COLUMN created_by SET NOT NULL")
-    )
-    await session.execute(
-        text("UPDATE t_process_chain_step SET updated_by = 0 WHERE updated_by IS NULL")
-    )
-    await session.execute(
-        text("ALTER TABLE t_process_chain_step ALTER COLUMN updated_by SET NOT NULL")
-    )
-    # 部分唯一索引（与 Rust 017 uq_chain_step_chain_order 对齐）
-    await session.execute(
-        text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_step_chain_order "
-            "ON t_process_chain_step (chain_id, sort_order) "
-            "WHERE deleted_at IS NULL"
-        )
-    )
-    # 部分索引（与 Rust 017 ix_chain_step_chain 对齐：WHERE deleted_at IS NULL）
-    # 历史残留库兼容：若旧的全列索引存在，先 DROP 再按 partial 重建。
-    await session.execute(text("DROP INDEX IF EXISTS ix_chain_step_chain"))
-    await session.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS ix_chain_step_chain "
-            "ON t_process_chain_step (chain_id) "
-            "WHERE deleted_at IS NULL"
         )
     )
     await session.commit()
@@ -570,7 +228,7 @@ async def _postgres_test_lifecycle():
         # 开发者在外部已经把容器起好了；只跑迁移 + 等 SELECT 1 通。
         await _probe_db_ready()
         await asyncio.to_thread(_run_alembic_upgrade_head_sync)
-        # 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列 + 表），生产 DB 不跑。
+        # 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列），生产 DB 不跑。
         async with SessionLocal() as s:
             await _apply_pr3_test_db_patch(s)
         yield
@@ -602,7 +260,7 @@ async def _postgres_test_lifecycle():
     await asyncio.to_thread(_run_alembic_upgrade_head_sync)
     print("[test-db] alembic upgrade head done")
 
-    # 7. 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列 + 表），生产 DB 不跑。
+    # 7. 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列），生产 DB 不跑。
     async with SessionLocal() as s:
         await _apply_pr3_test_db_patch(s)
 
@@ -619,27 +277,21 @@ async def _postgres_test_lifecycle():
 
 # 业务表清单（按"先子后父"顺序 truncate，避免 FK 冲突；本项目无物理 FK，
 # 但仍按依赖顺序保持稳定）。
+#
+# 2026-09-24 PR-3 重构：dormant 业务表（t_pickup_skip_event / t_outsource_* /
+# t_process / t_work_type* / t_worker / t_shelf / t_user* / t_role_menu /
+# t_menu / t_applicant / t_delivery_note_event / t_delivery_note_counter /
+# t_part_event / t_process_chain_step 等）已下线，仅保留 7 张活跃表。
 _BUSINESS_TABLES = (
-    "t_pickup_skip_event",  # 2026-08-05：跳序事件（append-only，按 created_at 依赖 part/worker）
-    "t_outsource_quote_event",
-    "t_outsource_quote",
-    "t_part_event",
-    "t_part_batch",
-    "t_work_type_process",
+    # 第一批：child rows + 多态子表
     "t_part_file",
-    "t_part",
+    "t_part_batch",
     "t_assembly",
+    "t_part",
+    "t_delivery_note",
+    # 第二批：字典 / 计数器
     "t_serial_counter",
-    # 第二批：fixture / 字典类
-    "t_process",
-    "t_work_type",
-    "t_worker",
-    "t_shelf",
     "t_customer",
-    "t_user",
-    "t_user_role",
-    "t_role_menu",
-    "t_menu",
 )
 
 
@@ -727,6 +379,10 @@ class FakeCosClient:
     - get_object（下载到内存）
     - get_object_url / get_presigned_url（GET/PUT 预签 URL）
     - head_object / delete_object / delete_objects（管理操作）
+
+    2026-09-24 PR-3：仍被 `tests/unit/test_printing_service.py` +
+    `tests/unit/test_print_back_page.py` + `tests/unit/test_print_front_cache.py`
+    消费，保留。
     """
 
     objects: dict[str, bytes] = field(default_factory=dict)

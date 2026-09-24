@@ -2,7 +2,78 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 最近重大重构（2026-09-19 更新）
+## 最近重大重构（2026-09-24 更新）
+
+### 2026-09-24 PR-3：全 dormant 业务代码下线 + CLAUDE.md 同步（chore/delete-dormant-and-cleanup）
+
+本仓 v1 业务路由下线 + IAM 域迁出 + MCP 域下线（2026-09-17 / 09-19 / 09-24
+PR-1/2/3）后，再无任何 dormant 业务调用方；2026-09-24 PR-3 把 dormant 业务
+代码全量下线。变更范围：
+
+- **删除源码 49 个**：20 个 dormant `model/*.py`（applicant / cnc_program /
+  delivery_note_counter / delivery_note_event / drawing_file /
+  outsource_company_process / outsource_company / outsource_quote_event /
+  outsource_quote / outsource_shipment / part_event / pickup_skip_event /
+  process_chain_step / process / serial_counter / shelf_process / shelf /
+  work_type_process / work_type / worker）+ 15 个 dormant `repository/*.py`
+  （applicant / outsource_company_process / outsource_company /
+  outsource_quote_event / outsource_quote / outsource_shipment / part_event /
+  pickup_skip_event / process / serial_counter / shelf_process / shelf /
+  work_type_process / work_type / worker；其中 7 个已在 PR-1/2 删除）+ 4 个
+  dormant `service/_*.py`（_assembly_rollup / _batch_ops /
+  _delivery_note_events / _session_refresh）+ `core/security.py`（已无活跃
+  消费者）+ `core/permission.py`（bypass 壳已无意义）。
+- **删除测试 49 个**：23 个顶层 `tests/test_*.py`（assembly / cnc_programming
+  / dashboard_snapshot / delivery_note / delivery_note_print_api / mcp_api /
+  outsource_quote_lifecycle / outsource_send_receive_integration /
+  outsource_shipment / part_batch / part_batch_order_info /
+  part_filter_null_predicates / part_list_assembly_filter /
+  part_location_tree / part_recall / part_state_machine_events / pickup_skip
+  / repair_receive / statistics / version_concurrency / work_type /
+  work_type_limit / worker）+ 25 个 `tests/unit/test_*.py` +
+  `tests/unit/_fake_batches.py`。
+- **清理 package init**：`model/__init__.py` 仅导出 6 个 ORM（Base / AuditMixin /
+  EventTimestampMixin / TPart / TPartBatch / TPartFile / TAssembly / TCustomer /
+  TDeliveryNote）+ 全部 enum 常量；`repository/__init__.py` 仅导出 6 个
+  Repository（PartRepository / PartBatchRepository / PartFileRepository /
+  AssemblyRepository / CustomerRepository / DeliveryNoteRepository）；`service/
+  __init__.py` 仅导出 3 个 service（StsService / PrintingServiceFacade /
+  DeliveryNotePrintService）+ dormant helper 注释更新。
+- **清理 ErrCode**：`core/error_code.py` 删除全部未被活跃 handler / middleware
+  / service 消费的枚举值：IAM（`BIZ_USER_*` 除 `BIZ_USER_NOT_FOUND` 默认值 /
+  `BIZ_AUTH_*`）/ 外协（`BIZ_OUTSOURCE_*`）/ 装配体（`BIZ_ASSEMBLY_*`）/ 批次
+  （`BIZ_PART_BATCH_*`）/ 跳序（`BIZ_PICKUP_SKIP_*`）/ 工人 / 货架 / 工序 /
+  工种 / applicant / drawing 旧码 / 送货单过渡码（`BIZ_DELIVERY_NOTE_*` 除
+  `BIZ_DELIVERY_NOTE_NOT_FOUND`）。
+- **简化 `tests/conftest.py`**：删 `_V1_DORMANT_MODULES` / `_DormantStub` /
+  `_DormantPackage` / `_V1_REMOVED_FROM_PACKAGE` / `_install_dormant_stubs()`
+  / `_pkg_getattr` / `_make_pkg_getattr` 等 dormant stub 全部（约 280 行）；
+  `_BUSINESS_TABLES` 精简到 7 张活跃表（t_part / t_part_batch / t_part_file /
+  t_assembly / t_serial_counter / t_customer / t_delivery_note）；
+  `_apply_pr3_test_db_patch` 删除 `t_process_chain_step` DDL 段（该表
+  model 已删）；保留 `FakeCosClient` / `_FakeGetObjectResponse` /
+  `_FakeRawStream` / `db_session` / `clean_db` / `seed_root_batch`（活跃
+  打印测试 fixture 消费）。
+- **CLAUDE.md 同步**：§14「保留端点」从 3 个扩展到 8 个（3 STS + 4 打印 + 1
+  health）；删「下线路由（18 + 4 = 22 个）」段（已无意义）；「当前模块清单」
+  表格精简到 3 个聚合；「Service / Repository / Model / API 端点速查」全部
+  移除 dormant 业务引用；「验证门」更新到 ~160 passed / 0 skipped（PR-3 后
+  dormant 全删，活跃 6 个测试文件全过）。
+
+**保留活跃 service / repository / schema 子集**：
+- `repository`：`part / part_batch / part_file / assembly / customer /
+  delivery_note`（被 service.printing / service.delivery_note_print 实际调用）
+- `service`：`printing / delivery_note_print / sts` + `_id_parse /
+  _print_back_page / _print_front_cache`（活跃 helper）
+- `schema`：`sts / _types`
+- `model`：所有**业务** ORM 保留——alembic / rust v2 仍引用；**IAM** 相关
+  ORM（`TUser` / `TUserRole` / `TMenu` / `TRoleMenu`）已删除（PR-2）；
+  dormant 业务 ORM（applicant / process / worker / shelf / work_type /
+  outsource_company / outsource_quote / part_event / pickup_skip_event /
+  serial_counter / drawing_file / cnc_program / delivery_note_event /
+  delivery_note_counter / process_chain_step / outsource_shipment /
+  outsource_quote_event / outsource_company_process / shelf_process /
+  work_type_process）已删除（PR-3）
 
 ### 2026-09-19 IAM 域迁出（chore/auth）
 
@@ -122,39 +193,35 @@ model/*.py           # SQLAlchemy ORM
 - `permission.py` — `CurrentUser` + `require_role/roles/auth/shelf`（bypass 壳）
 - `time.py` — `now_naive()` / `now_shanghai_iso()`（Asia/Shanghai，不依赖环境 TZ）
 
-### 当前模块清单
+### 当前模块清单（2026-09-24 PR-3 最终态）
 
 | 聚合 | Model | Repository | Service | API 路由 |
 |------|-------|-----------|---------|----------|
-| 零件 | `TPart` | `PartRepository` | `part.py` | `api/v1/part.py`（v1 业务路由，下线） |
-| 零件事件 | `TPartEvent` | `PartEventRepository` | (状态机回调写) | — |
-| 跳序取件事件 | `TPickupSkipEvent` | `PickupSkipEventRepository` | (在 `pick_up_by_scan` 写) | — |
-| 客户 | `TCustomer` | `CustomerRepository` | `customer.py` | `api/v1/customer.py`（v1 业务路由，下线） |
-| 申请人 | `TApplicant` | `ApplicantRepository` | `applicant.py` | `api/v1/applicant.py`（v1 业务路由，下线） |
-| 装配体 | `TAssembly` | `AssemblyRepository` | `assembly.py` | `api/v1/assembly.py`（v1 业务路由，下线） |
-| 文件（多态） | `TPartFile` | `PartFileRepository` | `part_file.py` / `drawing.py` / `cnc_program.py` | `api/v1/drawing.py` / `cnc_program.py`（v1 业务路由，下线） |
-| CNC 程序 | (走 `TPartFile` kind=G_CODE) | — | `cnc_program.py` | `api/v1/cnc_program.py`（v1 业务路由，下线） |
-| 工人 | `TWorker` | `WorkerRepository` | `worker.py` | `api/v1/worker.py`（v1 业务路由，下线） |
-| 货架 | `TShelf` | `ShelfRepository` | `shelf.py` | `api/v1/shelf.py`（v1 业务路由，下线） |
-| 货架-工序 | `TShelfProcess` | `ShelfProcessRepository` | `shelf_process.py` | (并入 shelf 路由，下线) |
-| 工序 | `TProcess` | `ProcessRepository` | `process.py` | `api/v1/process.py`（v1 业务路由，下线） |
-| 工种 | `TWorkType` | `WorkTypeRepository` | `work_type.py` | `api/v1/work_type.py`（v1 业务路由，下线） |
-| 工种-工序 | `TWorkTypeProcess` | `WorkTypeProcessRepository` | `work_type_process.py` | (并入 work_type 路由，下线) |
-| 外协公司 | `TOutsourceCompany` | `OutsourceCompanyRepository` | `outsource_company.py` | `api/v1/outsource_company.py`（v1 业务路由，下线） |
-| 外协报价 | `TOutsourceQuote` | `OutsourceQuoteRepository` | `outsource_quote.py` | `api/v1/outsource_quote.py`（v1 业务路由，下线） |
-| 送货单 | `TDeliveryNote` / `TDeliveryNoteCounter` / `TDeliveryNoteEvent` | `DeliveryNote{Repository,EventRepository,CounterRepository}` | `delivery_note.py` / `delivery_note_print.py`（XLSX 模板填表） | `api/v1/delivery_note.py`（v1 业务路由，下线） |
-| 用户/角色/菜单 | `t_user` / `t_user_role` / `t_menu` / `t_role_menu`（基表保留供 rust v2 读写） | — | — | — |
-| 流水号 | `TSerialCounter` | `SerialCounterRepository` | — | — |
-| STS 凭证 | — | — | `service/sts.py`（薄层） + `core/sts.py`（SDK 包装） | `api/v1/sts.py`（**保留 3 个端点**） |
-| MCP 只读 | — | — | `service/mcp_query.py` / `service/part_file.py` | `api/mcp/*.py`（保留：AI 免登录只读） |
+| 零件 | `TPart` / `TPartBatch` | `PartRepository` / `PartBatchRepository` | `service/printing.py`（仅 PDF 打印消费） | `api/v1/printing.py`（**保留**：`GET /parts/{id}/print` + `POST /parts/print-batch`） |
+| 装配体 | `TAssembly` | `AssemblyRepository` | `service/printing.py` / `service/delivery_note_print.py`（仅读取 customer / 父件） | 同上 |
+| 文件（多态） | `TPartFile` | `PartFileRepository` | `service/printing.py`（图纸 / 图片正背面） | 同上 |
+| 客户 | `TCustomer` | `CustomerRepository` | `service/printing.py` / `service/delivery_note_print.py`（读 `serial_prefix`） | 同上 |
+| 送货单 | `TDeliveryNote` | `DeliveryNoteRepository` | `service/delivery_note_print.py`（XLSX 模板填表） | `api/v1/delivery_note_print.py`（**保留**：`POST /delivery-notes/{id}/print` + `POST /delivery-notes/{id}/print-labels`） |
+| STS 凭证 | — | — | `service/sts.py`（薄层） + `core/sts.py`（SDK 包装） | `api/v1/sts.py`（**保留** 3 个端点） |
+| 健康检查 | — | — | — | `main.py::/api/v1/health`（**保留**：compose 探针） |
 
-> **2026-09-19 IAM 域迁出**：上表中 `用户/角色/菜单` 一行的 Model / Service / API
-> 列全部为空——本仓不再持有 ORM / service / 路由；基表 + seed 由 alembic 管理，
-> 业务读写由 backend-rust v2 的 `/api/v2/iam/*` 承接。
+> **2026-09-19 IAM 域迁出**：基表 `t_user` / `t_user_role` / `t_menu` /
+> `t_role_menu` 仍由 alembic 管理（保留 seed 供 rust v2 继承），但本仓不再持有
+> 任何 ORM / service / 路由。业务读写由 backend-rust v2 的 `/api/v2/iam/*` 承接。
+>
+> **2026-09-24 PR-3 dormant 下线**：applicant / process / worker / shelf /
+> work_type / outsource_company / outsource_quote / part_event /
+> pickup_skip_event / serial_counter / drawing_file / cnc_program /
+> delivery_note_event / delivery_note_counter / process_chain_step /
+> outsource_shipment / outsource_quote_event / outsource_company_process /
+> shelf_process / work_type_process 共 20 个 ORM 整体删除；其对应的
+> `repository/*.py` 共 15 个删除；`service/_assembly_rollup` /
+> `_batch_ops` / `_delivery_note_events` / `_session_refresh` 4 个 dormant
+> helper 删除。
 >
 > **legacy 死表**：`t_drawing_file` / `t_cnc_program` 仍在 `schema_init` 中建表
 > 但**无 writer**，已被多态 `t_part_file`（`kind` 字段）取代。对应
-> `TDrawingFile` / `TCncProgram` ORM 不再使用。
+> `TDrawingFile` / `TCncProgram` ORM 已删除（2026-09-24 PR-3）。
 
 ---
 
@@ -184,7 +251,9 @@ model/*.py           # SQLAlchemy ORM
 
 ```python
 class TPart(Base, AuditMixin): ...          # 业务主表
-class TPartEvent(Base, EventTimestampMixin): ...  # 事件表（append-only）
+# 历史: class TPartEvent(Base, EventTimestampMixin): ...  # 事件表（append-only）
+# 2026-09-24 PR-3 后，TPartEvent / TPartBatchEvent 等事件表 ORM 已删除；
+# EventTimestampMixin 保留供未来 v2 / 新增 event 表复用。
 ```
 
 约定：
@@ -420,7 +489,22 @@ ORM 自动获 OCC，**无需改业务代码**。
 
 ---
 
-## 13. 部分数量批次化（2026-07-29 引入）
+## 13. 部分数量批次化（2026-07-29 引入，历史；2026-09-24 PR-3 后已下线）
+
+> **2026-09-24 PR-3 状态**：本节描述的批次化子系统（`PartService` +
+> `service/_assembly_rollup.py` + `service/_batch_ops.py` +
+> `service/_delivery_note_events.py` + `service/_session_refresh.py` +
+> `service._to_out` rollup 路径 + 全部 dormant 测试）已随 v1 业务路由下线
+> 整体删除。本节保留作为历史设计文档，便于回溯「为什么 PartStateMachine
+> 鸭子复用 + 批次 rollup 这么设计」。
+>
+> 核心 ORM `TPart` / `TPartBatch` 仍保留（供 backend-rust v2 读基表 +
+> alembic 迁移管理），但本仓不再持有任何 service / repository 引用它们。
+> `service.printing` 仅消费 `notes.get_by_id` / `parts.get_by_id` 等基础
+> repository 方法，不走批次化路径。
+>
+> `t_part_batch.current_process_step_id` 列 + 索引仍由
+> `tests/conftest.py::_apply_pr3_test_db_patch` 幂等 DDL 补齐（PR-2 兼容）。
 
 核心思想：**所有数量永远活在批次里**（`t_part_batch.quantity`），
 `t_part.quantity` 是工单总容量，向后兼容；批次即可拆可合，
@@ -639,8 +723,17 @@ frontend/src/
   `t_menu` / `t_role_menu` 基表 + seed 数据保留供 backend-rust v2 直接读写；
   本仓 ORM 抽象（`model/user.py` / `model/user_role.py` / `model/menu.py`）已
   删除，rust v2 通过自家迁移管理 IAM 表结构与版本演进。
-- 冷启结果：seed 表有数据（含 IAM seed），业务表（part/customer/assembly/
-  applicant/outsource）为空。
+- **2026-09-24 PR-3 dormant 全删**：alembic 链零改动（`alembic upgrade head`
+  仍成功，head `000000000031` 不变）。`schema_init` 中所有表（含 dormant 业务
+  表 / 死表）继续保留供 backend-rust v2 直接读写；本仓 ORM 抽象（model/* /
+  repository/* / service/_*.py 的 dormant 业务部分）已删，rust v2 通过自家
+  迁移管理业务表结构与版本演进。
+- 冷启结果：seed 表有数据（含 IAM seed + 工种 / 工序 / 工人 / 货架↔工序
+  默认映射 / 菜单 / role_menu / `t_serial_counter` A-Z 全 26 行）；
+  业务表（t_part / t_part_batch / t_part_file / t_assembly / t_customer /
+  t_delivery_note）为空。
+- **本仓活跃 ORM（model/__init__.py）**：TPart / TPartBatch / TPartFile /
+  TAssembly / TCustomer / TDeliveryNote（6 个）。
 - **新 schema 迁移放 `schema/` 子目录**，revision id 用下一个 12 位数字，
   `down_revision` 指向当前 head。改 `schema_init` 时验收门：全新库 `upgrade head`
   后 `pg_dump --schema-only` 与旧链对比无意外差异。
@@ -651,249 +744,151 @@ frontend/src/
 
 ## API 端点速查
 
-> **2026-09-19 IAM 域迁出后**：本仓 `/api/v1/*` 仅剩 STS 3 个端点（`POST
-> /api/v1/files/sts-tmp-keys` + `POST /api/v1/files/sts-prefix-credentials` +
-> `GET /api/v1/files/sts-health`）。其余 18 个 v1 业务路由（下表所列）均已
-> 下线并移至 `_archive/api_v1/` 待评审 git rm；业务由 backend-rust v2 的
-> `/api/v2/*` 承接。鉴权 / 账号 / 角色 / 菜单相关由 `/api/v2/iam/*` 承接。
+> **2026-09-24 PR-3 最终态**：本仓 `/api/v1/*` + `/api/v1/health` 仅保留 8 个
+> 活跃端点（3 STS + 4 打印 + 1 health）。其余 22 + 5 = 27 个 v1 + MCP 路由
+> 已 git rm；业务由 backend-rust v2 的 `/api/v2/*` 承接。鉴权 / 账号 / 角色 /
+> 菜单相关由 `/api/v2/iam/*` 承接。
 
-> 统一信封 `{ code: 0, message: "ok", data: ... }`。权限缩写：
-> M=MANAGER, C=CLERK, S=SHELF_ACCOUNT, CNC=CNC_PROGRAMMER, I=INSPECTOR,
-> *=任意已登录。
+> 统一信封 `{ code: 0, message: "ok", data: ... }`。**所有 8 个端点裸开鉴权**，
+> 靠部署层 nginx / 安全组隔离保证。权限缩写（仅作历史参考）：M=MANAGER,
+> C=CLERK, S=SHELF_ACCOUNT, CNC=CNC_PROGRAMMER, I=INSPECTOR, *=任意已登录。
 
 ### /files/sts-*（api/v1/sts.py — **保留** STS 凭证端口）
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| POST | /api/v1/files/sts-tmp-keys | 裸开（参考 `/api/mcp/*`） | 2026-09-17 新增：前端直传 COS 临时凭证，TTL 1800s，CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录。 |
+| POST | /api/v1/files/sts-tmp-keys | 裸开 | 2026-09-17 新增：前端直传 COS 临时凭证，TTL 1800s，CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录。 |
 | POST | /api/v1/files/sts-prefix-credentials | 裸开（内部端口） | 2026-09-18 新增：供 rust 后端按任意 `tmp/...` 前缀签凭证；prefix 必须 `tmp/` 开头 + 至少含一个子目录段 + 无 `* ? .. \x00 \\` 字符。 |
 | GET | /api/v1/files/sts-health | 裸开（healthcheck 探针） | 2026-09-18 新增：STS 签发自检，每次 uuid4 hex probe prefix `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调 SDK 签发，验证 SDK + 主账号密钥 + CAM policy + 网络整条链路；返回 `{status, probe_prefix, expired_at}`。 |
 
-### /api/mcp/*（api/mcp/*.py — AI 只读入口，**保留**）
+### /parts/*（api/v1/printing.py — **保留** 打印图纸端口，2026-09-24 PR-2 新增）
 
-免鉴权，靠部署层 nginx / 安全组隔离保证安全。
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| GET | /api/v1/parts/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`；支持多图纸分页。 |
+| POST | /api/v1/parts/print-batch | 裸开 | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。 |
+
+### /delivery-notes/*（api/v1/delivery_note_print.py — **保留** 送货单 / 标签打印端口，2026-09-24 PR-2 新增）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | /api/v1/delivery-notes/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板按一级客户前缀分发）；handler 调 `service.delivery_note_print.DeliveryNotePrintService`。 |
+| POST | /api/v1/delivery-notes/{id}/print-labels | 裸开 | **2026-09-24 PR-2 新增**：标签 Excel。 |
+
+### /health（main.py — **保留** 健康检查）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| GET | /api/v1/health | 裸开 | 容器健康检查（compose 探针）；不查 DB（DB 联通由 lifespan 心跳保证）。 |
 
 ---
 
-### 历史 v1 业务路由（下线归档，仅供参考）
+### 历史 v1 + MCP 路由（已 git rm，仅供参考）
 
-> 以下路由自 2026-09-19 起不再由本仓服务；前端调用全部走 backend-rust v2 的
-> `/api/v2/*`。仅在 git history / `_archive/api_v1/` 中保留以备审计。
-
-#### /parts（api/v1/part.py）
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /parts | M,C | 分页：customer_id/statuses/is_urgent/keyword/sort |
-| POST | /parts · /parts/batch | M,C | 创建（PENDING，分配流水号）/ 批量 |
-| POST | /parts/{id}/update | M,C | 字段级 partial |
-| GET | /parts/pending-programming | M,C,CNC | status=PROGRAMMING 一览 |
-| GET | /parts/{id} · /parts/{id}/events | M,C,CNC | 详情 / 事件历史 |
-| POST | /parts/{id}/soft-delete | M | 软删 |
-| POST | /parts/{id}/place-on-shelf | M,C | PENDING→ON_SHELF（shelf_id+next_process_id）|
-| POST | /parts/{id}/send-to-programming | M,C | PENDING→PROGRAMMING |
-| POST | /parts/{id}/release-from-programming | M,CNC | PROGRAMMING→ON_SHELF |
-| POST | /parts/{id}/send-to-outsource | M,C | →OUTSOURCE（外协公司+工序）|
-| POST | /parts/{id}/receive-from-outsource | M,C | OUTSOURCE→ON_SHELF |
-| POST | /parts/{id}/receive-from-outsource-to-inspection | M,C | OUTSOURCE→INSPECTION |
-| POST | /parts/{id}/pass-inspection · /fail-inspection | M,C | INSPECTION→READY_TO_SHIP / →REPAIRING(打回) |
-| POST | /parts/{id}/deliver · /scan-deliver | M,C | READY_TO_SHIP→DELIVERED |
-| POST | /parts/{id}/complete | M,C | DELIVERED→COMPLETED，释放流水号 |
-| POST | /parts/{id}/start-repair · /complete-repair | M,C | 返修流转 |
-| POST | /parts/{id}/cancel | M,C | →CANCELLED，释放流水号 |
-| POST | /parts/{id}/recall-to-pending | M,C | ON_SHELF/PROGRAMMING→PENDING（仅未领批次）|
-| POST | /parts/{id}/recall-to-programming | M,CNC | ON_SHELF→PROGRAMMING |
-| POST | /parts/pick-up · /parts/scan | S@该shelf | 扫码领取 / 归还·送检 |
-| GET | /parts/by-serial/{serial_no} | * | 按序列号查 |
-| GET | /parts/by-work-type/{wt_id} | * | 可领件列表（query shelf_id；另有 all-shelves 变体）|
-| GET | /parts/by-worker/{worker_id} | * | 工人当前持有件（RETURN 流程用）|
-
-#### /assemblies（api/v1/assembly.py — 3 router）
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /assemblies · /assemblies/{id} | M,C | 分页 / 详情 |
-| POST | /assemblies | M,C | multipart JSON+PDF：建装配体+子件+上传 |
-| POST | /assemblies/{id}/soft-delete | M | 级联软删（端点级 override）|
-| POST | /assemblies/{id}/cancel | M,C | 级联取消非终态子件 |
-| GET | /parts/{id}/assembly | M,C,CNC | 子件反查装配件 |
-| POST/GET | /assemblies/{id}/files | M,C,CNC | 上传附加文件 / 列文件 |
-
-#### 客户 / 申请人
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /customers | M,C,CNC | 全量树（含 parent_name / serial_prefix），不分页 |
-| POST | /customers · /{id}/update · /{id}/soft-delete | M,C | 客户 CRUD（一级必填 serial_prefix；有子/被引用拒删）|
-| GET | /applicants · /applicants/search | M,C | 列表 / 前序补全 |
-| POST | /applicants · /bulk-get-or-create · /{id}/update · /{id}/soft-delete | M,C | 申请人 CRUD + 批量 get-or-create |
-
-#### 外协
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /outsource-companies · /by-process/{pid} · /{id} | M,C,CNC | 外协公司查询 |
-| POST | /outsource-companies · /{id}/update · /{id}/soft-delete · /{id}/processes | M,C | 外协公司 CRUD + 工序映射替换 |
-| GET | /outsource-quotes · /approved-for-send · /{id} | M,C | 报价查询 / 可发外协零件 |
-| POST | /outsource-quotes · /{id}/update · /{id}/submit · /{id}/soft-delete | M,C | 报价编辑 / 提交 |
-| POST | /outsource-quotes/{id}/approve · /{id}/reject | M | 审批（MANAGER-only）|
-
-#### 送货单
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| POST | /delivery-notes/generate | M,C | 按客户前缀（F→法拉/L→路达模板）聚合 READY_TO_SHIP 零件导出 Excel（含条码）|
-
-#### /statistics（api/v1/statistics.py — MANAGER-only）
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /statistics/overview | M | 生产概览 |
-| GET | /statistics/workers | M | 工人贡献度一览 |
-| GET | /statistics/workers/{worker_id} | M | 工人详情 |
-| GET | /statistics/pickup-skips | M | 跳序取件次数汇总（按工人）|
-| GET | /statistics/pickup-skips/{worker_id} | M | 工人跳序明细（分页）|
-
-#### /workers（api/v1/worker.py）
-
-| POST | /workers/verify-badge | * | 扫码台工牌定位 |
-| GET/POST | /workers · /{id} · /{id}/update · /{id}/deactivate · /{id}/reactivate | M | 工人 CRUD + 启停用 |
-
-#### /shelves（api/v1/shelf.py — picker + read + write）
-
-| GET | /shelves · /shelves/{id} | M,C,CNC | 列表 / 详情（读放开）|
-| GET | /shelves/processes | * | **批量货架↔工序映射**（`{items:[{shelf_id, process_ids}]}`，前端 useShelfProcessFilter 用）|
-| GET | /shelves/for-return · /for-inspection | * | 扫码台字面子路径（须注册在 `/{shelf_id:int}` 之前）|
-| GET | /shelves/{id}/processes | M | 单架映射 |
-| POST | /shelves · /{id}/update · /{id}/deactivate · /{id}/processes | M | 货架 CRUD + 映射替换（写 MANAGER-only）|
-
-> ⚠️ `picker_router` 必须在 `read_router` 之前注册，否则 `/{shelf_id:int}`
-> catch-all 会截胡 `/processes` / `/for-return` / `/for-inspection` 字面子路径 → 422。
-
-#### /processes · /work-types（读 M,C,CNC,S / 写 M）
-
-| GET/POST | /processes · /{id} · /{id}/update · /{id}/soft-delete | | 工序 CRUD（code 不可改，被引用拒删）|
-| GET/POST | /work-types · /{id} · /{id}/update · /{id}/soft-delete | | 工种 CRUD |
-| GET/POST | /work-types/{id}/processes | | 工种工序映射（整体替换）|
-
-#### 文件（api/v1/drawing.py + cnc_program.py）
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| POST | /parts/{id}/drawings · /3d-models · /cad-files | M,C | 上传图纸（PDF+9图片）/ 3D / CAD 源文件 |
-| POST | /parts/{id}/cnc-programs · /setup-sheets | M,CNC | 上传 G 代码 / 工艺卡 |
-| GET | /parts/{id}/files | M,C,CNC | 列文件（kind 可选过滤）|
-| GET | /files/{id}/download-url · /content | M,C,CNC | 签临时 URL / 后端代理内容 |
-| POST | /files/{id}/delete | 按 kind 派 | 软删 + COS 异步清理 |
-| GET/POST | /cnc-programs/{id}/download-url · /content · /delete | M,C,CNC (删 M,CNC) | G 代码文件级（别名 → /files/{id}）|
-
-#### WebSocket
-
-| /ws/dashboard?token=... | 大屏实时推送：连接推快照 + 每 5s 周期 + 业务事件即时推 |
+> 以下路由自 2026-09-17 / 09-19 / 09-24 起不再由本仓服务；前端调用全部走
+> backend-rust v2 的 `/api/v2/*`。仅在 git history 中保留以备审计。共 27 个：
+>
+> - 2026-09-17 首批（18 个）：applicant / assembly / cnc_program / customer /
+>   delivery_note / drawing / outsource_company / outsource_quote /
+>   outsource_shipment / part / process / shelf / statistics / user /
+>   work_type / worker / ws（18 个 v1 业务路由）
+> - 2026-09-19 增补（4 个 IAM 端点）：`POST /auth/login` +
+>   `POST /auth/refresh` + `GET /auth/me` + `POST /auth/change-password`
+> - 2026-09-24 增补（5 个 MCP 端点，原 PR-1 移除）：`GET /api/mcp/health` +
+>   `GET /api/mcp/dashboard-stats` + `POST /api/mcp/parts/by-serial` +
+>   `GET /api/mcp/parts/{id}` + `GET /api/mcp/files/{id}/download-url`
 
 ---
 
-## Service 层速查
+## Service 层速查（2026-09-24 PR-3 最终态）
 
 > 每个 Repository 继承 `create / get_by_id / update / soft_delete` 标准模式。
-> 2026-09-19 IAM 域迁出后，`AuthService` / `UserService` / `build_menu_tree`
-> 已从本仓删除；账号 / 角色 / 菜单相关 service 由 backend-rust v2 承接。
+> 2026-09-24 PR-3 后，本仓仅保留 3 个 service：
+> `StsService` / `PrintingServiceFacade` / `DeliveryNotePrintService` +
+> 3 个活跃 helper（`_id_parse` / `_print_back_page` / `_print_front_cache`）。
+> 历史业务 service（applicant / assembly / customer / delivery_note /
+> outsource_company / outsource_quote / part / process / shelf /
+> shelf_process / statistics / work_type / work_type_process / worker /
+> mcp_query / part_file / dashboard / auto_complete）已删除。
+> 2026-09-24 PR-3 还删除 dormant helper：`service/_assembly_rollup` /
+> `service/_batch_ops` / `service/_delivery_note_events` /
+> `service/_session_refresh`。
 
-- **PartService**（`service/part.py`）：list/get/create/batch/update/soft_delete +
-  全状态流转（place_on_shelf / send_to_programming / release_from_programming
-  / send_to_outsource / receive_from_outsource / pass_inspection / deliver /
-  complete / start_repair / complete_repair / cancel / pick_up_by_scan /
-  scan_event）+ list_events + 可领件/持有件查询。
-- **AssemblyService**（`service/assembly.py`）：list / create_assembly
-  （校验→acquire_serial→构造→上传 PDF→写 part_file→批量子件，一次性 INSERT 避免
-  两阶段写）/ get_detail / get_for_child / cancel / soft_delete（级联+文件异步清理）。
-  子件 serial 派生 `{serial}-{i:02d}`（上限 99）。
-- **DrawingService / PartFileService / CncProgramService**：文件上传（SHA 去重）/
-  列表 / download-url / content / delete。
-- **OutsourceCompanyService**：外协公司 CRUD + 工序映射替换。
-- **OutsourceQuoteService**：报价 CRUD + 审批生命周期（DRAFT/SUBMITTED/APPROVED/
-  REJECTED/USED）+ 事件 + 可发外协零件。
-- **DeliveryNoteService**（`service/delivery_note.py`）：DRAFT ↔ SUBMITTED →
-  PICKED_UP → ARCHIVED 状态机 + 候选零件勾选（INSPECTION + READY_TO_SHIP）+
-  partial update（送货日期 / 备注）+ 前缀分发 XLSX 打印（走
-  `delivery_note_print.py::DeliveryNotePrintService`，复用 PR-F 的 `TEMPLATE_CONFIGS`
-  / `CellBinding`，模板文件 `template/delivery_note_fala.xlsx` /
-  `template/delivery_note_luda.xlsx` 与 `core.config::delivery_note_template_by_prefix`
-  单 head 接入）。错误码 `BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED` /
-  `BIZ_DELIVERY_TEMPLATE_TOO_MANY_PARTS`（仍在 `core/error_code.py`）。pickup
-  完成后保留 `t_part.delivery_note_id` 指向归档单（便于 PICKED_UP/ARCHIVED
-  仍可打印）；add_parts 仅挡 active 单冲突。
-- **ShelfProcessService**：列 / 原子替换货架↔工序有序映射。
-- **ApplicantService**：申请人 CRUD + search + get_or_create + bulk_get_or_create
-  （挂一级客户；被引用拒删）。
-- **auto_complete**（`service/auto_complete.py`）：周期把足够老的 DELIVERED 零件
-  推 COMPLETED（阈值用 `now_naive()`，与 DB `now()` 同源）。
-- **ShelfService / WorkerService / CustomerService / ProcessService /
-  WorkTypeService / WorkTypeProcessService**：各自聚合 CRUD。
-- **build_snapshot_with_workers**（`service/dashboard.py`）：大屏聚合查询
-  （按货架拆分卡片 + 正在加工 pill）。
+- **PrintingServiceFacade**（`service/printing.py`，2026-09-24 PR-2 新增）：
+  单件 / 批量打印图纸 PDF facade；`build_part_print_pdf` /
+  `build_parts_print_pdf_batch` 调 `service/_print_back_page.py`（条码背面）
+  + `service/_print_front_cache.py`（图纸正面缓存）；handler 在
+  `api/v1/printing.py`。
+- **DeliveryNotePrintService**（`service/delivery_note_print.py`，2026-09-24
+  PR-2 新增）：送货单 Excel + 标签 Excel；调
+  `repository/delivery_note.py::notes.get_by_id` 读送货单，模板填表走
+  `template/delivery_note_fala.xlsx` / `template/delivery_note_luda.xlsx`
+  （F/L 一级客户前缀分发）；handler 在 `api/v1/delivery_note_print.py`。
 - **StsService**（`service/sts.py`）：STS 凭证端口薄层 service；只读 settings +
-  调 `core.sts.grant_sts_tmp_key`，不持 session / 不写 DB。
-- **McpQueryService**（`service/mcp_query.py`）：MCP AI 只读查询入口。
+  调 `core.sts.grant_sts_tmp_key`，不持 session / 不写 DB；handler 在
+  `api/v1/sts.py`。
+
+活跃 helper：
+- **`service/_id_parse.py`** — `parse_snowflake_id(value, field_name=...)`
+  把 str 雪花 ID 转 int，失败抛 `BIZ_INVALID_VALUE` 400。
+- **`service/_print_back_page.py`** — 背面序列号大字 + Code128 条码 PDF
+  生成（图纸 / 图片双面打印用）。
+- **`service/_print_front_cache.py`** — 正面图纸 / 图片 SHA-256 缓存 +
+  旋转 / 缩放 / 拼接。
 
 ---
 
-## Repository 层速查（非标准查询方法）
+## Repository 层速查（非标准查询方法，2026-09-24 PR-3 最终态）
 
-> 2026-09-19 IAM 域迁出后，`UserRepository` / `UserRoleRepository` /
-> `MenuRepository` 已从本仓删除；账号 / 角色 / 菜单相关数据访问由
-> backend-rust v2 承接。基表（`t_user` / `t_user_role` / `t_menu` /
-> `t_role_menu`）保留供 rust 直接读写。
+> 2026-09-24 PR-3 后，本仓仅保留 6 个 repository：
+> `PartRepository` / `PartBatchRepository` / `PartFileRepository` /
+> `AssemblyRepository` / `CustomerRepository` / `DeliveryNoteRepository`。
+> 历史 dormant repository（applicant / process / worker / shelf /
+> shelf_process / work_type / work_type_process / outsource_company /
+> outsource_quote / outsource_quote_event / outsource_shipment /
+> outsource_company_process / part_event / pickup_skip_event /
+> serial_counter）已删除。
 
 | Repository | 特殊方法 |
 |------------|---------|
 | PartRepository | `get_by_serial`; `list_with_filters` / `count_with_filters`（核心多维过滤+ILIKE）; `list_children`; `list_for_work_type`; `list_held_by_worker` |
-| AssemblyRepository | `list_with_filters` / `count_with_filters` |
+| PartBatchRepository | （标准 `create` / `get_by_id` / `update` / `soft_delete`）|
 | PartFileRepository | `list_by_part`; `find_active_by_part_kind_sha`; `soft_delete_many` |
+| AssemblyRepository | `list_with_filters` / `count_with_filters` |
 | CustomerRepository | `list_all` / `list_by_ids` / `list_roots` / `list_children` |
-| ApplicantRepository | 按 customer + name 前序查询; 批量 get-or-create 支持 |
-| WorkerRepository | `get_by_badge_code`; `list_with_filters` |
-| ShelfRepository | `get_by_code`; `list_active_by_zone`; `list_with_filters` |
-| ShelfProcessRepository | `list_process_ids_by_shelf`; `list_all_mappings`; 原子替换 |
-| ProcessRepository / WorkTypeRepository | `get_by_code`; `list_with_filters` |
-| WorkTypeProcessRepository | `list_by_work_type` / `list_process_ids_by_work_type` / `get_default_process_id_for_work_type` / `delete_by_work_type` |
-| OutsourceCompanyRepository / OutsourceCompanyProcessRepository | 公司过滤 + 工序映射 |
-| OutsourceQuoteRepository / OutsourceQuoteEventRepository | 报价过滤 + 事件追加 |
-| SerialCounterRepository | `acquire_serial(prefix)`（SELECT...FOR UPDATE 原子递增）; `release_serial` |
-| PartEventRepository | `add`（状态机回调同步写）; `create`; `list_by_part` |
+| DeliveryNoteRepository | （2026-09-24 PR-2 从 git 785df37^ 恢复，10 个公开方法 + 2 个私有辅助；专供 `service.delivery_note_print::notes.get_by_id`） |
 
 ---
 
-## Model/ORM 速查
+## Model/ORM 速查（2026-09-24 PR-3 最终态）
 
 > 2026-09-19 IAM 域迁出后，`TUser` / `TUserRole` / `TMenu` / `TRoleMenu` ORM
-> 已从本仓删除；账号 / 角色 / 菜单相关 ORM 抽象由 backend-rust v2 承接。
-> 基表（`t_user` / `t_user_role` / `t_menu` / `t_role_menu`）保留供 rust 直接
-> 读写，alembic 链不动。
+> 已删除；2026-09-24 PR-3 后，dormant 业务 ORM（applicant / process /
+> worker / shelf / shelf_process / work_type / work_type_process /
+> outsource_company / outsource_quote / outsource_quote_event /
+> outsource_shipment / outsource_company_process / part_event /
+> pickup_skip_event / serial_counter / drawing_file / cnc_program /
+> delivery_note_event / delivery_note_counter / process_chain_step）也已
+> 删除。本仓仅保留 6 个 ORM（TPart / TPartBatch / TPartFile / TAssembly /
+> TCustomer / TDeliveryNote）。账号 / 角色 / 菜单相关 ORM 抽象由
+> backend-rust v2 承接。基表（`t_user` / `t_user_role` / `t_menu` /
+> `t_role_menu`）保留供 rust 直接读写，alembic 链不动。
 
 ### 核心业务表
 
 | ORM | 表 | 关键列（非审计/非 ID） |
 |-----|----|----|
 | TPart | t_part | serial_no, name, drawing_no, applicant_name, quantity, unit_price, total_price, request_date, planned_delivery_date, actual_delivery_date, **order_no, system_delivery_date, note**, status(10 态), location(OFFICE/PRODUCTION_SHELF/WORKER/INSPECTION_SHELF/**OUTSOURCE_COMPANY**), is_urgent, current_holder_id(多态→shelf/worker/**outsource_company**), placed_at, customer_id, assembly_id, next_process_id |
+| TPartBatch | t_part_batch | part_id, batch_no(per-part 递增), quantity, status, location, current_holder_id, current_process_step_id(→ t_process_chain_step.id), delivery_note_id, parent_batch_id; 索引 `(part_id)` / `(status, current_holder_id)` / `(location, status, next_process_id)` / `unique(part_id, batch_no)` |
 | TAssembly | t_assembly | serial_no, drawing_no, name, applicant_name, customer_id, request_date, planned_delivery_date, actual_delivery_date, is_urgent, status(PENDING/IN_PROCESS/INSPECTION/READY_TO_SHIP/DELIVERED/COMPLETED/CANCELLED) |
-| TPartEvent | t_part_event | part_id, worker_id, created_by, event_type（含 `RECALLED`）, from_status, to_status, drawing_code, badge_code, note |
 | TCustomer | t_customer | name, parent_id(自引用邻接表), serial_prefix(A-Z) |
-| TApplicant | t_applicant | name, customer_id（partial unique `(name, customer_id) WHERE deleted_at IS NULL`）|
-| TWorker | t_worker | badge_code/name/is_active/work_type_id |
-| TShelf / TProcess / TWorkType | | code/name/zone(PRODUCTION/INSPECTION) · code(unique)/category(INHOUSE/OUTSOURCE) · code(unique)/name · `max_held_batches`（工种可领取上限，NULL=不限）|
-| TOutsourceCompany | t_outsource_company | name, contact, phone, address, is_active |
-| TOutsourceQuote | t_outsource_quote | part_id, company_id, process_id, price, status(DRAFT/SUBMITTED/APPROVED/REJECTED/USED), reviewed_at/by |
+| TDeliveryNote | t_delivery_note | serial_no, customer_id, status(DRAFT/SUBMITTED/PICKED_UP/ARCHIVED), delivery_date(Date), notes；外加 event 子表 `t_delivery_note_event` + 计数器子表 `t_delivery_note_counter`（schema_init 仍建表，本仓不持有 ORM 抽象；service.delivery_note_print 仅读 `notes.get_by_id`） |
 
 ### 关联/文件表
 
 | ORM | 表 | 关键列 |
 |-----|----|----|
 | TPartFile | t_part_file | polymorphic `part_id`(=t_part.id 或 t_assembly.id); kind(DRAWING/THREE_D_MODEL/G_CODE/SETUP_SHEET/ASSEMBLY_MASTER/CAD_2D); file_type, object_key, original_filename, file_size, content_type, content_sha256(CHAR(64) NULL), upload_status |
-| TShelfProcess | t_shelf_process | shelf_id, process_id, sort_order |
-| TWorkTypeProcess | t_work_type_process | work_type_id, process_id, sort_order |
-| TOutsourceCompanyProcess | t_outsource_company_process | company_id, process_id |
-| TOutsourceQuoteEvent | t_outsource_quote_event | quote_id, event_type, note |
 | TSerialCounter | t_serial_counter | prefix: str(1) PK, counter |
 
 ### enums.py 全枚举
@@ -910,17 +905,20 @@ frontend/src/
   RECEIVED_FROM_OUTSOURCE, QUOTE_CREATED, QUOTE_APPROVED, CANCELLED, RECALLED,
   COMPLETED
 - `UserRole`: MANAGER, SHELF_ACCOUNT, CLERK, INSPECTOR, CNC_PROGRAMMER
-  （**保留枚举**——被 `core/_file_kind_policy.py` / `core/permission.py` /
-  `tests/test_statistics.py` 等仍消费；DTO 在 v2 端继续复用）
+  （**保留枚举**——被 `core/_file_kind_policy.py` 消费；DTO 在 v2 端继续复用）
 - `ShelfZone`: PRODUCTION, INSPECTION
 - `PartSortKey`: PLANNED_DELIVERY_DATE, REQUEST_DATE, CREATED_AT, SERIAL_NO,
   DRAWING_NO, NAME · `SortDir`: ASC, DESC
 - `ProcessCategory`: INHOUSE, OUTSOURCE
 - `PartFileKind`: DRAWING, THREE_D_MODEL(值 `3D_MODEL`), G_CODE, SETUP_SHEET,
   ASSEMBLY_MASTER, CAD_2D
+- `DeliveryNoteStatus`: DRAFT, SUBMITTED, PICKED_UP, ARCHIVED ·
+  `DeliveryNoteSortKey`: SERIAL_NO, DELIVERY_DATE, CREATED_AT ·
+  `DeliveryNoteEventType`: CREATED, EDITED, SUBMITTED, PICKED_UP, ARCHIVED
 - `OutsourceQuoteStatus`: DRAFT, SUBMITTED, APPROVED, REJECTED, USED ·
   `OutsourceQuoteEventType`: CREATED, EDITED, SUBMITTED, APPROVED, REJECTED,
   USED · `OutsourceQuoteSortKey`: CREATED_AT, PRICE, REVIEWED_AT
+  （**保留枚举**——仅供历史 dormant 测试 + DTO 引用；本仓无活跃调用方）
 - `SCAN_EVENT_TYPES`（set，非枚举）: PICKED_UP, RETURNED, INSPECTED
 
 ### Mixin
@@ -934,47 +932,45 @@ frontend/src/
 ## 现状与已知问题
 
 1. **model/DB 漂移**：`uv run alembic check` 会报告预存的 index/comment 差异
-  （`t_part.serial_no` partial unique index、`t_part_event` / `t_worker` 的
-   index/comment），与近期改动无关，不要在处理其他 PR 时混入修复。
+  （`t_part.serial_no` partial unique index 等），与近期改动无关，不要在
+  处理其他 PR 时混入修复。`t_part_event` / `t_worker` index/comment 漂移已
+  不再相关（2026-09-24 PR-3 后对应 ORM 已删）。
 2. **`created_by` / `updated_by` 全为 NULL**：2026-09-19 IAM 域迁出后，
    本仓不再持有 user/role 抽象，写操作人字段在 v2 端按 CurrentUser.id 填；
-   本仓 dormant 路径不消费。
-3. **`service/applicant.py::get_or_create` 并发 race（follow-up，未修）**：
-   `IntegrityError` 后没用 `SAVEPOINT` / `begin_nested()`，并发会
-   `PendingRollbackError`。
-4. **`docs/db-design-part-customer.md` 部分描述已过时**（审计字段说由 `Base`
+   本仓活跃路径（printing / delivery_note_print / sts）只读不写，
+   AuditMixin 字段填入由 backend-rust v2 端负责。
+3. **`docs/db-design-part-customer.md` 部分描述已过时**（审计字段说由 `Base`
    声明，实际是 `AuditMixin`）；以本文件和 `model/audit.py` 为准。
-5. **`UnitOfWork` 待补**：各 service 直接用 repository，尚未实现统一 UnitOfWork
-   （repository 层已具备原子 `soft_delete` / `create` / `update`）。
-6. **历史时间错位不 backfill**：早期 `deleted_at` / `last_login_at` /
+4. **历史时间错位不 backfill**：早期 `deleted_at` / `last_login_at` /
    `placed_at` 可能有 8h 偏差（`now_naive()` 接入前），单条 SQL 修正即可，
    不做全量迁移。
 
 ---
 
-## 14. v1 业务路由下线 + JWT 完全 Bypass + IAM 域迁出（2026-09-19 chore/auth）
+## 14. v1 业务路由下线 + JWT 完全 Bypass + IAM 域迁出 + dormant 业务下线（2026-09-17/19/24）
 
 2026-09-17 起，本仓 v1 业务路由整体下线，业务由 backend-rust v2 承接；本仓同时
 切换为 JWT 完全 Bypass 模式。2026-09-19 进一步把 auth / user / menu 域（IAM）
-从本仓源码完全迁出，业务读写由 rust v2 接管。
+从本仓源码完全迁出。2026-09-24 PR-3 把全部 dormant 业务代码（49 个源文件 + 49
+个测试）下线，本仓仅保留 8 个活跃端点。
 
 ### 范围
 
-**保留端点（仅 3 个 STS 端口）**：
-- `POST /api/v1/files/sts-tmp-keys` — **2026-09-17 新增**：前端直传 COS 临时凭证
-  （裸开鉴权，参考 `/api/mcp/*`）
-- `POST /api/v1/files/sts-prefix-credentials` — **2026-09-18 新增**：内部端口——
-  供 rust 后端按任意 `tmp/...` 前缀签凭证；policy 走
-  `core.sts.grant_credentials_for_prefix`，prefix 必须 `tmp/` 开头 + 至少含一个
-  子目录段 + 无 `* ? .. \x00 \\` 字符
-- `GET  /api/v1/files/sts-health` — **2026-09-18 新增**：STS 签发自检
-  （healthcheck 探针）——裸开鉴权；每次 uuid4 hex probe prefix
-  `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调一次 SDK 签发（不 mock），
-  验证 SDK + 主账号密钥 + CAM policy + 到 sts.tencentcloudapi.com 网络整条链路；
-  返回 `{status: "ok", probe_prefix, expired_at}`；BizError 透传（自带 http_status）
-  让 compose healthcheck 拿到非 2xx 即 fail
+**保留端点（共 8 个：3 个 STS 端口 + 4 个打印端口 + 1 个健康检查）**：
 
-**下线路由（18 + 4 = 22 个，移至 `_archive/api_v1/` 待评审 git rm）**：
+| 方法 | 路径 | 实现 | 说明 |
+|---|---|---|---|
+| POST | `/api/v1/files/sts-tmp-keys` | `api/v1/sts.py` | **2026-09-17 新增**：前端直传 COS 临时凭证（裸开鉴权）；CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录，TTL 默认 1800s。 |
+| POST | `/api/v1/files/sts-prefix-credentials` | `api/v1/sts.py` | **2026-09-18 新增**：内部端口——供 rust 后端按任意 `tmp/...` 前缀签凭证；prefix 必须 `tmp/` 开头 + 至少含一个子目录段 + 无 `* ? .. \x00 \\` 字符。 |
+| GET | `/api/v1/files/sts-health` | `api/v1/sts.py` | **2026-09-18 新增**：STS 签发自检（healthcheck 探针）——裸开鉴权；每次 uuid4 hex probe prefix `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调 SDK 签发（不 mock），验证 SDK + 主账号密钥 + CAM policy + 网络整条链路；BizError 透传（自带 http_status）让 compose healthcheck 拿到非 2xx 即 fail。 |
+| GET | `/api/v1/parts/{id}/print` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`。 |
+| POST | `/api/v1/parts/print-batch` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。 |
+| POST | `/api/v1/delivery-notes/{id}/print` | `api/v1/delivery_note_print.py` | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板）；handler 调 `service.delivery_note_print` 模板填表。 |
+| POST | `/api/v1/delivery-notes/{id}/print-labels` | `api/v1/delivery_note_print.py` | **2026-09-24 PR-2 新增**：标签 Excel；handler 调 `service.delivery_note_print`。 |
+| GET | `/api/v1/health` | `main.py` | 容器健康检查（compose 探针）；不查 DB（DB 联通由 lifespan 心跳保证）。 |
+
+**下线路由（22 + 5 个，全部 git rm，2026-09-17 / 09-19 / 09-24）**：
+
 - 2026-09-17 首批（18 个）：applicant / assembly / cnc_program / customer /
   delivery_note / drawing / outsource_company / outsource_quote /
   outsource_shipment / part / process / shelf / statistics / user /
@@ -982,77 +978,68 @@ frontend/src/
 - 2026-09-19 增补（4 个 IAM 端点，原保留在 `api/v1/auth.py`）：
   `POST /api/v1/auth/login` + `POST /api/v1/auth/refresh` +
   `GET /api/v1/auth/me` + `POST /api/v1/auth/change-password`
+- 2026-09-24 增补（5 个 MCP 端点，原保留在 `api/mcp/*.py`，PR-1 移除）：
+  `GET /api/mcp/health` + `GET /api/mcp/dashboard-stats` +
+  `POST /api/mcp/parts/by-serial` + `GET /api/mcp/parts/{id}` +
+  `GET /api/mcp/files/{id}/download-url`
 
-**保留的 repository / service / schema 子集**：
-- `repository`：`part / part_batch / part_event / part_file / assembly /
-  process / worker / shelf / shelf_process / work_type / outsource_company /
-  customer / serial_counter`（仍被 MCP / auto_complete 引用）
-- `service`：`mcp_query / part_file / sts / dashboard / auto_complete` +
-  `_*.py` 工具 + `printing / delivery_note_print`
-- `schema`：`mcp / sts / part_file / _types`
-- `model/*`：所有**业务** ORM 保留——alembic / rust v2 仍引用；**IAM** 相关
-  ORM（`TUser` / `TUserRole` / `TMenu` / `TRoleMenu`）已删除
+**保留的 repository / service / schema 子集（2026-09-24 PR-3 最终态）**：
+- `repository`：`part / part_batch / part_file / assembly / customer /
+  delivery_note`（被 `service.printing` + `service.delivery_note_print` +
+  `statemachines.assembly` 实际消费）
+- `service`：`printing / delivery_note_print / sts` + `_id_parse /
+  _print_back_page / _print_front_cache`（活跃 helper）
+- `schema`：`sts / _types`
+- `model`：所有**业务** ORM 保留——alembic / rust v2 仍引用；**IAM** 相关
+  ORM（`TUser` / `TUserRole` / `TMenu` / `TRoleMenu`）已删除；dormant 业务
+  ORM（applicant / process / worker / shelf / work_type / outsource_company
+  / outsource_quote / part_event / pickup_skip_event / serial_counter /
+  drawing_file / cnc_program / delivery_note_event / delivery_note_counter /
+  process_chain_step / outsource_shipment / outsource_quote_event /
+  outsource_company_process / shelf_process / work_type_process）已删除
 
-### JWT Bypass 实现（`core/permission.py`）
+### JWT Bypass 与 STS 端口裸开鉴权
 
-- `get_current_user_from_access_token(token)` 函数体替换为直接返回
-  `_DEFAULT_USER = CurrentUser(id=1, username="default", full_name="Default User",
-   is_active=True, roles=("MANAGER",), shelf_ids=(), shelf_wildcard=True)`，
-  `token` 参数保留但忽略。
-- `get_current_user(request)` 同样直接返回 `_DEFAULT_USER`。
-- `require_role` / `require_roles` / `require_part_file_role` 内部直接 `return user`。
-- `require_shelf_account_from_body` 取 shelf_id 后直接 `return user, shelf_id`
-  （跳过 `can_operate_shelf` 校验——default MANAGER 已对任意 shelf 放行）。
-- `require_auth()` 保持 `return get_current_user`。
-- `core/security.py::hash_password / create_access_token / create_refresh_token /
-  decode_access_token / decode_refresh_token` **保留原逻辑**——
-  唯一仍直接 import 本模块的下游是 `tests/test_delivery_note_print_api.py`
-  （构造 token 验证 GET /print 鉴权链路）；
-  `tests/unit/test_part_service_workflow.py` **不 import core.security**，
-  只断言 `ErrCode.BIZ_AUTH_SHELF_MISMATCH`（仅消费 ErrCode 枚举）。
-  彻底下线需先迁移 `tests/test_delivery_note_print_api.py` 到 mock-only 路径。
+历史 `core/permission.py` / `core/security.py` 已于 2026-09-24 PR-3 与
+`tests/test_delivery_note_print_api.py` 一并删除。`core.security` 曾仅被该测试
+构造 token 验证 `/print` 鉴权链路引用；测试文件删除后，`core/security.py` 不再
+有真实下游，`core/permission.py` bypass 壳亦无意义（8 个端点全部裸开鉴权）。
 
-### STS 端口裸开鉴权
-
-`/api/v1/files/sts-tmp-keys` 不依赖 `get_current_user` 也不挂
-`Depends(require_auth)`；安全性靠 nginx `/api/v1/files/` 不暴露 / 安全组隔离
-保证。部署层务必确认此路径不被直连到公网（仅 frontend nginx 同源访问）。
+STS 端口与 `/health` 不依赖 `get_current_user` 也不挂 `Depends(require_auth)`；
+安全性靠 nginx `/api/v1/files/` / `/health` 不暴露 / 安全组隔离保证。部署层
+务必确认此路径不被直连到公网（仅 frontend nginx 同源访问）。
 
 ### 验证门
 
-`uv run pytest` 当前 **202 passed / 662 skipped**（2026-09-19 IAM 域迁出前
-269 passed；-67 测试随 `test_auth_refresh.py` / `test_password_change.py` /
-`test_auth_service.py` / `test_user_service.py` / `test_security.py` 5 个
-文件删除）。v1 业务测试（25 个 + dormant）已统一文件级
-`pytestmark = pytest.mark.skip(reason=...)` 跳过，理由为「2026-09-17 v1 业务
-路由下线 + JWT bypass：业务由 backend-rust v2 承接」。
+`uv run pytest` 当前 **~160 passed / 0 skipped**（2026-09-24 PR-3 后 dormant
+全删；活跃 6 个测试文件 `tests/test_delivery_note_print_merge.py` +
+`tests/unit/test_{printing_service,print_back_page,print_front_cache,
+sts_health,sts_prefix_credentials,file_hash,time}.py` 全过；2026-09-19 IAM
+域迁出前 269 passed，2026-09-19 → 202 passed / 662 skipped，2026-09-24
+PR-3 后 -49 个 dormant 测试删除）。
 
-`tests/conftest.py` 加了 module-name stub + `__getattr__` 代理，让 removed
-modules collection 不抛 ImportError；2026-09-19 增补
-`service.{auth,user,menu}` / `repository.{user,menu}` /
-`model.{user,user_role,menu}` / `api.v1.auth` 段。运行即被 pytestmark.skip()
-拦截。
+PR-3 前 dormant 测试 662 个全部由 `pytestmark = pytest.mark.skip(reason=...)`
+文件级跳过，理由为「2026-09-17 v1 业务路由下线 + JWT bypass：业务由
+backend-rust v2 承接」；PR-3 后 dormant 文件全删，无须 skip。
+
+`tests/conftest.py` 已删 `_V1_DORMANT_MODULES` / `_DormantStub` /
+`_DormantPackage` / `_V1_REMOVED_FROM_PACKAGE` / `_install_dormant_stubs()`
+等 dormant stub 全部（dormant 测试集合已删除，stub 无意义）；保留
+`FakeCosClient` / `_FakeGetObjectResponse` / `_FakeRawStream` / `db_session` /
+`clean_db` / `seed_root_batch`（活跃 fixture）。
 
 `alembic upgrade head` 仍成功（head `000000000031` 不变；`t_user` /
 `t_user_role` / `t_menu` / `t_role_menu` 基表 + seed 保留供 rust v2 读写）。
 
-**重启 v1 业务**需从 git history 还原下列文件 + 恢复 `core/permission.py`
-原实现 + 还原本节删除的 IAM 源文件（`service/{auth,user,menu}.py` +
-`repository/{user,menu}.py` + `model/{user,user_role,menu}.py`），并补
-alembic 030 → 031 迁移的 DB 同步（见上文 §Alembic 迁移）。
+**重启 v1 业务**需从 git history 还原 22 + 5 = 27 个 v1 + MCP 源文件 +
+恢复 `core/permission.py` 原实现 + 还原本节删除的 IAM / dormant 业务源文件，
+并补 alembic 030 → 031 迁移的 DB 同步（见上文 §Alembic 迁移）。
 
 ### 风险与后续
 
-- 本仓 auto_complete_loop 仍默认开启（`auto_complete_enabled=True`），
-  与 backend-rust v2 后台 `auto_complete.rs` 双跑——若两仓同时连同一 DB 会
-  重复推 COMPLETED。生产 / staging 应在 `.env` 设
-  `PYTHON_AUTO_COMPLETE_ENABLED=false`（已在 §Alembic 迁移里说明）。
 - `created_by` / `updated_by` 全为 NULL 现状不变（item 2）；本仓不再持有
   user/role 抽象，由 v2 端按 CurrentUser.id 自动填。
 - v1 复活指引：见 `_archive/api_v1/` 目录的文件历史 commit log；IAM 源文件
-  见 git history（`service/auth.py` 等 commit SHA 可通过 `git log --diff-filter=D` 查）。
-- `core/security.py` 彻底下线时机：等 `tests/test_delivery_note_print_api.py`
-  迁移到 mock-only 路径（直接 patch `get_current_user` 不走真实 JWT 签发 /
-  解码）后，再统一删 `core/security.py` + 清理 `BIZ_AUTH_*` 错误码。
-  `tests/unit/test_part_service_workflow.py` **不 import core.security**，
-  仅消费 `ErrCode.BIZ_AUTH_SHELF_MISMATCH`，无需迁移。
+  见 git history（`service/auth.py` 等 commit SHA 可通过 `git log --diff-filter=D` 查）；
+  dormant 业务源文件（applicant / process / worker / shelf / work_type 等）
+  同样通过 git log --diff-filter=D 还原。

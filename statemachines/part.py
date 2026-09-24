@@ -5,6 +5,11 @@
 2026-07-29 批次化：model 也可以是 `TPartBatch`（字段与 TPart 的报工字段同名，
 鸭子类型复用）。此时事件写入 `part_id=批次所属工单 id`、`batch_id=批次 id`、
 `quantity=批次 quantity`；model 是 TPart 时 `batch_id=None`（工单级事件）。
+
+2026-09-24 PR-3：TPartEvent 模型已下线（v1 业务路由下线 + IAM 域迁出）。
+本状态机仅供 `model.part.TPart.sm` / `model.part_batch.TPartBatch.sm` 懒加载
+引用；本仓活跃 service（printing / delivery_note_print / sts）不触发状态机
+流转，本文件作为历史设计保留。
 """
 from __future__ import annotations
 
@@ -13,7 +18,6 @@ from typing import TYPE_CHECKING
 from statemachine import State, StateChart
 
 from model.enums import PartEventType, PartStatus
-from model.part_event import TPartEvent
 
 if TYPE_CHECKING:
     from model.part import TPart

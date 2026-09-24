@@ -5,8 +5,8 @@ from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.time import now_naive
-from model import TPart, TPartBatch, TPartEvent, TProcessChainStep
-from model.enums import PartEventType, PartSortKey, PartStatus, SortDir
+from model import TPart, TPartBatch
+from model.enums import PartSortKey, PartStatus, SortDir
 
 
 def _chain_step_process_subq():

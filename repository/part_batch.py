@@ -12,8 +12,8 @@ from datetime import date, datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model import TPart, TPartBatch, TPartEvent, TProcessChainStep
-from model.enums import PartEventType, PartStatus
+from model import TPart, TPartBatch
+from model.enums import PartStatus
 
 
 def _chain_step_process_subq():

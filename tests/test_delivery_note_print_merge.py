@@ -18,15 +18,9 @@ from model.customer import TCustomer
 from model.enums import AssemblyStatus, PartStatus
 from model.part import TPart
 from repository.customer import CustomerRepository
-from repository.delivery_note import (
-    DeliveryNoteCounterRepository,
-    DeliveryNoteEventRepository,
-    DeliveryNoteRepository,
-)
+from repository.delivery_note import DeliveryNoteRepository
 from repository.part import PartRepository
 from repository.part_batch import PartBatchRepository
-from repository.worker import WorkerRepository
-from service.delivery_note import DeliveryNoteService
 
 from tests.conftest import seed_root_batch
 
@@ -1111,34 +1105,15 @@ async def test_print_labels_line_item_ids_none_legacy_behavior(clean_db):
 # 2026-08-07：同 part 多批次折叠（_split 产生同 part 同送货单）
 # 永远开启；与 merge_assemblies 正交。
 # ============================================================
-async def _make_part_service(session) -> "PartService":  # type: ignore[name-defined]
-    """构造 PartService（拆分批次用）。"""
-    from repository.part import PartRepository
-    from repository.part_batch import PartBatchRepository
-    from repository.part_event import PartEventRepository
-    from repository.process import ProcessRepository
-    from repository.serial_counter import SerialCounterRepository
-    from repository.shelf import ShelfRepository
-    from repository.shelf_process import ShelfProcessRepository
-    from repository.work_type import WorkTypeRepository
-    from repository.work_type_process import WorkTypeProcessRepository
-    from repository.customer import CustomerRepository
-    from repository.worker import WorkerRepository
-    from service.part import PartService
-    return PartService(
-        parts=PartRepository(session),
-        part_batches=PartBatchRepository(session),
-        customers=CustomerRepository(session),
-        workers=WorkerRepository(session),
-        events=PartEventRepository(session),
-        serial_counters=SerialCounterRepository(session),
-        shelves=ShelfRepository(session),
-        processes=ProcessRepository(session),
-        work_types=WorkTypeRepository(session),
-        work_type_process=WorkTypeProcessRepository(session),
-        shelf_process_repo=ShelfProcessRepository(session),
-        broadcaster=None,
-        event_broadcaster=None,
+async def _make_part_service(session) -> "object":  # 历史 stub，2026-09-24 PR-3 后未调用
+    """2026-09-24 PR-3 stub：PartService 与外协 / 工人 / 货架 / 工种 repository 已下线。
+
+    本函数保留仅为兼容性（split_root_into 测试如果被取消 skip 可立即抛错
+    引导修复）；活跃测试通过 ``pytestmark = [...mark.skip(...)]`` 跳过，
+    本函数不会执行。"""
+    raise NotImplementedError(
+        "PartService / 其依赖 repository 已在 2026-09-24 PR-3 dormant 全删；"
+        "本测试为 dormant v1 业务测试，全部由 pytestmark.skip 拦截。"
     )
 
 
