@@ -1,42 +1,25 @@
-"""2026-09-19 重构：python 端 IAM 域（auth/user/menu）整体迁出至 backend-rust v2。
+"""2026-09-24 重构：MCP 域（`/api/mcp/*` + `/mcp` mount）整体下线。
 
-本仓 v1 已不再注入 AuthService / UserService / UserRepository / UserRoleRepository
-/ MenuRepository / get_auth_service / get_user_service / get_user_repo /
-get_user_role_repo / get_menu_repo —— 这些 DI 工厂随 IAM 域迁至 backend-rust v2
-(`/api/v2/iam/*`)。当前仅活跃 4 类注入：
+本仓 v1 DI 已收紧至 STS 凭证端口；MCP AI 只读入口对应源文件已删除，
+业务 AI 只读查询改由 backend-rust v2 的 `/api/v2/*` 承接。
+
+活跃注入：
 
 - `get_session`              — 请求级 Session（commit/rollback + dashboard
                               广播调度）
 - `get_sts_service`          — `api/v1/sts.py` (STS 临时凭证端口)
-- `get_mcp_query_service` / `get_mcp_part_file_service`
-                            — `/api/mcp/*`（AI 只读入口）
 
-业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发（与 IAM 无关）
-与 MCP AI 只读入口。
+业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发（与 IAM 无关）。
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
-from repository import (
-    AssemblyRepository,
-    CustomerRepository,
-    OutsourceCompanyRepository,
-    PartBatchRepository,
-    PartEventRepository,
-    PartFileRepository,
-    PartRepository,
-    ProcessRepository,
-    ShelfRepository,
-    WorkerRepository,
-)
 from service import (
-    McpQueryService,
-    PartFileService,
     StsService,
 )
 
@@ -72,6 +55,8 @@ _EVENTS_PENDING_KEY = "dashboard_events_pending"
 _pending_snapshot = False
 _pending_events: list[tuple[str, dict]] = []
 _flush_task: "asyncio.Task[None] | None" = None
+
+logger = logging.getLogger(__name__)
 
 
 def _drain_and_schedule_dashboard_broadcasts(session: AsyncSession) -> None:
@@ -113,49 +98,42 @@ def _schedule_dashboard_flush(
 async def _dashboard_flush_worker() -> None:
     """后台 flush：先推 snapshot，再逐条推 event（保持「先 snapshot 后 event」）。
 
-    2026-09-19：v1 业务路由 + IAM 域整体下线后，dashboard WS 路由 (`/ws/dashboard`)
-    已不再被任何 v1 路由触发；广播器可被外部脚本触发（保留兼容）——lazy 调用
-    防止强制 import 历史 v1 模块。
+    2026-09-24：dashboard WS 路由 (`/ws/dashboard`) 与 `service.dashboard` 已下线，
+    广播器在生产路径上不可用——`api.v1.ws` 已迁移至历史归档，本 worker 走
+    try/except ImportError 软失败；测试环境 conftest 已把 `api.v1.ws` 注册为
+    DormantStub（patch 后 import 仍能拿到 mocked 名字，测试 `test_dashboard_
+    broadcast_scheduling.py` 继续生效）。
     """
     global _pending_snapshot, _pending_events
-    import logging
-
-    logger = logging.getLogger(__name__)
     while _pending_snapshot or _pending_events:
         want_snapshot = _pending_snapshot
         events = _pending_events
         _pending_snapshot = False
         _pending_events = []
         try:
+            # 2026-09-24：dashboard WS 路由下线；`api.v1.ws` 已不在生产 import
+            # 图中，软失败 + logger.debug 让本 worker 不抛异常。conftest 测试
+            # 环境仍注入 DormantStub，patch 后可正常解析。
+            from api.v1.ws import (
+                broadcast_dashboard_event,
+                broadcast_dashboard_snapshot,
+            )
+
             if want_snapshot:
-                # 2026-09-19：v1 dashboard WS 路由下线；广播器若被外部脚本
-                # 触发仍可工作；懒加载避免循环引用（`api.v1.ws` 在 _archive）。
-                from api.v1.ws import (
-                    broadcast_dashboard_event,
-                    broadcast_dashboard_snapshot,
-                )
-
-                if want_snapshot:
-                    await broadcast_dashboard_snapshot()
-                for event_type, payload in events:
-                    await broadcast_dashboard_event(event_type, payload)
-        except Exception:  # noqa: BLE001
+                await broadcast_dashboard_snapshot()
+            for event_type, payload in events:
+                await broadcast_dashboard_event(event_type, payload)
+        except ImportError:
+            # 2026-09-24：dashboard 域下线，广播器在生产不可用；仅 debug 不 warn。
+            logger.debug("dashboard broadcast skipped: api.v1.ws not importable")
+        except Exception:
             logger.exception("dashboard broadcast flush failed")
-
-
-# ============================================================
-# 仓库 DI（仅保留 MCP 仍引用的）
-# ============================================================
-def get_shelf_repo(
-    session: AsyncSession = Depends(get_session),
-) -> ShelfRepository:
-    return ShelfRepository(session)
 
 
 # ============================================================
 # STS 临时凭证端口（2026-09-17 新增）
 # ============================================================
-# 裸开鉴权（参考 /api/mcp/* 模式），靠部署层 nginx / 安全组隔离。
+# 裸开鉴权（参考历史 /api/mcp/* 模式），靠部署层 nginx / 安全组隔离。
 # 不注入 `get_session`（无 DB IO）/ `get_current_user`（bypass 模式无关）。
 def get_sts_service() -> "StsService":
     """STS 临时凭证 service 工厂。
@@ -167,34 +145,3 @@ def get_sts_service() -> "StsService":
     触发 service 链导入。
     """
     return StsService()
-
-
-# ============================================================
-# MCP 只读查询（免鉴权）
-# ============================================================
-# ⚠️ 以下两个工厂**刻意不注入 `get_current_user`**——`/api/mcp/*` 是给 AI 用的
-# 免登录只读入口，注入了会让端点直接 401。安全性靠部署层（nginx / 安全组不暴露
-# `/api/mcp` 与 `/mcp` 前缀）保证，不要在这里加回 `Depends(get_current_user)`。
-def get_mcp_query_service(
-    session: AsyncSession = Depends(get_session),
-) -> McpQueryService:
-    """MCP 只读查询 service 工厂（无 current_user，无 broadcaster）。"""
-    return McpQueryService(
-        parts=PartRepository(session),
-        part_batches=PartBatchRepository(session),
-        customers=CustomerRepository(session),
-        workers=WorkerRepository(session),
-        shelves=ShelfRepository(session),
-        processes=ProcessRepository(session),
-        outsource_companies=OutsourceCompanyRepository(session),
-        assemblies=AssemblyRepository(session),
-        files=PartFileRepository(session),
-        events=PartEventRepository(session),
-    )
-
-
-def get_mcp_part_file_service(
-    session: AsyncSession = Depends(get_session),
-) -> PartFileService:
-    """MCP 图纸代理用的文件 service（`current_user=None`，仅走读路径）。"""
-    return PartFileService(files=PartFileRepository(session))

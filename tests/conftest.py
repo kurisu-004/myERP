@@ -60,12 +60,15 @@ _V1_DORMANT_MODULES = (
     "service.assembly",
     "service.auth",
     "service.customer",
+    "service.dashboard",  # 2026-09-24 PR-1：dashboard 域已删
     "service.delivery_note",
     "service.menu",
+    "service.mcp_query",  # 2026-09-24 PR-1：MCP 域已删
     "service.outsource_company",
     "service.outsource_quote",
     "service.outsource_shipment",
     "service.part",
+    "service.part_file",  # 2026-09-24 PR-1：PartFile 域已删
     "service.process",
     "service.shelf",
     "service.shelf_process",
@@ -95,16 +98,18 @@ _V1_DORMANT_MODULES = (
     "repository.work_type",
     "repository.work_type_process",
     "repository.worker",
-    # schema（part_file 仍保留：被 service/part_file.py 引用）
+    # schema（2026-09-24 PR-1：part_file / mcp 域已删，stub 化让 dormant 测试 collection 不抛 ImportError）
     "schema.applicant",
     "schema.assembly",
     "schema.cnc_program",
     "schema.customer",
     "schema.delivery_note",
     "schema.drawing",
+    "schema.mcp",  # 2026-09-24 PR-1：MCP schema 域已删
     "schema.outsource_company",
     "schema.outsource_quote",
     "schema.part",
+    "schema.part_file",  # 2026-09-24 PR-1：PartFile schema 域已删
     "schema.process",
     "schema.shelf",
     "schema.shelf_process",
@@ -172,9 +177,10 @@ class _DormantPackage(_types.ModuleType):
 
 
 # 2026-09-17 记录：从各顶层包直接 import 但已下线的名字。
-# 注意：仅包含真正**已下线**的名字；仍被活跃 service 引用的（如
-# `schema.part_file.PartFileOut` / `service.part_file.PartFileService`）不
-# 在列，避免把真实对象替换为 DormantStub。
+# 注意：仅包含真正**已下线**的名字；活跃 service 引用的对象**不在列**，
+# 避免把真实对象替换为 DormantStub（2026-09-24 PR-1：service.part_file /
+# service.mcp_query / service.dashboard / schema.part_file / schema.mcp
+# 已下线，加入 _V1_DORMANT_MODULES 兜底 dormant 测试 collection）。
 _V1_REMOVED_FROM_PACKAGE = {
     "repository": {
         "ApplicantRepository",
@@ -262,6 +268,7 @@ def _install_dormant_stubs() -> None:
     def _make_pkg_getattr(mod, removed: set[str]):
         # 通过 sys.modules 直接拿 module dict，避免触发自身 __getattr__。
         mod_dict = _sys.modules[mod.__name__].__dict__
+        mod_fullname = mod.__name__ + "."
 
         def _pkg_getattr(name: str) -> object:
             if name in removed:
@@ -270,6 +277,14 @@ def _install_dormant_stubs() -> None:
             # 不要走 getattr(mod, name) 否则递归。
             if name in mod_dict:
                 return mod_dict[name]
+            # 2026-09-24 PR-1 review 修复：dormant 子模块（如 service.part_file
+            # / schema.mcp）已在 sys.modules 注册，但不在 parent.__dict__ 里
+            # ——Python import 子模块时触发 parent.__getattr__，需要回退到
+            # sys.modules 取回对应 stub，让 `import service.part_file` /
+            # `service.part_file.cos_mod` 等显式子模块引用正常工作。
+            full_name = mod_fullname + name
+            if full_name in _sys.modules:
+                return _sys.modules[full_name]
             raise AttributeError(f"module {mod.__name__!r} has no attribute {name!r}")
 
         return _pkg_getattr
