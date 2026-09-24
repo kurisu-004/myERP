@@ -716,3 +716,56 @@ async def build_parts_print_pdf_batch(
     buf = io.BytesIO()
     out_pdf.save(buf)
     return buf.getvalue()
+
+
+# ============================================================
+# DI facade（2026-09-24 PR-2 新增）
+# ============================================================
+class PrintingServiceFacade:
+    """2026-09-24 PR-2 新增：薄层 facade，供 ``api/v1/printing.py`` Depends 注入。
+
+    包装 module-level ``build_part_print_pdf`` / ``build_parts_print_pdf_batch``，
+    把 session-bound repository 在 DI 阶段组装好，避免 API handler 内手动 new。
+    """
+
+    def __init__(
+        self,
+        *,
+        parts: PartRepository,
+        part_files: PartFileRepository,
+        assemblies: AssemblyRepository,
+    ) -> None:
+        self.parts = parts
+        self.part_files = part_files
+        self.assemblies = assemblies
+
+    async def build_part_print_pdf(
+        self,
+        *,
+        part_id: int,
+        vector: bool = False,
+    ) -> bytes:
+        """详见 module-level ``build_part_print_pdf``（同参）。"""
+        return await build_part_print_pdf(
+            part_id=part_id,
+            parts=self.parts,
+            part_files=self.part_files,
+            vector=vector,
+        )
+
+    async def build_parts_print_pdf_batch(
+        self,
+        *,
+        part_ids: list[int],
+        assembly_ids: list[int] | None = None,
+        vector: bool = False,
+    ) -> bytes:
+        """详见 module-level ``build_parts_print_pdf_batch``（同参）。"""
+        return await build_parts_print_pdf_batch(
+            part_ids=part_ids,
+            assembly_ids=assembly_ids,
+            parts=self.parts,
+            part_files=self.part_files,
+            assemblies=self.assemblies,
+            vector=vector,
+        )

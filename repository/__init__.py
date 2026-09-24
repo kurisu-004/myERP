@@ -15,13 +15,18 @@
 无活跃 service 引用它，import 它走 `from repository.serial_counter import ...`
 直连路径即可）。
 
-具体业务 repository（如 applicant/delivery_note/menu/outsource_quote/
-pickup_skip_event/user/...）整体移至 `_archive/repository/`，由 backend-rust v2
-承接。
+2026-09-24 PR-2：从 git 785df37^ 恢复 ``DeliveryNoteRepository``（10 个公开方法 +
+2 个私有辅助），专供 ``service.delivery_note_print`` 调
+``notes.get_by_id(note.id)`` 用，不复活 ``DeliveryNoteEventRepository`` /
+``DeliveryNoteCounterRepository``（其依赖 model 在 PR-3 清理）。
+
+具体业务 repository（如 applicant/menu/outsource_quote/pickup_skip_event/
+user/...）整体移至 `_archive/repository/`，由 backend-rust v2 承接。
 """
 
 from .assembly import AssemblyRepository
 from .customer import CustomerRepository
+from .delivery_note import DeliveryNoteRepository
 from .outsource_company import OutsourceCompanyRepository
 from .part import PartRepository
 from .part_batch import PartBatchRepository
@@ -36,6 +41,7 @@ from .worker import WorkerRepository
 __all__ = [
     "AssemblyRepository",
     "CustomerRepository",
+    "DeliveryNoteRepository",
     "OutsourceCompanyRepository",
     "PartBatchRepository",
     "PartEventRepository",

@@ -1,25 +1,42 @@
 """2026-09-24 重构：MCP 域（`/api/mcp/*` + `/mcp` mount）整体下线。
 
-本仓 v1 DI 已收紧至 STS 凭证端口；MCP AI 只读入口对应源文件已删除，
-业务 AI 只读查询改由 backend-rust v2 的 `/api/v2/*` 承接。
+本仓 v1 DI 已收紧至 STS 凭证端口 + 打印端口（2026-09-24 PR-2 新增）；
+MCP AI 只读入口对应源文件已删除，业务 AI 只读查询改由 backend-rust v2 的
+`/api/v2/*` 承接。
 
 活跃注入：
 
-- `get_session`              — 请求级 Session（commit/rollback + dashboard
-                              广播调度）
-- `get_sts_service`          — `api/v1/sts.py` (STS 临时凭证端口)
+- `get_session`                       — 请求级 Session（commit/rollback + dashboard
+                                     广播调度）
+- `get_sts_service`                   — `api/v1/sts.py`（STS 临时凭证端口）
+- `get_printing_service`              — `api/v1/printing.py`（零件标签 PDF，
+                                     2026-09-24 PR-2 新增）
+- `get_delivery_note_print_service`   — `api/v1/delivery_note_print.py`（送货单
+                                     / 标签 Excel，2026-09-24 PR-2 新增）
 
-业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发（与 IAM 无关）。
+业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发 + 打印端点
+（均与 IAM 无关）。
 """
 
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionLocal
+from repository import (
+    AssemblyRepository,
+    CustomerRepository,
+    DeliveryNoteRepository,
+    PartBatchRepository,
+    PartFileRepository,
+    PartRepository,
+)
 from service import (
+    DeliveryNotePrintService,
+    PrintingServiceFacade,
     StsService,
 )
 
@@ -145,3 +162,42 @@ def get_sts_service() -> "StsService":
     触发 service 链导入。
     """
     return StsService()
+
+
+# ============================================================
+# 打印端口（2026-09-24 PR-2 新增）
+# ============================================================
+# 与 STS 同款裸开鉴权（参考 `/api/v1/files/sts-*`），安全性靠部署层 nginx 隔离。
+def get_printing_service(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> PrintingServiceFacade:
+    """2026-09-24 PR-2 新增：零件标签 PDF 打印 service 工厂。
+
+    ``api/v1/printing.py`` 单件 / 批量两个端点共享一个 facade 实例（handler 内
+    按 part_ids / assembly_ids 维度分流）。
+    """
+    return PrintingServiceFacade(
+        parts=PartRepository(session),
+        part_files=PartFileRepository(session),
+        assemblies=AssemblyRepository(session),
+    )
+
+
+def get_delivery_note_print_service(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> DeliveryNotePrintService:
+    """2026-09-24 PR-2 新增：送货单 / 标签 Excel service 工厂。
+
+    ``api/v1/delivery_note_print.py`` 送货单 / 标签两个端点共用：
+    - notes：404 校验
+    - customers：L1 客户前缀解析 + leaf/parent 客户名映射
+    - part_batches：拉 note 关联批次（标签 / 送货单行构建共享）
+    - assemblies：2026-09-24 PR-2 改为 service 内部组装，API 层不传 ORM
+    """
+    return DeliveryNotePrintService(
+        notes=DeliveryNoteRepository(session),
+        parts=PartRepository(session),
+        customers=CustomerRepository(session),
+        part_batches=PartBatchRepository(session),
+        assemblies=AssemblyRepository(session),
+    )

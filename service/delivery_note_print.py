@@ -87,6 +87,7 @@ from model.part import TPart
 from model.part_batch import TPartBatch
 from repository.customer import CustomerRepository
 from repository.delivery_note import DeliveryNoteRepository
+from repository.assembly import AssemblyRepository
 from repository.part import PartRepository
 from repository.part_batch import PartBatchRepository
 
@@ -279,18 +280,20 @@ class DeliveryNotePrintService:
         parts: PartRepository,
         customers: CustomerRepository,
         part_batches: PartBatchRepository | None = None,
+        assemblies: AssemblyRepository | None = None,  # 2026-09-24 PR-2：可选
     ) -> None:
         self.notes = notes
         self.parts = parts
         self.customers = customers
         self.part_batches = part_batches
+        self.assemblies = assemblies
 
     async def render(
         self,
         note: TDeliveryNote,
         custom_order: list[str] | None = None,
         merge_assemblies: bool = False,  # 2026-08-04 新增
-        assembly_map: dict[int, TAssembly] | None = None,  # 2026-08-04：service 层预查
+        assembly_ids: list[int] | None = None,  # 2026-09-24 PR-2：原 assembly_map 改为 list[int]
         merge_quantities: dict[int, int] | None = None,  # 2026-08-04 扩展：每套 override
     ) -> tuple[bytes, str]:
         """填模板并返回字节流 + 模板 prefix。
@@ -300,9 +303,13 @@ class DeliveryNotePrintService:
         - ``merge_assemblies`` 为 True → 同装配体的子件合并为一行（数量 = merge_quantities
           或默认 1，单位套）；散件逐行不变；组位置 = 组内最早出现的 batch 在
           ``custom_order`` 中的位次
+        - ``assembly_ids``（2026-09-24 PR-2 新增）→ API 层不传 ORM 对象，由 service
+          内部用 ``self.assemblies.list_by_ids`` 组装 ``assembly_map``；None / 空则不
+          做装配体合并（即便 ``merge_assemblies=True``）。
         """
         custom_order_list: list[str] = list(custom_order) if custom_order else []
-        assembly_map = assembly_map or {}
+        # 2026-09-24 PR-2：assembly_ids → 内部组装 assembly_map（API 层不应传 ORM）
+        assembly_map = await self._resolve_assembly_map(assembly_ids)
 
         # 1) 拉 L1 客户的 serial_prefix（决定模板）
         cust = await self.customers.get_by_id(note.customer_id)
@@ -580,7 +587,7 @@ class DeliveryNotePrintService:
         note: TDeliveryNote,
         custom_order: list[str] | None = None,
         merge_assemblies: bool = True,  # 2026-08-07 改默认：与送货单保持一致
-        assembly_map: dict[int, TAssembly] | None = None,
+        assembly_ids: list[int] | None = None,  # 2026-09-24 PR-2：原 assembly_map 改为 list[int]
         merge_quantities: dict[int, int] | None = None,
         line_item_ids: list[str] | None = None,  # 2026-08-07：标签勾选子集
     ) -> tuple[bytes, str]:
@@ -598,9 +605,12 @@ class DeliveryNotePrintService:
         合并模式下若用户只勾装配体*部分*子件（API 直调可能），合并行数量仍取
         ``merge_quantities.get(asm_id, 1)``，不按存活子件缩放——以防合并行凭空
         缩小。``prefix`` 仅用于文件名前缀兜底（缺省 "X"）。
+
+        ``assembly_ids``（2026-09-24 PR-2 新增）→ 见 ``render`` 同名字段说明。
         """
         custom_order_list: list[str] = list(custom_order) if custom_order else []
-        assembly_map = assembly_map or {}
+        # 2026-09-24 PR-2：assembly_ids → 内部组装 assembly_map
+        assembly_map = await self._resolve_assembly_map(assembly_ids)
         print_rows = await self._prepare_print_rows(
             note=note,
             custom_order=custom_order_list,
@@ -646,6 +656,26 @@ class DeliveryNotePrintService:
 
         xlsx_bytes = await asyncio.to_thread(_build)
         return xlsx_bytes, prefix
+
+    async def _resolve_assembly_map(
+        self, assembly_ids: list[int] | None,
+    ) -> dict[int, TAssembly]:
+        """2026-09-24 PR-2 新增：API 层传 ``assembly_ids: list[int]``，service 内部
+        拉 ORM 后组装 ``assembly_map``。API 不应传 ORM 对象（避免跨层耦合）。
+
+        ``assembly_ids`` 为 None / 空 → 返回空 dict；调用方按 ``merge_assemblies``
+        决定是否需要合并。无 ``self.assemblies`` 注入但仍传 ids → 500。
+        """
+        if not assembly_ids:
+            return {}
+        if self.assemblies is None:
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message="server missing assembly repository",
+                http_status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        asm_list = await self.assemblies.list_by_ids(assembly_ids)
+        return {a.id: a for a in asm_list}
 
     def _build_print_rows(
         self,

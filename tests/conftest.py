@@ -186,7 +186,9 @@ _V1_REMOVED_FROM_PACKAGE = {
         "ApplicantRepository",
         "DeliveryNoteCounterRepository",
         "DeliveryNoteEventRepository",
-        "DeliveryNoteRepository",
+        # 2026-09-24 PR-2：从 git 785df37^ 恢复 DeliveryNoteRepository，活跃
+        # service.delivery_note_print 消费；不再走 DormantStub 兜底
+        # "DeliveryNoteRepository",
         "OutsourceCompanyProcessRepository",
         "OutsourceQuoteEventRepository",
         "OutsourceQuoteRepository",
