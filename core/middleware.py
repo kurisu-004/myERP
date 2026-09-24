@@ -10,12 +10,6 @@ from core.response import R
 
 _WRAP_PREFIXES = ("/api",)
 
-# 2026-08-08：`/api/mcp/*` 是给 AI 用的 MCP 只读入口，返回**裸 JSON**。
-# 信封会让 MCP tool 的 outputSchema（由 response_model 生成）与实际返回值对不上，
-# AI 得先剥一层 `data` 才拿得到数据。这里显式豁免。
-# 只豁免信封：`RequestSizeLimitMiddleware` 仍按 `_WRAP_PREFIXES` 对 `/api/*` 全量生效。
-_NO_WRAP_PREFIXES = ("/api/mcp",)
-
 
 def _has_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
     return any(path == p or path.startswith(p + "/") for p in prefixes)
@@ -29,8 +23,6 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.url.path
         if not _has_prefix(path, _WRAP_PREFIXES):
-            return await call_next(request)
-        if _has_prefix(path, _NO_WRAP_PREFIXES):
             return await call_next(request)
 
         response = await call_next(request)
@@ -49,8 +41,11 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
-            return Response(content=body, status_code=response.status_code,
-                            headers=dict(response.headers))
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+            )
 
         wrapped = R.ok(data=payload).model_dump()
         new_body = json.dumps(wrapped, ensure_ascii=False).encode()
