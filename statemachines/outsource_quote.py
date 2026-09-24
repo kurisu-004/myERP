@@ -10,6 +10,10 @@
 - `model` 由 `__init__(model=quote)` 注入；`start_value` 从 quote.status 恢复。
 - 状态转换通过 callbacks 写 event_repo（同步 add，不 flush）。
 - 不在状态机内部查 DB；service 层校验 target 存在 / 业务规则。
+
+2026-09-24 PR-3：TOutsourceQuote / TOutsourceQuoteEvent / 外协 model 整体下线。
+本状态机仅供历史 `model.outsource_quote.TOutsourceQuote.sm` 懒加载引用（已无
+真实 caller），本文件作为历史设计保留。
 """
 from __future__ import annotations
 
@@ -19,10 +23,9 @@ from statemachine import State, StateChart
 
 from core.time import now_naive
 from model.enums import OutsourceQuoteEventType, OutsourceQuoteStatus
-from model.outsource_quote_event import TOutsourceQuoteEvent
 
 if TYPE_CHECKING:
-    from model.outsource_quote import TOutsourceQuote
+    pass  # model.outsource_quote 已下线（2026-09-24 PR-3）
 
 
 class OutsourceQuoteStateMachine(StateChart):

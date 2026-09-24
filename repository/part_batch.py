@@ -7,31 +7,13 @@
 - 拆分并发：`get_for_update` 锁源批次行 → 同事单的拆分串行化，
   `next_batch_no` 在锁内取 MAX+1，保证 (part_id, batch_no) 唯一。
 """
-from datetime import date, datetime
+from datetime import date
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from model import TPart, TPartBatch, TPartEvent, TProcessChainStep
-from model.enums import PartEventType, PartStatus
-
-
-def _chain_step_process_subq():
-    """2026-09-16 PR-3：t_part_batch.next_process_id 列已删（Rust 迁移 028），
-    改用 ``current_process_step_id → t_process_chain_step.process_id`` 派生
-    工序筛选条件。详见 ``repository/part.py::_chain_step_process_subq`` 同名
-    函数（两处语义一致；不抽公共是因两个仓库 import 各自的子模块就够了，
-    抽到 core 反而增加循环依赖风险）。
-    """
-    return (
-        select(TProcessChainStep.process_id)
-        .where(
-            TProcessChainStep.id == TPartBatch.current_process_step_id,
-            TProcessChainStep.deleted_at.is_(None),
-        )
-        .correlate(TPartBatch)
-        .scalar_subquery()
-    )
+from model import TPart, TPartBatch
+from model.enums import PartStatus
 
 
 class PartBatchRepository:
@@ -131,78 +113,10 @@ class PartBatchRepository:
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
-    # ===== 扫码台 / 列表（批次级，JOIN 工单拿展示字段）=====
-    async def list_for_work_type(
-        self,
-        *,
-        shelf_id: int,
-        mapped_process_ids: list[int],
-    ) -> list[tuple[TPartBatch, TPart]]:
-        """PICK_UP：某生产货架上、某工种可领的批次（含工单）。
-
-        过滤同 PartRepository.list_for_work_type，只是主体换成批次。
-        """
-        if not mapped_process_ids:
-            return []
-        stmt = (
-            select(TPartBatch, TPart)
-            .join(TPart, TPart.id == TPartBatch.part_id)
-            .where(
-                TPartBatch.status == "IN_PROCESS",
-                TPartBatch.location == "PRODUCTION_SHELF",
-                TPartBatch.current_holder_id == shelf_id,
-                or_(
-                    # 2026-09-16 PR-3：next_process_id 列已删，NULL 判断改用
-                    # current_process_step_id IS NULL（保持「无工序或工序不在
-                    # 映射集里都进列表」的旧语义）。
-                    TPartBatch.current_process_step_id.is_(None),
-                    _chain_step_process_subq().in_(mapped_process_ids),
-                ),
-                TPartBatch.deleted_at.is_(None),
-                TPart.deleted_at.is_(None),
-            )
-            .order_by(
-                TPart.is_urgent.desc(),
-                TPart.planned_delivery_date.asc(),
-                TPartBatch.id.desc(),
-            )
-        )
-        result = await self.session.execute(stmt)
-        return [(row[0], row[1]) for row in result.all()]
-
-    async def list_for_work_type_all_shelves(
-        self,
-        *,
-        shelf_ids: list[int],
-        mapped_process_ids: list[int],
-    ) -> list[tuple[TPartBatch, TPart]]:
-        """跨货架可领批次（扫码台默认视图）。"""
-        if not mapped_process_ids or not shelf_ids:
-            return []
-        stmt = (
-            select(TPartBatch, TPart)
-            .join(TPart, TPart.id == TPartBatch.part_id)
-            .where(
-                TPartBatch.status == "IN_PROCESS",
-                TPartBatch.location == "PRODUCTION_SHELF",
-                TPartBatch.current_holder_id.in_(shelf_ids),
-                or_(
-                    # 2026-09-16 PR-3：next_process_id 列已删，NULL 判断改用
-                    # current_process_step_id IS NULL（语义同 list_for_work_type）。
-                    TPartBatch.current_process_step_id.is_(None),
-                    _chain_step_process_subq().in_(mapped_process_ids),
-                ),
-                TPartBatch.deleted_at.is_(None),
-                TPart.deleted_at.is_(None),
-            )
-            .order_by(
-                TPart.is_urgent.desc(),
-                TPart.planned_delivery_date.asc(),
-                TPartBatch.id.desc(),
-            )
-        )
-        result = await self.session.execute(stmt)
-        return [(row[0], row[1]) for row in result.all()]
+    # 2026-09-24 PR-3 review 第 1 轮修复：删除 `list_for_work_type` /
+    # `list_for_work_type_all_shelves`（dormant v1 扫码台查询，依赖已删的
+    #  `_chain_step_process_subq()` + `TProcessChainStep` ORM；v1 扫码端点已
+    # dormant，业务由 backend-rust v2 承接，全仓无调用方）。
 
     async def list_held_by_worker(
         self, *, worker_id: int
@@ -353,50 +267,6 @@ class PartBatchRepository:
         result = await self.session.execute(stmt)
         return [(row[0], row[1]) for row in result.all()]
 
-    # ===== auto_complete（DELIVERED 批次超阈值 → COMPLETED）=====
-    async def find_delivered_older_than(
-        self, threshold: datetime
-    ) -> list[TPartBatch]:
-        """DELIVERED 且最近一次送货事件早于 threshold、之后未返修的批次。
-
-        镜像 PartRepository.find_delivered_older_than 的逻辑，事件按 batch_id
-        匹配（历史事件已回填根批次 id）。
-        """
-        latest_delivered = (
-            select(func.max(TPartEvent.created_at))
-            .where(
-                TPartEvent.batch_id == TPartBatch.id,
-                TPartEvent.event_type == PartEventType.STATUS_CHANGED.value,
-                TPartEvent.from_status == PartStatus.READY_TO_SHIP.value,
-                TPartEvent.to_status == PartStatus.DELIVERED.value,
-            )
-            .correlate(TPartBatch)
-            .scalar_subquery()
-        )
-        repair_after = (
-            select(TPartEvent.id)
-            .where(
-                TPartEvent.batch_id == TPartBatch.id,
-                TPartEvent.event_type == PartEventType.REPAIR_STARTED.value,
-                TPartEvent.created_at > latest_delivered,
-            )
-            .correlate(TPartBatch)
-            .exists()
-        )
-        # 2026-07-31：JOIN t_part 排除已软删零件的孤儿批次。即便 soft_delete_assembly
-        # 已级联置 CANCELLED，此 JOIN 是防御性兜底：未来其他路径（如直接 DB 操作）
-        # 留下 DELIVERED 孤儿批次时，auto_complete 也不会反复抛 BIZ_PART_NOT_FOUND。
-        stmt = (
-            select(TPartBatch)
-            .join(TPart, TPart.id == TPartBatch.part_id)
-            .where(
-                TPartBatch.status == PartStatus.DELIVERED.value,
-                TPartBatch.deleted_at.is_(None),
-                TPart.deleted_at.is_(None),
-                latest_delivered.is_not(None),
-                latest_delivered <= threshold,
-                ~repair_after,
-            )
-        )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+    # 2026-09-24 PR-3 review 第 1 轮修复：删除 `find_delivered_older_than`
+    # （dormant helper，依赖已删的 TPartEvent / PartEventType；v1 auto_complete
+    # 服务已下线，业务由 backend-rust v2 task/auto_complete.rs 接管）。
