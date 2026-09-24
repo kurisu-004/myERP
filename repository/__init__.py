@@ -4,7 +4,11 @@
 - `PartRepository` / `PartBatchRepository` / `PartEventRepository` /
   `PartFileRepository` / `AssemblyRepository` / `CustomerRepository` /
   `WorkerRepository` / `ProcessRepository` / `OutsourceCompanyRepository`
-  — `McpQueryService` / `PartFileService`（`/api/mcp/*`）
+
+2026-09-24 PR-1：`service.part_file` / `service.mcp_query` / `service.dashboard`
+整体删除后，`PartFileRepository` 当前仅被 dormant 测试 / 历史
+`/api/mcp/files.py` 路径引用，活跃调用已归零；stub 化兜底，待 PR-3 范围
+做 dormant repository 清理时一并评估是否彻底下线。
 
 `repository/serial_counter.py` 仍保留模块（被 future-instantiation 测试与 alembic
 迁移间接引用），但不再从顶层 package 暴露（2026-09-17 删 auto_complete.py 后
