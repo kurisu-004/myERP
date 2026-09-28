@@ -341,17 +341,21 @@ class TestGrantTmpKeysBatchSuccess:
         assert ("a" * 16) in resp.items[0].tmp_key
         assert ("b" * 16) in resp.items[1].tmp_key
 
-    async def test_each_file_has_own_session_token(
+    async def test_each_file_has_independent_sdk_call(
         self,
         fake_sts: _FakeStsRecorder,
     ) -> None:
-        """2026-09-28：业务真实场景下每文件 session_token 不同（每次 SDK
-        call 独立签发）。Mock 默认返回相同 session_token，但每次
-        SDK call 的 tmpSecretId 后缀不同——证明 SDK 确实被 call N 次。
+        """2026-09-28 review 第 1 轮修复——per-call SDK call (by design)：
 
-        注：plan §4 中「session_token 共享」字面理解按「同一批次
-        调用复用 settings」解释（settings 不变即共享），不指 SDK
-        返回相同 session_token。
+        业务真实场景：每文件一次独立 STS 签名 → 每次 SDK call 独立返回
+        完整 credentials 五元组（tmpSecretId / tmpSecretKey /
+        **session_token** / startTime / expiredTime）；session_token 在
+        STS 语义下不可复用（每次签发独立、不可刷新），所以 batch 响应
+        里 `items[*].credentials.session_token` **必须** 各不相同——这
+        是 by design，不是 bug。
+
+        Mock 默认返回相同 session_token，但每次 SDK call 的 tmpSecretId
+        后缀不同（call_idx）→ 间接证明 SDK 确实被独立 call N 次。
         """
         svc = StsService()
         req = StsBatchTmpKeysRequest(

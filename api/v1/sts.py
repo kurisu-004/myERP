@@ -19,6 +19,12 @@
 2026-09-28 删除 `POST /api/v1/files/sts-prefix-credentials`：rust 后端
 upload_session 域下线后已无调用方（plan
 `sts-session-uploader-sts-sts-sequential-globe` §2.2）。
+2026-09-28 review 第 1 轮修复：把 `assert isinstance(body, ...)` 改为
+显式 `if/else` 分支——`assert` 在 CPython `-O` / `PYTHONOPTIMIZE=1`
+下被 strip，边界 schema（如 `{}` / `{"purpose": "drawing"}` /
+`{"scope": "x"}`）若 Pydantic v2 smart union 误分类，会绕过 assert
+直接走 service，缺字段抛 AttributeError / KeyError → 500。改为
+显式分支 + 兜底 BizError 400 是健壮性硬要求。
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from api.deps import get_sts_service
+from core.error_code import ErrCode
+from core.exception import BizError
 from schema.sts import (
     StsBatchTmpKeysRequest,
     StsHealthResponse,
@@ -57,11 +65,19 @@ async def grant_sts_tmp_keys(
 
     Pydantic v2 smart union 按字段形态自动区分；不显式 tag 字段。
     """
+    # 2026-09-28 review 第 1 轮修复：显式 if/else 分流（不依赖 `assert`
+    # 或运行时类型守卫的隐式行为）。理论上 Pydantic 已按 smart union
+    # 把 `body` 限定为 `StsTmpKeysRequest | StsBatchTmpKeysRequest` 之
+    # 一——这里再硬限一次，防御性兜底。
     if isinstance(body, StsBatchTmpKeysRequest):
         return await svc.grant_tmp_keys_batch(body)
-    # StsTmpKeysRequest 路径（单文件，向后兼容）
-    assert isinstance(body, StsTmpKeysRequest)
-    return await svc.grant_tmp_keys(body)
+    if isinstance(body, StsTmpKeysRequest):
+        return await svc.grant_tmp_keys(body)
+    raise BizError(
+        code=ErrCode.BIZ_INVALID_VALUE,
+        message="unrecognized body shape",
+        http_status=400,
+    )
 
 
 # 2026-09-18 新增：STS 签发自检（healthcheck 探针）。裸开鉴权，与上面

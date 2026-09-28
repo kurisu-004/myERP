@@ -19,9 +19,12 @@ upload_session 域下线后已无调用方；详见 plan
 `sts-session-uploader-sts-sts-sequential-globe` §2.2。
 
 2026-09-18 review 第 1 轮修复：prefix schema 加 `field_validator` 拒绝
-`*` / `?` / `..` / `\\x00` 等通配 / 路径穿越字符；导出
-`TMP_PREFIX_REQUIRED` 常量供 service 复用，避免跨模块从 `core.sts`
-import 私有常量。
+`*` / `?` / `..` / `\\x00` 等通配 / 路径穿越字符。
+
+2026-09-28 review 第 2 轮修复：移除 schema 入口对 `TMP_PREFIX_REQUIRED`
+的死引用（2026-09-28 删 `sts-prefix-credentials` 内部端口后，`schema.sts`
+不再消费该常量；service 层仍直接 `from core.sts import TMP_PREFIX_REQUIRED`，
+无依赖 cycle 风险，故这里删除导入并从 `__all__` 移除）。
 
 2026-09-18 新增 `StsHealthResponse`：STS 签发自检端点响应契约——
 healthcheck 探针（`GET /api/v1/files/sts-health`）真实调一次 SDK 签发
@@ -42,8 +45,6 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
-
-from core.sts import TMP_PREFIX_REQUIRED
 
 Purpose = Literal[
     "drawing",
@@ -171,7 +172,6 @@ StsTmpKeysEndpointResponse = StsTmpKeysResponse | StsBatchTmpKeysResponse
 
 
 __all__ = [
-    "TMP_PREFIX_REQUIRED",
     "Purpose",
     "StsBatchTmpKeysRequest",
     "StsBatchTmpKeysResponse",

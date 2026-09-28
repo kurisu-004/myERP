@@ -20,6 +20,16 @@ healthcheck 拿到非 2xx 即 fail）。
 `asyncio.gather` 并发调 `core.sts.grant_sts_tmp_key`（每文件一次签名，
 共享 bucket/region/scheme / endpoint 等独立字段）。单文件入口
 `grant_tmp_keys` 保持不变，向后兼容旧链路 A。
+
+2026-09-28 review 第 1 轮修复：
+1. 加 `asyncio.Semaphore(30)` —— N=200 一次打 200 并发会超 STS 默认
+   QPS ~100 req/s/appid 触发 Throttling 包成 BIZ_STS_GRANT_FAILED 502；
+   与 plan §5「30 并发 ≈ 1.5s」一致。
+2. docstring 显式声明 per-call `session_token`（**by design**）——每
+   文件一次独立 STS 签名，session_token 自然各不相同；非「共享」
+   字面理解。
+3. docstring 显式声明 batch 失败语义：任一文件 SDK 失败 → 整批
+   502 重试（暂不实现 partial success 契约）。
 """
 
 from __future__ import annotations
@@ -44,6 +54,11 @@ from schema.sts import (
     StsTmpKeysRequest,
     StsTmpKeysResponse,
 )
+
+# 2026-09-28 review 第 1 轮修复：batch STS 签发并发上限。
+# 30 并发 ≈ 1.5s（plan §5 风险缓解），与 STS 默认 QPS ~100 req/s/appid
+# 安全余量充足，避免 Throttling 包成 BIZ_STS_GRANT_FAILED 502。
+_BATCH_STS_CONCURRENCY = 30
 
 
 class StsService:
@@ -94,6 +109,20 @@ class StsService:
     #   max_length=200)，Pydantic 失败抛 422 进不到 service 层；
     # - 这里再硬限一次（防止未来有人绕过 schema 直接构造
     #   `model_construct` 调用）。
+    #
+    # 2026-09-28 review 第 1 轮修复——并发限流 + 失败语义：
+    # - `asyncio.Semaphore(30)` 包 `_sign_one`（见模块顶部常量
+    #   `_BATCH_STS_CONCURRENCY`）；避免 N=200 一次打 200 并发超 STS 默认
+    #   QPS 触发 Throttling 包成 BIZ_STS_GRANT_FAILED 502。
+    # - **per-call session_token（by design）**：每文件独立 STS 签名，
+    #   session_token 自然各不相同（不可能复用，因为 STS 单次签发的 token
+    #   不可刷新复用）；不要把 `items[*].credentials.session_token` 理解
+    #   为「共享」字段。
+    # - **batch 失败语义（全有 / 全无）**：`asyncio.gather` 默认 re-raise
+    #   第一条异常；任一文件 SDK 失败 → 整批 502 重试，client 拿不到任何
+    #   N-1 成功文件的结果。暂不实现 partial success 契约（避免 schema
+    #   跨后端漂移），如有需要应先与 frontend 同步 `BatchItems { items,
+    #   failures: [...] }` 契约。
     async def grant_tmp_keys_batch(
         self,
         req: StsBatchTmpKeysRequest,
@@ -103,7 +132,12 @@ class StsService:
         与 `grant_tmp_keys` 区别：
         - 入参是 `{scope, files[1..200]}`，每项复用 `StsTmpKeysRequest`；
         - 出参是 `{items: list[StsTmpKeysResponse]}`，每项含独立
-          `tmp_key` + 共享 `bucket/region/endpoint/scheme/upload_prefix`。
+          `tmp_key` + 共享 `bucket/region/endpoint/scheme/upload_prefix`；
+        - **失败语义（全有 / 全无）**：任一文件 SDK 失败 → 整批
+          BIZ_STS_GRANT_FAILED 502 重试；不要假设可拿到 partial result。
+
+        并发上限 `_BATCH_STS_CONCURRENCY`（默认 30），与 plan §5 风险缓解
+        一致；Semaphore 在 gather 外层一次性获取，避免 200 一次性 fanout。
         """
         if not req.files:
             raise BizError(
@@ -127,27 +161,36 @@ class StsService:
         bucket = settings.cos_bucket
         region = settings.cos_region
 
-        async def _sign_one(file_req: StsTmpKeysRequest) -> StsTmpKeysResponse:
-            sha16 = (file_req.content_sha256 or "nohash")[:16].lower()
-            safe_name = safe_filename(file_req.filename)
-            tmp_key = f"tmp/{settings.sts_default_user_id}/{sha16}/{safe_name}"
-            creds = await grant_sts_tmp_key(
-                purpose=file_req.purpose,
-                filename=safe_name,
-                sha16=sha16,
-                expire_seconds=file_req.expire_seconds,
-            )
-            return StsTmpKeysResponse(
-                tmp_key=tmp_key,
-                bucket=bucket,
-                region=region,
-                endpoint=endpoint,
-                scheme=scheme,
-                credentials=StsCredentialsOut(**creds),
-                expires_in=creds["expired_time"] - creds["start_time"],
-                upload_prefix=upload_prefix,
-            )
+        # 2026-09-28 review 第 1 轮修复：限流 Semaphore。`_sign_one` 内
+        # 通过 `async with semaphore` 控并发；acquire 失败默认 await，
+        # 不抛 CancelledError，符合 batch 失败语义。
+        semaphore = asyncio.Semaphore(_BATCH_STS_CONCURRENCY)
 
+        async def _sign_one(file_req: StsTmpKeysRequest) -> StsTmpKeysResponse:
+            async with semaphore:
+                sha16 = (file_req.content_sha256 or "nohash")[:16].lower()
+                safe_name = safe_filename(file_req.filename)
+                tmp_key = f"tmp/{settings.sts_default_user_id}/{sha16}/{safe_name}"
+                creds = await grant_sts_tmp_key(
+                    purpose=file_req.purpose,
+                    filename=safe_name,
+                    sha16=sha16,
+                    expire_seconds=file_req.expire_seconds,
+                )
+                return StsTmpKeysResponse(
+                    tmp_key=tmp_key,
+                    bucket=bucket,
+                    region=region,
+                    endpoint=endpoint,
+                    scheme=scheme,
+                    credentials=StsCredentialsOut(**creds),
+                    expires_in=creds["expired_time"] - creds["start_time"],
+                    upload_prefix=upload_prefix,
+                )
+
+        # 2026-09-28 review 第 1 轮修复：不加 `return_exceptions=True`
+        # ——按 design 故意保留「任一失败整批 502」语义，避免跨后端
+        # schema 漂移；docstring 已显式声明。
         items = await asyncio.gather(*(_sign_one(f) for f in req.files))
         return StsBatchTmpKeysResponse(items=list(items))
 
