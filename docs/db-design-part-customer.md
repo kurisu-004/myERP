@@ -207,8 +207,9 @@ PENDING → IN_PROCESS → INSPECTION → READY_TO_SHIP → DELIVERED → COMPLE
 ### 4.6 PR-2/3 列变更（2026-09-17 复核）
 
 PR-2（feat/part-slim-down，对齐 Rust 迁移 027）+ PR-3（feat/batch-step-ify，
-对齐 Rust 迁移 028）后，表结构发生以下变更（生产 schema 由 alembic 不动、
-由 backend-rust v2 端迁移承担；本仓仅 ORM 同步）：
+对齐 Rust 迁移 028）后，表结构发生以下变更（生产 schema 由 backend-rust 的
+sqlx 迁移 `backend-rust/migrations/` 承担，本仓 2026-09-28 起不再持有迁移，
+仅 ORM 同步）：
 
 - **`t_part` 删列**：`actual_delivery_date` / `location` / `current_holder_id` /
   `placed_at` / `delivery_note_id` / `has_been_repaired`（送回 t_part 层面，由
@@ -299,6 +300,15 @@ parts = await repo.list_with_filters(
 
 ## 7. 交付物清单
 
+> **已归档，仅历史参考**：本节是 2026-07 初版设计文档的交付物快照。
+> 表结构已演进（`t_part` / `t_part_batch` 瘦身、工艺链 step 化等），且
+> **2026-09-28 起 schema 真相源是 backend-rust 的 sqlx 迁移
+> （`backend-rust/migrations/`），本仓不再持有任何迁移目录**——下表里的
+> `alembic/` 条目仅为当年文件名留档，对应的 `alembic/` 目录与 `alembic.ini`
+> 已整体 `git rm`（历史见 git history）。当前表结构请查
+> `backend-rust/migrations/20260925000000_001_baseline.sql` 及后续追加的
+> migration。
+
 | 文件 | 说明 |
 |---|---|
 | `model/base.py` | `Base`（`__abstract__`），统一声明 5 个审计字段 |
@@ -307,4 +317,4 @@ parts = await repo.list_with_filters(
 | `model/part.py` | `TPart`（雪花 id、二级客户逻辑外键、`is_urgent`） |
 | `model/__init__.py` | 清理悬挂导出，新增 TCustomer |
 | `repository/part.py` | `PartRepository`：CRUD + `list_with_filters` / `count_with_filters` / `soft_delete` |
-| `alembic/versions/a1f9c2d8e3b4_create_t_customer_and_t_part.py` | 初始迁移：建表 + 审计字段 + 索引 + CHECK 约束 |
+| ~~`alembic/versions/a1f9c2d8e3b4_create_t_customer_and_t_part.py`~~ | 初始迁移：建表 + 审计字段 + 索引 + CHECK 约束（**已归档**：本仓 alembic 2026-09-28 全量下线，仅存于 git history） |

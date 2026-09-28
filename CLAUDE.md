@@ -2,7 +2,46 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 最近重大重构（2026-09-24 更新）
+## 最近重大重构（2026-09-28 更新）
+
+### 2026-09-28：alembic 全量下线 + 开发库切 5430（chore/drop-alembic）
+
+本仓 DB schema 迁移职责完全交给 backend-rust v2 的 sqlx baseline
+（`backend-rust/migrations/20260925000000_001_baseline.sql`），本仓不再持有
+任何迁移工具。变更范围：
+
+- **删除 alembic 31 个迁移文件 + `alembic.ini`**：从
+  `schema/000000000001_schema_init.py` 到
+  `prod_data/000000000031_delivery_note_menu_inspector.py`，含 env.py /
+  script.py.mako / README；历史保留在 git history，**不要** `git revert` 复活。
+- **依赖清理**：`pyproject.toml` 删 `"alembic>=1.13"`；`uv.lock` 同步移除 alembic
+  + mako 传递依赖（`uv lock && uv sync`）。
+- **Dockerfile 启动不再跑迁移**：`CMD ["sh", "-c", "alembic upgrade head && exec uvicorn ..."]`
+  → `CMD ["exec", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]`
+  （tini ENTRYPOINT 不变）。
+- **conftest 测试库建 schema 方式切换**：删 `_run_alembic_upgrade_head_sync()` +
+  `_apply_pr3_test_db_patch()`（baseline 已含 `t_part_batch.current_process_step_id`
+  列 + 部分索引），新增 `_apply_rust_baseline_sync()`：用独立 `asyncpg.connect` 整段
+  灌 backend-rust 的 sqlx baseline；路径解析从 `PROJECT_ROOT` 逐级向上找
+  `<祖先>/backend-rust/migrations/`（适配主 checkout 与 `.claude/worktrees/<slug>/`
+  两种布局），`RUST_MIGRATIONS_DIR` 环境变量可显式覆盖。
+- **配置清理**：`.env` + `.env.example` 数据库段切到
+  `postgresql+asyncpg://hsh:6065161@localhost:5430/hsh`（库 `hsh`，与 backend-rust
+  的 `postgres-dev` 服务共用同一 PG 容器）；`docker-compose.yml` +
+  `docker-compose.staging.yml` 删 `SHELF_SEED_ON_MIGRATE` env 行；`core/config.py`
+  删 `shelf_seed_on_migrate` 死字段（全仓无消费者）。
+- **注释措辞**：5 处历史注释（`model/__init__.py` / `model/audit.py` /
+  `model/enums.py` / `model/part_batch.py` / `docs/db-design-part-customer.md`）把
+  「由 alembic 维持」改为「由 backend-rust sqlx 迁移管理」。
+- **`.gitignore` + `.dockerignore`**：删 alembic 相关忽略行（保留目录已无）。
+- **CLAUDE.md**：「Alembic 迁移」整章 → 「数据库 schema 归属：backend-rust sqlx」
+  新章；「常用命令」表删 3 行 alembic + 改 `uv run pytest` 注释；§14 风险与后续补
+  「生产启动顺序」一段；「现状与已知问题」第 1 条改为 sqlx 视角。
+
+**不动**：根仓 `/Users/ren/Code/hsh-erp/docker-compose*.yml` +
+`takeover.sql` + `schema_ddl.sql`（已在范围外，本仓仅消费 rust 迁移，不调整根仓
+编排）；根仓 `rust-backend depends_on backend: service_healthy` 顺序保持（注释
+保留但已事实失效，建议后续单独 PR 反转）。
 
 ### 2026-09-24 PR-3：全 dormant 业务代码下线 + CLAUDE.md 同步（chore/delete-dormant-and-cleanup）
 
@@ -66,7 +105,7 @@ PR-1/2/3）后，再无任何 dormant 业务调用方；2026-09-24 PR-3 把 dorm
 - `service`：`printing / delivery_note_print / sts` + `_id_parse /
   _print_back_page / _print_front_cache`（活跃 helper）
 - `schema`：`sts / _types`
-- `model`：所有**业务** ORM 保留——alembic / rust v2 仍引用；**IAM** 相关
+- `model`：所有**业务** ORM 保留——基表 schema 由 backend-rust sqlx 维护；**IAM** 相关
   ORM（`TUser` / `TUserRole` / `TMenu` / `TRoleMenu`）已删除（PR-2）；
   dormant 业务 ORM（applicant / process / worker / shelf / work_type /
   outsource_company / outsource_quote / part_event / pickup_skip_event /
@@ -146,7 +185,7 @@ PR-2（feat/part-slim-down）+ PR-3（feat/batch-step-ify）已完成并归档�
 myERP —— 零件加工订单管理系统。覆盖法拉电子、路达等一级客户及其下分厂/部门的
 零件下单、生产跟踪、外协、交付闭环。
 
-- 后端：FastAPI + SQLAlchemy 2.0 异步 + asyncpg + Alembic + Pydantic v2
+- 后端：FastAPI + SQLAlchemy 2.0 异步 + asyncpg + Pydantic v2
 - 前端：`frontend/`（Vue 3 + Vite + TypeScript + Element Plus）
 - 数据库：PostgreSQL 18（`docker-compose.yml` 提供容器）
 - 包管理：uv（依赖在 `pyproject.toml` / `uv.lock`）
@@ -206,7 +245,7 @@ model/*.py           # SQLAlchemy ORM
 | 健康检查 | — | — | — | `main.py::/api/v1/health`（**保留**：compose 探针） |
 
 > **2026-09-19 IAM 域迁出**：基表 `t_user` / `t_user_role` / `t_menu` /
-> `t_role_menu` 仍由 alembic 管理（保留 seed 供 rust v2 继承），但本仓不再持有
+> `t_role_menu` 仍由 backend-rust sqlx 管理（保留 seed 供 rust v2 继承），但本仓不再持有
 > 任何 ORM / service / 路由。业务读写由 backend-rust v2 的 `/api/v2/iam/*` 承接。
 >
 > **2026-09-24 PR-3 dormant 下线**：applicant / process / worker / shelf /
@@ -230,7 +269,7 @@ model/*.py           # SQLAlchemy ORM
 ### 1. 数据库中禁止使用物理外键
 
 所有跨表引用都是普通列 + 普通索引，**不**在 `model/*.py` 写 `ForeignKey(...)`，
-也**不**在 alembic 迁移里写 `sa.ForeignKey(...)`。
+也**不**在 sqlx migration SQL 里加 `REFERENCES ... FOREIGN KEY`。
 
 引用完整性、级联删除防悬空、防自环等由 **service 层** 校验：
 - 写入前用 repository `get_by_id` 校验目标存在
@@ -498,8 +537,8 @@ ORM 自动获 OCC，**无需改业务代码**。
 > 整体删除。本节保留作为历史设计文档，便于回溯「为什么 PartStateMachine
 > 鸭子复用 + 批次 rollup 这么设计」。
 >
-> 核心 ORM `TPart` / `TPartBatch` 仍保留（供 backend-rust v2 读基表 +
-> alembic 迁移管理），但本仓不再持有任何 service / repository 引用它们。
+> 核心 ORM `TPart` / `TPartBatch` 仍保留（供 backend-rust v2 读基表，
+> 表结构由 sqlx baseline 管理），但本仓不再持有任何 service / repository 引用它们。
 > `service.printing` 仅消费 `notes.get_by_id` / `parts.get_by_id` 等基础
 > repository 方法，不走批次化路径。
 >
@@ -679,66 +718,63 @@ frontend/src/
 
 | 用途 | 命令 |
 |---|---|
-| 启动 PostgreSQL | `docker compose up -d` |
+| 启动 PostgreSQL | `cd ../backend-rust && docker compose up -d postgres-dev`（5430 端口库 hsh） |
 | 运行后端（开发） | `uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000` |
-| 应用所有迁移 | `uv run alembic upgrade head` |
-| 回滚一步 | `uv run alembic downgrade -1` |
-| 新建空迁移 | `uv run alembic revision -m "add_xxx"` |
-| 跑全部测试 | `uv run pytest` |
+| 跑全部测试 | `uv run pytest`（测试库 schema 由 conftest 灌 backend-rust 的 sqlx baseline） |
 | 跑单个测试 | `uv run pytest tests/path/test_xxx.py::test_yyy` |
 | 前端开发服 | `cd frontend && npm run dev` |
 | 前端构建 | `cd frontend && npm run build` |
 
 ---
 
-## Alembic 迁移
+## 数据库 schema 归属：backend-rust sqlx
 
-`alembic/versions/` 下用 **12 位零填充数字** revision id（如
-`000000000001_schema_init.py`），不是 hex。模块顶部写明 `revision` /
-`down_revision` / `Create Date`，docstring 说明要点。
+2026-09-28 起本仓不再持有任何 schema 迁移；DB 迁移职责完全交给 backend-rust v2
+的 `sqlx::migrate!()`。本仓 `alembic/` 目录（31 个迁移文件 + `alembic.ini`）
+整体 `git rm`，历史保留在 git history 供审计，**不要** `git revert` 复活——它是
+被新迁移管理方式取代的旧实现。
 
-**当前迁移（5 个 schema + 4 个 prod_data 共 9 文件，schema 链 001 → 003 → 005
-→ 009 → 010，单 head = `000000000031`）**：
+**真相源**：`/Users/ren/Code/hsh-erp/backend-rust/migrations/`
 
-| 文件 | revision | down | 内容 |
-|------|----------|------|------|
-| `schema/000000000001_schema_init.py` | `000000000001` | base | 唯一 schema 基线：一次建全部表 + 索引 + 约束。文件表统一 `t_part_file`（另建 2 张 legacy 死表 `t_drawing_file` / `t_cnc_program`）；`t_customer.id` 用 `autoincrement=False`（全表雪花 ID）；所有 AuditMixin 表带 `version` 列。**含 IAM 基表 `t_user` / `t_user_role` / `t_menu` / `t_role_menu`**（2026-09-19 起 ORM 抽象迁至 rust v2，基表 + seed 仍由本仓 alembic 管理）。 |
-| `prod_data/000000000002_data_init.py` | `000000000002` | `000000000001` | 唯一数据种子（全部 ON CONFLICT 幂等，无假数据）：工种 / 工序 / 工种↔工序映射 / 真实工人 / **账号（密码 changeme）** / **菜单 + role_menu** / `t_serial_counter` A-Z 全 26 行 / 货架↔工序默认映射（每 active PRODUCTION 架映射 5 个 INHOUSE 工序）。**IAM seed 在此**——rust v2 通过自己的迁移继承 / 验证此数据。 |
-| `schema/000000000003_outsource_quote.py` | `000000000003` | `000000000002` | 外协：`t_outsource_company` / `t_outsource_quote` / `t_outsource_quote_event` / `t_outsource_company_process` + Part 外协状态/位置支持。 |
-| `schema/000000000005_add_part_order_note.py` | `000000000005` | `000000000003` | `t_part` 加 `order_no` / `system_delivery_date` / `note` 三列。 |
-| `prod_data/000000000006_inspector_menus.py` | `000000000006` | `000000000005` | 巡检员 (INSPECTOR) 菜单种子。 |
-| `prod_data/000000000007_inspector_dashboard.py` | `000000000007` | `000000000006` | INSPECTOR 看板卡片种子。 |
-| `prod_data/000000000008_remove_assemblies_new_menu.py` | `000000000008` | `000000000007` | 删除装配体（assemblies_new）老菜单条目。 |
-| `schema/000000000009_delivery_note.py` | `000000000009` | `000000000008` | 送货单：`t_delivery_note` / `t_delivery_note_event` / `t_delivery_note_counter` + `t_part.delivery_note_id`；状态机 DRAFT ↔ SUBMITTED → PICKED_UP → ARCHIVED；菜单 `delivery_notes_manage`。 |
-| `schema/000000000010_add_delivery_note_delivery_date.py` | `000000000010` | `000000000009` | `t_delivery_note.delivery_date`（Date NULL；默认 = 创建当天）；DRAFT/SUBMITTED 可改；PICKED_UP/ARCHIVED 后保留打印能力。 |
-| `schema/000000000029_worktype_limit_and_pickup_skip.py` | `000000000029` | `000000000028` | `t_work_type.max_held_batches` 列 + `t_pickup_skip_event` 表（12 列 append-only）|
-| `prod_data/000000000030_cnc_parts_list_menu.py` | `000000000030` | `000000000029` | 编程员零件一览菜单（`t_role_menu` 幂等授予 CNC_PROGRAMMER）|
-| `prod_data/000000000031_delivery_note_menu_inspector.py` | `000000000031` | `000000000030` | INSPECTOR 送货单菜单授权（仅 t_role_menu row 插入；Create Date 2026-08-05，PR-K 早已合并，与本 PR 无关）|
+- `20260925000000_001_baseline.sql`（2026-09-25 sqlx 接管点合并单文件）
+  全量 schema baseline：建全部 35 张表 + 索引 + 约束 + 注释；
+  `t_drawing_file` / `t_cnc_program` legacy 死表保留（无 writer）；所有
+  `AuditMixin` 业务表带 `version` 列 + OCC 索引。
+- 后续 schema 变更走**追加式新 migration**：`<13位时间戳>_<顺序>_<简短描述>.sql`，
+  `down` 留空（forward-only）；已应用文件**绝不修改**（即使改注释 / 空行）——
+  sqlx 在编译期与运行时都校验 `_sqlx_migrations.checksum` 与文件内容 SHA384
+  一致，修改会触发 `VersionMismatch` panic。
+- `backend-rust/seeds/` 声明式种子数据（菜单等配置数据），与 migrations 分开管理。
 
-- `alembic.ini`：`version_locations = schema:prod_data`
-  （`recursive_version_locations = true`）。**无 `dev_data/` 目录**。
-- `alembic heads` 只返 1 行（`000000000031`）；`alembic upgrade head` 单命令即可
-  （Dockerfile 的 `CMD alembic upgrade head && uvicorn ...`）。
-- **2026-09-19 IAM 域迁出**：alembic 链零改动。`t_user` / `t_user_role` /
-  `t_menu` / `t_role_menu` 基表 + seed 数据保留供 backend-rust v2 直接读写；
-  本仓 ORM 抽象（`model/user.py` / `model/user_role.py` / `model/menu.py`）已
-  删除，rust v2 通过自家迁移管理 IAM 表结构与版本演进。
-- **2026-09-24 PR-3 dormant 全删**：alembic 链零改动（`alembic upgrade head`
-  仍成功，head `000000000031` 不变）。`schema_init` 中所有表（含 dormant 业务
-  表 / 死表）继续保留供 backend-rust v2 直接读写；本仓 ORM 抽象（model/* /
-  repository/* / service/_*.py 的 dormant 业务部分）已删，rust v2 通过自家
-  迁移管理业务表结构与版本演进。
-- 冷启结果：seed 表有数据（含 IAM seed + 工种 / 工序 / 工人 / 货架↔工序
-  默认映射 / 菜单 / role_menu / `t_serial_counter` A-Z 全 26 行）；
-  业务表（t_part / t_part_batch / t_part_file / t_assembly / t_customer /
-  t_delivery_note）为空。
-- **本仓活跃 ORM（model/__init__.py）**：TPart / TPartBatch / TPartFile /
-  TAssembly / TCustomer / TDeliveryNote（6 个）。
-- **新 schema 迁移放 `schema/` 子目录**，revision id 用下一个 12 位数字，
-  `down_revision` 指向当前 head。改 `schema_init` 时验收门：全新库 `upgrade head`
-  后 `pg_dump --schema-only` 与旧链对比无意外差异。
-- **已有库对齐**：确认 schema 等价后 `alembic stamp <head>` 即可；
-  dev 本地假数据另写独立 seed 脚本（不走迁移）。
+**本仓与 rust schema 的兼容性约束**：
+
+- 本仓 6 个 ORM（TPart / TPartBatch / TPartFile / TAssembly / TCustomer /
+  TDeliveryNote）必须与 rust 迁移后的 schema **列兼容**（ORM 只声明自己用到的
+  列；DB 中存在但本仓 ORM 不映射的列 SQLAlchemy 自动忽略，不会出错）。2026-09-16
+  起已经历过两次对齐：PR-2（t_part 瘦身为 Rust 迁移 027 同步）、PR-3
+  （t_part_batch 切 current_process_step_id 为 Rust 迁移 028 同步）。
+- 后续如 rust 增列 / 改类型，python 端 ORM 同步跟随并在 PR 中写明
+  `2026-XX-XX 跟随 Rust 迁移 NNN 同步 <columns>`。
+
+**测试库建 schema 流程**（`tests/conftest.py`）：
+
+1. `docker compose -f docker-compose.test.yml up -d` 起一个 5434 临时容器
+2. conftest 调 `_apply_rust_baseline_sync()` —— 用独立 `asyncpg.connect`（不复用
+   `core.database.engine` 连接池，避免 baseline 里的 `SET default_tablespace`
+   session 设置污染池连接）整段执行 rust baseline SQL（asyncpg 无参数 `execute`
+   走 simple query 协议，支持多语句序列），无参数自动复用的连接关闭
+3. baseline 路径解析从 `PROJECT_ROOT` 逐级向上找 `<祖先>/backend-rust/migrations/`
+   `20260925000000_001_baseline.sql`（适配主 checkout 与 `.claude/worktrees/<slug>/`
+   两种布局）；环境变量 `RUST_MIGRATIONS_DIR` 可显式覆盖
+4. 测试结束后 `docker compose ... down -v` 清容器 + bind mount
+
+baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
+`ix_t_part_batch_current_step_id`，故原 `_apply_pr3_test_db_patch` 幂等 DDL
+已成为死代码删除。`t_serial_counter` 是 schema-only，无 A-Z 种子行；
+`conftest._truncate_all` 每次用 `ON CONFLICT DO UPDATE` 重灌，不受影响。
+
+**已有库对齐**：本仓不再负责；若老库 schema 与 rust baseline 漂移，走 rust
+端迁移修补（追加新 migration 或 `pg_restore` + `INSERT _sqlx_migrations`）。
 
 ---
 
@@ -872,7 +908,7 @@ frontend/src/
 > 删除。本仓仅保留 6 个 ORM（TPart / TPartBatch / TPartFile / TAssembly /
 > TCustomer / TDeliveryNote）。账号 / 角色 / 菜单相关 ORM 抽象由
 > backend-rust v2 承接。基表（`t_user` / `t_user_role` / `t_menu` /
-> `t_role_menu`）保留供 rust 直接读写，alembic 链不动。
+> `t_role_menu`）保留供 rust 直接读写，schema 由 backend-rust sqlx 管理。
 
 ### 核心业务表
 
@@ -931,10 +967,10 @@ frontend/src/
 
 ## 现状与已知问题
 
-1. **model/DB 漂移**：`uv run alembic check` 会报告预存的 index/comment 差异
-  （`t_part.serial_no` partial unique index 等），与近期改动无关，不要在
-  处理其他 PR 时混入修复。`t_part_event` / `t_worker` index/comment 漂移已
-  不再相关（2026-09-24 PR-3 后对应 ORM 已删）。
+1. **model/DB 漂移**：schema 由 backend-rust sqlx 维护，本仓不再做 alembic check
+  类的漂移校验；任何 ORM ↔ DB 列不一致由 rust 端迁移承担修复，本仓 ORM 同步跟随
+  时带日期戳注释。`t_part_event` / `t_worker` index/comment 漂移已不再相关
+  （2026-09-24 PR-3 后对应 ORM 已删）。
 2. **`created_by` / `updated_by` 全为 NULL**：2026-09-19 IAM 域迁出后，
    本仓不再持有 user/role 抽象，写操作人字段在 v2 端按 CurrentUser.id 填；
    本仓活跃路径（printing / delivery_note_print / sts）只读不写，
@@ -990,7 +1026,7 @@ frontend/src/
 - `service`：`printing / delivery_note_print / sts` + `_id_parse /
   _print_back_page / _print_front_cache`（活跃 helper）
 - `schema`：`sts / _types`
-- `model`：所有**业务** ORM 保留——alembic / rust v2 仍引用；**IAM** 相关
+- `model`：所有**业务** ORM 保留——基表 schema 由 backend-rust sqlx 维护；**IAM** 相关
   ORM（`TUser` / `TUserRole` / `TMenu` / `TRoleMenu`）已删除；dormant 业务
   ORM（applicant / process / worker / shelf / work_type / outsource_company
   / outsource_quote / part_event / pickup_skip_event / serial_counter /
@@ -1028,15 +1064,20 @@ backend-rust v2 承接」；PR-3 后 dormant 文件全删，无须 skip。
 `FakeCosClient` / `_FakeGetObjectResponse` / `_FakeRawStream` / `db_session` /
 `clean_db` / `seed_root_batch`（活跃 fixture）。
 
-`alembic upgrade head` 仍成功（head `000000000031` 不变；`t_user` /
-`t_user_role` / `t_menu` / `t_role_menu` 基表 + seed 保留供 rust v2 读写）。
+`t_user` / `t_user_role` / `t_menu` / `t_role_menu` 基表 + seed 仍由 backend-rust
+的 sqlx baseline + seeds 管理（schema_init 仍建表，本仓不持有迁移链）。
 
 **重启 v1 业务**需从 git history 还原 22 + 5 = 27 个 v1 + MCP 源文件 +
-恢复 `core/permission.py` 原实现 + 还原本节删除的 IAM / dormant 业务源文件，
-并补 alembic 030 → 031 迁移的 DB 同步（见上文 §Alembic 迁移）。
+恢复 `core/permission.py` 原实现 + 还原本节删除的 IAM / dormant 业务源文件；
+schema 不需要本仓管（直接由 rust 端迁移保证）。
 
 ### 风险与后续
 
+- **生产启动顺序**：python 不再跑迁移就起。`/health` 与 `/sts-health` 不查 DB
+  不受影响；4 个打印端点若在 rust 尚未 migrate 完时被调用会 `UndefinedTableError`
+  500。当前根仓 compose 已有 `rust-backend depends_on backend: service_healthy`
+  （本仓改后该方向已失效但不影响功能）。**彻底消除需在根仓把依赖方向反转——
+  已在本次范围外，建议后续单独 PR**。
 - `created_by` / `updated_by` 全为 NULL 现状不变（item 2）；本仓不再持有
   user/role 抽象，由 v2 端按 CurrentUser.id 自动填。
 - v1 复活指引：见 `_archive/api_v1/` 目录的文件历史 commit log；IAM 源文件

@@ -4,8 +4,8 @@
 
 - `Base` / `AuditMixin` / `EventTimestampMixin` — ORM 基类 / 审计字段 mixin
 - `TPart` / `TPartBatch` / `TPartFile` — 零件 + 批次 + 多态文件（基表 + 批次
-  rollup 关系由 alembic / rust v2 维持；本仓仅持有 ORM 抽象供 STS / 打印端口
-  间接消费）
+  rollup 关系由 backend-rust sqlx 迁移维持——schema 由 `backend-rust/migrations/`
+  管理，本仓不再持有迁移；本仓仅持有 ORM 抽象供 STS / 打印端口间接消费）
 - `TAssembly` / `TCustomer` / `TDeliveryNote` — 装配体 / 客户 / 送货单
 
 历史 IAM ORM（TUser / TUserRole / TMenu / TRoleMenu）已删除（2026-09-19

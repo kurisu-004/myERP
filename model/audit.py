@@ -7,8 +7,9 @@
                           不要 version / `updated_at` / 操作人 / 软删（事件型只追加）。
 
 字段顺序与现有 DB 列序精确一致
-（`version → created_at → created_by → updated_at → updated_by → deleted_at`），
-alembic 1.13+ 默认 `compare_column_order=True` 也不会触发列重排迁移。
+（`version → created_at → created_by → updated_at → updated_by → deleted_at`）；
+2026-09-28 alembic 下线后本仓不再做列序比对，列序以 backend-rust 的 sqlx
+迁移（`backend-rust/migrations/`）为准，本文件保持与其一致即可。
 
 乐观锁（OCC）
 -------------
