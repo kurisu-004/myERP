@@ -87,11 +87,6 @@ mysql_data/
 data/
 docker-compose.override.yml
 
-# ---------- Alembic ----------
-# 保留 alembic/ 目录本身和 versions/，只忽略缓存
-alembic/__pycache__/
-alembic/versions/__pycache__/
-
 # ---------- API 文档 / 客户端生成 ----------
 docs/_build/
 docs/.sphinx/

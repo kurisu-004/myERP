@@ -54,6 +54,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2); sys.exit(0 if r.status==200 else 1)"
 
-# 启动时跑迁移；exec 让 uvicorn 接管 PID 1，tini 负责信号转发
+# 2026-09-28 起启动时不再跑迁移：schema 真相源是 backend-rust 的 sqlx 迁移
+# （backend-rust/migrations/），本仓不再持有任何迁移工具。
+# exec 让 uvicorn 接管 PID 1，tini 负责信号转发
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000"]
+CMD ["exec", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

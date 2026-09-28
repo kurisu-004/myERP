@@ -31,7 +31,9 @@
   - MCP 输出 ``batches[].next_process_name`` 由
     ``batch.current_process_step_id → TProcessChainStep.process_id → TProcess.name``
     派生（详见 ``service/mcp_query.py``）。
-- 不动 alembic 迁移（PR-2 已确立双链并存惯例；表结构变更由 Rust 端迁移 028 主导）。
+- 不动迁移链：schema 真相源是 backend-rust 的 sqlx 迁移（``backend-rust/migrations/``），
+  本仓已于 2026-09-28 随 alembic 全量下线移除自己的迁移目录，只同步 ORM
+  （表结构变更由 backend-rust 追加的新 migration 主导）。
 """
 from typing import Optional
 

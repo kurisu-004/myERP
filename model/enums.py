@@ -304,7 +304,9 @@ class DeliveryNoteEventType(str, enum.Enum):
     - RECALLED      旧 enum 值；2026-07-23 之前写的事件仍用此值。前端 label 映射与
                     WITHDRAWN 同为「撤回」展示，避免历史时间线出现英文。
 
-    已删除（2026-07-23；DB 列同时 drop；详见 alembic 000000000013）：
+    已删除（2026-07-23；DB 列同时 drop；当时的 Alembic 迁移 000000000013
+    已于 2026-09-28 随本仓 alembic 全量下线移除，列变更现由 backend-rust
+    的 sqlx 迁移 `backend-rust/migrations/` 承担）：
     - EDITED / ITEM_ADDED / ITEM_REMOVED（噪音事件）
     - PICKUP_SCANNED（前端本地扫码去重，后端不再承载进度状态）
     - ARCHIVED（status 仍存在作终态，事件不再单独写）

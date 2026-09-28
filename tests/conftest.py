@@ -2,7 +2,7 @@
 
 生命周期：
 1. pytest session 启动 → 自动 up 一个独立的 `postgres-test` 容器（5434 端口），
-   等待 healthy，跑 `alembic upgrade head` 把 schema 建好。
+   等待 healthy，把 backend-rust 的 sqlx baseline 灌进去把 schema 建好。
 2. 每个测试函数用 `clean_db` fixture 自取清空后的 DB；fixture 会 truncate 所有
    业务表 + 重置流水号。
 3. pytest session 结束 → `docker compose -f docker-compose.test.yml down -v`，
@@ -18,9 +18,12 @@ sts_health,sts_prefix_credentials,file_hash,time}.py`），全部走真实 DB
 dormant 测试集合（25 个 + 25 个 unit）已整体删除，无须 _V1_DORMANT_MODULES /
 _DormantStub / _V1_REMOVED_FROM_PACKAGE / _install_dormant_stubs 等兜底。
 
-2026-09-16 PR-2 兼容：`_apply_pr3_test_db_patch` 保留 `t_part_batch.current_process_step_id`
-列 + 索引的幂等 DDL；`t_process_chain_step` 表 DDL 已删（model/process_chain_step.py
-PR-3 删除，对应 ORM 不再持有）。
+2026-09-28 alembic 全量下线：本仓 001-031 迁移链 + alembic.ini 整体 `git rm`
+（schema 真相源已切到 backend-rust 的 sqlx 迁移 `backend-rust/migrations/`）。
+测试库建 schema 的方式随之从 `alembic upgrade heads` 改为
+`_apply_rust_baseline_sync()` 灌 backend-rust 的
+`20260925000000_001_baseline.sql`；原 `_apply_pr3_test_db_patch` 删除
+（baseline 已含 `t_part_batch.current_process_step_id` 列 + 索引）。
 """
 
 from __future__ import annotations
@@ -42,7 +45,8 @@ _os.environ.setdefault("COS_SECRET_KEY", "test-cos-key")
 _os.environ.setdefault("COS_BUCKET", "test-bucket")
 _os.environ.setdefault("COS_REGION", "ap-guangzhou")
 # 不在迁移时自动 seed t_user / t_shelf；测试自己造数据。
-_os.environ.setdefault("SHELF_SEED_ON_MIGRATE", "false")
+# （2026-09-28：`SHELF_SEED_ON_MIGRATE` 死配置已随 alembic 下线从 core/config.py
+#  删除，这里也不需要再注入。）
 _os.environ.setdefault("TZ", "Asia/Shanghai")
 
 # ============================================================
@@ -129,53 +133,85 @@ async def _probe_db_ready(timeout: float = 30.0) -> None:
     )
 
 
-def _run_alembic_upgrade_head_sync() -> None:
-    """在测试容器上跑迁移。env 已经在 conftest 顶部注入过了。
+# 2026-09-28 alembic 下线后，schema 的真相源是 backend-rust 的 sqlx 迁移。
+# baseline 文件名固定（全量 schema 基线；后续变更走 backend-rust/migrations/ 下
+# 追加的新 migration，不改 baseline 本身）。
+_RUST_BASELINE_FILENAME = "20260925000000_001_baseline.sql"
 
-    必须在独立线程里跑——alembic 内部用了 asyncio.run()，不能在已有 event loop 里调。
+# 与上面 `_probe_db_ready` 保持同一组测试库连接参数。
+_TEST_DB_DSN = {
+    "host": "127.0.0.1",
+    "port": 5434,
+    "user": "myerp_test",
+    "password": "testpass",
+    "database": "myerp_test",
+}
 
-    用 `upgrade heads`（复数）而不是 `upgrade head`：当前 alembic 拓扑有
-    `schema/003 + prod_data/002` 两个 head；用 `head`（单数）会报
-    `Multiple head revisions` 错误。
+
+def _resolve_rust_baseline() -> Path:
+    """定位 backend-rust 的 sqlx baseline SQL 文件。
+
+    2026-09-28：alembic 下线后测试库不再用 `alembic upgrade heads` 建 schema，
+    改灌 backend-rust 的 `migrations/20260925000000_001_baseline.sql`。
+
+    路径解析要同时适配两种布局（backend-python 的 git worktree 就在
+    `backend-python/.claude/worktrees/<slug>/` 下，此时 `PROJECT_ROOT.parent`
+    指向 `.../backend-python/.claude/worktrees`，**不是** hsh-erp 根）：
+    从 `PROJECT_ROOT` 起逐级向上，每层都试 `<该层>/backend-rust/migrations/`，
+    第一个命中的即返回；`RUST_MIGRATIONS_DIR` 环境变量可显式指定目录
+    （直接指向 `backend-rust/migrations`），便于 CI / 非常规布局。
     """
-    from alembic import command
-    from alembic.config import Config
+    env_dir = _os.environ.get("RUST_MIGRATIONS_DIR")
+    candidates: list[Path] = []
+    if env_dir:
+        candidates.append(Path(env_dir) / _RUST_BASELINE_FILENAME)
+    for base in (PROJECT_ROOT, *PROJECT_ROOT.parents):
+        candidates.append(base / "backend-rust" / "migrations" / _RUST_BASELINE_FILENAME)
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    tried = "\n  ".join(str(c) for c in candidates)
+    raise RuntimeError(
+        "找不到 backend-rust 的 sqlx baseline 文件 "
+        f"{_RUST_BASELINE_FILENAME}；已依次尝试：\n  {tried}\n"
+        "请确认本仓与 backend-rust 同级，或用环境变量 RUST_MIGRATIONS_DIR "
+        "显式指向 backend-rust/migrations 目录。"
+    )
 
-    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
-    cfg.set_main_option(
-        "sqlalchemy.url", _os.environ["DATABASE_URL"]
-    )  # alembic.ini 留空时保险起见再设一次
-    command.upgrade(cfg, "heads")
 
+async def _apply_rust_baseline_sync() -> None:
+    """把 backend-rust 的 sqlx baseline 灌进临时测试库。
 
-async def _apply_pr3_test_db_patch(session: AsyncSession) -> None:
-    """2026-09-16 PR-3 测试 DB 补丁。
+    2026-09-28 alembic 下线：schema 真相源切到 backend-rust 的 sqlx 迁移
+    （`backend-rust/migrations/20260925000000_001_baseline.sql`），本仓不再
+    持有迁移链，测试库建 schema 的方式随之改为整段执行这份 baseline。
 
-    与 PR-2 「不动 alembic 迁移」惯例一致：生产 schema 变更由 Rust v2 后端
-    迁移 028（t_part_batch 删 next_process_id / placed_at + 加
-    current_process_step_id）承担。
+    baseline 是纯 `pg_dump --schema-only` 风格：开头 `SET default_tablespace` /
+    `SET default_table_access_method`，无 psql 元命令（`\\restrict` 等）、无
+    `$$` dollar-quote、无 DROP / CREATE EXTENSION / OWNER TO / GRANT / ROLE，
+    因此可在**空库**上用 asyncpg 的 simple query 协议（`conn.execute(sql)`，
+    无参数）一次执行整段多语句。
 
-    测试 DB 只走 alembic，不知道这些变更；这里用幂等 DDL 把缺失列补上，
-    使 ORM 模型与测试库对齐。生产 DB 永不跑本函数。
+    **刻意不复用 `core.database.engine` 的连接池**：baseline 里的
+    `SET default_tablespace` 等是 session 级设置，留在池连接上会污染后续
+    ORM 查询用的连接。这里单开一条连完即关。
 
-    2026-09-24 PR-3：t_process_chain_step 表 DDL 已删（model/process_chain_step.py
-    不再持有）；t_part_batch.current_process_step_id 列保留。
+    **本函数只在临时测试库（docker-compose.test.yml 起的 5434 容器）上跑，
+    生产库永不执行。**
     """
-    # t_part_batch 加 current_process_step_id 列（PR-3 新增；幂等）
-    await session.execute(
-        text(
-            "ALTER TABLE t_part_batch "
-            "ADD COLUMN IF NOT EXISTS current_process_step_id bigint NULL"
-        )
-    )
-    # 给该列加索引（对应 ORM 上的 index=True；幂等）
-    await session.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS ix_t_part_batch_current_process_step_id "
-            "ON t_part_batch (current_process_step_id)"
-        )
-    )
-    await session.commit()
+    import asyncpg
+
+    baseline = _resolve_rust_baseline()
+    sql = baseline.read_text(encoding="utf-8")
+    conn = await asyncpg.connect(**_TEST_DB_DSN)
+    try:
+        await conn.execute(sql)
+    except Exception as e:
+        raise RuntimeError(
+            f"执行 backend-rust sqlx baseline 失败（文件：{baseline}）：{e}"
+        ) from e
+    finally:
+        await conn.close()
 
 
 def _wipe_test_data_dir() -> None:
@@ -216,21 +252,22 @@ def _wipe_test_data_dir() -> None:
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _postgres_test_lifecycle():
-    """整场测试只跑一次：down -v → wipe bind mount → up -d → wait healthy → migrate → tests → down -v。
+    """整场测试只跑一次：down -v → wipe bind mount → up -d → wait healthy → 建 schema → tests → down -v。
 
     2026-09-16 PR-2：环境变量 `SKIP_TEST_DB_LIFECYCLE=1` 时跳过整个 docker 编排
     （包括结尾 down -v）。用于开发者在本地手动起好 test 容器后直接跑 pytest，
     绕开 Docker Desktop + virtiofs 下「wipe 后立刻 up -d 偶发 bind-mount 失败」
     的环境问题（PG initdb 报 `mkdir '/var/lib/postgresql/18/'` 失败）；
-    调用方需自行保证容器在 5434 端口 healthy + schema 已 `alembic upgrade heads`。
+    调用方需自行保证容器在 5434 端口 healthy。
+
+    2026-09-28：建 schema 的一步由 `alembic upgrade heads` 改为灌 backend-rust
+    的 sqlx baseline（`_apply_rust_baseline_sync`）。
     """
     if _os.environ.get("SKIP_TEST_DB_LIFECYCLE") == "1":
-        # 开发者在外部已经把容器起好了；只跑迁移 + 等 SELECT 1 通。
+        # 开发者在外部已经把容器起好了；等 SELECT 1 通 + 灌 baseline 建 schema。
         await _probe_db_ready()
-        await asyncio.to_thread(_run_alembic_upgrade_head_sync)
-        # 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列），生产 DB 不跑。
-        async with SessionLocal() as s:
-            await _apply_pr3_test_db_patch(s)
+        await _apply_rust_baseline_sync()
+        print("[test-db] rust baseline applied (external container)")
         yield
         return
 
@@ -256,17 +293,13 @@ async def _postgres_test_lifecycle():
     await _probe_db_ready()
     print("[test-db] DB is queryable")
 
-    # 6. 跑迁移（推到线程池，避开已有 event loop）
-    await asyncio.to_thread(_run_alembic_upgrade_head_sync)
-    print("[test-db] alembic upgrade head done")
-
-    # 7. 2026-09-16 PR-3：补 PR-3 测试 DB 补丁（列），生产 DB 不跑。
-    async with SessionLocal() as s:
-        await _apply_pr3_test_db_patch(s)
+    # 6. 建 schema：灌 backend-rust 的 sqlx baseline（2026-09-28 取代 alembic upgrade heads）
+    await _apply_rust_baseline_sync()
+    print("[test-db] rust baseline applied")
 
     yield  # ---- tests run here ----
 
-    # 8. session 结束：清容器 + 清 volume
+    # 7. session 结束：清容器 + 清 volume
     down = _compose("down", "-v")
     print(f"[test-db] docker compose down -v:\n{down.stdout.strip()}")
 
@@ -335,8 +368,8 @@ async def _truncate_all(session: AsyncSession) -> None:
         # 不能用 RESTART IDENTITY；其余 BigSerial 表保持原样。
         suffix = "" if table == "t_customer" else " RESTART IDENTITY CASCADE"
         await session.execute(text(f'TRUNCATE TABLE "{table}"{suffix}'))
-    # 复位流水号计数器；alembic 迁移可能没 seed，单独 ensure 一次。
-    # 2026-07-09 起：seed A-Z 全 26 行（迁移 000000000014），不再限于 L/F/H。
+    # 复位流水号计数器。2026-09-28 起灌的是 backend-rust 的 sqlx baseline
+    # （schema-only，不含 A-Z 种子行），所以这里必须无条件 ON CONFLICT 重灌。
     await session.execute(text("SELECT 1 FROM t_serial_counter LIMIT 0"))  # 探测表存在
     await session.execute(
         text(

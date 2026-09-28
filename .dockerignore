@@ -30,7 +30,6 @@ frontend/
 data/
 tmp/
 tests/
-.alembic/
 docs/**/*.md
 docs/**/.DS_Store
 docs/*.csv

@@ -36,10 +36,9 @@ class Settings(BaseSettings):
     )
     jwt_issuer: str = Field(default="myerp", alias="JWT_ISSUER")
 
-    # ---- Dev seed (t_user / t_shelf 迁移后自动 seed) ----
-    shelf_seed_on_migrate: bool = Field(
-        default=False, alias="SHELF_SEED_ON_MIGRATE"
-    )
+    # 2026-09-28：原 `shelf_seed_on_migrate`（SHELF_SEED_ON_MIGRATE）死配置删除。
+    # 该字段本是为「alembic 迁移后自动 seed t_user / t_shelf」准备，alembic 随
+    # 2026-09-28 下线后全仓无任何消费者，留着只会误导后来人以为本仓还会跑迁移。
 
     # ---- 腾讯云 COS（图纸上传 / 下载 / 预签）----
     # 本进程用长期 SecretId/Key 调 SDK（仅后端内部用）；前端要走 STS 临时凭证。
