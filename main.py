@@ -3,9 +3,9 @@
 2026-09-24：MCP 域（`/api/mcp/*` + `/mcp` mount）整体下线后，本仓仅保留 STS
 凭证签发 + 健康检查（标签 / 送货单打印端点新增见后续 PR）。
 
-路由现状：
-- `POST /api/v1/files/sts-tmp-keys`
-- `POST /api/v1/files/sts-prefix-credentials`
+路由现状（2026-09-28：删除 `sts-prefix-credentials` 内部端口——rust 后端
+upload_session 域下线后无调用方）：
+- `POST /api/v1/files/sts-tmp-keys`（2026-09-28 扩展为 Union 入参：单文件 / 批量）
 - `GET  /api/v1/files/sts-health`
 - `GET  /api/v1/health`（容器健康检查）
 

@@ -3,15 +3,22 @@
 裸开鉴权（参考 `/api/mcp/*` 模式，2026-09-17 起 v1 业务路由已 JWT bypass，
 此端点更不依赖 `get_current_user`），靠部署层 nginx / 安全组隔离。
 
-路径（2026-09-18 review：列入 CLAUDE.md §14「保留端点」段）：
+路径（2026-09-28 review：列入 CLAUDE.md §14「保留端点」段）：
 - `POST /api/v1/files/sts-tmp-keys`            — 前端直传 COS（`tmp/<uid>/<sha16>/*` 命名空间）。
-- `POST /api/v1/files/sts-prefix-credentials`  — 2026-09-18 新增：内部端口——
-  供 rust 后端按任意 `tmp/...` 前缀签凭证，不返回 `tmp_key`。
+  2026-09-28 扩展为 Union 入参：接受单文件 schema
+  （`{purpose, filename, content_type, expire_seconds, content_sha256}`）
+  或批量 schema（`{scope, files[1..200]}`），由 Pydantic v2 smart union
+  自动区分。响应也分别为 `StsTmpKeysResponse` 或
+  `StsBatchTmpKeysResponse`。链路 A 单文件场景向后兼容。
 - `GET  /api/v1/files/sts-health`              — 2026-09-18 新增：STS 签发自检
   （healthcheck 探针）——真实调一次 SDK 签发，验证整条链路（SDK + 主账号密钥
   + CAM policy + 到 sts.tencentcloudapi.com 的网络）；HTTP 200 表示通过，
   BizError 透传（自带 http_status）让 compose healthcheck 拿到非 2xx 即
   fail。
+
+2026-09-28 删除 `POST /api/v1/files/sts-prefix-credentials`：rust 后端
+upload_session 域下线后已无调用方（plan
+`sts-session-uploader-sts-sts-sequential-globe` §2.2）。
 """
 
 from __future__ import annotations
@@ -20,11 +27,11 @@ from fastapi import APIRouter, Depends
 
 from api.deps import get_sts_service
 from schema.sts import (
+    StsBatchTmpKeysRequest,
     StsHealthResponse,
-    StsPrefixCredentialsRequest,
-    StsPrefixCredentialsResponse,
+    StsTmpKeysEndpointBody,
+    StsTmpKeysEndpointResponse,
     StsTmpKeysRequest,
-    StsTmpKeysResponse,
 )
 from service.sts import StsService
 
@@ -33,39 +40,31 @@ router = APIRouter(prefix="/files", tags=["sts"])
 
 @router.post(
     "/sts-tmp-keys",
-    response_model=StsTmpKeysResponse,
+    response_model=StsTmpKeysEndpointResponse,
     operation_id="grant_sts_tmp_keys",
-    summary="前端直传 COS 临时凭证端口",
+    summary="前端直传 COS 临时凭证端口（支持单文件 / 批量）",
 )
 async def grant_sts_tmp_keys(
-    body: StsTmpKeysRequest,
+    body: StsTmpKeysEndpointBody,
     svc: StsService = Depends(get_sts_service),
-) -> StsTmpKeysResponse:
+) -> StsTmpKeysEndpointResponse:
+    """2026-09-28 扩展：接受单文件或批量 schema。
+
+    - 单文件 schema (`{purpose, filename, ...}`) → 走
+      `service.grant_tmp_keys`，向后兼容旧链路 A；
+    - 批量 schema (`{scope, files[1..200]}`) → 走
+      `service.grant_tmp_keys_batch`，并发签名批。
+
+    Pydantic v2 smart union 按字段形态自动区分；不显式 tag 字段。
+    """
+    if isinstance(body, StsBatchTmpKeysRequest):
+        return await svc.grant_tmp_keys_batch(body)
+    # StsTmpKeysRequest 路径（单文件，向后兼容）
+    assert isinstance(body, StsTmpKeysRequest)
     return await svc.grant_tmp_keys(body)
 
 
-@router.post(
-    "/sts-prefix-credentials",
-    response_model=StsPrefixCredentialsResponse,
-    operation_id="grant_sts_prefix_credentials",
-    summary="内部端口——供 rust 后端调用：按前缀签 STS 临时凭证",
-)
-async def grant_sts_prefix_credentials(
-    body: StsPrefixCredentialsRequest,
-    svc: StsService = Depends(get_sts_service),
-) -> StsPrefixCredentialsResponse:
-    """2026-09-18 新增：按调用方传入的 prefix 签 STS 临时凭证。
-
-    - `prefix` 必须以 `tmp/` 开头，否则返回 `BIZ_STS_PREFIX_INVALID`。
-    - duration 在 service 层 clamp 到 `settings.sts_max_ttl_seconds`。
-    - 响应不包含 `tmp_key`（rust 后端自行拼对象 key）。
-
-    裸开鉴权：安全性靠 nginx `/api/v1/files/` 不暴露 / 安全组隔离保证。
-    """
-    return await svc.grant_prefix_credentials(body)
-
-
-# 2026-09-18 新增：STS 签发自检（healthcheck 探针）。裸开鉴权，与上面两个
+# 2026-09-18 新增：STS 签发自检（healthcheck 探针）。裸开鉴权，与上面
 # sts 端点保持一致（参考 /api/mcp/* 模式；安全性靠部署层 nginx / 安全组隔离）。
 # 真实调一次 SDK 签发（不 mock）以验证 SDK + 主账号密钥 + CAM policy + 网络
 # 联通整条链路；BizError 透传，compose healthcheck 拿 HTTP 状态判定 ok/fail。
