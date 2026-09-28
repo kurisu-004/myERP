@@ -1,14 +1,16 @@
-"""2026-09-24 PR-2 重构：python 端 v1 仅保留 STS 凭证端口 + 4 个打印端口
-（与 IAM 无关）。
+"""2026-09-24 PR-2 重构 + 2026-09-28 删 STS 内部端口：python 端 v1 仅保留
+2 个 STS 凭证端口（前端直传 + healthcheck 自检）+ 4 个打印端口（与 IAM 无关）。
 
-保留端点（2026-09-24 PR-2 共 7 个，全部裸开鉴权，靠部署层 nginx / 安全组隔离）：
+保留端点（2026-09-28 共 7 个，全部裸开鉴权，靠部署层 nginx / 安全组隔离）：
 
-- ``sts``                              — ``POST /files/sts-tmp-keys``（前端直传
-                                       COS 临时凭证）+ ``POST /files/sts-prefix-
-                                       credentials``（2026-09-18 内部端口，供 rust
-                                       后端按任意 ``tmp/...`` 前缀签凭证）+
-                                       ``GET /files/sts-health``（2026-09-18 自检
-                                       探针）。
+- ``sts``                              — ``POST /files/sts-tmp-keys``（2026-09-17
+                                       前端直传 COS 临时凭证；2026-09-28 扩
+                                       Union 入参：单文件 / 批量 schema 自由切
+                                       换）+ ``GET /files/sts-health``
+                                       （2026-09-18 自检探针）。2026-09-28
+                                       删除 ``POST /files/sts-prefix-credentials``
+                                       内部端口（rust upload_session 域下线后
+                                       无调用方）。
 - ``printing``                         — 2026-09-24 PR-2 新增：零件标签 PDF
                                        （``GET /parts/{id}/print`` +
                                        ``POST /parts/print-batch``）。

@@ -145,9 +145,11 @@ AI 只读入口。变更范围：
 - **alembic 链零改动**：基表（`t_user` / `t_user_role` / `t_menu` /
   `t_role_menu`）+ seed 数据保留供 rust v2 直接读写；本仓不持有 ORM 抽象，
   rust v2 通过自己的迁移管理 IAM 表结构。
-- **STS 端点零改动**：`POST /api/v1/files/sts-tmp-keys` /
-  `POST /api/v1/files/sts-prefix-credentials` /
-  `GET /api/v1/files/sts-health` 与 IAM 无关，全部保留。
+- **STS 端点零改动**：`POST /api/v1/files/sts-tmp-keys`（2026-09-28 扩
+  为 Union 入参：单文件 / 批量） /
+  `GET /api/v1/files/sts-health` 与 IAM 无关，全部保留；2026-09-28
+  删除 `POST /api/v1/files/sts-prefix-credentials`（rust 后端
+  upload_session 域下线后无调用方）。
 - **dormant stub 扩列**：`tests/conftest.py` 的 `_V1_DORMANT_MODULES` /
   `_V1_REMOVED_FROM_PACKAGE` 加入 `service.{auth,user,menu}` +
   `repository.{user,menu}` + `model.{user,user_role,menu}` + `api.v1.auth`，
@@ -793,8 +795,7 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| POST | /api/v1/files/sts-tmp-keys | 裸开 | 2026-09-17 新增：前端直传 COS 临时凭证，TTL 1800s，CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录。 |
-| POST | /api/v1/files/sts-prefix-credentials | 裸开（内部端口） | 2026-09-18 新增：供 rust 后端按任意 `tmp/...` 前缀签凭证；prefix 必须 `tmp/` 开头 + 至少含一个子目录段 + 无 `* ? .. \x00 \\` 字符。 |
+| POST | /api/v1/files/sts-tmp-keys | 裸开 | 2026-09-17 新增 / 2026-09-28 扩 Union 入参：前端直传 COS 临时凭证，TTL 1800s，CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录；接受单文件 schema（`{purpose, filename, ...}`，向后兼容）或批量 schema（`{scope, files[1..200]}`，单 HTTP 单签名批），由 Pydantic v2 smart union 自动分流；批量并发限流 Semaphore(30)，任一文件 SDK 失败 → 整批 502 重试（by design）。 |
 | GET | /api/v1/files/sts-health | 裸开（healthcheck 探针） | 2026-09-18 新增：STS 签发自检，每次 uuid4 hex probe prefix `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调 SDK 签发，验证 SDK + 主账号密钥 + CAM policy + 网络整条链路；返回 `{status, probe_prefix, expired_at}`。 |
 
 ### /parts/*（api/v1/printing.py — **保留** 打印图纸端口，2026-09-24 PR-2 新增）
@@ -992,12 +993,11 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 ### 范围
 
-**保留端点（共 8 个：3 个 STS 端口 + 4 个打印端口 + 1 个健康检查）**：
+**保留端点（共 7 个：2 个 STS 端口 + 4 个打印端口 + 1 个健康检查）**：
 
 | 方法 | 路径 | 实现 | 说明 |
 |---|---|---|---|
-| POST | `/api/v1/files/sts-tmp-keys` | `api/v1/sts.py` | **2026-09-17 新增**：前端直传 COS 临时凭证（裸开鉴权）；CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录，TTL 默认 1800s。 |
-| POST | `/api/v1/files/sts-prefix-credentials` | `api/v1/sts.py` | **2026-09-18 新增**：内部端口——供 rust 后端按任意 `tmp/...` 前缀签凭证；prefix 必须 `tmp/` 开头 + 至少含一个子目录段 + 无 `* ? .. \x00 \\` 字符。 |
+| POST | `/api/v1/files/sts-tmp-keys` | `api/v1/sts.py` | **2026-09-17 新增 / 2026-09-28 扩 Union 入参**：前端直传 COS 临时凭证（裸开鉴权）；单文件 schema（`{purpose, filename, ...}`，向后兼容）或批量 schema（`{scope, files[1..200]}`，单 HTTP 单签名批）由 Pydantic v2 smart union 自动分流。CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录，TTL 默认 1800s。 |
 | GET | `/api/v1/files/sts-health` | `api/v1/sts.py` | **2026-09-18 新增**：STS 签发自检（healthcheck 探针）——裸开鉴权；每次 uuid4 hex probe prefix `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调 SDK 签发（不 mock），验证 SDK + 主账号密钥 + CAM policy + 网络整条链路；BizError 透传（自带 http_status）让 compose healthcheck 拿到非 2xx 即 fail。 |
 | GET | `/api/v1/parts/{id}/print` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`。 |
 | POST | `/api/v1/parts/print-batch` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。 |
