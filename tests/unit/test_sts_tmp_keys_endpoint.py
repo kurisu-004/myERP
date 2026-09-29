@@ -1,5 +1,5 @@
-"""2026-09-28 review 第 1 轮修复新增：`POST /api/v1/files/sts-tmp-keys`
-端到端测试（TestClient + httpx）。
+"""2026-09-28 review 第 1 轮修复新增 / 2026-09-29 重构：
+`POST /api/v1/files/sts-tmp-keys` 端到端测试（TestClient + httpx）。
 
 plan §4 #9 硬要求：本端点必须有 TestClient 端到端覆盖。本文件对齐 plan
 验收条件，覆盖 4 个场景：
@@ -10,6 +10,10 @@ plan §4 #9 硬要求：本端点必须有 TestClient 端到端覆盖。本文�
 3. `files=[]` → 422 ValidationError（Pydantic smart union 拒收批量 schema
    + min_length=1）；422 响应结构对齐前端类型契约（含 `detail` 数组）；
 4. `files` 长度=201 → 422 ValidationError（Pydantic max_length=200）。
+
+2026-09-29 重构：tmp_key 模板简化为 `tmp/{uid}/{sha256}.{ext}`——
+本测试请求体同步加 `content_sha256`（必填 64 hex）+ `ext`（必填）；
+响应 `tmp_key` 断言相应更新（无 filename 段、`ext` 后缀）。
 
 实现策略：本端点零 DB IO（`StsService` 不持 session / 不写 DB），故每个
 测试单独 `FastAPI()` + `include_router(sts.router, prefix="/api/v1")`
@@ -37,6 +41,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import core.sts as sts_core
+
+# 2026-09-29 重构：统一 sha fixture，与 test_sts_tmp_keys.py 对齐。
+SHA_64_A = "a" * 64
+SHA_64_B = "b" * 64
 
 
 # ============================================================
@@ -114,6 +122,9 @@ def test_single_file_schema_returns_200_with_keys_shape(
     """2026-09-28 review：单文件 `{purpose, filename, ...}` → 200 +
     `StsTmpKeysResponse` 形状（含 `tmp_key` / `credentials` 五元组 /
     `expires_in` / `upload_prefix`）。回归旧链路 A 兼容。
+
+    2026-09-29 重构：请求体加必填 `content_sha256` + `ext`；响应
+    `tmp_key` 形如 `tmp/{uid}/{sha256}.{ext}`。
     """
     _patch_sdk_with_recorder(monkeypatch)
     client = TestClient(_build_app())
@@ -125,6 +136,8 @@ def test_single_file_schema_returns_200_with_keys_shape(
             "filename": "a.pdf",
             "content_type": "application/pdf",
             "expire_seconds": 1800,
+            "content_sha256": SHA_64_A,
+            "ext": "pdf",
         },
     )
 
@@ -132,8 +145,16 @@ def test_single_file_schema_returns_200_with_keys_shape(
     body = resp.json()
     # StsTmpKeysResponse 必填字段
     assert "tmp_key" in body
+    # 2026-09-29 重构：tmp_key 形如 `tmp/{uid}/{sha256}.{ext}`，无
+    # filename 段。
+    expected_key = f"tmp/1/{SHA_64_A}.pdf"
+    assert body["tmp_key"] == expected_key
     assert body["tmp_key"].startswith("tmp/")
-    assert "a.pdf" in body["tmp_key"]
+    assert body["tmp_key"].endswith(".pdf")
+    # 关键不变量：filename 段已去除——断言用 sha64 后 48 hex + ".pdf"
+    # 整段（filename 不会进 key；SHA="a"*64 + ext="pdf" 虽自然产生
+    # "...aaa.pdf" 子串，但精确等值断言已锁死模板，filename 不参与）。
+    assert body["tmp_key"].endswith(f"{SHA_64_A[16:]}.pdf")
     # credentials 五元组
     creds = body["credentials"]
     for key in (
@@ -164,6 +185,8 @@ def test_batch_schema_returns_200_with_items_length_aligned(
 ) -> None:
     """2026-09-28 review：批量 `{scope, files[2]}` → 200 + 响应顶层
     `items` 字段、长度=2、每项是完整 `StsTmpKeysResponse`。
+
+    2026-09-29 重构：files 每项加必填 `content_sha256` + `ext`。
     """
     _patch_sdk_with_recorder(monkeypatch)
     client = TestClient(_build_app())
@@ -178,12 +201,16 @@ def test_batch_schema_returns_200_with_items_length_aligned(
                     "filename": "a.pdf",
                     "content_type": "application/pdf",
                     "expire_seconds": 1800,
+                    "content_sha256": SHA_64_A,
+                    "ext": "pdf",
                 },
                 {
                     "purpose": "drawing",
                     "filename": "b.pdf",
                     "content_type": "application/pdf",
                     "expire_seconds": 1800,
+                    "content_sha256": SHA_64_B,
+                    "ext": "pdf",
                 },
             ],
         },
@@ -222,8 +249,10 @@ def test_batch_schema_returns_200_with_items_length_aligned(
     assert item_a["region"] == item_b["region"]
     assert item_a["scheme"] == item_b["scheme"]
     assert item_a["upload_prefix"] == item_b["upload_prefix"]
-    # tmp_key 不同
+    # tmp_key 不同（不同 sha256）
     assert item_a["tmp_key"] != item_b["tmp_key"]
+    assert item_a["tmp_key"] == f"tmp/1/{SHA_64_A}.pdf"
+    assert item_b["tmp_key"] == f"tmp/1/{SHA_64_B}.pdf"
 
 
 # ============================================================
@@ -261,6 +290,8 @@ def test_batch_files_empty_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_batch_files_length_201_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
     """2026-09-28 review：批量 schema `files` 长度=201 → 422
     ValidationError（Pydantic max_length=200）。同样验证 422 响应结构。
+
+    2026-09-29 重构：每项加必填 `content_sha256` + `ext` 才能构造。
     """
     _patch_sdk_with_recorder(monkeypatch)
     client = TestClient(_build_app())
@@ -274,6 +305,8 @@ def test_batch_files_length_201_returns_422(monkeypatch: pytest.MonkeyPatch) -> 
                     "purpose": "drawing",
                     "filename": f"f{i}.pdf",
                     "content_type": "application/pdf",
+                    "content_sha256": ("a" * 60 + f"{i:04d}"),
+                    "ext": "pdf",
                 }
                 for i in range(201)
             ],
@@ -298,8 +331,7 @@ def test_boundary_schema_empty_object_returns_422(
 ) -> None:
     """2026-09-28 review 第 1 轮修复：A1 修复连带验收——空对象 `{}`
     必被 smart union + Pydantic 拒为 422，**不会**走到 handler 内的兜底
-    `BizError(400)`（422 是 Pydantic 校验阶段的硬错误，handler 进不去）。
-    """
+    `BizError(400)`（422 是 Pydantic 校验阶段的硬错误，handler 进不去）。"""
     _patch_sdk_with_recorder(monkeypatch)
     client = TestClient(_build_app())
 
@@ -316,8 +348,7 @@ def test_boundary_schema_purpose_only_returns_422(
 ) -> None:
     """2026-09-28 review 第 1 轮修复：A1 修复连带验收——`{"purpose":
     "drawing"}` 缺 `filename` → Pydantic 422（不会走到 handler 兜底
-    BizError 400，因 422 在校验阶段先抛）。
-    """
+    BizError 400，因 422 在校验阶段先抛）。"""
     _patch_sdk_with_recorder(monkeypatch)
     client = TestClient(_build_app())
 
@@ -326,4 +357,71 @@ def test_boundary_schema_purpose_only_returns_422(
         json={"purpose": "drawing"},
     )
 
+    assert resp.status_code == 422
+
+
+# ============================================================
+# 附赠：2026-09-29 重构相关 schema 校验
+# ============================================================
+def test_single_file_missing_content_sha256_returns_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-29 重构：单文件 schema 缺 `content_sha256` → 422。"""
+    _patch_sdk_with_recorder(monkeypatch)
+    client = TestClient(_build_app())
+
+    resp = client.post(
+        "/api/v1/files/sts-tmp-keys",
+        json={
+            "purpose": "drawing",
+            "filename": "a.pdf",
+            "expire_seconds": 1800,
+            "ext": "pdf",
+        },
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    locs = [tuple(err.get("loc", [])) for err in body["detail"]]
+    assert any("content_sha256" in loc for loc in locs)
+
+
+def test_single_file_missing_ext_returns_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-29 重构：单文件 schema 缺 `ext` → 422。"""
+    _patch_sdk_with_recorder(monkeypatch)
+    client = TestClient(_build_app())
+
+    resp = client.post(
+        "/api/v1/files/sts-tmp-keys",
+        json={
+            "purpose": "drawing",
+            "filename": "a.pdf",
+            "expire_seconds": 1800,
+            "content_sha256": SHA_64_A,
+        },
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    locs = [tuple(err.get("loc", [])) for err in body["detail"]]
+    assert any("ext" in loc for loc in locs)
+
+
+def test_single_file_ext_uppercase_returns_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-29 重构：单文件 schema `ext` 大写 → 422（pattern 强制小写）。"""
+    _patch_sdk_with_recorder(monkeypatch)
+    client = TestClient(_build_app())
+
+    resp = client.post(
+        "/api/v1/files/sts-tmp-keys",
+        json={
+            "purpose": "drawing",
+            "filename": "a.pdf",
+            "expire_seconds": 1800,
+            "content_sha256": SHA_64_A,
+            "ext": "PDF",
+        },
+    )
     assert resp.status_code == 422

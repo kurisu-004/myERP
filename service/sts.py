@@ -17,9 +17,9 @@ healthcheck 拿到非 2xx 即 fail）。
 `sts-session-uploader-sts-sts-sequential-globe` §2.2）。
 2026-09-28 新增 `grant_tmp_keys_batch`：扩展
 `POST /api/v1/files/sts-tmp-keys` 接受 `files[]` 数组入参，内部用
-`asyncio.gather` 并发调 `core.sts.grant_sts_tmp_key`（每文件一次签名，
-共享 bucket/region/scheme / endpoint 等独立字段）。单文件入口
-`grant_tmp_keys` 保持不变，向后兼容旧链路 A。
+`asyncio.gather` 并发调 `core.sts.grant_credentials_for_prefix`（每文件
+一次签名，共享 bucket/region/scheme / endpoint 等独立字段）。单文件入
+口 `grant_tmp_keys` 保持不变，向后兼容旧链路 A。
 
 2026-09-28 review 第 1 轮修复：
 1. 加 `asyncio.Semaphore(30)` —— N=200 一次打 200 并发会超 STS 默认
@@ -30,6 +30,19 @@ healthcheck 拿到非 2xx 即 fail）。
    字面理解。
 3. docstring 显式声明 batch 失败语义：任一文件 SDK 失败 → 整批
    502 重试（暂不实现 partial success 契约）。
+
+2026-09-29 重构：tmp_key 模板由 `tmp/{user_id}/{sha16}/{safe_filename}`
+三层简化为 `tmp/{user_id}/{sha256}.{ext}` 两层。
+- `sha16` 截断 → 完整 `sha256`（64 hex，必填，schema 已 Field 校验）；
+- `safe_filename` 段去掉——后端**不**做 filename 推断（中文 / 特殊字符
+  / 路径穿越风险一并消失），`ext` 由前端 `StsTmpKeysRequest.ext` 显式
+  传入（schema 校验 1..7 字符小写字母数字）；
+- 同步：service 不再 `from core.file_hash import safe_filename`，不再
+  调 `core.sts.grant_sts_tmp_key`（该函数随本次重构一并删除，详见
+  `core/sts.py` 顶部 docstring）；
+- 直接 `await grant_credentials_for_prefix(prefix=tmp_key, ...)`——
+  prefix 语义由 core 层更新为「完整 key 前缀」（详见
+  `core/sts.py::grant_credentials_for_prefix` docstring）。
 """
 
 from __future__ import annotations
@@ -40,12 +53,7 @@ import uuid
 from core.config import settings
 from core.error_code import ErrCode
 from core.exception import BizError
-from core.file_hash import safe_filename
-from core.sts import (
-    TMP_PREFIX_REQUIRED,
-    grant_credentials_for_prefix,
-    grant_sts_tmp_key,
-)
+from core.sts import TMP_PREFIX_REQUIRED, grant_credentials_for_prefix
 from schema.sts import (
     StsBatchTmpKeysRequest,
     StsBatchTmpKeysResponse,
@@ -63,15 +71,22 @@ _BATCH_STS_CONCURRENCY = 30
 
 class StsService:
     async def grant_tmp_keys(self, req: StsTmpKeysRequest) -> StsTmpKeysResponse:
-        """签发一对 STS 临时凭证 + 返回前端直传 COS 所需的全套元数据。"""
-        sha16 = (req.content_sha256 or "nohash")[:16].lower()
-        safe_name = safe_filename(req.filename)
-        tmp_key = f"tmp/{settings.sts_default_user_id}/{sha16}/{safe_name}"
+        """签发一对 STS 临时凭证 + 返回前端直传 COS 所需的全套元数据。
 
-        creds = await grant_sts_tmp_key(
-            purpose=req.purpose,
-            filename=safe_name,
-            sha16=sha16,
+        2026-09-29 重构：tmp_key 模板改为 `tmp/{uid}/{sha256}.{ext}`。
+        prefix 入参（=tmp_key 自身）作为完整 key 传给
+        `grant_credentials_for_prefix`，由 core 层内部补 `*` 形成 policy
+        resource 通配。
+        """
+        # 2026-09-29 重构：`content_sha256` 必填 + 64 hex（schema 已校验），
+        # 直接使用；不再截前 16 hex。
+        sha256 = req.content_sha256.lower()
+        tmp_key = f"tmp/{settings.sts_default_user_id}/{sha256}.{req.ext}"
+
+        # 2026-09-29 重构：直接调 `grant_credentials_for_prefix`，不再走
+        # 已删除的 `grant_sts_tmp_key` 薄包装。
+        creds = await grant_credentials_for_prefix(
+            prefix=tmp_key,
             expire_seconds=req.expire_seconds,
         )
 
@@ -94,11 +109,10 @@ class StsService:
 
     # 2026-09-28 新增：批量 STS 临时凭证签发。
     #
-    # 复用 `grant_sts_tmp_key`（不删除，单文件路径继续使用），内部用
-    # `asyncio.gather` 并发签 N 个文件（每文件独立 SDK 调用、各自独立的
-    # tmp_key / session_token / start_time / expired_time；共享
-    # bucket / region / endpoint / scheme / upload_prefix 等来自 settings
-    # 的字段）。
+    # 内部用 `asyncio.gather` 并发签 N 个文件（每文件独立 SDK 调用、各
+    # 自独立的 tmp_key / session_token / start_time / expired_time；共
+    # 享 bucket / region / endpoint / scheme / upload_prefix 等来自
+    # settings 的字段）。
     #
     # 性能预估（plan §5 风险缓解）：单文件签名约 50ms，30 并发
     # asyncio.gather ≈ 1.5s；200 个上限 ~ 10s 上限，仍在 HTTP 30s timeout
@@ -123,6 +137,11 @@ class StsService:
     #   N-1 成功文件的结果。暂不实现 partial success 契约（避免 schema
     #   跨后端漂移），如有需要应先与 frontend 同步 `BatchItems { items,
     #   failures: [...] }` 契约。
+    #
+    # 2026-09-29 重构：tmp_key 模板改为 `tmp/{uid}/{sha256}.{ext}`（与
+    # `grant_tmp_keys` 同步）。`_sign_one` 不再调 `safe_filename`、不再
+    # 截 sha16、不再走 `grant_sts_tmp_key`——直接拼 tmp_key 后调
+    # `grant_credentials_for_prefix`。
     async def grant_tmp_keys_batch(
         self,
         req: StsBatchTmpKeysRequest,
@@ -168,13 +187,12 @@ class StsService:
 
         async def _sign_one(file_req: StsTmpKeysRequest) -> StsTmpKeysResponse:
             async with semaphore:
-                sha16 = (file_req.content_sha256 or "nohash")[:16].lower()
-                safe_name = safe_filename(file_req.filename)
-                tmp_key = f"tmp/{settings.sts_default_user_id}/{sha16}/{safe_name}"
-                creds = await grant_sts_tmp_key(
-                    purpose=file_req.purpose,
-                    filename=safe_name,
-                    sha16=sha16,
+                # 2026-09-29 重构：完整 64 hex sha256 + 前端显式 ext，
+                # 拼成 tmp_key 后直接作 prefix 入参。
+                sha256 = file_req.content_sha256.lower()
+                tmp_key = f"tmp/{settings.sts_default_user_id}/{sha256}.{file_req.ext}"
+                creds = await grant_credentials_for_prefix(
+                    prefix=tmp_key,
                     expire_seconds=file_req.expire_seconds,
                 )
                 return StsTmpKeysResponse(

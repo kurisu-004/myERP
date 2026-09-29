@@ -27,6 +27,19 @@ api）只关心业务错误码。
 - core 层加 `prefix` 兜底（必须以 `tmp/` 开头）；service 层再校验至少
   含一个子目录段。
 
+2026-09-29 重构：`grant_credentials_for_prefix(prefix=...)` 的 `prefix`
+入参语义从「目录前缀（如 `tmp/{user_id}/{sha16}`，函数内部补 `/*`）」
+改为「完整 key 前缀（如 `tmp/{user_id}/{sha256}.{ext}`，函数内部补
+`*`）」。理由：COS key 模板由 `tmp/{user_id}/{sha16}/{safe_filename}`
+三层简化为 `tmp/{user_id}/{sha256}.{ext}` 两层——前端显式传 `ext`，
+后端无需再分「目录前缀 + 文件名」两段拼接，policy resource 直接对
+完整 key 加 `*` 通配。
+
+2026-09-29 重构：删除 `grant_sts_tmp_key`。原函数仅做「拼
+`tmp/{uid}/{sha16}` 目录前缀 → 调 `grant_credentials_for_prefix`」的
+薄包装；删除后 `service.sts` 直接调 `grant_credentials_for_prefix`
+即可（service 层现持完整 `tmp_key`，作为 prefix 入参语义自然对齐）。
+
 SDK config 变更说明
 -------------------
 `qcloud-python-sts` SDK 行为（`.venv/lib/python3.12/site-packages/sts/sts.py`
@@ -101,12 +114,19 @@ async def grant_credentials_for_prefix(
 ) -> dict:
     """按指定 prefix 签一组 STS 临时凭证（仅上传类 7 个 action）。
 
+    2026-09-29 重构：`prefix` 入参语义从「目录前缀」改为「完整 key 前缀」。
+    历史行为：prefix = `tmp/{user_id}/{sha16}`（目录段，无文件名），函数内
+    部补 `/*` 形成 resource 通配。当前行为：prefix = `tmp/{user_id}/
+    {sha256}.{ext}`（完整 key，service 层拼好后直接传入），函数内部补
+    `*` 形成 resource 通配。语义等价于「policy 只对该具体 key（或更长
+    名字）放行」—— 因 key 末尾 `.ext` 固定，无更长的实际变体，等价于
+    「对该具体 key 放行」。
+
     Parameters
     ----------
     prefix:
-        已含命名空间的 key 前缀，例如 `tmp/{user_id}/{sha16}` 或
-        `tmp/{user_id}/{session_id}`（rust 后端 session 用）。**不含**
-        尾部 `/*` 通配符，函数内部补。
+        完整 key 前缀，例如 `tmp/{user_id}/{sha256}.{ext}`。**不含**
+        尾部 `*` 通配符，函数内部补。必须以 `tmp/` 开头（core 层兜底）。
     expire_seconds:
         TTL（秒）。clamp 到 `settings.sts_max_ttl_seconds`，下限 60。
         入参非法（< 60）抛 `BIZ_INVALID_VALUE`。
@@ -125,15 +145,15 @@ async def grant_credentials_for_prefix(
     Raises
     ------
     BizError(BIZ_INVALID_VALUE)
-        当 `expire_seconds < 60` 或 `prefix` 不以 `tmp/` 开头（core 层
-        兜底，正常路径 service 层已挡）。
+        当 `expire_seconds < 60`。
+    BizError(BIZ_STS_PREFIX_INVALID, 400)
+        `prefix` 不以 `tmp/` 开头（core 层兜底，正常路径 service 层已挡）。
     BizError(BIZ_STS_GRANT_FAILED, 502)
         SDK 抛错 / 响应缺 credentials。
     """
     # 2026-09-18 review：core 层兜底 —— 防止 service / 上层未来绕过校验
     # 直接传任意 prefix 进来。仅校验「以 tmp/ 开头」这一最弱约束；更强
-    # 的「至少含子目录段」校验放在 service 层（schema 已约束 max_length
-    # 与非法字符）。
+    # 的「格式合法 / ext 小写字母数字」校验放在 service / schema 层。
     if not prefix.startswith(TMP_PREFIX_REQUIRED):
         raise BizError(
             code=ErrCode.BIZ_STS_PREFIX_INVALID,
@@ -153,7 +173,9 @@ async def grant_credentials_for_prefix(
     region = settings.cos_region
     appid = bucket_appid.rsplit("-", 1)[-1]
     # 2026-09-18 review：恢复 bucket 段（与旧端点 `grant_sts_tmp_key` 行
-    # 为对齐）。resource = `qcs::cos:{region}:uid/{appid}:{bucket}/{prefix}*`。
+    # 为对齐）。resource = `qcs::cos:{region}:uid/{appid}:{bucket_appid}/{prefix}*`。
+    # 2026-09-29 重构：`prefix` 现为完整 key 前缀（`tmp/{uid}/{sha256}.{ext}`），
+    # 补 `*` 后 resource 收口到该具体 key（及其任何更长的变体，实践中无）。
     resource = f"qcs::cos:{region}:uid/{appid}:{bucket_appid}/{prefix}*"
     policy = {
         "version": "2.0",
@@ -172,6 +194,9 @@ async def grant_credentials_for_prefix(
         # 2026-09-18 review：恢复 allow_prefix + allow_actions（policy
         # 同时存在时 SDK 走 self.policy 分支，allow_* 是死代码但保留，
         # 详见模块 docstring「SDK config 变更说明」）。
+        # 2026-09-29 重构：`allow_prefix` 同步改为单 `*` 通配（与
+        # resource 同源；旧版补 `/*` 是因为 prefix 是目录，现在 prefix
+        # 是完整 key，单 `*` 等价）。
         client = _CosSts(
             {
                 "secret_id": settings.cos_secret_id,
@@ -179,7 +204,7 @@ async def grant_credentials_for_prefix(
                 "duration_seconds": expire_seconds,
                 "bucket": bucket_appid,
                 "region": region,
-                "allow_prefix": [f"{prefix}/*"],
+                "allow_prefix": [f"{prefix}*"],
                 "allow_actions": list(_UPLOAD_ACTIONS_SHORT),
                 "policy": policy,
             }
@@ -189,7 +214,7 @@ async def grant_credentials_for_prefix(
     try:
         result = await asyncio.to_thread(_do_grant)
     except Exception as e:
-        # 2026-09-17 P2-5：详细异常写 server log，只把异常类型名暴露给客户端，
+        # 2026-09-17 P2-5：详细异常写 server log，只把异常类型名暴露给客户端,
         # 避免 SDK 原始 dict repr（含临时凭证 / policy 痕迹）泄漏到响应里。
         logger.exception("STS grant failed")
         raise BizError(
@@ -218,54 +243,24 @@ async def grant_credentials_for_prefix(
     }
 
 
-async def grant_sts_tmp_key(
-    *,
-    purpose: str,
-    filename: str,
-    sha16: str,
-    expire_seconds: int,
-) -> dict:
-    """每次请求现签 STS 临时凭证（前端直传 COS 用）。
-
-    复用 `grant_credentials_for_prefix`，resource 收窄到
-    `tmp/{user_id}/{sha16}*` 单目录。
-
-    Parameters
-    ----------
-    purpose:
-        业务目的（`drawing` / `3d_model` / ...），保留以兼容 service
-        调用方，**不再影响 policy**（2026-09-18 抽出公共函数后）。
-    filename:
-        已 ASCII 折叠的安全文件名，保留以兼容 service 调用方，**不再影响
-        policy**——policy resource 路径前缀只用 `tmp/{user_id}/{sha16}`，
-        不含 filename。
-    sha16:
-        内容 SHA-256 的前 16 hex；用于隔离不同文件上传目录（policy 收口）。
-    expire_seconds:
-        TTL（秒）。超过 `settings.sts_max_ttl_seconds` 自动回退到上限；
-        小于 60 抛 `BIZ_INVALID_VALUE`。
-
-    SDK config 变更说明（2026-09-18 review 第 1 轮修复）
-    --------------------------------------------------
-    本次重构（0507aa7）把 resource 由
-    `qcs::cos:{region}:uid/{appid}:{bucket_appid}/{key_prefix}/*` 改成
-    `qcs::cos:{region}:uid/{appid}:{prefix}*`、删除了 SDK config 中的
-    `allow_prefix` / `allow_actions` 字段。本次 review 已恢复：
-    - resource 恢复含 bucket 段（与本函数 PR 引入时行为一致）；
-    - SDK config 恢复 `allow_prefix=[f"{prefix}/*"]` + `allow_actions=
-      list(_UPLOAD_ACTIONS_SHORT)`（policy 同时存在时 SDK 走 self.policy
-      分支，allow_* 实际不影响最终 policy；详见模块 docstring）。
-    """
-    user_id = settings.sts_default_user_id
-    key_prefix = f"tmp/{user_id}/{sha16}"
-    return await grant_credentials_for_prefix(
-        prefix=key_prefix,
-        expire_seconds=expire_seconds,
-    )
+# 2026-09-29 重构：删除 `grant_sts_tmp_key`。
+#
+# 历史（2026-09-17 新增）：薄包装，固定拼 `tmp/{uid}/{sha16}` 目录前缀后
+# 调 `grant_credentials_for_prefix`；service 层只需传 purpose / filename
+# / sha16 / expire_seconds，由本函数负责拼 prefix。
+#
+# 删除理由：本次重构把 COS key 模板简化为 `tmp/{user_id}/{sha256}.{ext}`
+# 两层，service 层现持有完整 `tmp_key`（含 ext），可直接作为
+# `grant_credentials_for_prefix` 的 prefix 入参；薄包装失去存在意义。
+#
+# 迁移指引（如有遗留 import）：
+# - `service.sts` 直接 `await grant_credentials_for_prefix(prefix=tmp_key,
+#   expire_seconds=req.expire_seconds)`；
+# - `prefix` 必须以 `tmp/` 开头（core 层兜底校验），schema 层不再校验
+#   prefix 形态。
 
 
 __all__ = [
     "TMP_PREFIX_REQUIRED",
     "grant_credentials_for_prefix",
-    "grant_sts_tmp_key",
 ]

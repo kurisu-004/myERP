@@ -5,9 +5,15 @@
 
 字段约束：
 - `purpose` 是有限枚举，便于 policy 跟踪 / 日志分类；
-- `filename` 必填且 1..255，用于生成 tmp_key 命名；
-- `content_sha256` 可选（前端算 SHA-256 截前 16 hex），缺省 fallback
-  `nohash` —— 不阻塞前端粗粒度上传；
+- `filename` 必填且 1..255，仅用于 STS policy `filename` 兼容字段
+  保留 / SDK 校验 / 日志；**不参与** tmp_key 命名（2026-09-29 重构后
+  tmp_key 不再含 filename 段）；
+- `content_sha256` **必填** 64 字符小写 hex（前端算完整 SHA-256），
+  直接进入 tmp_key；2026-09-29 重构去掉可选 + sha16 截断 fallback——
+  简化模板后 `sha256` 是 tmp_key 的核心去重 / 命名空间字段，必须有；
+- `ext` **必填** 1..7 字符小写字母数字（`^[a-z0-9]+$`），由前端显式
+  决定 COS key 的扩展名段；后端**不**做 filename 推断（2026-09-29 重构
+  去掉了 safe_filename 段——中文 / 特殊字符 / 路径穿越风险一并消失）；
 - `expire_seconds` 默认 1800、上限 `settings.sts_max_ttl_seconds`。
 
 2026-09-18 新增 `POST /api/v1/files/sts-prefix-credentials`（内部端口——
@@ -62,11 +68,27 @@ class StsTmpKeysRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_type: str | None = Field(default=None, max_length=127)
     expire_seconds: int = Field(default=1800, ge=60, le=43200)
-    content_sha256: str | None = Field(
-        default=None,
-        min_length=16,
+    # 2026-09-29 重构：必填 + 64 hex（小写）。简化 tmp_key 模板后
+    # `sha256` 是核心命名空间字段，旧版可选 + 16-char fallback（'nohash'）
+    # 不再适用。
+    content_sha256: str = Field(
+        min_length=64,
         max_length=64,
-        description="前端算 SHA-256 后截前 16 hex；缺省 fallback 到 'nohash'",
+        description=(
+            "前端算完整 SHA-256 后的 64 字符小写 hex；必填。直接进入"
+            " tmp_key：`tmp/{uid}/{sha256}.{ext}`。"
+        ),
+    )
+    # 2026-09-29 重构新增：必填 1..7 字符小写字母数字。前端显式决定
+    # COS key 的扩展名段；后端**不**做 filename 推断。
+    ext: str = Field(
+        min_length=1,
+        max_length=7,
+        pattern=r"^[a-z0-9]+$",
+        description=(
+            "COS key 扩展名段（1..7 字符小写字母数字）。前端显式传，"
+            "后端不做 filename 推断。"
+        ),
     )
 
 
