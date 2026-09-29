@@ -3,17 +3,19 @@
 2026-07-14 新增：
 - compute_sha256_hex：基础 + 边界（空 / 大文件 / 一致性）
 - safe_filename：ASCII 折叠 / 截断保留扩展名 / 空输入
-- make_object_key：key 模板 / sha16 一致性 / 同内容同 key / 跨 owner 不同 key
+
+2026-09-29 重构：删除 `make_object_key` 测试段（移至
+`tests/unit/test_make_object_key.py`，覆盖新签名 `(owner_id,
+content_sha256, ext)` + 新模板 `parts/{owner_id}/{sha256}.{ext}`）。
+`safe_filename` 函数本身保留（本文件保留测试），但不再被
+`make_object_key` 消费——`make_object_key` 已与文件名解耦。
 """
+
 from __future__ import annotations
 
 import hashlib
 
-import pytest
-
-from core.file_hash import compute_sha256_hex, make_object_key, safe_filename
-from model.enums import PartFileKind
-
+from core.file_hash import compute_sha256_hex, safe_filename
 
 # ===== compute_sha256_hex =====
 
@@ -96,114 +98,3 @@ class TestSafeFilename:
         assert safe_filename("...foo...") == "foo"
         assert safe_filename("___bar___") == "bar"
         assert safe_filename("---baz---") == "baz"
-
-
-# ===== make_object_key =====
-
-
-class TestMakeObjectKey:
-    def test_part_drawing_key_layout(self):
-        key = make_object_key(
-            owner_id=199852260920918016,
-            owner_kind="part",
-            kind=PartFileKind.DRAWING,
-            content_sha256="a" * 64,
-            original_filename="pulley_v2.pdf",
-            ext="pdf",
-        )
-        # 默认 cos_upload_prefix = "drawings/"
-        assert key == (
-            "drawings/part/199852260920918016/DRAWING/"
-            "aaaaaaaaaaaaaaaa_pulley_v2.pdf"
-        )
-
-    def test_assembly_master_key_layout(self):
-        key = make_object_key(
-            owner_id=42,
-            owner_kind="assembly",
-            kind=PartFileKind.ASSEMBLY_MASTER,
-            content_sha256="b" * 64,
-            original_filename="master.pdf",
-            ext="pdf",
-        )
-        assert key == (
-            "drawings/assembly/42/ASSEMBLY_MASTER/"
-            "bbbbbbbbbbbbbbbb_master.pdf"
-        )
-
-    def test_dedup_same_content_same_key(self):
-        """同 part + 同 kind + 同 sha + 同 filename → 同 key（CAS）。"""
-        kw = dict(
-            owner_id=100,
-            owner_kind="part",
-            kind=PartFileKind.DRAWING,
-            content_sha256="c" * 64,
-            original_filename="foo.pdf",
-            ext="pdf",
-        )
-        assert make_object_key(**kw) == make_object_key(**kw)
-
-    def test_different_owner_different_key(self):
-        kw = dict(
-            owner_kind="part",
-            kind=PartFileKind.DRAWING,
-            content_sha256="d" * 64,
-            original_filename="foo.pdf",
-            ext="pdf",
-        )
-        a = make_object_key(owner_id=1, **kw)
-        b = make_object_key(owner_id=2, **kw)
-        assert a != b  # 跨 part 不共享 COS 对象
-
-    def test_sha16_used_in_key(self):
-        # sha16 是完整 sha 的前 16 个字符
-        full = "abcdef0123456789" * 4  # 64 chars
-        key = make_object_key(
-            owner_id=1,
-            owner_kind="part",
-            kind=PartFileKind.DRAWING,
-            content_sha256=full,
-            original_filename="foo.pdf",
-            ext="pdf",
-        )
-        # key 中 sha 段恰好是前 16 字符
-        assert "abcdef0123456789" in key
-
-    def test_chinese_filename_folded(self):
-        key = make_object_key(
-            owner_id=1,
-            owner_kind="part",
-            kind=PartFileKind.DRAWING,
-            content_sha256="e" * 64,
-            original_filename="图纸.pdf",
-            ext="pdf",
-        )
-        # safe_filename("图纸.pdf") → "tu_zhi.pdf"（每个汉字折叠一次，
-        # 中间下划线合并与否由 re.sub 决定，但断言结尾 .pdf 与 ASCII 即可）
-        assert key.endswith(".pdf")
-        assert "图纸" not in key  # 一定不含中文
-
-    def test_image_ext_in_key(self):
-        """PNG 图片也走新 key 模板（与 PDF 同槽）。"""
-        key = make_object_key(
-            owner_id=1,
-            owner_kind="part",
-            kind=PartFileKind.DRAWING,
-            content_sha256="f" * 64,
-            original_filename="photo.png",
-            ext="png",
-        )
-        assert key.endswith(".png")
-        assert "/DRAWING/" in key
-
-    def test_cad_2d_kind_in_key(self):
-        key = make_object_key(
-            owner_id=1,
-            owner_kind="part",
-            kind=PartFileKind.CAD_2D,
-            content_sha256="1" * 64,
-            original_filename="source.dwg",
-            ext="dwg",
-        )
-        assert key.endswith(".dwg")
-        assert "/CAD_2D/" in key

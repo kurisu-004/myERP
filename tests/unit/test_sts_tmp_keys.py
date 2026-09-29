@@ -1,4 +1,5 @@
-"""2026-09-17 新增 / 2026-09-28 扩展：`POST /api/v1/files/sts-tmp-keys` 单测。
+"""2026-09-17 新增 / 2026-09-28 扩展 / 2026-09-29 重构：
+`POST /api/v1/files/sts-tmp-keys` 单测。
 
 2026-09-17 原生版只覆盖单文件路径（`StsTmpKeysRequest` →
 `StsService.grant_tmp_keys` → `core.sts.grant_sts_tmp_key`）。
@@ -15,6 +16,15 @@
   * 边界：files=[] → 422 ValidationError（Pydantic min_length=1）
   * 边界：files 长度=201 → 422 ValidationError（Pydantic max_length=200）
   * SDK 抛错 → BIZ_STS_GRANT_FAILED（502）
+
+2026-09-29 重构（tmp_key 模板简化 `tmp/{uid}/{sha256}.{ext}`）：
+- 所有 tmp_key 断言改为新模板（无 sha16 截断 / 无 safe_filename 段）；
+- `StsTmpKeysRequest.content_sha256` 改为必填 + 64 hex；
+- 新增 `ext: str` 必填字段（1..7 字符小写字母数字）；
+- `core.sts.grant_sts_tmp_key` 已删除——本测试不再 import；service 层
+  现直接走 `grant_credentials_for_prefix(prefix=tmp_key)`；
+- policy.resource 同步改为以完整 tmp_key（=`{sha256}.{ext}`）为前缀
+  补 `*` 的通配。
 
 测试不打 DB（STS 端口零 DB IO），不需要 docker；放 tests/unit/，复用
 `tests/unit/conftest.py` 跳过父 conftest 的 postgres-test 生命周期。
@@ -46,6 +56,16 @@ from schema.sts import (
 from service.sts import StsService
 
 pytestmark = pytest.mark.asyncio
+
+
+# 2026-09-29 重构：统一 64-char sha fixture，方便跨测试复用。
+SHA_64_A = "a" * 64
+SHA_64_B = "b" * 64
+SHA_64_C = "c" * 64
+# 与 sha16 等价的「前 16 hex」断言用 helper。
+SHA_16_A = SHA_64_A[:16]
+SHA_16_B = SHA_64_B[:16]
+SHA_16_C = SHA_64_C[:16]
 
 
 # ============================================================
@@ -104,6 +124,25 @@ def fake_sts(monkeypatch: pytest.MonkeyPatch) -> _FakeStsRecorder:
     return recorder
 
 
+def _build_single_file_req(
+    *,
+    filename: str = "test.pdf",
+    content_sha256: str = SHA_64_A,
+    ext: str = "pdf",
+    purpose: str = "drawing",
+    expire_seconds: int = 1800,
+) -> StsTmpKeysRequest:
+    """2026-09-29 重构：构造单文件 `StsTmpKeysRequest`（含必填
+    content_sha256 + ext）。"""
+    return StsTmpKeysRequest(
+        purpose=purpose,  # type: ignore[arg-type]
+        filename=filename,
+        content_sha256=content_sha256,
+        ext=ext,
+        expire_seconds=expire_seconds,
+    )
+
+
 # ============================================================
 # 单文件端点回归（从 test_sts_prefix_credentials.py 迁来）
 # ============================================================
@@ -116,17 +155,22 @@ class TestGrantStsTmpKeySingleFileRegression:
        `uid/{appid}:{prefix}*`）；
     2. SDK config 必须同时含 `allow_prefix` + `allow_actions` + `policy`，
        不能因重构被删。
+
+    2026-09-29 重构：tmp_key 模板改为 `tmp/{uid}/{sha256}.{ext}`，
+    prefix 入参语义对齐为「完整 key 前缀」（详见
+    `core.sts.grant_credentials_for_prefix` docstring）。本测试
+    不变量保持：resource 与 allow_prefix 形态合规（仍是 `*` 通配）。
     """
 
-    async def test_policy_resource_includes_bucket_mid_segment(
+    async def test_policy_resource_uses_full_tmp_key_with_wildcard(
         self,
         fake_sts: _FakeStsRecorder,
     ) -> None:
         svc = StsService()
-        req = StsTmpKeysRequest(
-            purpose="drawing",
+        req = _build_single_file_req(
             filename="test.pdf",
-            expire_seconds=1800,
+            content_sha256=SHA_64_A,
+            ext="pdf",
         )
         await svc.grant_tmp_keys(req)
 
@@ -134,17 +178,17 @@ class TestGrantStsTmpKeySingleFileRegression:
         cfg = fake_sts.calls[0].config
         policy = cfg["policy"]
         stmt = policy["statement"][0]
-        # 不变量 1：resource 含 `{bucket_appid}/` 中段
+        # 不变量 1：resource 含 `{bucket_appid}/` 中段 + 完整 tmp_key
         bucket_appid = settings.cos_bucket
         appid = bucket_appid.rsplit("-", 1)[-1]
-        sha16 = "nohash"
-        expected_prefix = f"tmp/{settings.sts_default_user_id}/{sha16}"
+        # 2026-09-29 重构：prefix 现为完整 tmp_key（`tmp/{uid}/{sha256}.{ext}`）。
+        expected_prefix = f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf"
         expected_resource = (
             f"qcs::cos:{settings.cos_region}:uid/{appid}:{bucket_appid}"
             f"/{expected_prefix}*"
         )
         assert stmt["resource"] == [expected_resource], (
-            "旧端点 grant_sts_tmp_key 的 resource 必须含 bucket 段"
+            "policy.resource 必须以完整 tmp_key 为前缀补 * 通配"
         )
 
     async def test_sdk_config_keeps_allow_prefix_and_allow_actions(
@@ -152,33 +196,177 @@ class TestGrantStsTmpKeySingleFileRegression:
         fake_sts: _FakeStsRecorder,
     ) -> None:
         svc = StsService()
-        req = StsTmpKeysRequest(
-            purpose="drawing",
+        req = _build_single_file_req(
             filename="test.pdf",
-            expire_seconds=1800,
+            content_sha256=SHA_64_A,
+            ext="pdf",
         )
         await svc.grant_tmp_keys(req)
 
         assert len(fake_sts.calls) == 1
         cfg = fake_sts.calls[0].config
         # 不变量 2：SDK config 同时含 allow_prefix + allow_actions
-        sha16 = "nohash"
-        expected_prefix = f"tmp/{settings.sts_default_user_id}/{sha16}"
-        assert cfg["allow_prefix"] == [f"{expected_prefix}/*"], (
-            "旧端点 SDK config 必须保留 allow_prefix（policy 并存时 SDK "
+        # 2026-09-29 重构：allow_prefix 现为完整 tmp_key + 单 `*`（不再
+        # 补 `/*`，因 prefix 是完整 key）。
+        expected_prefix = f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf"
+        assert cfg["allow_prefix"] == [f"{expected_prefix}*"], (
+            "SDK config 必须保留 allow_prefix（policy 并存时 SDK "
             "走 self.policy 分支，但 config 形状必须维持旧行为）"
         )
         assert sorted(cfg["allow_actions"]) == sorted(_UPLOAD_ACTIONS_SHORT), (
-            "旧端点 SDK config 必须保留 allow_actions"
+            "SDK config 必须保留 allow_actions"
         )
-        assert "policy" in cfg, "旧端点 SDK config 必须保留 policy"
+        assert "policy" in cfg, "SDK config 必须保留 policy"
+
+    async def test_single_file_tmp_key_format(
+        self,
+        fake_sts: _FakeStsRecorder,
+    ) -> None:
+        """2026-09-29 重构：单文件响应 tmp_key 形如 `tmp/{uid}/{sha256}.{ext}`。"""
+        svc = StsService()
+        req = _build_single_file_req(
+            filename="图纸.pdf",  # 故意带中文：验证后端不做 filename 推断
+            content_sha256=SHA_64_A,
+            ext="pdf",
+        )
+        resp = await svc.grant_tmp_keys(req)
+
+        expected_key = f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf"
+        assert resp.tmp_key == expected_key, (
+            "tmp_key 必须严格匹配 `tmp/{uid}/{sha256}.{ext}` 模板"
+        )
+        # 关键不变量：不含中文 / 不含 safe_filename 段
+        assert "图纸" not in resp.tmp_key
+        assert "test" not in resp.tmp_key
+
+
+# ============================================================
+# 单文件 schema 校验（2026-09-29 重构：content_sha256 必填 + 64 hex，ext 必填）
+# ============================================================
+class TestStsTmpKeysRequestSchemaValidation:
+    """2026-09-29 重构：schema 边界校验。
+
+    - `content_sha256` 必填 64 hex（旧版 16..64 可选不再适用）；
+    - `ext` 必填 1..7 字符小写字母数字（`^[a-z0-9]+$`）；
+    - `filename` 仍必填 1..255，但**不**参与 tmp_key 命名。
+
+    2026-09-29：本类测试在模块级 `pytestmark = pytest.mark.asyncio`
+    下需要 `async def` 签名，否则会产生「sync 函数被 asyncio 标记」
+    警告。Pydantic schema 校验本身不需要事件循环；声明为 `async def`
+    仅是为兼容模块级 marker，无副作用。
+    """
+
+    async def test_content_sha256_required(self) -> None:
+        """缺 `content_sha256` → Pydantic ValidationError。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                ext="pdf",
+                expire_seconds=1800,
+            )
+
+    async def test_content_sha256_too_short_rejected(self) -> None:
+        """`content_sha256` 长度 < 64 → Pydantic ValidationError。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                content_sha256="a" * 63,
+                ext="pdf",
+                expire_seconds=1800,
+            )
+
+    async def test_content_sha256_too_long_rejected(self) -> None:
+        """`content_sha256` 长度 > 64 → Pydantic ValidationError。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                content_sha256="a" * 65,
+                ext="pdf",
+                expire_seconds=1800,
+            )
+
+    async def test_ext_required(self) -> None:
+        """缺 `ext` → Pydantic ValidationError。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                content_sha256=SHA_64_A,
+                expire_seconds=1800,
+            )
+
+    async def test_ext_uppercase_rejected(self) -> None:
+        """`ext` 含大写字母 → Pydantic ValidationError（pattern 强制小写）。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                content_sha256=SHA_64_A,
+                ext="PDF",
+                expire_seconds=1800,
+            )
+
+    async def test_ext_too_long_rejected(self) -> None:
+        """`ext` 长度 > 7 → Pydantic ValidationError。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                content_sha256=SHA_64_A,
+                ext="tooolong",
+                expire_seconds=1800,
+            )
+
+    async def test_ext_with_special_char_rejected(self) -> None:
+        """`ext` 含 `.` / `_` 等 → Pydantic ValidationError（只允许 a-z0-9）。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsTmpKeysRequest(
+                purpose="drawing",
+                filename="a.pdf",
+                content_sha256=SHA_64_A,
+                ext="p.df",
+                expire_seconds=1800,
+            )
+
+    async def test_ext_with_digits_accepted(self) -> None:
+        """`ext` 纯数字 → 接受（pattern 允许 a-z0-9）。"""
+        req = StsTmpKeysRequest(
+            purpose="drawing",
+            filename="a.123",
+            content_sha256=SHA_64_A,
+            ext="123",
+            expire_seconds=1800,
+        )
+        assert req.ext == "123"
 
 
 # ============================================================
 # 批量端点：成功路径
 # ============================================================
 class TestGrantTmpKeysBatchSuccess:
-    """2026-09-28：N 个文件 → N 个 tmp_key + 共享 bucket/region/scheme。"""
+    """2026-09-28：N 个文件 → N 个 tmp_key + 共享 bucket/region/scheme。
+
+    2026-09-29 重构：tmp_key 改为 `tmp/{uid}/{sha256}.{ext}`，断言相应
+    更新（无 safe_filename 段、各文件 tmp_key 形态由 content_sha256 + ext
+    决定）。
+    """
 
     async def test_two_files_returns_two_items(
         self,
@@ -188,17 +376,15 @@ class TestGrantTmpKeysBatchSuccess:
         req = StsBatchTmpKeysRequest(
             scope="parts_new",
             files=[
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="a.pdf",
-                    content_type="application/pdf",
-                    expire_seconds=1800,
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="b.pdf",
-                    content_type="application/pdf",
-                    expire_seconds=1800,
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
                 ),
             ],
         )
@@ -216,20 +402,24 @@ class TestGrantTmpKeysBatchSuccess:
         fake_sts: _FakeStsRecorder,
     ) -> None:
         """2026-09-28：每个文件 tmp_key 不同，bucket/region/endpoint/
-        scheme/upload_prefix 共享。"""
+        scheme/upload_prefix 共享。
+
+        2026-09-29 重构：tmp_key 不同由 content_sha256 + ext 决定；
+        `filename` **不参与** key 命名（同一 sha + ext 即同 key，CAS 语义）。
+        """
         svc = StsService()
         req = StsBatchTmpKeysRequest(
             scope="parts_new",
             files=[
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="a.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="b.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
                 ),
             ],
         )
@@ -244,13 +434,19 @@ class TestGrantTmpKeysBatchSuccess:
         assert item_a.upload_prefix == item_b.upload_prefix
         assert item_a.bucket == item_b.bucket
         assert item_a.region == item_b.region
-        # tmp_key 不同（不同 filename）
+        # tmp_key 不同（不同 content_sha256）
         assert item_a.tmp_key != item_b.tmp_key
-        assert "a.pdf" in item_a.tmp_key
-        assert "b.pdf" in item_b.tmp_key
-        # 共享 prefix：tmp/{uid}/{sha16}/...
-        assert item_a.tmp_key.startswith(f"tmp/{settings.sts_default_user_id}/")
-        assert item_b.tmp_key.startswith(f"tmp/{settings.sts_default_user_id}/")
+        # 2026-09-29 重构：tmp_key 形如 `tmp/{uid}/{sha256}.{ext}`
+        expected_a = f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf"
+        expected_b = f"tmp/{settings.sts_default_user_id}/{SHA_64_B}.pdf"
+        assert item_a.tmp_key == expected_a
+        assert item_b.tmp_key == expected_b
+        # 不含 filename 段（关键不变量）：tmp_key 是 `<sha64>.pdf`，filename
+        # 段不再出现。注：SHA="a"*64 + ext="pdf" 会自然产生 "...aaa.pdf"
+        # 子串；严格断言应比对「无 filename 段」，改为比对 SHA 后 48 hex
+        # + ".pdf" 整段（filename 不会进 key）。
+        assert item_a.tmp_key.endswith(f"{SHA_64_A[16:]}.pdf")
+        assert item_b.tmp_key.endswith(f"{SHA_64_B[16:]}.pdf")
 
     async def test_per_file_sdk_call_independent(
         self,
@@ -262,20 +458,20 @@ class TestGrantTmpKeysBatchSuccess:
         req = StsBatchTmpKeysRequest(
             scope="parts_new",
             files=[
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="a.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="b.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="c.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_C,
+                    ext="pdf",
                 ),
             ],
         )
@@ -291,27 +487,25 @@ class TestGrantTmpKeysBatchSuccess:
         assert resp.items[1].credentials.tmp_secret_id == "STS.fake-id-1"
         assert resp.items[2].credentials.tmp_secret_id == "STS.fake-id-2"
 
-    async def test_per_file_policy_resource_uses_sha16(
+    async def test_per_file_policy_resource_uses_full_tmp_key(
         self,
         fake_sts: _FakeStsRecorder,
     ) -> None:
-        """2026-09-28：批量路径下每文件 policy.resource 仍按各自 sha16
-        收口到 `tmp/{uid}/{sha16}*`，与单文件行为完全一致。"""
+        """2026-09-29 重构：批量路径下每文件 policy.resource 以各自完整
+        tmp_key（`tmp/{uid}/{sha256}.{ext}`）为前缀补 `*` 通配。"""
         svc = StsService()
         req = StsBatchTmpKeysRequest(
             scope="parts_new",
             files=[
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="a.pdf",
-                    content_type="application/pdf",
-                    content_sha256="a" * 64,
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="b.pdf",
-                    content_type="application/pdf",
-                    content_sha256="b" * 64,
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
                 ),
             ],
         )
@@ -325,21 +519,58 @@ class TestGrantTmpKeysBatchSuccess:
         bucket_appid = settings.cos_bucket
         appid = bucket_appid.rsplit("-", 1)[-1]
 
-        # sha16 = 前 16 hex
+        # 2026-09-29 重构：prefix 现为完整 tmp_key；resource / allow_prefix
+        # 都补单 `*`。
         expected_a = (
             f"qcs::cos:{settings.cos_region}:uid/{appid}:{bucket_appid}"
-            f"/tmp/{settings.sts_default_user_id}/{'a' * 16}*"
+            f"/tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf*"
         )
         expected_b = (
             f"qcs::cos:{settings.cos_region}:uid/{appid}:{bucket_appid}"
-            f"/tmp/{settings.sts_default_user_id}/{'b' * 16}*"
+            f"/tmp/{settings.sts_default_user_id}/{SHA_64_B}.pdf*"
         )
         assert cfg_a["policy"]["statement"][0]["resource"] == [expected_a]
         assert cfg_b["policy"]["statement"][0]["resource"] == [expected_b]
 
-        # 响应中 tmp_key 也按各自 sha16 命名
-        assert ("a" * 16) in resp.items[0].tmp_key
-        assert ("b" * 16) in resp.items[1].tmp_key
+        # 响应中 tmp_key 也按各自 sha256 + ext 命名
+        assert resp.items[0].tmp_key == (
+            f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf"
+        )
+        assert resp.items[1].tmp_key == (
+            f"tmp/{settings.sts_default_user_id}/{SHA_64_B}.pdf"
+        )
+
+    async def test_different_ext_yields_different_tmp_key(
+        self,
+        fake_sts: _FakeStsRecorder,
+    ) -> None:
+        """2026-09-29 重构：同 sha256 + 不同 ext → 不同 tmp_key
+        （前端可借此让同一文件支持多 ext 上传，如 `xxx.pdf` vs `xxx.png`）。"""
+        svc = StsService()
+        req = StsBatchTmpKeysRequest(
+            scope="parts_new",
+            files=[
+                _build_single_file_req(
+                    filename="same",
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
+                ),
+                _build_single_file_req(
+                    filename="same",
+                    content_sha256=SHA_64_A,
+                    ext="png",
+                ),
+            ],
+        )
+        resp = await svc.grant_tmp_keys_batch(req)
+
+        assert resp.items[0].tmp_key == (
+            f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.pdf"
+        )
+        assert resp.items[1].tmp_key == (
+            f"tmp/{settings.sts_default_user_id}/{SHA_64_A}.png"
+        )
+        assert resp.items[0].tmp_key != resp.items[1].tmp_key
 
     async def test_each_file_has_independent_sdk_call(
         self,
@@ -361,15 +592,15 @@ class TestGrantTmpKeysBatchSuccess:
         req = StsBatchTmpKeysRequest(
             scope="parts_new",
             files=[
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="a.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="b.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
                 ),
             ],
         )
@@ -386,7 +617,11 @@ class TestGrantTmpKeysBatchSuccess:
 # 批量端点：边界 / 校验失败
 # ============================================================
 class TestGrantTmpKeysBatchValidation:
-    """2026-09-28：files 长度边界（schema min_length=1 / max_length=200）。"""
+    """2026-09-28：files 长度边界（schema min_length=1 / max_length=200）。
+
+    2026-09-29 重构：批量 schema 内每项文件复用 `StsTmpKeysRequest`，
+    文件 schema 校验（content_sha256 64 hex + ext 必填）一并继承。
+    """
 
     async def test_files_empty_rejected_by_schema(self) -> None:
         """files=[] → Pydantic ValidationError（min_length=1）。"""
@@ -400,10 +635,10 @@ class TestGrantTmpKeysBatchValidation:
         from pydantic import ValidationError
 
         files = [
-            StsTmpKeysRequest(
-                purpose="drawing",
+            _build_single_file_req(
                 filename=f"f{i}.pdf",
-                content_type="application/pdf",
+                content_sha256=("a" * 60 + f"{i:04d}"),
+                ext="pdf",
             )
             for i in range(201)
         ]
@@ -413,15 +648,53 @@ class TestGrantTmpKeysBatchValidation:
     async def test_files_length_200_accepted_by_schema(self) -> None:
         """files 长度=200 → 通过 schema 校验（max_length=200 上限）。"""
         files = [
-            StsTmpKeysRequest(
-                purpose="drawing",
+            _build_single_file_req(
                 filename=f"f{i}.pdf",
-                content_type="application/pdf",
+                content_sha256=("a" * 60 + f"{i:04d}"),
+                ext="pdf",
             )
             for i in range(200)
         ]
         req = StsBatchTmpKeysRequest(scope="parts_new", files=files)
         assert len(req.files) == 200
+
+    async def test_batch_item_missing_content_sha256_rejected(
+        self,
+    ) -> None:
+        """2026-09-29 重构：批量 schema 任一文件缺 content_sha256 → 422。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsBatchTmpKeysRequest(
+                scope="parts_new",
+                files=[
+                    StsTmpKeysRequest(
+                        purpose="drawing",  # type: ignore[arg-type]
+                        filename="a.pdf",
+                        ext="pdf",
+                        expire_seconds=1800,
+                    ),
+                ],
+            )
+
+    async def test_batch_item_missing_ext_rejected(
+        self,
+    ) -> None:
+        """2026-09-29 重构：批量 schema 任一文件缺 ext → 422。"""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StsBatchTmpKeysRequest(
+                scope="parts_new",
+                files=[
+                    StsTmpKeysRequest(
+                        purpose="drawing",  # type: ignore[arg-type]
+                        filename="a.pdf",
+                        content_sha256=SHA_64_A,
+                        expire_seconds=1800,
+                    ),
+                ],
+            )
 
     async def test_service_rejects_empty_via_model_construct(
         self,
@@ -454,7 +727,8 @@ class TestGrantTmpKeysBatchValidation:
             StsTmpKeysRequest.model_construct(
                 purpose="drawing",
                 filename=f"f{i}.pdf",
-                content_type="application/pdf",
+                content_sha256=("a" * 60 + f"{i:04d}"),
+                ext="pdf",
                 expire_seconds=1800,
             )
             for i in range(201)
@@ -504,15 +778,15 @@ class TestGrantTmpKeysBatchSdkFailure:
         req = StsBatchTmpKeysRequest(
             scope="parts_new",
             files=[
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="a.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
                 ),
-                StsTmpKeysRequest(
-                    purpose="drawing",
+                _build_single_file_req(
                     filename="b.pdf",
-                    content_type="application/pdf",
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
                 ),
             ],
         )

@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     )
     sts_default_user_id: int = Field(
         default=1, alias="STS_DEFAULT_USER_ID", ge=1,
-        description="JWT bypass 后默认 user_id；拼 tmp_key 命名空间用（tmp/<uid>/<sha16>/<file>）",
+        description="JWT bypass 后默认 user_id；拼 tmp_key 命名空间用（tmp/<uid>/<sha256>.<ext>）",
     )
 
 

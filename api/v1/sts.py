@@ -4,7 +4,7 @@
 此端点更不依赖 `get_current_user`），靠部署层 nginx / 安全组隔离。
 
 路径（2026-09-28 review：列入 CLAUDE.md §14「保留端点」段）：
-- `POST /api/v1/files/sts-tmp-keys`            — 前端直传 COS（`tmp/<uid>/<sha16>/*` 命名空间）。
+- `POST /api/v1/files/sts-tmp-keys`            — 前端直传 COS（`tmp/<uid>/<sha256>.<ext>` 命名空间）。
   2026-09-28 扩展为 Union 入参：接受单文件 schema
   （`{purpose, filename, content_type, expire_seconds, content_sha256}`）
   或批量 schema（`{scope, files[1..200]}`），由 Pydantic v2 smart union

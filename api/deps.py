@@ -155,8 +155,11 @@ async def _dashboard_flush_worker() -> None:
 def get_sts_service() -> "StsService":
     """STS 临时凭证 service 工厂。
 
-    service 层只读 settings + 调 `core.sts.grant_sts_tmp_key`，无状态；
-    直接返回单例即可，不放 Depends 链上避免和 SessionInit 冲突。
+    service 层只读 settings + 调 `core.sts.grant_credentials_for_prefix`，
+    无状态；直接返回单例即可，不放 Depends 链上避免和 SessionInit 冲突。
+
+    2026-09-29 重构：原 `core.sts.grant_sts_tmp_key` 薄包装删除，本工厂
+    现直接走 `grant_credentials_for_prefix`（prefix = 完整 tmp_key）。
 
     类型注解用字符串字面量避免在文件顶部导入 `service.sts.StsService`
     触发 service 链导入。

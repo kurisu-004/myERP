@@ -1,16 +1,24 @@
-"""2026-09-18 新增：STS 签发自检端点（`GET /api/v1/files/sts-health`）单测。
+"""2026-09-18 新增 / 2026-09-29 重构：STS 签发自检端点
+（`GET /api/v1/files/sts-health`）单测。
 
 覆盖 `service/sts.StsService.sts_health`：
 
 - 成功路径 → fake SDK 返合法 creds，断言响应 `status="ok"` + probe_prefix
   满足 `tmp/__sts_healthcheck__/<32-hex>/probe` 形态 + `expired_at` 与 SDK
   返回的 `expiredTime` 对齐；同时断言 SDK 收到 `duration_seconds=60` +
-  `allow_prefix=[f"{probe_prefix}/*"]`。
+  `allow_prefix=[f"{probe_prefix}*"]`。
 - SDK 抛错 → `BizError(BIZ_STS_GRANT_FAILED, 502)` 透传，不被 service 层
   二次包装。
 - 连续两次调用 → probe_prefix 不同（uuid4 防重）。
 - 命名空间隔离断言：probe_prefix 命中现有 schema 校验（`tmp/` 开头 +
   含子目录段 + 无通配字符），未来若 schema / service 校验收紧应同步调整。
+
+2026-09-29 重构：`grant_credentials_for_prefix` 的 `allow_prefix` 格式
+由 `f"{prefix}/*"`（目录前缀 + `/*` 通配）改为 `f"{prefix}*"`（完整
+key 前缀 + `*` 通配），与 `policy.resource` 同源。本测试断言同步
+更新——probe_prefix 仍以 `probe` 收尾，新格式下
+`probe*` 等价匹配原 `probe` 路径（healthcheck 不会真去 PutObject，
+仅验证 SDK 链路是否打通）。
 
 测试不打 DB（STS 端口零 DB IO），不需要 docker；放 tests/unit/，复用
 `tests/unit/conftest.py` 跳过父 conftest 的 postgres-test 生命周期。
@@ -112,7 +120,10 @@ class TestStsHealthSuccess:
         # 也很快失效）。
         assert cfg["duration_seconds"] == 60
         # policy resource 收口必须对齐 probe_prefix。
-        assert cfg["allow_prefix"] == [f"{resp.probe_prefix}/*"]
+        # 2026-09-29 重构：`allow_prefix` 由 `f"{prefix}/*"` 改为
+        # `f"{prefix}*"`（与 `policy.resource` 同源；详见
+        # `core/sts.py::grant_credentials_for_prefix` docstring）。
+        assert cfg["allow_prefix"] == [f"{resp.probe_prefix}*"]
         assert "policy" in cfg
         stmt = cfg["policy"]["statement"][0]
         # policy.resource 形如 `qcs::cos:{region}:uid/{appid}:{bucket}/{prefix}*`
