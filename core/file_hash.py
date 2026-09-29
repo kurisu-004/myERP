@@ -11,8 +11,8 @@
 
   2026-09-29 重构：保留函数但**不再**被 `make_object_key` / STS 临时
   key 派生调用（两端新模板均不再需要 ASCII 折叠文件名段——后端不做
-  filename 推断，前端显式传 `ext`）。保留函数是因 `core/_file_kind_policy.py`
-  等其他模块仍在调用；docstring 同步更新。
+  filename 推断，前端显式传 `ext`）。保留供未来可能复用 / 历史调用方；
+  当前无活跃 production 调用方。
 
 - `make_object_key(owner_id, content_sha256, ext) -> str`：2026-09-29
   重构：COS 对象 key 模板由三层 / 五段（`{prefix}{owner_kind}/
@@ -119,6 +119,9 @@ def make_object_key(
       schema 同款约束；本函数不做校验，调用方负责）。
     - `owner_id` 是雪花 ID；part_file 表 polymorphic part_id 拆桶由
       application 层 `owner_kind` 解析，COS key 不再携带 owner_kind 段。
+
+    注：本函数目前无 backend-python 内部 caller，仅作为跨语言约定镜像
+    存在；真正在生产跑的是 backend-rust 的 `build_cas_key`。
 
     设计取舍：
     - 不带 `cos_upload_prefix`：桶内 key 由 `parts/{owner_id}/` 段直接

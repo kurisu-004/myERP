@@ -5,7 +5,8 @@ import 名 `sts`），每次请求现签不缓存。SDK 同步阻塞走
 `asyncio.to_thread` 包装，避免卡事件循环。
 
 策略（CAM policy）：
-- 资源限定到 `tmp/{user_id}/{sha16}/*` 单目录，禁止通配到整个桶。
+- 资源限定按 `tmp_key` 完整收口（`tmp/{user_id}/{sha256}.{ext}`），单
+  `*` 通配，禁止通配到整个桶。
 - 允许的动作限定上传用 7 个（PutObject / InitiateMultipartUpload /
   ListMultipartUploads / ListParts / UploadPart / CompleteMultipartUpload /
   AbortMultipartUpload），不含 GetObject / DeleteObject —— 读取仍走后端
@@ -214,7 +215,7 @@ async def grant_credentials_for_prefix(
     try:
         result = await asyncio.to_thread(_do_grant)
     except Exception as e:
-        # 2026-09-17 P2-5：详细异常写 server log，只把异常类型名暴露给客户端,
+        # 2026-09-17 P2-5：详细异常写 server log，只把异常类型名暴露给客户端，
         # 避免 SDK 原始 dict repr（含临时凭证 / policy 痕迹）泄漏到响应里。
         logger.exception("STS grant failed")
         raise BizError(

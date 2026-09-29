@@ -137,8 +137,8 @@ class StsHealthResponse(BaseModel):
 #
 # 设计取舍：
 # - `scope` 仅作为业务边界 metadata（前端用 `parts_new` / `parts_edit`
-#   等标识上传业务域），不参与 policy 签发；policy 仍按每个文件 sha16
-#   单独收口到 `tmp/{uid}/{sha16}/*`，与单文件端点行为完全一致。
+#   等标识上传业务域），不参与 policy 签发；policy 仍按 tmp_key 完整收口
+#   （`tmp/{uid}/{sha256}.{ext}` + 单 `*` 通配），与单文件端点行为完全一致。
 # - `files` 复用 `StsTmpKeysRequest` 形态，**复用其内部字段校验**
 #   （filename 长度 / purpose 枚举 / expire_seconds 上下界 / content_sha256
 #   长度）。每个文件独立签一次 SDK，得到自己的 tmp_key + session_token
