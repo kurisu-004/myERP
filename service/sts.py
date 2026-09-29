@@ -43,6 +43,11 @@ healthcheck 拿到非 2xx 即 fail）。
 - 直接 `await grant_credentials_for_prefix(prefix=tmp_key, ...)`——
   prefix 语义由 core 层更新为「完整 key 前缀」（详见
   `core/sts.py::grant_credentials_for_prefix` docstring）。
+
+2026-09-29 新增：service 层加 `x_user_id: int | None = None` 形参，
+拼 tmp_key 时优先用 `x_user_id`，缺失回退 `settings.sts_default_user_id`。
+由部署层 rust 转发层通过 `X-Forwarded-User-Id` header 注入（详见
+`api/v1/sts.py` 顶部 docstring）。
 """
 
 from __future__ import annotations
@@ -70,18 +75,30 @@ _BATCH_STS_CONCURRENCY = 30
 
 
 class StsService:
-    async def grant_tmp_keys(self, req: StsTmpKeysRequest) -> StsTmpKeysResponse:
+    async def grant_tmp_keys(
+        self,
+        req: StsTmpKeysRequest,
+        *,
+        x_user_id: int | None = None,
+    ) -> StsTmpKeysResponse:
         """签发一对 STS 临时凭证 + 返回前端直传 COS 所需的全套元数据。
 
         2026-09-29 重构：tmp_key 模板改为 `tmp/{uid}/{sha256}.{ext}`。
         prefix 入参（=tmp_key 自身）作为完整 key 传给
         `grant_credentials_for_prefix`，由 core 层内部补 `*` 形成 policy
         resource 通配。
+
+        2026-09-29 新增：`x_user_id` 形参——优先用于 tmp_key 的 `{user_id}`
+        段；`None` 时回退 `settings.sts_default_user_id`。
+        由 api 层从 `X-Forwarded-User-Id` header 透传（rust 转发层注入）。
         """
         # 2026-09-29 重构：`content_sha256` 必填 + 64 hex（schema 已校验），
         # 直接使用；不再截前 16 hex。
         sha256 = req.content_sha256.lower()
-        tmp_key = f"tmp/{settings.sts_default_user_id}/{sha256}.{req.ext}"
+        # 2026-09-29 新增：tmp_key 的 `{user_id}` 段优先取 `x_user_id`，
+        # 缺失回退 `settings.sts_default_user_id`。
+        uid = x_user_id if x_user_id is not None else settings.sts_default_user_id
+        tmp_key = f"tmp/{uid}/{sha256}.{req.ext}"
 
         # 2026-09-29 重构：直接调 `grant_credentials_for_prefix`，不再走
         # 已删除的 `grant_sts_tmp_key` 薄包装。
@@ -142,9 +159,15 @@ class StsService:
     # `grant_tmp_keys` 同步）。`_sign_one` 不再调 `safe_filename`、不再
     # 截 sha16、不再走 `grant_sts_tmp_key`——直接拼 tmp_key 后调
     # `grant_credentials_for_prefix`。
+    #
+    # 2026-09-29 新增：service 层加 `x_user_id: int | None = None` 形参；
+    # 透传给 `_sign_one`，使批量所有文件 tmp_key 共享同一个 `user_id`
+    # 段（同一次 HTTP 调用复用同一个 user_id，与单文件端点语义一致）。
     async def grant_tmp_keys_batch(
         self,
         req: StsBatchTmpKeysRequest,
+        *,
+        x_user_id: int | None = None,
     ) -> StsBatchTmpKeysResponse:
         """批量签发 STS 临时凭证（每文件一次 SDK 签名 / 共享 bucket/region）。
 
@@ -157,6 +180,11 @@ class StsService:
 
         并发上限 `_BATCH_STS_CONCURRENCY`（默认 30），与 plan §5 风险缓解
         一致；Semaphore 在 gather 外层一次性获取，避免 200 一次性 fanout。
+
+        2026-09-29 新增：`x_user_id` 形参（keyword-only）——优先用于
+        tmp_key 的 `{user_id}` 段；`None` 时回退
+        `settings.sts_default_user_id`。由 api 层从
+        `X-Forwarded-User-Id` header 透传（rust 转发层注入）。
         """
         if not req.files:
             raise BizError(
@@ -190,7 +218,12 @@ class StsService:
                 # 2026-09-29 重构：完整 64 hex sha256 + 前端显式 ext，
                 # 拼成 tmp_key 后直接作 prefix 入参。
                 sha256 = file_req.content_sha256.lower()
-                tmp_key = f"tmp/{settings.sts_default_user_id}/{sha256}.{file_req.ext}"
+                # 2026-09-29 新增：tmp_key 的 `{user_id}` 段优先取
+                # `x_user_id`，缺失回退 `settings.sts_default_user_id`。
+                uid = (
+                    x_user_id if x_user_id is not None else settings.sts_default_user_id
+                )
+                tmp_key = f"tmp/{uid}/{sha256}.{file_req.ext}"
                 creds = await grant_credentials_for_prefix(
                     prefix=tmp_key,
                     expire_seconds=file_req.expire_seconds,

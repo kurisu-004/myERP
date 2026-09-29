@@ -15,6 +15,14 @@ plan §4 #9 硬要求：本端点必须有 TestClient 端到端覆盖。本文�
 本测试请求体同步加 `content_sha256`（必填 64 hex）+ `ext`（必填）；
 响应 `tmp_key` 断言相应更新（无 filename 段、`ext` 后缀）。
 
+2026-09-29 新增：`X-Forwarded-User-Id` header 透传到 service 层：
+- `endpoint_with_x_forwarded_user_id_header`：带 header `67890` →
+  tmp_key = `tmp/67890/{sha}.pdf`；
+- `endpoint_without_x_forwarded_user_id_header`：不带 header → tmp_key
+  = `tmp/1/{sha}.pdf`（fallback `sts_default_user_id=1`）；
+- `endpoint_with_malformed_user_id_header`：带 header `abc`（非 int）
+  → 422 FastAPI 标准校验失败响应。
+
 实现策略：本端点零 DB IO（`StsService` 不持 session / 不写 DB），故每个
 测试单独 `FastAPI()` + `include_router(sts.router, prefix="/api/v1")`
 跑 TestClient；`get_sts_service` 不挂 `Depends(get_session)`，
@@ -425,3 +433,105 @@ def test_single_file_ext_uppercase_returns_422(
         },
     )
     assert resp.status_code == 422
+
+
+# ============================================================
+# 2026-09-29 新增：`X-Forwarded-User-Id` header 端到端覆盖
+# ============================================================
+def test_endpoint_with_x_forwarded_user_id_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-29：单文件端点带 `X-Forwarded-User-Id: "67890"` →
+    响应 `tmp_key` = `tmp/67890/{sha}.pdf`（不走 fallback）。
+
+    端到端验证：header 透传到 service 层 → service 拼 tmp_key 段 → 响应。
+    """
+    _patch_sdk_with_recorder(monkeypatch)
+    client = TestClient(_build_app())
+
+    resp = client.post(
+        "/api/v1/files/sts-tmp-keys",
+        headers={"X-Forwarded-User-Id": "67890"},
+        json={
+            "purpose": "drawing",
+            "filename": "a.pdf",
+            "content_type": "application/pdf",
+            "expire_seconds": 1800,
+            "content_sha256": SHA_64_A,
+            "ext": "pdf",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tmp_key"] == f"tmp/67890/{SHA_64_A}.pdf"
+    # 反向断言：tmp_key 不含 fallback 段 `tmp/1/`
+    assert "tmp/1/" not in body["tmp_key"]
+
+
+def test_endpoint_without_x_forwarded_user_id_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-29：单文件端点不带 `X-Forwarded-User-Id` header →
+    响应 `tmp_key` = `tmp/1/{sha}.pdf`（fallback
+    `sts_default_user_id=1`，行为不变）。
+
+    端到端验证：旧链路 A（无 header 的调用方，本端点零 DB IO 也不会受
+    影响）继续走 fallback。
+    """
+    _patch_sdk_with_recorder(monkeypatch)
+    client = TestClient(_build_app())
+
+    resp = client.post(
+        "/api/v1/files/sts-tmp-keys",
+        json={
+            "purpose": "drawing",
+            "filename": "a.pdf",
+            "content_type": "application/pdf",
+            "expire_seconds": 1800,
+            "content_sha256": SHA_64_A,
+            "ext": "pdf",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tmp_key"] == f"tmp/1/{SHA_64_A}.pdf"
+
+
+def test_endpoint_with_malformed_user_id_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-29：单文件端点带 `X-Forwarded-User-Id: "abc"`（非 int）
+    → 422 FastAPI 标准校验失败。
+
+    FastAPI 按 `int | None` 注解解析 header，非法字符串自动抛
+    ValidationError（顶层 `detail` 数组结构）。
+    """
+    _patch_sdk_with_recorder(monkeypatch)
+    client = TestClient(_build_app())
+
+    resp = client.post(
+        "/api/v1/files/sts-tmp-keys",
+        headers={"X-Forwarded-User-Id": "abc"},
+        json={
+            "purpose": "drawing",
+            "filename": "a.pdf",
+            "content_type": "application/pdf",
+            "expire_seconds": 1800,
+            "content_sha256": SHA_64_A,
+            "ext": "pdf",
+        },
+    )
+
+    assert resp.status_code == 422
+    body = resp.json()
+    # FastAPI 标准 422 结构
+    assert "detail" in body
+    assert isinstance(body["detail"], list)
+    assert len(body["detail"]) > 0
+    # 错误应指向 `X-Forwarded-User-Id` header（FastAPI loc 用 alias 字面）
+    locs = [tuple(err.get("loc", [])) for err in body["detail"]]
+    assert any("X-Forwarded-User-Id" in loc for loc in locs), (
+        f"422 errors should reference `X-Forwarded-User-Id`, got {locs}"
+    )

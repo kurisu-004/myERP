@@ -26,6 +26,13 @@
 - policy.resource 同步改为以完整 tmp_key（=`{sha256}.{ext}`）为前缀
   补 `*` 的通配。
 
+2026-09-29 新增：`service.grant_tmp_keys` /
+`service.grant_tmp_keys_batch` 加 `x_user_id` 形参（来自 api 层
+`X-Forwarded-User-Id` header），用于拼 tmp_key 的 `{user_id}` 段；
+缺失回退 `settings.sts_default_user_id`。本文件新增两个 case 覆盖
+显式 user_id 路径，保留原 fallback（默认 `sts_default_user_id=1`）
+case。
+
 测试不打 DB（STS 端口零 DB IO），不需要 docker；放 tests/unit/，复用
 `tests/unit/conftest.py` 跳过父 conftest 的 postgres-test 生命周期。
 
@@ -798,3 +805,90 @@ class TestGrantTmpKeysBatchSdkFailure:
         # 异常消息只暴露 SDK 异常类型名，不泄漏完整 repr。
         assert "RuntimeError" in exc.value.message
         assert "network boom" not in exc.value.message
+
+
+# ============================================================
+# 2026-09-29 新增：`x_user_id` 形参覆盖（来自 `X-Forwarded-User-Id` header）
+# ============================================================
+class TestGrantTmpKeysWithXUserId:
+    """2026-09-29：service 层 `x_user_id` 形参覆盖。
+
+    - `grant_tmp_keys_with_explicit_user_id`：显式传 `x_user_id=67890`
+      → tmp_key 用 `tmp/67890/{sha}.pdf`（不走 `sts_default_user_id`
+      fallback）；
+    - `grant_tmp_keys_batch_with_user_id`：批量场景下所有文件 tmp_key
+      共享同一个 `x_user_id`（同一次 HTTP 调用语义一致）；
+    - 默认 `x_user_id=None` 路径由既有的
+      `TestGrantStsTmpKeySingleFileRegression` 等 case 覆盖（fallback
+      到 `sts_default_user_id=1`），本类不重复。
+    """
+
+    async def test_grant_tmp_keys_with_explicit_user_id(
+        self,
+        fake_sts: _FakeStsRecorder,
+    ) -> None:
+        """2026-09-29：单文件端点显式 `x_user_id=67890` → tmp_key =
+        `tmp/67890/{sha}.pdf`（不走 fallback）。"""
+        svc = StsService()
+        req = _build_single_file_req(
+            filename="a.pdf",
+            content_sha256=SHA_64_A,
+            ext="pdf",
+        )
+
+        resp = await svc.grant_tmp_keys(req, x_user_id=67890)
+
+        # 关键断言：tmp_key 的 `{uid}` 段是 67890，不是 fallback 1
+        assert resp.tmp_key == f"tmp/67890/{SHA_64_A}.pdf"
+        # 反向断言：tmp_key 不含 fallback 段 `tmp/1/`（避免误用 settings）
+        assert "tmp/1/" not in resp.tmp_key
+        # SDK config 同步：policy.resource 收口到 `tmp/67890/...`
+        cfg = fake_sts.calls[0].config
+        bucket_appid = settings.cos_bucket
+        appid = bucket_appid.rsplit("-", 1)[-1]
+        expected_resource = (
+            f"qcs::cos:{settings.cos_region}:uid/{appid}:{bucket_appid}"
+            f"/tmp/67890/{SHA_64_A}.pdf*"
+        )
+        assert cfg["policy"]["statement"][0]["resource"] == [expected_resource]
+
+    async def test_grant_tmp_keys_batch_with_user_id(
+        self,
+        fake_sts: _FakeStsRecorder,
+    ) -> None:
+        """2026-09-29：批量端点显式 `x_user_id=67890` → 所有文件 tmp_key
+        共享同一个 `{uid}` 段。"""
+        svc = StsService()
+        req = StsBatchTmpKeysRequest(
+            scope="parts_new",
+            files=[
+                _build_single_file_req(
+                    filename="a.pdf",
+                    content_sha256=SHA_64_A,
+                    ext="pdf",
+                ),
+                _build_single_file_req(
+                    filename="b.pdf",
+                    content_sha256=SHA_64_B,
+                    ext="pdf",
+                ),
+            ],
+        )
+
+        resp = await svc.grant_tmp_keys_batch(req, x_user_id=67890)
+
+        # 所有文件 tmp_key 都用同一个 `67890`
+        assert resp.items[0].tmp_key == f"tmp/67890/{SHA_64_A}.pdf"
+        assert resp.items[1].tmp_key == f"tmp/67890/{SHA_64_B}.pdf"
+        # SDK call：每次 SDK 的 policy.resource 也都用 `tmp/67890/...`
+        bucket_appid = settings.cos_bucket
+        appid = bucket_appid.rsplit("-", 1)[-1]
+        expected_resource_prefix = (
+            f"qcs::cos:{settings.cos_region}:uid/{appid}:{bucket_appid}/tmp/67890/"
+        )
+        for call in fake_sts.calls:
+            resource = call.config["policy"]["statement"][0]["resource"][0]
+            assert resource.startswith(expected_resource_prefix), (
+                f"batch 路径下所有 SDK 调用的 policy.resource 应当都以"
+                f" `tmp/67890/` 开头，实际: {resource}"
+            )
