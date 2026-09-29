@@ -3,6 +3,14 @@
 裸开鉴权（参考 `/api/mcp/*` 模式，2026-09-17 起 v1 业务路由已 JWT bypass，
 此端点更不依赖 `get_current_user`），靠部署层 nginx / 安全组隔离。
 
+**2026-09-29 依赖部署层 rust 转发层注入 `X-Forwarded-User-Id`**；本路
+由直接信任此 header 是来自 rust 的（非外部用户），因为前端的 STS 请求
+都走 rust（baseURL `/api/v2`，详见 frontend nginx 反代配置 + backend-rust
+docs/api/files.md）：浏览器不直接命中本端点，rust `/api/v2/files/sts-tmp-keys`
+转发到本端点时把 JWT 解出的 `user_id` 写进 header，本路由读后用于拼
+`tmp/{uid}/{sha256}.{ext}` 的 `{uid}` 段；缺失回退
+`settings.sts_default_user_id`。
+
 路径（2026-09-28 review：列入 CLAUDE.md §14「保留端点」段）：
 - `POST /api/v1/files/sts-tmp-keys`            — 前端直传 COS（`tmp/<uid>/<sha256>.<ext>` 命名空间）。
   2026-09-28 扩展为 Union 入参：接受单文件 schema
@@ -29,7 +37,7 @@ upload_session 域下线后已无调用方（plan
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 
 from api.deps import get_sts_service
 from core.error_code import ErrCode
@@ -54,6 +62,17 @@ router = APIRouter(prefix="/files", tags=["sts"])
 )
 async def grant_sts_tmp_keys(
     body: StsTmpKeysEndpointBody,
+    # 2026-09-29 新增：依赖部署层 rust 转发层注入 `X-Forwarded-User-Id`。
+    # FastAPI 自动按 `int` 注解把 header 字符串解析为 int；非法值（如
+    # `"abc"`）自动抛 422 ValidationError。
+    x_user_id: int | None = Header(
+        default=None,
+        alias="X-Forwarded-User-Id",
+        description=(
+            "rust 转发层从 JWT 解出的 user_id；缺失回退 "
+            "`settings.sts_default_user_id`（详见 service 层 docstring）。"
+        ),
+    ),
     svc: StsService = Depends(get_sts_service),
 ) -> StsTmpKeysEndpointResponse:
     """2026-09-28 扩展：接受单文件或批量 schema。
@@ -64,15 +83,19 @@ async def grant_sts_tmp_keys(
       `service.grant_tmp_keys_batch`，并发签名批。
 
     Pydantic v2 smart union 按字段形态自动区分；不显式 tag 字段。
+
+    2026-09-29 新增：`x_user_id`（来自 `X-Forwarded-User-Id` header）
+    透传给 service 层——用于拼 tmp_key 的 `{user_id}` 段；缺失回退
+    `settings.sts_default_user_id`。
     """
     # 2026-09-28 review 第 1 轮修复：显式 if/else 分流（不依赖 `assert`
     # 或运行时类型守卫的隐式行为）。理论上 Pydantic 已按 smart union
     # 把 `body` 限定为 `StsTmpKeysRequest | StsBatchTmpKeysRequest` 之
     # 一——这里再硬限一次，防御性兜底。
     if isinstance(body, StsBatchTmpKeysRequest):
-        return await svc.grant_tmp_keys_batch(body)
+        return await svc.grant_tmp_keys_batch(body, x_user_id=x_user_id)
     if isinstance(body, StsTmpKeysRequest):
-        return await svc.grant_tmp_keys(body)
+        return await svc.grant_tmp_keys(body, x_user_id=x_user_id)
     raise BizError(
         code=ErrCode.BIZ_INVALID_VALUE,
         message="unrecognized body shape",
