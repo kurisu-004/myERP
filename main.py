@@ -10,7 +10,9 @@ upload_session 域下线后无调用方）：
 - `GET  /api/v1/health`（容器健康检查）
 
 鉴权：所有 STS 端口裸开（`api/v1/sts.py`），靠部署层 nginx / 安全组隔离保证；
-本仓不持有 IAM 抽象（已迁至 backend-rust v2 的 `/api/v2/iam/*`）。
+打印端口同样自身无鉴权，经 Rust 转发层触达时由 Rust 鉴权（见
+`api/v1/printing.py` 模块 docstring）。本仓不持有 IAM 抽象（已迁至
+backend-rust v2 的 `/api/v2/iam/*`）。
 """
 
 import uvicorn

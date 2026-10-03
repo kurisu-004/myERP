@@ -9,7 +9,11 @@
 - ``POST /api/v1/delivery-notes/{note_id}/print``         — 送货单 Excel 模板填表
 - ``POST /api/v1/delivery-notes/{note_id}/print-labels``  — 标签 Excel（无模板）
 
-鉴权：裸开（参考 ``/api/v1/files/sts-*`` / ``/api/v1/parts/print``）。
+鉴权：本端点自身无鉴权（裸开，``api/deps.py::get_delivery_note_print_service``
+只注入 DB session、不注入身份）。经 Rust 转发层
+（``/api/v2/delivery-notes/{id}/print`` / ``/api/v2/delivery-notes/{id}/print-labels``，
+JWT + RBAC）触达时鉴权由 Rust 承担；部署层是否已收敛 nginx ``/api/`` 直连路径
+以本仓外配置为准，本仓 ``CLAUDE.md`` §14 仍按「裸开 + nginx 隔离」记录。
 """
 
 from __future__ import annotations
