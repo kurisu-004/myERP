@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from datetime import date
 from typing import Any
 
@@ -641,6 +642,153 @@ async def test_labels_assembly_merge_survives_partial_line_item_subset(clean_db)
     assert rows[0][B_QTY] == 2, "只勾 1/2 子件也不缩放套数（防合并行凭空变小）"
     assert rows[0][B_UNIT] == "套"
     assert rows[0][B_ORDER] == "ON-ASM-001"
+
+
+# ============================================================
+# 「合并后 0 行」兜底：整单全在 0 套装配件下 → 400（不返回空壳 xlsx）
+# ============================================================
+async def _seed_all_parts_under_zero_quantity_assembly(session):
+    """造「整单零件都挂在 0 套装配件下」的单子，返回 (note, asm, [两个子件])。"""
+    root = await _make_l1_root(session, name="法拉", prefix="F")
+    note = await _make_note(session, customer_id=root.id)
+    asm = await _make_assembly(
+        session, customer_id=root.id, serial_no="FZ001",
+        drawing_no="DA-ZERO-ALL", name="全单凑不齐套装",
+    )
+    c1 = await _make_part(
+        session, customer_id=root.id, serial_no="FZ101", drawing_no="D-FZ101",
+        assembly_id=asm.id, delivery_note_id=note.id,
+    )
+    c2 = await _make_part(
+        session, customer_id=root.id, serial_no="FZ102", drawing_no="D-FZ102",
+        assembly_id=asm.id, delivery_note_id=note.id,
+    )
+    return note, asm, (c1, c2)
+
+
+async def test_render_all_parts_zero_quantity_raises_400(clean_db):
+    """整单全在 0 套装配件下 → 400 BIZ_INVALID_VALUE（送货单）。
+
+    没有这条兜底时 ``print_rows == []`` → ``pages == []`` → ``zip`` 空转，连
+    ``_write_footer``（送货日期 / 签字栏）都不写，200 返回一张只有模板空壳的 xlsx。
+    """
+    note, asm, _ = await _seed_all_parts_under_zero_quantity_assembly(clean_db)
+
+    with pytest.raises(BizError) as ei:
+        await _svc(clean_db).render(
+            note=note,
+            merge_assemblies=True,
+            assembly_ids=[asm.id],
+            merge_quantities={str(asm.id): 0},
+        )
+    assert ei.value.code == ErrCode.BIZ_INVALID_VALUE
+    assert ei.value.http_status == 400
+    # 与「所选零件均不可用（缺流水号或图号）」区分开：那条是字段缺失，这条是套数为 0
+    assert "凑不齐整套" in ei.value.message
+    assert "缺流水号" not in ei.value.message
+
+
+async def test_labels_all_parts_zero_quantity_raises_400(clean_db):
+    """同一兜底也必须覆盖 ``render_labels``（本端点 merge_assemblies 默认 True）。"""
+    note, asm, _ = await _seed_all_parts_under_zero_quantity_assembly(clean_db)
+
+    with pytest.raises(BizError) as ei:
+        await _svc(clean_db).render_labels(
+            note=note,
+            assembly_ids=[asm.id],
+            merge_quantities={str(asm.id): 0},
+        )
+    assert ei.value.code == ErrCode.BIZ_INVALID_VALUE
+    assert ei.value.http_status == 400
+    assert "凑不齐整套" in ei.value.message
+
+
+async def test_render_negative_merge_quantity_warns_and_drops_group(
+    clean_db, caplog
+):
+    """注入负套数（冻结合同只允许 ≥0）→ warning + 按 0 处理（丢整组，不出 -N 套）。
+
+    负数必须与「业务上 0 套」在日志里可区分，否则上游算错完全看不出来。
+    """
+    root = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    note = await _make_note(clean_db, customer_id=root.id)
+    asm = await _make_assembly(clean_db, customer_id=root.id)
+    await _make_part(
+        clean_db, customer_id=root.id, serial_no="FN001", drawing_no="D-FN001",
+        assembly_id=asm.id, delivery_note_id=note.id,
+    )
+    loose = await _make_part(
+        clean_db, customer_id=root.id, serial_no="FN002", drawing_no="D-FN002",
+        order_no="ON-FN002", delivery_note_id=note.id,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="service.delivery_note_print"):
+        xlsx_bytes, _ = await _svc(clean_db).render(
+            note=note,
+            merge_assemblies=True,
+            assembly_ids=[asm.id],
+            merge_quantities={str(asm.id): -1},
+        )
+    rows = _fala(xlsx_bytes)
+    assert [r[F_DRAWING] for r in rows] == ["D-FN002"], (
+        f"负套数应按 0 处理（丢整组，只剩散件），实际 {rows!r}"
+    )
+    assert "负数" in caplog.text, "负数必须有独立 warning 以便与业务上的 0 套区分"
+
+
+async def test_render_dirty_merge_quantity_key_falls_back_to_one_set(
+    clean_db, caplog
+):
+    """脏键（非数字）→ 跳过 + warning，该装配件退回默认 1 套（不 500）。"""
+    root = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    note = await _make_note(clean_db, customer_id=root.id)
+    asm = await _make_assembly(clean_db, customer_id=root.id)
+    await _make_part(
+        clean_db, customer_id=root.id, serial_no="FK001", drawing_no="D-FK001",
+        assembly_id=asm.id, delivery_note_id=note.id,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="service.delivery_note_print"):
+        xlsx_bytes, _ = await _svc(clean_db).render(
+            note=note,
+            merge_assemblies=True,
+            assembly_ids=[asm.id],
+            merge_quantities={"not-an-id": 5},
+        )
+    rows = _fala(xlsx_bytes)
+    assert len(rows) == 1
+    assert rows[0][F_UNIT] == "套"
+    assert rows[0][F_QTY] == 1, "脏键不得影响输出，退回默认 1 套"
+    assert "非法 merge_quantities 键" in caplog.text
+
+
+async def test_render_dirty_merge_quantity_value_falls_back_to_one_set(
+    clean_db, caplog
+):
+    """值脏（非数字，但键合法）→ warning 记在**值**上，该装配件退回默认 1 套。
+
+    日志口径护栏：这条与脏键分支的措辞必须不同，否则排查会被引向「键有问题」。
+    """
+    root = await _make_l1_root(clean_db, name="法拉", prefix="F")
+    note = await _make_note(clean_db, customer_id=root.id)
+    asm = await _make_assembly(clean_db, customer_id=root.id)
+    await _make_part(
+        clean_db, customer_id=root.id, serial_no="FK101", drawing_no="D-FK101",
+        assembly_id=asm.id, delivery_note_id=note.id,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="service.delivery_note_print"):
+        xlsx_bytes, _ = await _svc(clean_db).render(
+            note=note,
+            merge_assemblies=True,
+            assembly_ids=[asm.id],
+            merge_quantities={str(asm.id): "three"},
+        )
+    rows = _fala(xlsx_bytes)
+    assert len(rows) == 1, f"脏值不该丢整组行，实际 {rows!r}"
+    assert rows[0][F_QTY] == 1, "脏值退回默认 1 套"
+    assert "非法 merge_quantities 键" not in caplog.text, "键合法，不该记成键非法"
+    assert "不是数字" in caplog.text
 
 
 # ============================================================

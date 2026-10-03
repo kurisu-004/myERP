@@ -6,10 +6,10 @@
 清理 dormant model 时一并删除（与对应状态机回调一同下线）。
 
 原 commit `785df37^` 全文保留 ``DeliveryNoteRepository`` 完整实现
-（10 个公开方法 + 2 个私有辅助），dormant test
-``tests/test_delivery_note_print_merge.py`` 可能直接调用
-``list_with_filters`` / ``list_parts`` / ``count_parts`` 等，因此方法签名
-不能减。
+（10 个公开方法 + 2 个私有辅助）。本仓唯一消费方是送货单 / 标签打印路径
+（``service.delivery_note_print`` + ``api/v1/delivery_note_print.py``），实际只调
+``get_by_id``；其余方法是随恢复一并带回的 dormant 表面，签名暂不删——删之前要连同
+调用方一起评估。
 """
 
 from __future__ import annotations

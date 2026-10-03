@@ -10,7 +10,7 @@
 - ``/print`` 透传 ``assembly_ids``（str → int）与 ``merge_quantities``；
 - ``/print`` 缺省 ``assembly_ids`` → None（不合并，向后兼容）；
 - ``/print-labels`` 透传 ``assembly_ids`` + ``line_item_ids``；
-- ``assembly_ids`` 含非数字串 → 400 BIZ_INVALID_VALUE（不静默丢弃）。
+- ``assembly_ids`` 含非数字串 / 空串 → 400 BIZ_INVALID_VALUE（不静默丢弃）。
 
 不挂 DB / docker：handler 只经 ``get_delivery_note_print_service`` 拿 service，
 用 ``dependency_overrides`` 换成假实现即可。
@@ -134,6 +134,24 @@ def test_print_rejects_non_numeric_assembly_id(
     resp = client.post(
         "/api/v1/delivery-notes/1001/print",
         json={"merge_assemblies": True, "assembly_ids": ["not-a-number"]},
+    )
+    assert resp.status_code == 400, resp.text
+    assert fake_service.render_calls == [], "解析失败不应调 service"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_print_rejects_blank_assembly_id(
+    client: TestClient, fake_service: _FakePrintService, blank: str
+) -> None:
+    """空串 → 400，不静默降级成「不合并」。
+
+    ``parse_snowflake_id`` 对空串返回 None，原实现把它剔掉，于是 ``[""]`` 拿到 200
+    且不合并——同一函数里唯一的静默降级口子，与「非数字一律 400」的理由矛盾。
+    口径对齐 ``line_item_ids`` / ``custom_order``（非法 id 一律报错）。
+    """
+    resp = client.post(
+        "/api/v1/delivery-notes/1001/print",
+        json={"merge_assemblies": True, "assembly_ids": [blank]},
     )
     assert resp.status_code == 400, resp.text
     assert fake_service.render_calls == [], "解析失败不应调 service"

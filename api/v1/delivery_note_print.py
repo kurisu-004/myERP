@@ -43,7 +43,10 @@ class PrintDeliveryNoteRequest(BaseModel):
 
     custom_order: list[str] | None = Field(default=None, max_length=500)
     merge_assemblies: bool = Field(default=False)
-    merge_quantities: dict[str, int] | None = Field(default=None)
+    # 2026-10-04：与 custom_order / assembly_ids / line_item_ids 收口到同一个上界。
+    # 转发层是可信任内网源，风险低，但无上界的 dict 与三个兄弟字段不对称，容易被
+    # 误当成「不限量」的入口。
+    merge_quantities: dict[str, int] | None = Field(default=None, max_length=500)
     # 2026-09-24 PR-2：原 service assembly_map: dict[int, TAssembly] 改为
     # assembly_ids: list[str]，由 service 内部用
     # ``AssemblyRepository.list_by_ids`` 组装（API 层不应传 ORM 对象）。
@@ -66,18 +69,27 @@ def _parse_assembly_ids(raw: list[str] | None) -> list[int] | None:
 
     雪花 ID 入参用 str 承载（CLAUDE.md §3），解析统一走 ``parse_snowflake_id``
     ——非法 id 抛 400 BIZ_INVALID_VALUE，而不是静默丢弃（静默丢弃会退化成
-    「不合并」，打印出一张与预览不一致的送货单）。空 / None → None（不合并）。
+    「不合并」，打印出一张与预览不一致的送货单）。空列表 / None → None（不合并）。
 
-    ``parse_snowflake_id`` 对空串返回 None，这里顺带剔掉（避免 ``IN (NULL)``
-    变成静默全不命中）；剔完为空同样按「不合并」处理。
+    2026-10-04：空串（``[""]`` / ``["  "]``）也从「静默剔除」改成 400。
+    ``parse_snowflake_id`` 对空串返回 None，原实现把它剔掉，于是同一函数里留了
+    唯一的静默降级口子：传 ``[""]`` 得到 200 且不合并，与上面拒绝静默丢弃的理由
+    直接矛盾。口径对齐 ``line_item_ids`` / ``custom_order``——非法 id 一律报错，
+    不当没传过。
     """
     if not raw:
         return None
-    parsed = [
-        i
-        for i in (parse_snowflake_id(v, field_name="assembly_ids") for v in raw)
-        if i is not None
-    ]
+    parsed: list[int] = []
+    for v in raw:
+        sid = parse_snowflake_id(v, field_name="assembly_ids")
+        if sid is None:
+            # parse_snowflake_id 只在 None / 纯空白串上返回 None
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=f"assembly_ids 含空值：{v!r}",
+                http_status=400,
+            )
+        parsed.append(sid)
     return parsed or None
 
 
