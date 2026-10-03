@@ -2,11 +2,11 @@
 
 两个端点：
 - ``GET  /api/v1/parts/{part_id}/print``       — 单件
-- ``POST /api/v1/parts/print-batch``          — 批量（按 body.part_ids 顺序拼接，
-  可选 ``assembly_ids`` 自动追加总装图页 + 全部子件）
+- ``POST /api/v1/parts/print-batch``          — 批量（``part_ids`` 按序逐件
+  拼接，``assembly_ids`` 自动追加总装图页 + 全部子件；两者至少一个非空）
 
-鉴权：裸开（参考 ``/api/v1/files/sts-*`` / ``/api/mcp/*`` 时代的裸开约定），
-安全性靠部署层 nginx ``/api/v1/*`` 不暴露 / 安全组隔离保证。
+鉴权：2026-10-03 起 nginx 的 ``/api/`` 转发块已删除，本端点只经 Rust 转发层
+触达（Rust 端强制 JWT + RBAC），不再对公网裸开。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from api.deps import get_printing_service
 from service._id_parse import parse_snowflake_id
@@ -25,14 +25,32 @@ router = APIRouter(prefix="/parts", tags=["printing"])
 
 
 class PrintBatchRequest(BaseModel):
-    """批量打印请求 body。"""
+    """批量打印请求 body。
 
-    part_ids: list[str] = Field(..., min_length=1, max_length=200)
+    2026-10-03 新增：``part_ids`` 允许空列表（前端对「只勾选装配体」的批次发
+    ``part_ids=[]`` + 非空 ``assembly_ids``，而服务层本就按 ``assembly_ids``
+    拉总装图 + 全部子件），「至少一类目标非空」改由本模型的
+    ``model_validator`` 收口。
+    """
+
+    part_ids: list[str] = Field(default_factory=list, max_length=200)
     assembly_ids: list[str] | None = Field(default=None, max_length=50)
     vector: bool = Field(
         default=False,
         description="true=光栅旁路（个别图纸光栅化不清晰时用）",
     )
+
+    @model_validator(mode="after")
+    def _require_one_non_empty_target(self) -> "PrintBatchRequest":
+        """两类目标至少一类非空。
+
+        pydantic 把 ``ValueError`` 包成校验错误，FastAPI 转
+        ``RequestValidationError`` → 本仓统一 422 + ``VALIDATION_ERROR`` +
+        errors 数组（与其它校验失败同形，不另造错误响应结构）。
+        """
+        if not self.part_ids and not self.assembly_ids:
+            raise ValueError("part_ids 与 assembly_ids 至少提供一个非空列表")
+        return self
 
 
 @router.get(
