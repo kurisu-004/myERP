@@ -7,11 +7,14 @@
 1. `part_ids=["a"]` → 通过（纯零件批，行为不变）；
 2. `part_ids=[]` + `assembly_ids=["x"]` → 通过（纯装配体批，本条是本次放宽
    修好的场景；端点级断言 service 收到的 `part_ids=[]` / `assembly_ids=[x]`）；
+   `part_ids` 键整个缺省同样走 `default_factory` 落成 `[]` 后通过；
 3. `part_ids=[]` + `assembly_ids=None` → 拒绝（`model_validator` 收口「至少一类
    目标非空」，pydantic 包成 `ValidationError`；端点级断言 422 走本仓
    `RequestValidationError` 处理器 = `code=VALIDATION_ERROR` + `data` 错误数组，
-   不是 FastAPI 默认信封、也不是自造结构）；
-4. `part_ids` 201 项 → 拒绝（`max_length=200` 批大小硬限）。
+   错误项 `loc=["body"]` / `type="value_error"`，不是 FastAPI 默认信封、也不是
+   自造结构）；
+4. `part_ids` 201 项 → 拒绝（`max_length=200` 批大小硬限；端点级错误项
+   `loc=["body","part_ids"]` / `type="too_long"`）。
 
 不依赖 docker / DB / COS：端点级用 `app.dependency_overrides` 注入假 facade，
 校验失败路径本就不会进 handler。
@@ -85,6 +88,35 @@ def test_assembly_only_endpoint_reaches_service_with_empty_part_ids() -> None:
     )
 
 
+def test_part_ids_key_absent_defaults_to_empty_list() -> None:
+    """`part_ids` 整个缺省 + `assembly_ids=["123"]` → 通过且 `part_ids` 落成
+    `[]`（`default_factory=list` 分支，不报 `missing`）。"""
+    body = PrintBatchRequest(assembly_ids=["123"])
+
+    assert body.part_ids == []
+    assert body.assembly_ids == ["123"]
+
+
+def test_part_ids_key_absent_endpoint_reaches_service() -> None:
+    """端点级：body 里不写 `part_ids` 键 → 200，service 收到 `part_ids=[]`
+    + `assembly_ids=[123]`（证明端点级也不依赖调用方显式传空数组）。"""
+    app = _build_app()
+    facade = AsyncMock()
+    facade.build_parts_print_pdf_batch = AsyncMock(return_value=b"%PDF-1.7 fake")
+    app.dependency_overrides[get_printing_service] = lambda: facade
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/v1/parts/print-batch",
+        json={"assembly_ids": ["123"]},
+    )
+
+    assert resp.status_code == 200
+    facade.build_parts_print_pdf_batch.assert_awaited_once_with(
+        part_ids=[], assembly_ids=[123], vector=False
+    )
+
+
 # ============================================================
 # 3：两类目标都空 → 拒绝
 # ============================================================
@@ -97,7 +129,12 @@ def test_both_targets_empty_is_rejected() -> None:
 
 def test_both_targets_empty_endpoint_returns_422_envelope() -> None:
     """端点级：空目标 → 422，且走本仓 `RequestValidationError` 处理器
-    （`code=VALIDATION_ERROR` + `data` 错误数组），非 FastAPI 默认信封。"""
+    （`code=VALIDATION_ERROR` + `data` 错误数组），非 FastAPI 默认信封。
+
+    同时锁死错误项的 `loc` / `type`：必须指到 `body` 整体且是 pydantic 模型级
+    校验（`value_error`），而不是某个字段的 `missing` / `too_long`——后者意味
+    着 `model_validator` 收口被绕过。
+    """
     app = _build_app()
     client = TestClient(app)
 
@@ -112,6 +149,8 @@ def test_both_targets_empty_endpoint_returns_422_envelope() -> None:
     assert isinstance(body["data"], list)
     assert len(body["data"]) > 0
     assert "至少提供一个非空列表" in str(body["data"])
+    assert body["data"][0]["loc"] == ["body"]
+    assert body["data"][0]["type"] == "value_error"
 
 
 # ============================================================
@@ -127,3 +166,21 @@ def test_part_ids_over_200_is_rejected() -> None:
 
     at_limit = PrintBatchRequest(part_ids=[str(i) for i in range(200)])
     assert len(at_limit.part_ids) == 200
+
+
+def test_part_ids_over_200_endpoint_returns_422() -> None:
+    """端点级：`part_ids` 201 项 → 422，错误项 `type=too_long` 且 `loc` 指向
+    `["body", "part_ids"]`（字段级超长，而非模型级 `value_error`）。"""
+    app = _build_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/v1/parts/print-batch",
+        json={"part_ids": [str(i) for i in range(201)]},
+    )
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == ErrCode.VALIDATION_ERROR
+    assert body["data"][0]["loc"] == ["body", "part_ids"]
+    assert body["data"][0]["type"] == "too_long"

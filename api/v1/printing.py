@@ -5,8 +5,11 @@
 - ``POST /api/v1/parts/print-batch``          — 批量（``part_ids`` 按序逐件
   拼接，``assembly_ids`` 自动追加总装图页 + 全部子件；两者至少一个非空）
 
-鉴权：2026-10-03 起 nginx 的 ``/api/`` 转发块已删除，本端点只经 Rust 转发层
-触达（Rust 端强制 JWT + RBAC），不再对公网裸开。
+鉴权：本端点自身无鉴权（裸开，``api/deps.py::get_printing_service`` 只注入
+DB session、不注入身份）。经 Rust 转发层（``/api/v2/parts/print-drawing`` /
+``/api/v2/parts/print-drawing-batch``，JWT + RBAC）触达时鉴权由 Rust 承担；
+部署层是否已收敛 nginx ``/api/`` 直连路径以本仓外配置为准，本仓
+``CLAUDE.md`` §14 仍按「裸开 + nginx 隔离」记录。
 """
 
 from __future__ import annotations
@@ -86,7 +89,7 @@ async def print_part_pdf(
 @router.post(
     "/print-batch",
     operation_id="print_parts_batch_pdf",
-    summary="批量零件标签 PDF（合并多件为单 PDF）",
+    summary="批量零件 + 装配体标签 PDF（合并多件为单 PDF）",
     responses={
         200: {"content": {"application/pdf": {}}, "description": "PDF 二进制流"},
     },
@@ -95,7 +98,8 @@ async def print_parts_batch_pdf(
     body: PrintBatchRequest,
     svc: PrintingServiceFacade = Depends(get_printing_service),  # noqa: B008
 ) -> Response:
-    """返回多件零件的双面 PDF 合并流（顺序按 body.part_ids）。"""
+    """返回多件零件 / 装配体的双面 PDF 合并流（顺序按 body.part_ids，其后
+    追加 body.assembly_ids 的总装图页 + 全部子件）。"""
     pids = [parse_snowflake_id(p, field_name="part_ids[]") for p in body.part_ids]
     aids = (
         [parse_snowflake_id(a, field_name="assembly_ids[]") for a in body.assembly_ids]

@@ -802,8 +802,8 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| GET | /api/v1/parts/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`；支持多图纸分页。 |
-| POST | /api/v1/parts/print-batch | 裸开 | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。 |
+| GET | /api/v1/parts/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`；支持多图纸分页。经 Rust 转发层 `/api/v2/parts/print-drawing` 触达时由 Rust 鉴权，见 §14。 |
+| POST | /api/v1/parts/print-batch | 裸开 | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。`part_ids` 可空（2026-10-03 放宽，纯装配体批发 `part_ids=[]` + 非空 `assembly_ids`），两类目标至少一类非空。经 Rust 转发层 `/api/v2/parts/print-drawing-batch` 触达时由 Rust 鉴权，见 §14。 |
 
 ### /delivery-notes/*（api/v1/delivery_note_print.py — **保留** 送货单 / 标签打印端口，2026-09-24 PR-2 新增）
 
@@ -1000,7 +1000,7 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 | POST | `/api/v1/files/sts-tmp-keys` | `api/v1/sts.py` | **2026-09-17 新增 / 2026-09-28 扩 Union 入参**：前端直传 COS 临时凭证（裸开鉴权）；单文件 schema（`{purpose, filename, ...}`，向后兼容）或批量 schema（`{scope, files[1..200]}`，单 HTTP 单签名批）由 Pydantic v2 smart union 自动分流。CAM policy 限定 `tmp/{user_id}/{sha16}/*` 单目录，TTL 默认 1800s。 |
 | GET | `/api/v1/files/sts-health` | `api/v1/sts.py` | **2026-09-18 新增**：STS 签发自检（healthcheck 探针）——裸开鉴权；每次 uuid4 hex probe prefix `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调 SDK 签发（不 mock），验证 SDK + 主账号密钥 + CAM policy + 网络整条链路；BizError 透传（自带 http_status）让 compose healthcheck 拿到非 2xx 即 fail。 |
 | GET | `/api/v1/parts/{id}/print` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`。 |
-| POST | `/api/v1/parts/print-batch` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。 |
+| POST | `/api/v1/parts/print-batch` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。**2026-10-03 放宽 `part_ids`**：`part_ids` 可缺省 / 空列表（纯装配体批次只需 `assembly_ids` 非空），两类目标至少一类非空由请求模型的 `model_validator` 收口。 |
 | POST | `/api/v1/delivery-notes/{id}/print` | `api/v1/delivery_note_print.py` | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板）；handler 调 `service.delivery_note_print` 模板填表。 |
 | POST | `/api/v1/delivery-notes/{id}/print-labels` | `api/v1/delivery_note_print.py` | **2026-09-24 PR-2 新增**：标签 Excel；handler 调 `service.delivery_note_print`。 |
 | GET | `/api/v1/health` | `main.py` | 容器健康检查（compose 探针）；不查 DB（DB 联通由 lifespan 心跳保证）。 |
@@ -1044,6 +1044,12 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 STS 端口与 `/health` 不依赖 `get_current_user` 也不挂 `Depends(require_auth)`；
 安全性靠 nginx `/api/v1/files/` / `/health` 不暴露 / 安全组隔离保证。部署层
 务必确认此路径不被直连到公网（仅 frontend nginx 同源访问）。
+
+打印端口（`api/v1/printing.py`）同理：应用层自身无鉴权，`get_printing_service`
+只注入 DB session。经 backend-rust 转发层 `/api/v2/parts/print-drawing` /
+`print-drawing-batch` 触达时由 Rust 承担 JWT + RBAC；本仓**不假设** nginx
+`/api/` 直连路径已在部署层收敛（该配置在本仓外，见 `frontend/nginx.conf`），
+排查可达性时以本仓外配置为准。
 
 ### 验证门
 

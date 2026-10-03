@@ -33,7 +33,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             status, "HTTP_422_UNPROCESSABLE_CONTENT", status.HTTP_422_UNPROCESSABLE_ENTITY
         )
         # 2026-10-03：errors 走 jsonable_encoder 再序列化。pydantic 自定义校验器
-        #（field_validator / model_validator）抛 ValueError 时，错误项的
+        # （field_validator / model_validator）抛 ValueError 时，错误项的
         # ctx.error 是异常对象，直接塞 JSONResponse 渲染会 TypeError → 500，
         # 把本该 422 的校验失败变成 500。编码后 ctx.error 退化为 {}，报错文案
         # 仍在 msg 里；响应结构（422 + VALIDATION_ERROR + errors 数组）不变。

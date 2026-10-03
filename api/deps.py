@@ -152,6 +152,8 @@ async def _dashboard_flush_worker() -> None:
 # ============================================================
 # 裸开鉴权（参考历史 /api/mcp/* 模式），靠部署层 nginx / 安全组隔离。
 # 不注入 `get_session`（无 DB IO）/ `get_current_user`（bypass 模式无关）。
+# 2026-10-03：经 backend-rust `/api/v2/files/sts-tmp-keys` 转发层触达时由 Rust
+# 承担鉴权，本工厂依旧不注入身份。
 def get_sts_service() -> "StsService":
     """STS 临时凭证 service 工厂。
 
@@ -171,6 +173,9 @@ def get_sts_service() -> "StsService":
 # 打印端口（2026-09-24 PR-2 新增）
 # ============================================================
 # 与 STS 同款裸开鉴权（参考 `/api/v1/files/sts-*`），安全性靠部署层 nginx 隔离。
+# 2026-10-03：打印端口经 Rust 转发层（`/api/v2/parts/print-drawing*`）触达时
+# 鉴权由 Rust 承担，本工厂依旧不注入身份；细节见 `api/v1/printing.py` 模块
+# docstring 的「鉴权」段。
 def get_printing_service(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> PrintingServiceFacade:
