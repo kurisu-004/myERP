@@ -378,8 +378,14 @@ async def test_custom_order_rep_expansion_follows_part_order(clean_db):
     assert rows[1][F_QTY] == 10, f"p1 两批 5+5 应为 10，实际 {rows[1][F_QTY]!r}"
 
 
-async def test_custom_order_duplicate_rep_id_does_not_double_quantity(clean_db):
-    """custom_order 重复发同一个代表 id → 只算一次（否则展开会把该 part 复制两份）。"""
+async def test_custom_order_duplicate_rep_id_does_not_double_quantity(
+    clean_db, caplog
+):
+    """custom_order 重复发同一个代表 id → 只算一次（否则展开会把该 part 复制一份）。
+
+    日志护栏（2026-10-04 review 第 3 轮补）：静默 continue 会让「前端重复发」完全
+    不可见，删掉 warning 也没人发现，所以行为断言之外必须钉住 warning 文案。
+    """
     root = await _make_l1_root(clean_db, name="法拉", prefix="F")
     note = await _make_note(clean_db, customer_id=root.id)
     p1 = await _make_part(
@@ -391,10 +397,15 @@ async def test_custom_order_duplicate_rep_id_does_not_double_quantity(clean_db):
     await clean_db.flush()
     rep = str(p1.root_batch.id)
 
-    xlsx_bytes, _ = await _svc(clean_db).render(note=note, custom_order=[rep, rep])
+    with caplog.at_level(logging.WARNING, logger="service.delivery_note_print"):
+        xlsx_bytes, _ = await _svc(clean_db).render(note=note, custom_order=[rep, rep])
     rows = _fala(xlsx_bytes)
     assert len(rows) == 1, f"重复代表 id 不应复制行，实际 {rows!r}"
     assert rows[0][F_QTY] == 9, f"求和应为 6+3=9，实际 {rows[0][F_QTY]!r}"
+    assert "重复出现代表批次 id" in caplog.text, (
+        "重复代表 id 必须留 warning，否则前端重复发完全不可见"
+    )
+    assert rep in caplog.text, "warning 必须点名是哪个代表 id 重复，否则无法定位"
 
 
 # ============================================================
@@ -686,6 +697,9 @@ async def test_render_all_parts_zero_quantity_raises_400(clean_db):
     # 与「所选零件均不可用（缺流水号或图号）」区分开：那条是字段缺失，这条是套数为 0
     assert "凑不齐整套" in ei.value.message
     assert "缺流水号" not in ei.value.message
+    # 与负套数路径区分开（2026-10-04 review 第 3 轮）：本例套数确实是 0，文案不该
+    # 提「负数」——否则用户会去查上游算错，而真实成因是子件确实凑不齐整套
+    assert "负数" not in ei.value.message
 
 
 async def test_labels_all_parts_zero_quantity_raises_400(clean_db):
@@ -701,6 +715,31 @@ async def test_labels_all_parts_zero_quantity_raises_400(clean_db):
     assert ei.value.code == ErrCode.BIZ_INVALID_VALUE
     assert ei.value.http_status == 400
     assert "凑不齐整套" in ei.value.message
+    assert "负数" not in ei.value.message
+
+
+async def test_render_all_parts_negative_quantity_raises_400_with_negative_message(
+    clean_db,
+):
+    """整单全在**负**套数装配件下 → 同样 400，但文案必须说「负数」而非「0 套」。
+
+    两条 400 的成因不同（业务上 0 套 vs 上游算错），修法就是文案不同：共用一条会让
+    用户把上游缺陷当成业务事实去查勾选范围，而日志里记的却是「为负数…按 0 处理」。
+    """
+    note, asm, _ = await _seed_all_parts_under_zero_quantity_assembly(clean_db)
+
+    with pytest.raises(BizError) as ei:
+        await _svc(clean_db).render(
+            note=note,
+            merge_assemblies=True,
+            assembly_ids=[asm.id],
+            merge_quantities={str(asm.id): -2},
+        )
+    assert ei.value.code == ErrCode.BIZ_INVALID_VALUE
+    assert ei.value.http_status == 400
+    assert "凑不齐整套" in ei.value.message, "与 0 套路径共用前缀，错误语义仍是同一兜底"
+    assert "负数" in ei.value.message, "负数路径必须点名成因，不能说成「可出货套数均为 0」"
+    assert "均为 0" not in ei.value.message, "业务上的 0 套口径不得污染负数路径"
 
 
 async def test_render_negative_merge_quantity_warns_and_drops_group(

@@ -1058,12 +1058,12 @@ JWT + RBAC；nginx `/api/` 直连路径的收敛情况同样以本仓外配置�
 
 ### 验证门
 
-`uv run pytest` 当前 **182 passed / 35 skipped**（2026-10-04 实测）。182 例 =
+`uv run pytest` 当前 **183 passed / 35 skipped**（2026-10-04 实测）。183 例 =
 `tests/unit/` 的 11 个文件（`test_{sts_tmp_keys,printing_service,
 make_object_key,print_front_cache,print_back_page,file_hash,
 sts_tmp_keys_endpoint,printing_batch_request,time,sts_health,
 delivery_note_print_endpoint}.py`）157 例 + 走真实 DB 的
-`tests/test_delivery_note_print_service.py` 25 例（送货单 / 标签 Excel 渲染器，
+`tests/test_delivery_note_print_service.py` 26 例（送货单 / 标签 Excel 渲染器，
 2026-10-04 新增，直接 seed DB 调 `DeliveryNotePrintService`）；35 例 skipped
 全部来自 `tests/test_delivery_note_print_merge.py` 的文件级 `pytestmark`，
 其断言 / 构造 / 调用方随 2026-09-17 v1 业务路由下线失效（该文件已退役，

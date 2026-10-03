@@ -61,6 +61,8 @@
   ``pages`` 也空，``zip`` 空转连 ``_write_footer`` 都不跑，会 200 返回一张只有模板
   空壳的 xlsx。现由 ``_prepare_print_rows`` 统一抛 400 BIZ_INVALID_VALUE，
   放在既有「所选零件均不可用（缺流水号或图号）」之后（消息可分辨：字段缺失 vs 套数为 0）。
+  负套数被按 0 处理也会丢空整单，同样 400，但走独立文案——不能让上游算错在用户
+  侧显示成业务上的「0 套」，与日志口径矛盾。
 
 模板字段含义（service 层不读，但供维护参考）：
 - 法拉（`template/delivery_note_fala.xlsx`，Sheet 'Sheet1'）：
@@ -79,10 +81,11 @@ import asyncio
 import io
 import logging
 import math
+from collections.abc import Mapping
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Mapping
+from typing import Any
 
 from fastapi import status as http_status
 import openpyxl
@@ -325,7 +328,8 @@ class DeliveryNotePrintService:
           内部用 ``self.assemblies.list_by_ids`` 组装 ``assembly_map``；None / 空则不
           做装配体合并（即便 ``merge_assemblies=True``）。
         - ``merge_quantities`` 的键可为 int 或 str（JSON 传输必然是 str，service 内部
-          归一化成 int）；值为 0 时该装配件整体不出行；整单都在 0 套装配件下 → 400。
+          归一化成 int）；值为 0 时该装配件整体不出行；整单都在 0 套装配件下 → 400
+          （负套数被按 0 处理同样 400，但文案指明「负数」而非「0 套」）。
         """
         custom_order_list: list[str] = list(custom_order) if custom_order else []
         # 2026-09-24 PR-2：assembly_ids → 内部组装 assembly_map（API 层不应传 ORM）
@@ -477,7 +481,7 @@ class DeliveryNotePrintService:
         - 缺 ``serial_no`` / ``drawing_no`` 的零件 warning + 跳过；
         - 全部行都不可用 → 400 BIZ_INVALID_VALUE；
         - 2026-10-04：**合并后**才变成 0 行 → 400 BIZ_INVALID_VALUE（整单全挂在
-          0 套装配件下，见下方兜底）。
+          0 套装配件下；负套数被按 0 处理同样落在这里，但走独立文案，见下方兜底）。
         """
         # 2) 拉 note 关联的批次行
         if self.part_batches is None:
@@ -624,7 +628,7 @@ class DeliveryNotePrintService:
         parent_map: dict[int, TCustomer] = {c.id: c for c in parent_list}
 
         # 4) 构造 PrintRow 列表（散件 + 装配体合并）
-        print_rows = self._build_print_rows(
+        print_rows, has_negative_qty = self._build_print_rows(
             rows=rows,
             leaf_map=leaf_map,
             parent_map=parent_map,
@@ -639,13 +643,24 @@ class DeliveryNotePrintService:
         # 返回一张只有模板空壳（连送货日期 / 签字栏都没有）的 xlsx，会被当作正式送货单
         # 签收。与上面「所选零件均不可用」的 400 是两回事：那条是零件字段缺失，
         # 这条是套数算下来为 0，消息必须能让用户分辨。
+        # 2026-10-04（review 第 3 轮）：负数路径原先也落到这条文案，用户看到的是
+        # 「可出货套数均为 0」，与日志里「为负数…按 0 处理」的口径矛盾（上游算错被
+        # 说成业务上确实 0 套）。_build_print_rows 把这个事实带回来了，故拆两条文案。
         if not print_rows:
-            raise BizError(
-                code=ErrCode.BIZ_INVALID_VALUE,
-                message=(
+            if has_negative_qty:
+                message = (
+                    "所选零件全部凑不齐整套：所涉装配件的可出货套数为负数"
+                    "（上游算错，已按 0 处理），合并后无任何可打印行；"
+                    "请核对各装配件的可出货套数"
+                )
+            else:
+                message = (
                     "所选零件全部凑不齐整套：所涉装配件的可出货套数均为 0，"
                     "合并后无任何可打印行；请调整勾选范围或核对各装配件套数"
-                ),
+                )
+            raise BizError(
+                code=ErrCode.BIZ_INVALID_VALUE,
+                message=message,
                 http_status=http_status.HTTP_400_BAD_REQUEST,
             )
         return print_rows
@@ -679,7 +694,8 @@ class DeliveryNotePrintService:
         键不存在 → 默认 1 套；**值为 0 时该装配件的全部行消失**——子件凑不齐整套
         不能单发，所以 ``line_item_ids`` 只勾部分子件也整组消失（且本身不报错）。
         若整单都落到 0 套装配件下 → 400 BIZ_INVALID_VALUE（合并后无任何可打印行，
-        否则会返回一张只有表头的空标签）。本端点默认 ``merge_assemblies=True``
+        否则会返回一张只有表头的空标签；负套数被按 0 处理时同样 400，但文案会指明
+        是「负数」而非业务上的「0 套」）。本端点默认 ``merge_assemblies=True``
         （与 ``render`` 对齐），是最容易「勾了却一行都没有」的一条路径。
 
         ``prefix`` 仅用于文件名前缀兜底（缺省 "X"）。
@@ -763,8 +779,12 @@ class DeliveryNotePrintService:
         assembly_map: dict[int, TAssembly],
         merge_assemblies: bool,
         merge_quantities: Mapping[int | str, int] | None = None,
-    ) -> list[PrintRow]:
+    ) -> tuple[list[PrintRow], bool]:
         """把 (batch, part) 列表转成 ``PrintRow``；merge_assemblies 时同装配体子件合并一行。
+
+        返回 ``(行列表, 有负套数被按 0 处理)``：第二个返回值只服务于调用方的空列表
+        兜底——整单丢空时要区分「业务上 0 套」与「上游传入负数」（见
+        ``_prepare_print_rows`` 的 400 文案），而只有这里知道是哪个装配件被丢的。
 
         返回的列表保留 ``rows`` 的原始顺序（custom_order 已应用）；合并行位置 = 组内
         最早出现的 batch 位次；散件行照常。``merge_quantities`` 按 assembly_id override
@@ -818,7 +838,7 @@ class DeliveryNotePrintService:
             ))
 
         if not merge_assemblies:
-            return [pr for _idx, pr in per_row_print_rows]
+            return [pr for _idx, pr in per_row_print_rows], False
 
         # 合并模式：按 part.assembly_id 分组（仅 assembly_map 命中的真装配体）
         groups: dict[int, list[int]] = {}  # asm.id → [原 rows 中的 idx 列表]
@@ -827,10 +847,11 @@ class DeliveryNotePrintService:
                 groups.setdefault(p.assembly_id, []).append(idx)
 
         if not groups:
-            return [pr for _idx, pr in per_row_print_rows]
+            return [pr for _idx, pr in per_row_print_rows], False
 
         merged_batch_indices: set[int] = set()
         merged_items: list[tuple[int, PrintRow]] = []
+        has_negative_qty = False
         # 2026-10-04：merge_quantities 的键在 JSON 里必然是字符串（冻结契约
         # Record<string, number>，由 backend-rust 算好注入），而这里按装配件雪花 id
         # （int）查表——直接 .get(asm_id) 永远命中不了，注入的套数形同虚设。统一
@@ -870,6 +891,7 @@ class DeliveryNotePrintService:
                     "（冻结合同只允许 ≥0），按 0 处理：该装配件的全部行丢弃",
                     asm_id, merge_qty,
                 )
+                has_negative_qty = True
             if merge_qty <= 0:
                 merged_batch_indices.update(group_indices)
                 continue
@@ -904,7 +926,7 @@ class DeliveryNotePrintService:
         result.extend(merged_items)
         # 按位置排序（保持视觉顺序一致）
         result.sort(key=lambda x: x[0])
-        return [pr for _idx, pr in result]
+        return [pr for _idx, pr in result], has_negative_qty
 
 
 # ============================================================
