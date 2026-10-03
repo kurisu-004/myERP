@@ -1058,12 +1058,16 @@ JWT + RBAC；nginx `/api/` 直连路径的收敛情况同样以本仓外配置�
 
 ### 验证门
 
-`uv run pytest` 当前 **150 passed / 35 skipped**（2026-10-03 实测）。150 例全部
-落在 `tests/unit/` 的 10 个文件（`test_{sts_tmp_keys,printing_service,
+`uv run pytest` 当前 **175 passed / 35 skipped**（2026-10-04 实测）。175 例 =
+`tests/unit/` 的 11 个文件（`test_{sts_tmp_keys,printing_service,
 make_object_key,print_front_cache,print_back_page,file_hash,
-sts_tmp_keys_endpoint,printing_batch_request,time,sts_health}.py`）；35 例
-skipped 全部来自 `tests/test_delivery_note_print_merge.py` 的文件级
-`pytestmark`，其断言 / 构造 / 调用方随 2026-09-17 v1 业务路由下线失效。
+sts_tmp_keys_endpoint,printing_batch_request,time,sts_health,
+delivery_note_print_endpoint}.py`）155 例 + 走真实 DB 的
+`tests/test_delivery_note_print_service.py` 20 例（送货单 / 标签 Excel 渲染器，
+2026-10-04 新增，直接 seed DB 调 `DeliveryNotePrintService`）；35 例 skipped
+全部来自 `tests/test_delivery_note_print_merge.py` 的文件级 `pytestmark`，
+其断言 / 构造 / 调用方随 2026-09-17 v1 业务路由下线失效（该文件已退役，
+渲染器覆盖由上面那份新测试承担）。
 
 PR-3 前 dormant 测试 662 个全部由 `pytestmark = pytest.mark.skip(reason=...)`
 文件级跳过，理由为「2026-09-17 v1 业务路由下线 + JWT bypass：业务由
