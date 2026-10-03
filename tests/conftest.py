@@ -10,11 +10,17 @@
 
 副作用：开发库（5433）完全不会被触及。
 
-2026-09-24 PR-3 重构：dormant stub 全部清零。活跃测试仅 6 个文件
-（`tests/test_delivery_note_print_merge.py` +
-`tests/unit/test_{printing_service,print_back_page,print_front_cache,
-sts_health,sts_prefix_credentials,file_hash,time}.py`），全部走真实 DB
-（`clean_db` / `db_session`）+ 假 SDK（`fake_cos`）+ `_id_parse` 等活跃 helper。
+2026-09-24 PR-3 重构：dormant stub 全部清零。活跃测试是 11 个 unit 文件
+（`tests/unit/test_{printing_service,printing_batch_request,print_back_page,
+print_front_cache,file_hash,make_object_key,sts_health,sts_tmp_keys,
+sts_tmp_keys_endpoint,time,delivery_note_print_endpoint}.py`）+ 1 个走真实 DB 的
+`tests/test_delivery_note_print_service.py`（送货单 / 标签 Excel 渲染器，
+直接 seed DB 调 `DeliveryNotePrintService`），假 SDK 由 `fake_cos` 提供，
+`_id_parse` / `seed_root_batch` 是活跃 helper。
+`tests/test_delivery_note_print_merge.py` **已退役**：文件级
+`pytestmark.skip`（2026-09-17 v1 业务路由下线），其 `DeliveryNoteService` /
+`create_draft` / `add_parts` 门面与被测入口都已不存在，断言无法复活；
+打印渲染器的覆盖由上述 `test_delivery_note_print_service.py` 承担。
 dormant 测试集合（25 个 + 25 个 unit）已整体删除，无须 _V1_DORMANT_MODULES /
 _DormantStub / _V1_REMOVED_FROM_PACKAGE / _install_dormant_stubs 等兜底。
 
