@@ -6,7 +6,7 @@
   拼接，``assembly_ids`` 自动追加总装图页 + 全部子件；两者至少一个非空）
 
 鉴权：本端点自身无鉴权（裸开，``api/deps.py::get_printing_service`` 只注入
-DB session、不注入身份）。经 Rust 转发层（``/api/v2/parts/print-drawing`` /
+DB session、不注入身份）。经 Rust 转发层（``/api/v2/parts/{part_id}/print-drawing`` /
 ``/api/v2/parts/print-drawing-batch``，JWT + RBAC）触达时鉴权由 Rust 承担；
 部署层是否已收敛 nginx ``/api/`` 直连路径以本仓外配置为准，本仓
 ``CLAUDE.md`` §14 仍按「裸开 + nginx 隔离」记录。

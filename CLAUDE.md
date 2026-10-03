@@ -802,15 +802,15 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| GET | /api/v1/parts/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`；支持多图纸分页。经 Rust 转发层 `/api/v2/parts/print-drawing` 触达时由 Rust 鉴权，见 §14。 |
+| GET | /api/v1/parts/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`；支持多图纸分页。经 Rust 转发层 `/api/v2/parts/{id}/print-drawing` 触达时由 Rust 鉴权，见 §14。 |
 | POST | /api/v1/parts/print-batch | 裸开 | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。`part_ids` 可空（2026-10-03 放宽，纯装配体批发 `part_ids=[]` + 非空 `assembly_ids`），两类目标至少一类非空。经 Rust 转发层 `/api/v2/parts/print-drawing-batch` 触达时由 Rust 鉴权，见 §14。 |
 
 ### /delivery-notes/*（api/v1/delivery_note_print.py — **保留** 送货单 / 标签打印端口，2026-09-24 PR-2 新增）
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| POST | /api/v1/delivery-notes/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板按一级客户前缀分发）；handler 调 `service.delivery_note_print.DeliveryNotePrintService`。 |
-| POST | /api/v1/delivery-notes/{id}/print-labels | 裸开 | **2026-09-24 PR-2 新增**：标签 Excel。 |
+| POST | /api/v1/delivery-notes/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板按一级客户前缀分发）；handler 调 `service.delivery_note_print.DeliveryNotePrintService`。经 Rust 转发层 `/api/v2/delivery-notes/{id}/print` 触达时由 Rust 鉴权，见 §14。 |
+| POST | /api/v1/delivery-notes/{id}/print-labels | 裸开 | **2026-09-24 PR-2 新增**：标签 Excel。经 Rust 转发层 `/api/v2/delivery-notes/{id}/print-labels` 触达时由 Rust 鉴权，见 §14。 |
 
 ### /health（main.py — **保留** 健康检查）
 
@@ -1034,7 +1034,7 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
   process_chain_step / outsource_shipment / outsource_quote_event /
   outsource_company_process / shelf_process / work_type_process）已删除
 
-### JWT Bypass 与 STS 端口裸开鉴权
+### JWT Bypass 与 STS / 打印端口裸开鉴权
 
 历史 `core/permission.py` / `core/security.py` 已于 2026-09-24 PR-3 与
 `tests/test_delivery_note_print_api.py` 一并删除。`core.security` 曾仅被该测试
@@ -1046,19 +1046,24 @@ STS 端口与 `/health` 不依赖 `get_current_user` 也不挂 `Depends(require_
 务必确认此路径不被直连到公网（仅 frontend nginx 同源访问）。
 
 打印端口（`api/v1/printing.py`）同理：应用层自身无鉴权，`get_printing_service`
-只注入 DB session。经 backend-rust 转发层 `/api/v2/parts/print-drawing` /
+只注入 DB session。经 backend-rust 转发层 `/api/v2/parts/{id}/print-drawing` /
 `print-drawing-batch` 触达时由 Rust 承担 JWT + RBAC；本仓**不假设** nginx
 `/api/` 直连路径已在部署层收敛（该配置在本仓外，见 `frontend/nginx.conf`），
 排查可达性时以本仓外配置为准。
 
+送货单 / 标签打印端口（`api/v1/delivery_note_print.py`）同理：应用层自身无鉴权，
+`get_delivery_note_print_service` 只注入 DB session。经 backend-rust 转发层
+`/api/v2/delivery-notes/{id}/print` / `/print-labels` 触达时由 Rust 承担
+JWT + RBAC；nginx `/api/` 直连路径的收敛情况同样以本仓外配置为准。
+
 ### 验证门
 
-`uv run pytest` 当前 **~160 passed / 0 skipped**（2026-09-24 PR-3 后 dormant
-全删；活跃 6 个测试文件 `tests/test_delivery_note_print_merge.py` +
-`tests/unit/test_{printing_service,print_back_page,print_front_cache,
-sts_health,sts_prefix_credentials,file_hash,time}.py` 全过；2026-09-19 IAM
-域迁出前 269 passed，2026-09-19 → 202 passed / 662 skipped，2026-09-24
-PR-3 后 -49 个 dormant 测试删除）。
+`uv run pytest` 当前 **150 passed / 35 skipped**（2026-10-03 实测）。150 例全部
+落在 `tests/unit/` 的 10 个文件（`test_{sts_tmp_keys,printing_service,
+make_object_key,print_front_cache,print_back_page,file_hash,
+sts_tmp_keys_endpoint,printing_batch_request,time,sts_health}.py`）；35 例
+skipped 全部来自 `tests/test_delivery_note_print_merge.py` 的文件级
+`pytestmark`，其断言 / 构造 / 调用方随 2026-09-17 v1 业务路由下线失效。
 
 PR-3 前 dormant 测试 662 个全部由 `pytestmark = pytest.mark.skip(reason=...)`
 文件级跳过，理由为「2026-09-17 v1 业务路由下线 + JWT bypass：业务由
