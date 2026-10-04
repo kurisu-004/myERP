@@ -56,6 +56,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # 2026-09-28 起启动时不再跑迁移：schema 真相源是 backend-rust 的 sqlx 迁移
 # （backend-rust/migrations/），本仓不再持有任何迁移工具。
-# exec 让 uvicorn 接管 PID 1，tini 负责信号转发
+# tini 负责信号转发并把 uvicorn 收编成 PID 1。
+# ⚠️ 不能写成 CMD ["exec", "uvicorn", ...]：exec 形式不经 shell，那个 "exec" 会被
+# tini 当成待执行程序的文件名，起来即 `tini: exec exec failed: No such file or directory`。
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["exec", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
