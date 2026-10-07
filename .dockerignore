@@ -25,8 +25,9 @@ dist/
 frontend/
 
 # ---------- 文档 / 数据 / 临时文件 ----------
-# docs/ 例外：DELIVERY_NOTE_TEMPLATE_PATH 默认指向 docs/example/送货单模板.xlsx，
-# service 层 Excel 导出需要这个文件。docs/example/ 大约 3.3MB，runtime 必需。
+# docs/ 只排除 md / csv / .DS_Store；docs/example/ 下的示例 xlsx（约 4.4MB）仍会
+# 进镜像。2026-10-08 送货单 Excel 导出下线后它们已无 runtime 消费方（相关配置字段
+# 与模板文件均不存在），例外是否该整体保留已登记在 CLAUDE.md「待清理项」。
 data/
 tmp/
 tests/

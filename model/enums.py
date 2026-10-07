@@ -323,15 +323,6 @@ class DeliveryNoteEventType(str, enum.Enum):
     PICKED_UP = "PICKED_UP"
 
 
-class DeliveryNoteSortKey(str, enum.Enum):
-    """送货单一览支持的排序字段（2026-07-22 新增）。"""
-
-    CREATED_AT = "CREATED_AT"
-    SUBMITTED_AT = "SUBMITTED_AT"
-    PICKED_UP_AT = "PICKED_UP_AT"
-    DELIVERY_NOTE_NO = "DELIVERY_NOTE_NO"
-
-
 class OutsourceSentPartSortKey(str, enum.Enum):
     """外协对账页（一览）支持的排序字段（2026-07-29 新增）。
 

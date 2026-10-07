@@ -1,7 +1,8 @@
 """2026-09-24 重构：MCP 域整体下线，本仓 service package 仅剩：
 
 - ``StsService``              — STS 凭证端口薄层（``api/v1/sts.py``）
-- ``PrintingServiceFacade``   — 零件标签 PDF 打印 facade（``api/v1/printing.py``）
+- ``PrintingServiceFacade``   — 2026-09-24 PR-2 新增：零件标签 PDF 打印 facade
+  （``api/v1/printing.py``）
 
 2026-10-08：送货单 / 标签 Excel 渲染服务（连同其 DI 工厂）随打印端口下线一并
 删除（打印端点由 backend-rust 域重构移除，前端改用 ``hucre`` 在浏览器内渲染）。

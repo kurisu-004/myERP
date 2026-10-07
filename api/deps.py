@@ -9,7 +9,8 @@ MCP AI 只读入口对应源文件已删除，业务 AI 只读查询改由 backe
 - `get_session`                       — 请求级 Session（commit/rollback + dashboard
                                      广播调度）
 - `get_sts_service`                   — `api/v1/sts.py`（STS 临时凭证端口）
-- `get_printing_service`              — `api/v1/printing.py`（零件标签 PDF）
+- `get_printing_service`              — `api/v1/printing.py`（零件标签 PDF，
+                                     2026-09-24 PR-2 新增）
 
 业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发 + 打印端点
 （均与 IAM 无关）。

@@ -1,5 +1,5 @@
 """2026-09-24 PR-2 重构 + 2026-09-28 删 STS 内部端口：python 端 v1 仅保留
-2 个 STS 凭证端口（前端直传 + healthcheck 自检）+ 4 个打印端口（与 IAM 无关）。
+2 个 STS 凭证端口（前端直传 + healthcheck 自检）+ 2 个打印端口（与 IAM 无关）。
 
 2026-10-08：送货单 / 标签 Excel 端口随 backend-rust 送货单打印域重构整体下线
 （前端改用 ``hucre`` 读用户上传的 xlsx 模板在浏览器内渲染），本包只剩 STS +
@@ -12,8 +12,8 @@ Rust 承担鉴权）：
 - ``sts``       — ``POST /files/sts-tmp-keys``（2026-09-17 前端直传 COS 临时
                    凭证；2026-09-28 扩 Union 入参：单文件 / 批量 schema 自由
                    切换）+ ``GET /files/sts-health``（2026-09-18 自检探针）。
-- ``printing``  — 零件标签 PDF（``GET /parts/{id}/print`` +
-                   ``POST /parts/print-batch``）。
+- ``printing``  — 2026-09-24 PR-2 新增：零件标签 PDF
+                   （``GET /parts/{id}/print`` + ``POST /parts/print-batch``）。
 
 历史 IAM 端点（``/auth/login`` / ``/auth/refresh`` / ``/auth/me`` /
 ``/auth/change-password`` + ``/users``）已下线，业务由 backend-rust v2 的

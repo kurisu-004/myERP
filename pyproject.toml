@@ -21,7 +21,7 @@ dependencies = [
     "python-statemachine>=2.5",
     "bcrypt<5.0",
     "websockets>=16.0",
-    "openpyxl>=3.1.5",  # 2026-07-10 起 runtime 化：送货单 Excel 模板导出
+    "openpyxl>=3.1.5",  # 脚本侧 xlsx 解析用（scripts/seed_from_excel.py / utils/gen_employee_badges.py）；2026-10-08 送货单 Excel 导出下线后已无 runtime 消费方
     "pikepdf>=10.10.0",
     "pypdfium2>=5.12.1",
     "reportlab>=5.0.0",

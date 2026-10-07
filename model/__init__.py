@@ -1,6 +1,6 @@
 """2026-09-24 PR-3 重构：dormant ORM 全部下线。
 
-本文件仅导出 printing / sts 实际消费的 ORM：
+本文件导出 printing / sts 实际消费的 ORM，外加休眠的送货单 ORM（见文末）。
 
 - `Base` / `AuditMixin` / `EventTimestampMixin` — ORM 基类 / 审计字段 mixin
 - `TPart` / `TPartBatch` / `TPartFile` — 零件 + 批次 + 多态文件（基表 + 批次
@@ -30,7 +30,6 @@ from .delivery_note import TDeliveryNote
 from .enums import (
     AssemblyStatus,
     DeliveryNoteEventType,
-    DeliveryNoteSortKey,
     DeliveryNoteStatus,
     OutsourceQuoteEventType,
     OutsourceQuoteSortKey,
@@ -62,7 +61,6 @@ __all__ = [
     "TPartFile",
     "AssemblyStatus",
     "DeliveryNoteEventType",
-    "DeliveryNoteSortKey",
     "DeliveryNoteStatus",
     "OutsourceQuoteEventType",
     "OutsourceQuoteSortKey",

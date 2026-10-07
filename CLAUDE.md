@@ -30,7 +30,36 @@ backend-rust 送货单打印端点随域重构整体删除，前端改为在浏�
   `statemachines/delivery_note.py`（送货单域归属 Rust，本仓只留 ORM 抽象 +
   历史状态机，无 Python 侧消费方）；`service/_print_{back_page,front_cache}.py`
   是零件图纸打印链路，未动。
+- **死码连带清理**：`model/enums.py::DeliveryNoteSortKey` 一并删除——唯一消费方
+  是本次删掉的 `repository/delivery_note.py`，与 `TDeliveryNote` ORM 无互引关系
+  （另 3 个 `DeliveryNote*` 枚举仍被 `statemachines/delivery_note.py` 18 处引用，
+  故保留）。
+- **⚠️ 合并顺序依赖（三仓必须同批合入）**：本仓的打印模块下线**必须与**
+  `backend-rust` 的 `delivery_note` 域重构（分支 `feat/delivery-note-com-refactor`）、
+  `frontend` 的送货单域重构（同分支名）**同批合入**。任一仓先于其它两个合入即破：
+  Rust v2 的打印转发端点仍会打到已不存在的 Python 端点（⇒ 20407
+  `BIZ_PRINT_FORWARD_FAILED` / 404），而 frontend master 仍在调它；反向则是本仓
+  删了服务但上游还在转发。三条分支（`feat/delivery-note-com-refactor` ×2 +
+  本仓 `refactor/delivery-note-print-remove`）必须一起进主干。
 - **验证门**：`pytest` 150 passed / 0 skipped（此前 183 passed / 35 skipped）。
+
+**本次遗留的待清理项（登记，不在本次范围内处理）**：
+
+1. `tests/conftest.py` 整套 DB harness（约 150 行：`_compose` /
+   `_wait_container_healthy` / `_probe_db_ready` / `_resolve_rust_baseline` /
+   `_apply_rust_baseline_sync` / `_wipe_test_data_dir` / 父版本
+   `_postgres_test_lifecycle` / `db_session` / `clean_db` / `seed_root_batch` /
+   `_truncate_all` / `_BUSINESS_TABLES`）已无消费方——150 个用例全在
+   `tests/unit/` 下，被 `tests/unit/conftest.py` 的同名空 fixture 覆盖掉。
+   保留是为降低将来 DB 用例的引入成本；删 harness 属独立任务。
+2. `statemachines/delivery_note.py:109` 引用了 `TDeliveryNoteEvent`（2026-09-24
+   PR-3 已删的 ORM，全仓零定义）⇒ 一旦调用 `on_submit` / `on_pickup` 等动作就是
+   `NameError`。属既有 latent bug，修它需连带重建 `TDeliveryNoteEvent` 或改方法
+   签名，超出本次范围。
+3. `.dockerignore` 对 `docs/` 的例外（只排除 `*.md` / `*.csv` / `.DS_Store`）
+   已无 runtime 理由——`docs/example/` 下的示例 xlsx（4.4MB）无任何生产代码读取，
+   但仍全部进镜像。是否整体排除 `docs/` 待后续单独评估（会一并影响 `Dockerfile`
+   的 `COPY . /app` 体积）。
 
 ### 2026-09-28：alembic 全量下线 + 开发库切 5430（chore/drop-alembic）
 
@@ -975,8 +1004,8 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 - `PartFileKind`: DRAWING, THREE_D_MODEL(值 `3D_MODEL`), G_CODE, SETUP_SHEET,
   ASSEMBLY_MASTER, CAD_2D
 - `DeliveryNoteStatus`: DRAFT, SUBMITTED, PICKED_UP, ARCHIVED ·
-  `DeliveryNoteSortKey`: SERIAL_NO, DELIVERY_DATE, CREATED_AT ·
-  `DeliveryNoteEventType`: CREATED, EDITED, SUBMITTED, PICKED_UP, ARCHIVED
+  `DeliveryNoteEventType`: CREATED, SUBMITTED, WITHDRAWN, RECALLED（历史兼容）,
+  PICKED_UP
 - `OutsourceQuoteStatus`: DRAFT, SUBMITTED, APPROVED, REJECTED, USED ·
   `OutsourceQuoteEventType`: CREATED, EDITED, SUBMITTED, APPROVED, REJECTED,
   USED · `OutsourceQuoteSortKey`: CREATED_AT, PRICE, REVIEWED_AT
@@ -1089,7 +1118,7 @@ make_object_key,print_front_cache,print_back_page,file_hash,
 sts_tmp_keys_endpoint,printing_batch_request,time,sts_health}.py`）全部通过；
 本仓不再有走真实 DB 的测试（送货单渲染器的 DB 用例随 2026-10-08 打印端口
 下线删除，`tests/conftest.py` 的 `db_session` / `clean_db` / `seed_root_batch`
-fixture 暂无消费方，保留待后续 Rust 转发端口复用）。
+fixture 暂无消费方，保留供未来 DB 用例复用）。
 
 PR-3 前 dormant 测试 662 个全部由 `pytestmark = pytest.mark.skip(reason=...)`
 文件级跳过，理由为「2026-09-17 v1 业务路由下线 + JWT bypass：业务由
@@ -1098,8 +1127,9 @@ backend-rust v2 承接」；PR-3 后 dormant 文件全删，无须 skip。
 `tests/conftest.py` 已删 `_V1_DORMANT_MODULES` / `_DormantStub` /
 `_DormantPackage` / `_V1_REMOVED_FROM_PACKAGE` / `_install_dormant_stubs()`
 等 dormant stub 全部（dormant 测试集合已删除，stub 无意义）；保留
-`FakeCosClient` / `_FakeGetObjectResponse` / `_FakeRawStream` / `db_session` /
-`clean_db` / `seed_root_batch`（活跃 fixture）。
+`FakeCosClient` / `_FakeGetObjectResponse` / `_FakeRawStream`（仍被
+`tests/unit/` 的打印用例消费）+ `db_session` / `clean_db` /
+`seed_root_batch`（暂无消费方，保留供未来 DB 用例复用）。
 
 `t_user` / `t_user_role` / `t_menu` / `t_role_menu` 基表 + seed 仍由 backend-rust
 的 sqlx baseline + seeds 管理（schema_init 仍建表，本仓不持有迁移链）。
