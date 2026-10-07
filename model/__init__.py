@@ -1,6 +1,6 @@
 """2026-09-24 PR-3 重构：dormant ORM 全部下线。
 
-本文件仅导出 printing / delivery_note_print / sts 实际消费的 6 个 ORM：
+本文件导出 printing / sts 实际消费的 ORM，外加休眠的送货单 ORM（见文末）。
 
 - `Base` / `AuditMixin` / `EventTimestampMixin` — ORM 基类 / 审计字段 mixin
 - `TPart` / `TPartBatch` / `TPartFile` — 零件 + 批次 + 多态文件（基表 + 批次
@@ -16,8 +16,10 @@ delivery_note_counter / process_chain_step / outsource_shipment /
 outsource_quote_event / outsource_company_process / shelf_process /
 work_type_process）已删除（2026-09-24 PR-3）。
 
-错误码 `BIZ_USER_*` / `BIZ_AUTH_*` 仍保留（历史 unit 测试 + delivery_note_print
-集成测试引用），详见 `core/error_code.py`。
+错误码 `BIZ_USER_*` / `BIZ_AUTH_*` 仍保留（历史 unit 测试引用），详见
+`core/error_code.py`。2026-10-08：送货单打印端口下线，`TDeliveryNote` ORM 与
+`statemachines/delivery_note.py` 保留（送货单域归属 backend-rust，本仓仅持有
+ORM 抽象，无 Python 侧消费方）。
 """
 
 from .assembly import TAssembly
@@ -28,7 +30,6 @@ from .delivery_note import TDeliveryNote
 from .enums import (
     AssemblyStatus,
     DeliveryNoteEventType,
-    DeliveryNoteSortKey,
     DeliveryNoteStatus,
     OutsourceQuoteEventType,
     OutsourceQuoteSortKey,
@@ -60,7 +61,6 @@ __all__ = [
     "TPartFile",
     "AssemblyStatus",
     "DeliveryNoteEventType",
-    "DeliveryNoteSortKey",
     "DeliveryNoteStatus",
     "OutsourceQuoteEventType",
     "OutsourceQuoteSortKey",

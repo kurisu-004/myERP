@@ -11,8 +11,6 @@ MCP AI 只读入口对应源文件已删除，业务 AI 只读查询改由 backe
 - `get_sts_service`                   — `api/v1/sts.py`（STS 临时凭证端口）
 - `get_printing_service`              — `api/v1/printing.py`（零件标签 PDF，
                                      2026-09-24 PR-2 新增）
-- `get_delivery_note_print_service`   — `api/v1/delivery_note_print.py`（送货单
-                                     / 标签 Excel，2026-09-24 PR-2 新增）
 
 业务路由整体由 backend-rust v2 承接；本仓仅承担 STS 凭证签发 + 打印端点
 （均与 IAM 无关）。
@@ -28,14 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import SessionLocal
 from repository import (
     AssemblyRepository,
-    CustomerRepository,
-    DeliveryNoteRepository,
-    PartBatchRepository,
     PartFileRepository,
     PartRepository,
 )
 from service import (
-    DeliveryNotePrintService,
     PrintingServiceFacade,
     StsService,
 )
@@ -187,25 +181,5 @@ def get_printing_service(
     return PrintingServiceFacade(
         parts=PartRepository(session),
         part_files=PartFileRepository(session),
-        assemblies=AssemblyRepository(session),
-    )
-
-
-def get_delivery_note_print_service(
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> DeliveryNotePrintService:
-    """2026-09-24 PR-2 新增：送货单 / 标签 Excel service 工厂。
-
-    ``api/v1/delivery_note_print.py`` 送货单 / 标签两个端点共用：
-    - notes：404 校验
-    - customers：L1 客户前缀解析 + leaf/parent 客户名映射
-    - part_batches：拉 note 关联批次（标签 / 送货单行构建共享）
-    - assemblies：2026-09-24 PR-2 改为 service 内部组装，API 层不传 ORM
-    """
-    return DeliveryNotePrintService(
-        notes=DeliveryNoteRepository(session),
-        parts=PartRepository(session),
-        customers=CustomerRepository(session),
-        part_batches=PartBatchRepository(session),
         assemblies=AssemblyRepository(session),
     )

@@ -1,6 +1,10 @@
 """测试 fixtures。
 
-生命周期：
+以下 DB harness（生命周期 1-3 + `db_session` / `clean_db` / `seed_root_batch`）
+**当前无消费方**：150 个用例全在 `tests/unit/` 下，被 `tests/unit/conftest.py:18-19`
+的同名空 `_postgres_test_lifecycle` 覆盖掉。保留是为降低将来 DB 用例的引入成本，
+harness 本身的机制如下（删 harness 属独立任务）：
+
 1. pytest session 启动 → 自动 up 一个独立的 `postgres-test` 容器（5434 端口），
    等待 healthy，把 backend-rust 的 sqlx baseline 灌进去把 schema 建好。
 2. 每个测试函数用 `clean_db` fixture 自取清空后的 DB；fixture 会 truncate 所有
@@ -10,17 +14,14 @@
 
 副作用：开发库（5433）完全不会被触及。
 
-2026-09-24 PR-3 重构：dormant stub 全部清零。活跃测试是 11 个 unit 文件
+2026-09-24 PR-3 重构：dormant stub 全部清零。活跃测试是 10 个 unit 文件
 （`tests/unit/test_{printing_service,printing_batch_request,print_back_page,
 print_front_cache,file_hash,make_object_key,sts_health,sts_tmp_keys,
-sts_tmp_keys_endpoint,time,delivery_note_print_endpoint}.py`）+ 1 个走真实 DB 的
-`tests/test_delivery_note_print_service.py`（送货单 / 标签 Excel 渲染器，
-直接 seed DB 调 `DeliveryNotePrintService`），假 SDK 由 `fake_cos` 提供，
-`_id_parse` / `seed_root_batch` 是活跃 helper。
-`tests/test_delivery_note_print_merge.py` **已退役**：文件级
-`pytestmark.skip`（2026-09-17 v1 业务路由下线），其 `DeliveryNoteService` /
-`create_draft` / `add_parts` 门面与被测入口都已不存在，断言无法复活；
-打印渲染器的覆盖由上述 `test_delivery_note_print_service.py` 承担。
+sts_tmp_keys_endpoint,time}.py`），假 SDK 由 `fake_cos` 提供——`FakeCosClient` /
+`_FakeGetObjectResponse` / `_FakeRawStream` 是本文件唯一有消费方的 helper。
+2026-10-08：送货单打印端口下线，服务层 / 装配件合并 / 端点共 3 个测试文件整体
+删除；本仓不再有走真实 DB 的渲染器测试，`t_delivery_note` 仍留在
+`_BUSINESS_TABLES`（供将来 DB 用例清表用，无写入方）。
 dormant 测试集合（25 个 + 25 个 unit）已整体删除，无须 _V1_DORMANT_MODULES /
 _DormantStub / _V1_REMOVED_FROM_PACKAGE / _install_dormant_stubs 等兜底。
 
