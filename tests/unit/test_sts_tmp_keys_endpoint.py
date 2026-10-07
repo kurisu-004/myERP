@@ -105,8 +105,8 @@ def _patch_sdk_with_recorder(
 
 
 def _build_app() -> FastAPI:
-    """构造一个最小 FastAPI app：只挂 sts router（不挂 printing /
-    delivery_note_print，免去 DB stub）。
+    """构造一个最小 FastAPI app：只挂 sts router（不挂 printing 端点，
+    免去 DB stub）。
 
     路径前缀对齐真实部署：`api_router -> /api` + `v1.api_router -> /v1`
     + `sts.router -> /files` + handler `/sts-tmp-keys` → 真实路径

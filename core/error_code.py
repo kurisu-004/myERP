@@ -10,20 +10,21 @@ class ErrCode(IntEnum):
       `FORBIDDEN` / `NOT_FOUND` / `CONFLICT` / `BIZ_VERSION_CONFLICT` /
       `BIZ_REQUEST_TOO_LARGE` / `INTERNAL_ERROR` / `DATABASE_ERROR`
     - 业务默认：`BIZ_USER_NOT_FOUND`（`BizError.__init__` 默认值；保守保留）
-    - 打印 / 送货单：`BIZ_PART_NOT_FOUND` / `BIZ_CUSTOMER_NOT_FOUND` /
-      `BIZ_INVALID_TRANSITION` / `BIZ_INVALID_VALUE` /
-      `BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED` / `BIZ_DELIVERY_PRINT_BAD_ORDER` /
-      `BIZ_DELIVERY_NOTE_NOT_FOUND`
+    - 零件 / 客户：`BIZ_PART_NOT_FOUND` / `BIZ_CUSTOMER_NOT_FOUND` /
+      `BIZ_INVALID_TRANSITION` / `BIZ_INVALID_VALUE` / `BIZ_DRAWING_UPLOAD_FAILED`
     - STS：`BIZ_STS_GRANT_FAILED` / `BIZ_STS_PREFIX_INVALID`
 
     已删除（2026-09-19 IAM 域迁出 + 2026-09-24 PR-3 dormant 业务下线）：
     IAM (`BIZ_AUTH_*` / `BIZ_USER_ACCOUNT_NOT_FOUND` / `BIZ_USER_DUPLICATE_USERNAME`
     / `BIZ_USER_INACTIVE` / `BIZ_USER_ROLE_DUPLICATE` / `BIZ_USER_ROLE_NOT_FOUND` /
     `BIZ_USER_DUPLICATE` / `BIZ_USER_NO_ROLE`)、外协 (`BIZ_OUTSOURCE_*`)、
-    装配体 (`BIZ_ASSEMBLY_*`)、批次 (`BIZ_PART_BATCH_*`)、送货单过渡码
-    (`BIZ_DELIVERY_NOTE_*` 除 `BIZ_DELIVERY_NOTE_NOT_FOUND`)、
+    装配体 (`BIZ_ASSEMBLY_*`)、批次 (`BIZ_PART_BATCH_*`)、送货单 (`BIZ_DELIVERY_*`)、
     跳序 (`BIZ_PART_BATCH_NOT_FOUND` 等)、工人 / 货架 / 工序 / 工种、
     applicant / drawing 旧码等。
+
+    2026-10-08：送货单打印端口下线（前端改用 ``hucre`` 在浏览器内渲染），
+    仅被该模块消费的 `BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED` /
+    `BIZ_DELIVERY_PRINT_BAD_ORDER` / `BIZ_DELIVERY_NOTE_NOT_FOUND` 一并删除。
     """
 
     SUCCESS = 0
@@ -53,13 +54,6 @@ class ErrCode(IntEnum):
 
     # ---- COS 上传 ----
     BIZ_DRAWING_UPLOAD_FAILED = 20404  # COS SDK 抛错（含 put/delete/get/head）
-
-    # ---- 送货单打印 ----
-    BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED = 21109  # root customer prefix 未配置模板
-    BIZ_DELIVERY_PRINT_BAD_ORDER = 21113  # custom_order 含非法 batch id 或漏行
-
-    # ---- 送货单（service.delivery_note_print / api.v1.delivery_note_print）----
-    BIZ_DELIVERY_NOTE_NOT_FOUND = 21401  # 404  找不到指定的送货单
 
     # ---- STS（service.sts / core.sts / api.v1.sts）----
     BIZ_STS_GRANT_FAILED = 21502  # STS 临时凭证签发失败

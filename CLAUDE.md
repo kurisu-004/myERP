@@ -2,7 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 最近重大重构（2026-09-28 更新）
+## 最近重大重构（2026-10-08 更新）
+
+### 2026-10-08：送货单打印模块下线（refactor/delivery-note-print-remove）
+
+backend-rust 送货单打印端点随域重构整体删除，前端改为在浏览器内用 `hucre` 读
+用户上传的 xlsx 模板本地渲染，不再回源本 Python 后端 ⇒ 本仓打印链路全部成为
+死代码。变更范围：
+
+- **删源文件**：`service/delivery_note_print.py` + `api/v1/delivery_note_print.py`
+  （2 个端点）+ `repository/delivery_note.py`。
+- **删测试**：`tests/test_delivery_note_print_service.py`（26 例，走真实 DB）/
+  `tests/test_delivery_note_print_merge.py`（35 例 skipped）/
+  `tests/unit/test_delivery_note_print_endpoint.py`（7 例）。
+- **删模板**：`template/delivery_note_{fala,luda}.xlsx`（F/L 前缀分发用），
+  `template/` 目录随之删除。
+- **注册表清理**：`api/v1/__init__.py`（router 注册）/ `api/deps.py`
+  （`get_delivery_note_print_service` 工厂）/ `service/__init__.py` /
+  `repository/__init__.py`（`DeliveryNoteRepository` re-export）。
+- **配置**：`core/config.py` 删 `delivery_note_template_by_prefix` 字段
+  （env `DELIVERY_NOTE_TEMPLATE_BY_PREFIX`）。
+- **错误码**：`core/error_code.py` 删仅被该模块消费的
+  `BIZ_DELIVERY_TEMPLATE_NOT_CONFIGURED`（21109）/
+  `BIZ_DELIVERY_PRINT_BAD_ORDER`（21113）/ `BIZ_DELIVERY_NOTE_NOT_FOUND`
+  （21401）；`BIZ_INVALID_VALUE` 等全仓共用码保留。
+- **保留**：`model/delivery_note.py::TDeliveryNote` +
+  `statemachines/delivery_note.py`（送货单域归属 Rust，本仓只留 ORM 抽象 +
+  历史状态机，无 Python 侧消费方）；`service/_print_{back_page,front_cache}.py`
+  是零件图纸打印链路，未动。
+- **验证门**：`pytest` 150 passed / 0 skipped（此前 183 passed / 35 skipped）。
 
 ### 2026-09-28：alembic 全量下线 + 开发库切 5430（chore/drop-alembic）
 
@@ -234,15 +262,15 @@ model/*.py           # SQLAlchemy ORM
 - `permission.py` — `CurrentUser` + `require_role/roles/auth/shelf`（bypass 壳）
 - `time.py` — `now_naive()` / `now_shanghai_iso()`（Asia/Shanghai，不依赖环境 TZ）
 
-### 当前模块清单（2026-09-24 PR-3 最终态）
+### 当前模块清单（2026-10-08 送货单打印端口下线后）
 
 | 聚合 | Model | Repository | Service | API 路由 |
 |------|-------|-----------|---------|----------|
 | 零件 | `TPart` / `TPartBatch` | `PartRepository` / `PartBatchRepository` | `service/printing.py`（仅 PDF 打印消费） | `api/v1/printing.py`（**保留**：`GET /parts/{id}/print` + `POST /parts/print-batch`） |
-| 装配体 | `TAssembly` | `AssemblyRepository` | `service/printing.py` / `service/delivery_note_print.py`（仅读取 customer / 父件） | 同上 |
+| 装配体 | `TAssembly` | `AssemblyRepository` | `service/printing.py`（仅读取 customer / 父件） | 同上 |
 | 文件（多态） | `TPartFile` | `PartFileRepository` | `service/printing.py`（图纸 / 图片正背面） | 同上 |
-| 客户 | `TCustomer` | `CustomerRepository` | `service/printing.py` / `service/delivery_note_print.py`（读 `serial_prefix`） | 同上 |
-| 送货单 | `TDeliveryNote` | `DeliveryNoteRepository` | `service/delivery_note_print.py`（XLSX 模板填表） | `api/v1/delivery_note_print.py`（**保留**：`POST /delivery-notes/{id}/print` + `POST /delivery-notes/{id}/print-labels`） |
+| 客户 | `TCustomer` | `CustomerRepository` | `service/printing.py`（读 `serial_prefix`） | 同上 |
+| 送货单 | `TDeliveryNote` | —（repository 已删） | —（打印端口下线，渲染职责移到前端 `hucre`） | —（`/delivery-notes/*` 随 Rust 域重构删除） |
 | STS 凭证 | — | — | `service/sts.py`（薄层） + `core/sts.py`（SDK 包装） | `api/v1/sts.py`（**保留** 3 个端点） |
 | 健康检查 | — | — | — | `main.py::/api/v1/health`（**保留**：compose 探针） |
 
@@ -782,12 +810,13 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 ## API 端点速查
 
-> **2026-09-24 PR-3 最终态**：本仓 `/api/v1/*` + `/api/v1/health` 仅保留 8 个
-> 活跃端点（3 STS + 4 打印 + 1 health）。其余 22 + 5 = 27 个 v1 + MCP 路由
+> **2026-10-08 当前态**：本仓 `/api/v1/*` + `/api/v1/health` 仅保留 5 个
+> 活跃端点（2 STS + 2 打印 + 1 health）。送货单 / 标签 Excel 的 2 个打印端点
+> 已随 Rust 域重构下线（前端改用 `hucre` 在浏览器内渲染）。其余 v1 + MCP 路由
 > 已 git rm；业务由 backend-rust v2 的 `/api/v2/*` 承接。鉴权 / 账号 / 角色 /
 > 菜单相关由 `/api/v2/iam/*` 承接。
 
-> 统一信封 `{ code: 0, message: "ok", data: ... }`。**所有 8 个端点裸开鉴权**，
+> 统一信封 `{ code: 0, message: "ok", data: ... }`。**所有 5 个端点裸开鉴权**，
 > 靠部署层 nginx / 安全组隔离保证。权限缩写（仅作历史参考）：M=MANAGER,
 > C=CLERK, S=SHELF_ACCOUNT, CNC=CNC_PROGRAMMER, I=INSPECTOR, *=任意已登录。
 
@@ -805,12 +834,12 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 | GET | /api/v1/parts/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`；支持多图纸分页。经 Rust 转发层 `/api/v2/parts/{id}/print-drawing` 触达时由 Rust 鉴权，见 §14。 |
 | POST | /api/v1/parts/print-batch | 裸开 | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。`part_ids` 可空（2026-10-03 放宽，纯装配体批发 `part_ids=[]` + 非空 `assembly_ids`），两类目标至少一类非空。经 Rust 转发层 `/api/v2/parts/print-drawing-batch` 触达时由 Rust 鉴权，见 §14。 |
 
-### /delivery-notes/*（api/v1/delivery_note_print.py — **保留** 送货单 / 标签打印端口，2026-09-24 PR-2 新增）
+### /delivery-notes/*（**2026-10-08 已下线**）
 
-| 方法 | 路径 | 鉴权 | 说明 |
-|------|------|------|------|
-| POST | /api/v1/delivery-notes/{id}/print | 裸开 | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板按一级客户前缀分发）；handler 调 `service.delivery_note_print.DeliveryNotePrintService`。经 Rust 转发层 `/api/v2/delivery-notes/{id}/print` 触达时由 Rust 鉴权，见 §14。 |
-| POST | /api/v1/delivery-notes/{id}/print-labels | 裸开 | **2026-09-24 PR-2 新增**：标签 Excel。经 Rust 转发层 `/api/v2/delivery-notes/{id}/print-labels` 触达时由 Rust 鉴权，见 §14。 |
+送货单 / 标签 Excel 的 2 个打印端点（`/print` + `/print-labels`）随 backend-rust
+送货单打印域重构整体删除，模板文件（`template/delivery_note_{fala,luda}.xlsx`）
+与 `delivery_note_template_by_prefix` 配置项一并移除；前端改用 `hucre` 读用户
+上传的 xlsx 模板在浏览器内渲染，不再回源本 Python 后端。
 
 ### /health（main.py — **保留** 健康检查）
 
@@ -837,11 +866,11 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 ---
 
-## Service 层速查（2026-09-24 PR-3 最终态）
+## Service 层速查（2026-10-08 当前态）
 
 > 每个 Repository 继承 `create / get_by_id / update / soft_delete` 标准模式。
-> 2026-09-24 PR-3 后，本仓仅保留 3 个 service：
-> `StsService` / `PrintingServiceFacade` / `DeliveryNotePrintService` +
+> 2026-10-08 后，本仓仅保留 2 个 service：
+> `StsService` / `PrintingServiceFacade` +
 > 3 个活跃 helper（`_id_parse` / `_print_back_page` / `_print_front_cache`）。
 > 历史业务 service（applicant / assembly / customer / delivery_note /
 > outsource_company / outsource_quote / part / process / shelf /
@@ -849,18 +878,14 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 > mcp_query / part_file / dashboard / auto_complete）已删除。
 > 2026-09-24 PR-3 还删除 dormant helper：`service/_assembly_rollup` /
 > `service/_batch_ops` / `service/_delivery_note_events` /
-> `service/_session_refresh`。
+> `service/_session_refresh`；2026-10-08 随打印端口下线删除送货单 Excel 渲染
+> service 及其 DI 工厂。
 
 - **PrintingServiceFacade**（`service/printing.py`，2026-09-24 PR-2 新增）：
   单件 / 批量打印图纸 PDF facade；`build_part_print_pdf` /
   `build_parts_print_pdf_batch` 调 `service/_print_back_page.py`（条码背面）
   + `service/_print_front_cache.py`（图纸正面缓存）；handler 在
   `api/v1/printing.py`。
-- **DeliveryNotePrintService**（`service/delivery_note_print.py`，2026-09-24
-  PR-2 新增）：送货单 Excel + 标签 Excel；调
-  `repository/delivery_note.py::notes.get_by_id` 读送货单，模板填表走
-  `template/delivery_note_fala.xlsx` / `template/delivery_note_luda.xlsx`
-  （F/L 一级客户前缀分发）；handler 在 `api/v1/delivery_note_print.py`。
 - **StsService**（`service/sts.py`）：STS 凭证端口薄层 service；只读 settings +
   调 `core.sts.grant_sts_tmp_key`，不持 session / 不写 DB；handler 在
   `api/v1/sts.py`。
@@ -875,16 +900,17 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 
 ---
 
-## Repository 层速查（非标准查询方法，2026-09-24 PR-3 最终态）
+## Repository 层速查（非标准查询方法，2026-10-08 当前态）
 
-> 2026-09-24 PR-3 后，本仓仅保留 6 个 repository：
+> 2026-10-08 后，本仓仅保留 5 个 repository：
 > `PartRepository` / `PartBatchRepository` / `PartFileRepository` /
-> `AssemblyRepository` / `CustomerRepository` / `DeliveryNoteRepository`。
+> `AssemblyRepository` / `CustomerRepository`。
 > 历史 dormant repository（applicant / process / worker / shelf /
 > shelf_process / work_type / work_type_process / outsource_company /
 > outsource_quote / outsource_quote_event / outsource_shipment /
 > outsource_company_process / part_event / pickup_skip_event /
-> serial_counter）已删除。
+> serial_counter / delivery_note）已删除（delivery_note 于 2026-10-08 随送货单
+> 打印端口下线删除）。
 
 | Repository | 特殊方法 |
 |------------|---------|
@@ -893,7 +919,6 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 | PartFileRepository | `list_by_part`; `find_active_by_part_kind_sha`; `soft_delete_many` |
 | AssemblyRepository | `list_with_filters` / `count_with_filters` |
 | CustomerRepository | `list_all` / `list_by_ids` / `list_roots` / `list_children` |
-| DeliveryNoteRepository | （2026-09-24 PR-2 从 git 785df37^ 恢复，10 个公开方法 + 2 个私有辅助；专供 `service.delivery_note_print::notes.get_by_id`） |
 
 ---
 
@@ -919,7 +944,7 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 | TPartBatch | t_part_batch | part_id, batch_no(per-part 递增), quantity, status, location, current_holder_id, current_process_step_id(→ t_process_chain_step.id), delivery_note_id, parent_batch_id; 索引 `(part_id)` / `(status, current_holder_id)` / `(location, status, next_process_id)` / `unique(part_id, batch_no)` |
 | TAssembly | t_assembly | serial_no, drawing_no, name, applicant_name, customer_id, request_date, planned_delivery_date, actual_delivery_date, is_urgent, status(PENDING/IN_PROCESS/INSPECTION/READY_TO_SHIP/DELIVERED/COMPLETED/CANCELLED) |
 | TCustomer | t_customer | name, parent_id(自引用邻接表), serial_prefix(A-Z) |
-| TDeliveryNote | t_delivery_note | serial_no, customer_id, status(DRAFT/SUBMITTED/PICKED_UP/ARCHIVED), delivery_date(Date), notes；外加 event 子表 `t_delivery_note_event` + 计数器子表 `t_delivery_note_counter`（schema_init 仍建表，本仓不持有 ORM 抽象；service.delivery_note_print 仅读 `notes.get_by_id`） |
+| TDeliveryNote | t_delivery_note | serial_no, customer_id, status(DRAFT/SUBMITTED/PICKED_UP/ARCHIVED), delivery_date(Date), notes；外加 event 子表 `t_delivery_note_event` + 计数器子表 `t_delivery_note_counter`（schema 由 backend-rust sqlx 建，本仓只持有 ORM 抽象 + 状态机，2026-10-08 打印端口下线后无 Python 侧消费方） |
 
 ### 关联/文件表
 
@@ -974,7 +999,7 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
   （2026-09-24 PR-3 后对应 ORM 已删）。
 2. **`created_by` / `updated_by` 全为 NULL**：2026-09-19 IAM 域迁出后，
    本仓不再持有 user/role 抽象，写操作人字段在 v2 端按 CurrentUser.id 填；
-   本仓活跃路径（printing / delivery_note_print / sts）只读不写，
+   本仓活跃路径（printing / sts）只读不写，
    AuditMixin 字段填入由 backend-rust v2 端负责。
 3. **`docs/db-design-part-customer.md` 部分描述已过时**（审计字段说由 `Base`
    声明，实际是 `AuditMixin`）；以本文件和 `model/audit.py` 为准。
@@ -989,11 +1014,12 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 2026-09-17 起，本仓 v1 业务路由整体下线，业务由 backend-rust v2 承接；本仓同时
 切换为 JWT 完全 Bypass 模式。2026-09-19 进一步把 auth / user / menu 域（IAM）
 从本仓源码完全迁出。2026-09-24 PR-3 把全部 dormant 业务代码（49 个源文件 + 49
-个测试）下线，本仓仅保留 8 个活跃端点。
+个测试）下线；2026-10-08 再随 Rust 域重构删掉 2 个送货单打印端点，本仓仅保留
+5 个活跃端点。
 
 ### 范围
 
-**保留端点（共 7 个：2 个 STS 端口 + 4 个打印端口 + 1 个健康检查）**：
+**保留端点（共 5 个：2 个 STS 端口 + 2 个打印端口 + 1 个健康检查）**：
 
 | 方法 | 路径 | 实现 | 说明 |
 |---|---|---|---|
@@ -1001,11 +1027,9 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 | GET | `/api/v1/files/sts-health` | `api/v1/sts.py` | **2026-09-18 新增**：STS 签发自检（healthcheck 探针）——裸开鉴权；每次 uuid4 hex probe prefix `tmp/__sts_healthcheck__/<hex>/probe`（TTL 60s）真实调 SDK 签发（不 mock），验证 SDK + 主账号密钥 + CAM policy + 网络整条链路；BizError 透传（自带 http_status）让 compose healthcheck 拿到非 2xx 即 fail。 |
 | GET | `/api/v1/parts/{id}/print` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：单件打印图纸 PDF（图纸正面 + 条码背面）；handler 调 `service.printing.build_part_print_pdf`。 |
 | POST | `/api/v1/parts/print-batch` | `api/v1/printing.py` | **2026-09-24 PR-2 新增**：批量打印图纸 PDF；handler 调 `service.printing.build_parts_print_pdf_batch`。**2026-10-03 放宽 `part_ids`**：`part_ids` 可缺省 / 空列表（纯装配体批次只需 `assembly_ids` 非空），两类目标至少一类非空由请求模型的 `model_validator` 收口。 |
-| POST | `/api/v1/delivery-notes/{id}/print` | `api/v1/delivery_note_print.py` | **2026-09-24 PR-2 新增**：送货单 Excel（F/L 模板）；handler 调 `service.delivery_note_print` 模板填表。 |
-| POST | `/api/v1/delivery-notes/{id}/print-labels` | `api/v1/delivery_note_print.py` | **2026-09-24 PR-2 新增**：标签 Excel；handler 调 `service.delivery_note_print`。 |
 | GET | `/api/v1/health` | `main.py` | 容器健康检查（compose 探针）；不查 DB（DB 联通由 lifespan 心跳保证）。 |
 
-**下线路由（22 + 5 个，全部 git rm，2026-09-17 / 09-19 / 09-24）**：
+**下线路由（22 + 5 + 2 个，全部 git rm，2026-09-17 / 09-19 / 09-24 / 10-08）**：
 
 - 2026-09-17 首批（18 个）：applicant / assembly / cnc_program / customer /
   delivery_note / drawing / outsource_company / outsource_quote /
@@ -1018,12 +1042,16 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
   `GET /api/mcp/health` + `GET /api/mcp/dashboard-stats` +
   `POST /api/mcp/parts/by-serial` + `GET /api/mcp/parts/{id}` +
   `GET /api/mcp/files/{id}/download-url`
+- 2026-10-08 增补（2 个送货单打印端点，原保留在 `api/v1/delivery_note_print.py`）：
+  `POST /api/v1/delivery-notes/{id}/print` +
+  `POST /api/v1/delivery-notes/{id}/print-labels`——Rust 侧送货单打印域重构
+  删除转发，前端改用 `hucre` 在浏览器内渲染，本仓端点 + service + repository
+  + `template/*.xlsx` 模板 + 配置项一并删除
 
-**保留的 repository / service / schema 子集（2026-09-24 PR-3 最终态）**：
-- `repository`：`part / part_batch / part_file / assembly / customer /
-  delivery_note`（被 `service.printing` + `service.delivery_note_print` +
-  `statemachines.assembly` 实际消费）
-- `service`：`printing / delivery_note_print / sts` + `_id_parse /
+**保留的 repository / service / schema 子集（2026-10-08 当前态）**：
+- `repository`：`part / part_batch / part_file / assembly / customer`
+  （被 `service.printing` + `statemachines.assembly` 实际消费）
+- `service`：`printing / sts` + `_id_parse /
   _print_back_page / _print_front_cache`（活跃 helper）
 - `schema`：`sts / _types`
 - `model`：所有**业务** ORM 保留——基表 schema 由 backend-rust sqlx 维护；**IAM** 相关
@@ -1039,7 +1067,7 @@ baseline 已包含 `t_part_batch.current_process_step_id` 列 + 部分索引
 历史 `core/permission.py` / `core/security.py` 已于 2026-09-24 PR-3 与
 `tests/test_delivery_note_print_api.py` 一并删除。`core.security` 曾仅被该测试
 构造 token 验证 `/print` 鉴权链路引用；测试文件删除后，`core/security.py` 不再
-有真实下游，`core/permission.py` bypass 壳亦无意义（8 个端点全部裸开鉴权）。
+有真实下游，`core/permission.py` bypass 壳亦无意义（5 个端点全部裸开鉴权）。
 
 STS 端口与 `/health` 不依赖 `get_current_user` 也不挂 `Depends(require_auth)`；
 安全性靠 nginx `/api/v1/files/` / `/health` 不暴露 / 安全组隔离保证。部署层
@@ -1051,23 +1079,17 @@ STS 端口与 `/health` 不依赖 `get_current_user` 也不挂 `Depends(require_
 `/api/` 直连路径已在部署层收敛（该配置在本仓外，见 `frontend/nginx.conf`），
 排查可达性时以本仓外配置为准。
 
-送货单 / 标签打印端口（`api/v1/delivery_note_print.py`）同理：应用层自身无鉴权，
-`get_delivery_note_print_service` 只注入 DB session。经 backend-rust 转发层
-`/api/v2/delivery-notes/{id}/print` / `/print-labels` 触达时由 Rust 承担
-JWT + RBAC；nginx `/api/` 直连路径的收敛情况同样以本仓外配置为准。
+送货单 / 标签打印端口已于 2026-10-08 随 Rust 域重构下线，本仓不再有该端口。
 
 ### 验证门
 
-`uv run pytest` 当前 **183 passed / 35 skipped**（2026-10-04 实测）。183 例 =
-`tests/unit/` 的 11 个文件（`test_{sts_tmp_keys,printing_service,
+`uv run pytest` 当前 **150 passed / 0 skipped**（2026-10-08 实测）。150 例 =
+`tests/unit/` 的 10 个文件（`test_{sts_tmp_keys,printing_service,
 make_object_key,print_front_cache,print_back_page,file_hash,
-sts_tmp_keys_endpoint,printing_batch_request,time,sts_health,
-delivery_note_print_endpoint}.py`）157 例 + 走真实 DB 的
-`tests/test_delivery_note_print_service.py` 26 例（送货单 / 标签 Excel 渲染器，
-2026-10-04 新增，直接 seed DB 调 `DeliveryNotePrintService`）；35 例 skipped
-全部来自 `tests/test_delivery_note_print_merge.py` 的文件级 `pytestmark`，
-其断言 / 构造 / 调用方随 2026-09-17 v1 业务路由下线失效（该文件已退役，
-渲染器覆盖由上面那份新测试承担）。
+sts_tmp_keys_endpoint,printing_batch_request,time,sts_health}.py`）全部通过；
+本仓不再有走真实 DB 的测试（送货单渲染器的 DB 用例随 2026-10-08 打印端口
+下线删除，`tests/conftest.py` 的 `db_session` / `clean_db` / `seed_root_batch`
+fixture 暂无消费方，保留待后续 Rust 转发端口复用）。
 
 PR-3 前 dormant 测试 662 个全部由 `pytestmark = pytest.mark.skip(reason=...)`
 文件级跳过，理由为「2026-09-17 v1 业务路由下线 + JWT bypass：业务由

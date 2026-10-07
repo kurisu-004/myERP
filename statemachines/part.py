@@ -8,8 +8,8 @@
 
 2026-09-24 PR-3：TPartEvent 模型已下线（v1 业务路由下线 + IAM 域迁出）。
 本状态机仅供 `model.part.TPart.sm` / `model.part_batch.TPartBatch.sm` 懒加载
-引用；本仓活跃 service（printing / delivery_note_print / sts）不触发状态机
-流转，本文件作为历史设计保留。
+引用；本仓活跃 service（printing / sts）不触发状态机流转，本文件作为历史设计
+保留。
 """
 from __future__ import annotations
 
